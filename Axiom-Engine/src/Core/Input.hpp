@@ -6,6 +6,9 @@
 
 #include <GLFW/glfw3.h>
 #include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 namespace Axiom {
     class Application;
@@ -33,6 +36,16 @@ namespace Axiom {
         Vec2 GetMouseDelta() const { return m_MouseDelta; }
         float ScrollValue() const { return m_ScrollValue; }
 
+        // Unicode codepoints typed this frame, in the order they arrived
+        // from GLFW's char callback. Cleared at the start of every Update.
+        // UI input fields read this each frame to append typed characters.
+        const std::vector<uint32_t>& GetCharsThisFrame() const { return m_CharsThisFrame; }
+
+        // Convenience: UTF-8 encoded version of GetCharsThisFrame, ready
+        // to append to a std::string. Returns empty when nothing was
+        // typed this frame.
+        std::string GetTypedTextUtf8() const;
+
     private:
         void Update();
 
@@ -42,6 +55,7 @@ namespace Axiom {
         void OnMouseUp(int btn);
         void OnScroll(float delta) { m_ScrollValue += delta; }
         void OnMouseMove(double x, double y);
+        void OnChar(uint32_t codepoint);
 
         static constexpr int k_KeyCount = GLFW_KEY_LAST + 1;
         static constexpr int k_MouseCount = GLFW_MOUSE_BUTTON_LAST + 1;
@@ -55,5 +69,7 @@ namespace Axiom {
         Vec2 m_MousePosition = { 0, 0 };
         Vec2 m_MouseDelta = { 0, 0 };
         Vec2 m_Axis = { 0, 0 };
+
+        std::vector<uint32_t> m_CharsThisFrame;
     };
 }

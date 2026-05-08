@@ -107,6 +107,7 @@ namespace Axiom {
 		static void RefreshCallback(GLFWwindow* window);
 		static void IconifyCallback(GLFWwindow* window, int iconified);
 		static void SetKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+		static void SetCharCallback(GLFWwindow* window, unsigned int codepoint);
 		static void SetMouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 		static void SetCursorPositionCallback(GLFWwindow* window, double xPos, double yPos);
 		static void SetScrollCallback(GLFWwindow* window, double xOffset, double yOffset);

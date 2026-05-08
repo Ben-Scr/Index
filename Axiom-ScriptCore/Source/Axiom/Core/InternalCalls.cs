@@ -77,6 +77,21 @@ internal static unsafe class InternalCalls
         }
     }
 
+    // Variant for the Dropdown_GetOptionBuffer signature where the
+    // entity ID + option index pair drives a UTF-8 buffer fetch.
+    private static string ReadNativeStringIndexed(delegate* unmanaged<ulong, int, byte*, int, int> fn, ulong entityID, int index)
+    {
+        int required = fn(entityID, index, null, 0);
+        if (required <= 0) return "";
+
+        byte[] buffer = new byte[required + 1];
+        fixed (byte* ptr = buffer)
+        {
+            int written = fn(entityID, index, ptr, buffer.Length);
+            return DecodeNativeString(buffer, written);
+        }
+    }
+
     private static void CallStringBinding(delegate* unmanaged<byte*, void> fn, string? message)
     {
         message ??= "";
@@ -632,4 +647,136 @@ internal static unsafe class InternalCalls
             return NativeCallbacks.Bindings.Physics2D_ContainsPointAll(originX, originY, idPtr, outEntityIDs.Length);
         }
     }
+
+    // ── UI: RectTransform2D ──────────────────────────────────────────
+
+    internal static void RectTransform_GetAnchorMin(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetAnchorMin(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetAnchorMin(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetAnchorMin(id, x, y);
+    internal static void RectTransform_GetAnchorMax(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetAnchorMax(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetAnchorMax(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetAnchorMax(id, x, y);
+    internal static void RectTransform_GetPivot(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetPivot(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetPivot(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetPivot(id, x, y);
+    internal static void RectTransform_GetAnchoredPosition(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetAnchoredPosition(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetAnchoredPosition(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetAnchoredPosition(id, x, y);
+    internal static void RectTransform_GetSizeDelta(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetSizeDelta(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetSizeDelta(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetSizeDelta(id, x, y);
+    internal static float RectTransform_GetRotation(ulong id) => NativeCallbacks.Bindings.RectTransform_GetRotation(id);
+    internal static void RectTransform_SetRotation(ulong id, float r) => NativeCallbacks.Bindings.RectTransform_SetRotation(id, r);
+    internal static void RectTransform_GetScale(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetScale(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetScale(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetScale(id, x, y);
+    internal static void RectTransform_GetResolvedSize(ulong id, out float w, out float h)
+    { float ow, oh; NativeCallbacks.Bindings.RectTransform_GetResolvedSize(id, &ow, &oh); w = ow; h = oh; }
+
+    // ── UI: Image ────────────────────────────────────────────────────
+
+    internal static void Image_GetColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Image_GetColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Image_SetColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Image_SetColor(id, r, g, b, a);
+    internal static ulong Image_GetTexture(ulong id) => NativeCallbacks.Bindings.Image_GetTexture(id);
+    internal static void Image_SetTexture(ulong id, ulong assetId) => NativeCallbacks.Bindings.Image_SetTexture(id, assetId);
+
+    // ── UI: Interactable ─────────────────────────────────────────────
+
+    internal static bool Interactable_GetInteractable(ulong id) => NativeCallbacks.Bindings.Interactable_GetInteractable(id) != 0;
+    internal static void Interactable_SetInteractable(ulong id, bool v) => NativeCallbacks.Bindings.Interactable_SetInteractable(id, v ? 1 : 0);
+    internal static bool Interactable_GetIsHovered(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsHovered(id) != 0;
+    internal static bool Interactable_GetIsClicked(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsClicked(id) != 0;
+    internal static bool Interactable_GetIsPressed(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsPressed(id) != 0;
+    internal static bool Interactable_GetIsMouseDown(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsMouseDown(id) != 0;
+    internal static bool Interactable_GetIsMouseUp(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsMouseUp(id) != 0;
+
+    // ── UI: Button ───────────────────────────────────────────────────
+
+    internal static void Button_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Button_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Button_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Button_SetNormalColor(id, r, g, b, a);
+    internal static void Button_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Button_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Button_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Button_SetHoveredColor(id, r, g, b, a);
+    internal static void Button_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Button_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Button_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Button_SetPressedColor(id, r, g, b, a);
+    internal static void Button_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Button_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Button_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Button_SetDisabledColor(id, r, g, b, a);
+
+    // ── UI: Slider ───────────────────────────────────────────────────
+
+    internal static float Slider_GetValue(ulong id) => NativeCallbacks.Bindings.Slider_GetValue(id);
+    internal static void Slider_SetValue(ulong id, float v) => NativeCallbacks.Bindings.Slider_SetValue(id, v);
+    internal static float Slider_GetMinValue(ulong id) => NativeCallbacks.Bindings.Slider_GetMinValue(id);
+    internal static void Slider_SetMinValue(ulong id, float v) => NativeCallbacks.Bindings.Slider_SetMinValue(id, v);
+    internal static float Slider_GetMaxValue(ulong id) => NativeCallbacks.Bindings.Slider_GetMaxValue(id);
+    internal static void Slider_SetMaxValue(ulong id, float v) => NativeCallbacks.Bindings.Slider_SetMaxValue(id, v);
+    internal static bool Slider_GetWholeNumbers(ulong id) => NativeCallbacks.Bindings.Slider_GetWholeNumbers(id) != 0;
+    internal static void Slider_SetWholeNumbers(ulong id, bool v) => NativeCallbacks.Bindings.Slider_SetWholeNumbers(id, v ? 1 : 0);
+    internal static bool Slider_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Slider_GetValueChangedThisFrame(id) != 0;
+
+    // ── UI: Toggle ───────────────────────────────────────────────────
+
+    internal static bool Toggle_GetIsOn(ulong id) => NativeCallbacks.Bindings.Toggle_GetIsOn(id) != 0;
+    internal static void Toggle_SetIsOn(ulong id, bool v) => NativeCallbacks.Bindings.Toggle_SetIsOn(id, v ? 1 : 0);
+    internal static bool Toggle_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Toggle_GetValueChangedThisFrame(id) != 0;
+
+    // ── UI: InputField ───────────────────────────────────────────────
+
+    internal static string InputField_GetText(ulong id)
+        => ReadNativeString(NativeCallbacks.Bindings.InputField_GetTextBuffer, id);
+    internal static void InputField_SetText(ulong id, string text)
+    {
+        byte[] buf = EncodeUtf8Z(text);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.InputField_SetText(id, ptr);
+    }
+    internal static string InputField_GetPlaceholderText(ulong id)
+        => ReadNativeString(NativeCallbacks.Bindings.InputField_GetPlaceholderTextBuffer, id);
+    internal static void InputField_SetPlaceholderText(ulong id, string text)
+    {
+        byte[] buf = EncodeUtf8Z(text);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.InputField_SetPlaceholderText(id, ptr);
+    }
+    internal static bool InputField_GetIsFocused(ulong id) => NativeCallbacks.Bindings.InputField_GetIsFocused(id) != 0;
+    internal static void InputField_SetIsFocused(ulong id, bool v) => NativeCallbacks.Bindings.InputField_SetIsFocused(id, v ? 1 : 0);
+    internal static bool InputField_GetSubmittedThisFrame(ulong id) => NativeCallbacks.Bindings.InputField_GetSubmittedThisFrame(id) != 0;
+    internal static int InputField_GetCharacterLimit(ulong id) => NativeCallbacks.Bindings.InputField_GetCharacterLimit(id);
+    internal static void InputField_SetCharacterLimit(ulong id, int v) => NativeCallbacks.Bindings.InputField_SetCharacterLimit(id, v);
+
+    // ── UI: Dropdown ─────────────────────────────────────────────────
+
+    internal static int Dropdown_GetSelectedIndex(ulong id) => NativeCallbacks.Bindings.Dropdown_GetSelectedIndex(id);
+    internal static void Dropdown_SetSelectedIndex(ulong id, int v) => NativeCallbacks.Bindings.Dropdown_SetSelectedIndex(id, v);
+    internal static bool Dropdown_GetIsOpen(ulong id) => NativeCallbacks.Bindings.Dropdown_GetIsOpen(id) != 0;
+    internal static void Dropdown_SetIsOpen(ulong id, bool v) => NativeCallbacks.Bindings.Dropdown_SetIsOpen(id, v ? 1 : 0);
+    internal static bool Dropdown_GetSelectionChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Dropdown_GetSelectionChangedThisFrame(id) != 0;
+    internal static int Dropdown_GetOptionCount(ulong id) => NativeCallbacks.Bindings.Dropdown_GetOptionCount(id);
+    internal static string Dropdown_GetOption(ulong id, int index)
+        => ReadNativeStringIndexed(NativeCallbacks.Bindings.Dropdown_GetOptionBuffer, id, index);
+    internal static void Dropdown_SetOption(ulong id, int index, string text)
+    {
+        byte[] buf = EncodeUtf8Z(text);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Dropdown_SetOption(id, index, ptr);
+    }
+    internal static void Dropdown_AddOption(ulong id, string text)
+    {
+        byte[] buf = EncodeUtf8Z(text);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Dropdown_AddOption(id, ptr);
+    }
+    internal static void Dropdown_RemoveOption(ulong id, int index) => NativeCallbacks.Bindings.Dropdown_RemoveOption(id, index);
+    internal static void Dropdown_ClearOptions(ulong id) => NativeCallbacks.Bindings.Dropdown_ClearOptions(id);
 }

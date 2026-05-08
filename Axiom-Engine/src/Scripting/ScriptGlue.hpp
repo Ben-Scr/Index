@@ -257,6 +257,88 @@ namespace Axiom {
 		int (*Physics2D_OverlapPolygonAll)(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut);
 		int (*Physics2D_ContainsPoint)(float originX, float originY, int mode, uint64_t* entityID);
 		int (*Physics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
+
+		// ── UI: RectTransform2D ──────────────────────────────────────
+		void (*RectTransform_GetAnchorMin)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetAnchorMin)(uint64_t entityID, float x, float y);
+		void (*RectTransform_GetAnchorMax)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetAnchorMax)(uint64_t entityID, float x, float y);
+		void (*RectTransform_GetPivot)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetPivot)(uint64_t entityID, float x, float y);
+		void (*RectTransform_GetAnchoredPosition)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetAnchoredPosition)(uint64_t entityID, float x, float y);
+		void (*RectTransform_GetSizeDelta)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetSizeDelta)(uint64_t entityID, float x, float y);
+		float (*RectTransform_GetRotation)(uint64_t entityID);
+		void (*RectTransform_SetRotation)(uint64_t entityID, float rotation);
+		void (*RectTransform_GetScale)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetScale)(uint64_t entityID, float x, float y);
+		void (*RectTransform_GetResolvedSize)(uint64_t entityID, float* outW, float* outH);
+
+		// ── UI: Image ────────────────────────────────────────────────
+		void (*Image_GetColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Image_SetColor)(uint64_t entityID, float r, float g, float b, float a);
+		uint64_t (*Image_GetTexture)(uint64_t entityID);
+		void (*Image_SetTexture)(uint64_t entityID, uint64_t assetId);
+
+		// ── UI: Interactable ─────────────────────────────────────────
+		int (*Interactable_GetInteractable)(uint64_t entityID);
+		void (*Interactable_SetInteractable)(uint64_t entityID, int value);
+		int (*Interactable_GetIsHovered)(uint64_t entityID);
+		int (*Interactable_GetIsClicked)(uint64_t entityID);
+		int (*Interactable_GetIsPressed)(uint64_t entityID);
+		int (*Interactable_GetIsMouseDown)(uint64_t entityID);
+		int (*Interactable_GetIsMouseUp)(uint64_t entityID);
+
+		// ── UI: Button ───────────────────────────────────────────────
+		void (*Button_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Button_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Button_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Button_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Button_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Button_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Button_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Button_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
+
+		// ── UI: Slider ───────────────────────────────────────────────
+		float (*Slider_GetValue)(uint64_t entityID);
+		void (*Slider_SetValue)(uint64_t entityID, float value);
+		float (*Slider_GetMinValue)(uint64_t entityID);
+		void (*Slider_SetMinValue)(uint64_t entityID, float value);
+		float (*Slider_GetMaxValue)(uint64_t entityID);
+		void (*Slider_SetMaxValue)(uint64_t entityID, float value);
+		int (*Slider_GetWholeNumbers)(uint64_t entityID);
+		void (*Slider_SetWholeNumbers)(uint64_t entityID, int value);
+		int (*Slider_GetValueChangedThisFrame)(uint64_t entityID);
+
+		// ── UI: Toggle ───────────────────────────────────────────────
+		int (*Toggle_GetIsOn)(uint64_t entityID);
+		void (*Toggle_SetIsOn)(uint64_t entityID, int value);
+		int (*Toggle_GetValueChangedThisFrame)(uint64_t entityID);
+
+		// ── UI: InputField ───────────────────────────────────────────
+		int (*InputField_GetTextBuffer)(uint64_t entityID, char* outBuffer, int capacity);
+		void (*InputField_SetText)(uint64_t entityID, const char* text);
+		int (*InputField_GetPlaceholderTextBuffer)(uint64_t entityID, char* outBuffer, int capacity);
+		void (*InputField_SetPlaceholderText)(uint64_t entityID, const char* text);
+		int (*InputField_GetIsFocused)(uint64_t entityID);
+		void (*InputField_SetIsFocused)(uint64_t entityID, int value);
+		int (*InputField_GetSubmittedThisFrame)(uint64_t entityID);
+		int (*InputField_GetCharacterLimit)(uint64_t entityID);
+		void (*InputField_SetCharacterLimit)(uint64_t entityID, int value);
+
+		// ── UI: Dropdown ─────────────────────────────────────────────
+		int (*Dropdown_GetSelectedIndex)(uint64_t entityID);
+		void (*Dropdown_SetSelectedIndex)(uint64_t entityID, int value);
+		int (*Dropdown_GetIsOpen)(uint64_t entityID);
+		void (*Dropdown_SetIsOpen)(uint64_t entityID, int value);
+		int (*Dropdown_GetSelectionChangedThisFrame)(uint64_t entityID);
+		int (*Dropdown_GetOptionCount)(uint64_t entityID);
+		int (*Dropdown_GetOptionBuffer)(uint64_t entityID, int index, char* outBuffer, int capacity);
+		void (*Dropdown_SetOption)(uint64_t entityID, int index, const char* text);
+		void (*Dropdown_AddOption)(uint64_t entityID, const char* text);
+		void (*Dropdown_RemoveOption)(uint64_t entityID, int index);
+		void (*Dropdown_ClearOptions)(uint64_t entityID);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

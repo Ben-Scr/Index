@@ -57,27 +57,36 @@ namespace Axiom {
 	}
 
 	Entity EntityHelper::CreateImageEntity(Scene& scene) {
-		return CreateWith<RectTransform2DComponent, ImageComponent>(scene);
+		Entity e = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
+		e.AddComponent<NameComponent>(NameComponent("Image"));
+		auto& rect = e.GetComponent<RectTransform2DComponent>();
+		rect.SizeDelta = Vec2{ 100.0f, 100.0f };
+		return e;
 	}
 
 	Entity EntityHelper::CreateImageEntity() {
-		return CreateWith<RectTransform2DComponent, ImageComponent>();
+		Entity e = CreateWith<RectTransform2DComponent, ImageComponent>();
+		e.AddComponent<NameComponent>(NameComponent("Image"));
+		auto& rect = e.GetComponent<RectTransform2DComponent>();
+		rect.SizeDelta = Vec2{ 100.0f, 100.0f };
+		return e;
 	}
 
 	// ── UI presets ──────────────────────────────────────────────────────
 	// Each preset configures a "parent" entity (the widget root) plus
 	// optional child entities for visuals that need their own rect /
-	// renderer. Sizes are picked to look reasonable at the default
-	// 100-unit-per-major-element scale GuiRenderer uses (= 1 unit per
-	// pixel). The user can resize after spawning.
+	// renderer. Sizes are in framebuffer pixels (UIRenderer is screen-
+	// space at 1 unit per pixel). UIEventSystem auto-resolves the
+	// cross-entity references each frame, so the child structure here
+	// is also what survives scene reload.
 
 	Entity EntityHelper::CreateUIPanel(Scene& scene) {
 		Entity entity = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Panel"));
 		auto& img = entity.GetComponent<ImageComponent>();
-		img.Color = Color{ 0.2f, 0.2f, 0.2f, 0.8f };
+		img.Color = Color{ 0.18f, 0.18f, 0.20f, 0.92f };
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 300.0f, 200.0f };
+		rect.SizeDelta = Vec2{ 320.0f, 220.0f };
 		return entity;
 	}
 
@@ -86,23 +95,35 @@ namespace Axiom {
 			InteractableComponent, ButtonComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Button"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 160.0f, 40.0f };
-		// Image starts white; UIEventSystem retints from ButtonComponent
-		// every frame, so the explicit color here is just the value at
-		// rest before the first system tick.
-		entity.GetComponent<ImageComponent>().Color = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+		rect.SizeDelta = Vec2{ 180.0f, 44.0f };
 
-		// Label child. RectTransform2D anchors centred so the text sits
-		// inside the parent regardless of how the button is resized.
+		// Pleasant default palette (looks good on a dark editor view).
+		auto& btn = entity.GetComponent<ButtonComponent>();
+		btn.NormalColor   = Color{ 0.30f, 0.55f, 0.95f, 1.0f };
+		btn.HoveredColor  = Color{ 0.42f, 0.65f, 1.00f, 1.0f };
+		btn.PressedColor  = Color{ 0.20f, 0.40f, 0.80f, 1.0f };
+		btn.DisabledColor = Color{ 0.45f, 0.45f, 0.45f, 0.5f };
+
+		// Image starts at NormalColor; UIEventSystem retints from
+		// ButtonComponent every frame, so the explicit color is just
+		// the value at rest before the first system tick.
+		entity.GetComponent<ImageComponent>().Color = btn.NormalColor;
+
+		// Label child stretches to fill the parent so the text reflows
+		// when the button is resized. Centred alignment makes it look
+		// right at the default size too.
 		Entity label = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		label.AddComponent<NameComponent>(NameComponent("Label"));
 		auto& labelRect = label.GetComponent<RectTransform2DComponent>();
-		labelRect.SizeDelta = Vec2{ 160.0f, 40.0f };
+		labelRect.AnchorMin = Vec2{ 0.0f, 0.0f };
+		labelRect.AnchorMax = Vec2{ 1.0f, 1.0f };
+		labelRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
+		labelRect.SizeDelta = Vec2{ 0.0f, 0.0f };
 		auto& labelText = label.GetComponent<TextRendererComponent>();
 		labelText.Text = "Button";
-		labelText.Color = Color{ 0.0f, 0.0f, 0.0f, 1.0f };
+		labelText.Color = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		labelText.HAlign = TextAlignment::Center;
-		labelText.FontSize = 20.0f;
+		labelText.FontSize = 18.0f;
 		label.SetParent(entity);
 
 		return entity;
@@ -113,8 +134,22 @@ namespace Axiom {
 			InteractableComponent, SliderComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Slider"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 200.0f, 16.0f };
-		entity.GetComponent<ImageComponent>().Color = Color{ 0.25f, 0.25f, 0.25f, 1.0f };
+		rect.SizeDelta = Vec2{ 220.0f, 20.0f };
+		entity.GetComponent<ImageComponent>().Color = Color{ 0.18f, 0.20f, 0.24f, 1.0f };
+
+		// Fill child — auto-resized by UIEventSystem to span [0, t] of
+		// the track. We anchor it stretched-vertically and pin to the
+		// left edge so it always grows from the left.
+		Entity fill = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
+		fill.AddComponent<NameComponent>(NameComponent("Fill"));
+		auto& fillRect = fill.GetComponent<RectTransform2DComponent>();
+		fillRect.AnchorMin = Vec2{ 0.0f, 0.0f };
+		fillRect.AnchorMax = Vec2{ 0.5f, 1.0f };
+		fillRect.Pivot = Vec2{ 0.0f, 0.5f };
+		fillRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
+		fillRect.SizeDelta = Vec2{ 0.0f, 0.0f };
+		fill.GetComponent<ImageComponent>().Color = Color{ 0.30f, 0.55f, 0.95f, 1.0f };
+		fill.SetParent(entity);
 
 		// Handle child — the bit the user visually drags. Width is
 		// fixed; UIEventSystem repositions it along the track every
@@ -122,11 +157,13 @@ namespace Axiom {
 		Entity handle = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		handle.AddComponent<NameComponent>(NameComponent("Handle"));
 		auto& handleRect = handle.GetComponent<RectTransform2DComponent>();
-		handleRect.SizeDelta = Vec2{ 16.0f, 24.0f };
-		handle.GetComponent<ImageComponent>().Color = Color{ 0.85f, 0.85f, 0.85f, 1.0f };
+		handleRect.SizeDelta = Vec2{ 18.0f, 28.0f };
+		handle.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
 		handle.SetParent(entity);
 
-		entity.GetComponent<SliderComponent>().HandleEntity = handle.GetHandle();
+		auto& slider = entity.GetComponent<SliderComponent>();
+		slider.HandleEntity = handle.GetHandle();
+		slider.FillEntity = fill.GetHandle();
 		return entity;
 	}
 
@@ -135,20 +172,27 @@ namespace Axiom {
 			InteractableComponent, InputFieldComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Input Field"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 220.0f, 32.0f };
+		rect.SizeDelta = Vec2{ 240.0f, 36.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
 
+		// Text child stretches to fill the parent so the placeholder /
+		// entered text always sits inside the box. Slight left-pad via
+		// alignment.
 		Entity textChild = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		textChild.AddComponent<NameComponent>(NameComponent("Text"));
 		auto& textRect = textChild.GetComponent<RectTransform2DComponent>();
-		textRect.SizeDelta = Vec2{ 220.0f, 32.0f };
+		textRect.AnchorMin = Vec2{ 0.0f, 0.0f };
+		textRect.AnchorMax = Vec2{ 1.0f, 1.0f };
+		textRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
+		textRect.SizeDelta = Vec2{ 0.0f, 0.0f };
 		auto& tc = textChild.GetComponent<TextRendererComponent>();
 		tc.Text = "Enter text...";
-		tc.Color = Color{ 0.4f, 0.4f, 0.4f, 1.0f };
+		tc.Color = Color{ 0.55f, 0.55f, 0.55f, 1.0f };
 		tc.FontSize = 16.0f;
 		tc.HAlign = TextAlignment::Left;
 		textChild.SetParent(entity);
 
+		entity.GetComponent<InputFieldComponent>().TextEntity = textChild.GetHandle();
 		return entity;
 	}
 
@@ -157,23 +201,28 @@ namespace Axiom {
 			InteractableComponent, DropdownComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Dropdown"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 200.0f, 32.0f };
+		rect.SizeDelta = Vec2{ 220.0f, 36.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
 
 		auto& dd = entity.GetComponent<DropdownComponent>();
-		dd.Options = { "Option 1", "Option 2", "Option 3" };
+		dd.Options = { "Option A", "Option B", "Option C" };
+		dd.SelectedIndex = 0;
 
 		Entity labelChild = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		labelChild.AddComponent<NameComponent>(NameComponent("Label"));
 		auto& labelRect = labelChild.GetComponent<RectTransform2DComponent>();
-		labelRect.SizeDelta = Vec2{ 200.0f, 32.0f };
+		labelRect.AnchorMin = Vec2{ 0.0f, 0.0f };
+		labelRect.AnchorMax = Vec2{ 1.0f, 1.0f };
+		labelRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
+		labelRect.SizeDelta = Vec2{ 0.0f, 0.0f };
 		auto& tc = labelChild.GetComponent<TextRendererComponent>();
 		tc.Text = dd.Options.empty() ? "" : dd.Options[0];
-		tc.Color = Color{ 0.0f, 0.0f, 0.0f, 1.0f };
+		tc.Color = Color{ 0.10f, 0.10f, 0.10f, 1.0f };
 		tc.FontSize = 16.0f;
 		tc.HAlign = TextAlignment::Left;
 		labelChild.SetParent(entity);
 
+		dd.LabelEntity = labelChild.GetHandle();
 		return entity;
 	}
 
@@ -182,16 +231,21 @@ namespace Axiom {
 			InteractableComponent, ToggleComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Toggle"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
-		rect.SizeDelta = Vec2{ 24.0f, 24.0f };
+		rect.SizeDelta = Vec2{ 28.0f, 28.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
 
-		// Checkmark child — UIEventSystem flips it enabled/disabled based
-		// on ToggleComponent::IsOn. Defaults disabled because IsOn = false.
+		// Checkmark child — anchored to the box's centre with a small
+		// margin so the on-state shows a smaller filled square.
+		// UIEventSystem flips it enabled/disabled from ToggleComponent::IsOn.
 		Entity check = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		check.AddComponent<NameComponent>(NameComponent("Checkmark"));
 		auto& checkRect = check.GetComponent<RectTransform2DComponent>();
-		checkRect.SizeDelta = Vec2{ 16.0f, 16.0f };
-		check.GetComponent<ImageComponent>().Color = Color{ 0.15f, 0.6f, 0.15f, 1.0f };
+		checkRect.AnchorMin = Vec2{ 0.0f, 0.0f };
+		checkRect.AnchorMax = Vec2{ 1.0f, 1.0f };
+		checkRect.AnchoredPosition = Vec2{ 0.0f, 0.0f };
+		// Negative SizeDelta = inset by 8px on each side (4 per edge).
+		checkRect.SizeDelta = Vec2{ -8.0f, -8.0f };
+		check.GetComponent<ImageComponent>().Color = Color{ 0.30f, 0.65f, 0.30f, 1.0f };
 		check.AddComponent<DisabledTag>();
 		check.SetParent(entity);
 

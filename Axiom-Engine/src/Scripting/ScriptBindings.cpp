@@ -21,9 +21,11 @@
 #include "Components/General/UUIDComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/NameComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/FastBody2DComponent.hpp"
@@ -31,6 +33,12 @@
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/UI/ButtonComponent.hpp"
+#include "Components/UI/DropdownComponent.hpp"
+#include "Components/UI/InputFieldComponent.hpp"
+#include "Components/UI/InteractableComponent.hpp"
+#include "Components/UI/SliderComponent.hpp"
+#include "Components/UI/ToggleComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Audio/AudioManager.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -1711,6 +1719,286 @@ namespace Axiom {
 			outEntityIDs, maxOut);
 	}
 
+	// ── UI: RectTransform2D ─────────────────────────────────────────────
+
+	static void Axiom_RectTransform_GetAnchorMin(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 0.5f, *outY = 0.5f));
+		*outX = comp.AnchorMin.x; *outY = comp.AnchorMin.y;
+	}
+	static void Axiom_RectTransform_SetAnchorMin(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.AnchorMin = { x, y };
+	}
+	static void Axiom_RectTransform_GetAnchorMax(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 0.5f, *outY = 0.5f));
+		*outX = comp.AnchorMax.x; *outY = comp.AnchorMax.y;
+	}
+	static void Axiom_RectTransform_SetAnchorMax(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.AnchorMax = { x, y };
+	}
+	static void Axiom_RectTransform_GetPivot(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 0.5f, *outY = 0.5f));
+		*outX = comp.Pivot.x; *outY = comp.Pivot.y;
+	}
+	static void Axiom_RectTransform_SetPivot(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.Pivot = { x, y };
+	}
+	static void Axiom_RectTransform_GetAnchoredPosition(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 0.0f, *outY = 0.0f));
+		*outX = comp.AnchoredPosition.x; *outY = comp.AnchoredPosition.y;
+	}
+	static void Axiom_RectTransform_SetAnchoredPosition(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.AnchoredPosition = { x, y };
+	}
+	static void Axiom_RectTransform_GetSizeDelta(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 100.0f, *outY = 100.0f));
+		*outX = comp.SizeDelta.x; *outY = comp.SizeDelta.y;
+	}
+	static void Axiom_RectTransform_SetSizeDelta(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.SizeDelta = { x, y };
+	}
+	static float Axiom_RectTransform_GetRotation(uint64_t entityID) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, 0.0f);
+		return comp.Rotation;
+	}
+	static void Axiom_RectTransform_SetRotation(uint64_t entityID, float rotation) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.Rotation = rotation;
+	}
+	static void Axiom_RectTransform_GetScale(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 1.0f, *outY = 1.0f));
+		*outX = comp.Scale.x; *outY = comp.Scale.y;
+	}
+	static void Axiom_RectTransform_SetScale(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.Scale = { x, y };
+	}
+	static void Axiom_RectTransform_GetResolvedSize(uint64_t entityID, float* outW, float* outH) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outW = 0.0f, *outH = 0.0f));
+		const Vec2 size = comp.GetSize();
+		*outW = size.x; *outH = size.y;
+	}
+
+	// ── UI: Image ───────────────────────────────────────────────────────
+
+	static void Axiom_Image_GetColor(uint64_t entityID, float* r, float* g, float* b, float* a) {
+		GET_COMPONENT(ImageComponent, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1));
+		*r = comp.Color.r; *g = comp.Color.g; *b = comp.Color.b; *a = comp.Color.a;
+	}
+	static void Axiom_Image_SetColor(uint64_t entityID, float r, float g, float b, float a) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		comp.Color = Color{ r, g, b, a };
+	}
+	static uint64_t Axiom_Image_GetTexture(uint64_t entityID) {
+		GET_COMPONENT(ImageComponent, entityID, 0ull);
+		return static_cast<uint64_t>(comp.TextureAssetId);
+	}
+	static void Axiom_Image_SetTexture(uint64_t entityID, uint64_t assetId) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		comp.TextureAssetId = UUID(assetId);
+		comp.TextureHandle = (assetId != 0)
+			? TextureManager::LoadTextureByUUID(assetId)
+			: TextureHandle{};
+	}
+
+	// ── UI: Interactable ────────────────────────────────────────────────
+
+	static int Axiom_Interactable_GetInteractable(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.Interactable ? 1 : 0;
+	}
+	static void Axiom_Interactable_SetInteractable(uint64_t entityID, int value) {
+		GET_COMPONENT(InteractableComponent, entityID, );
+		comp.Interactable = value != 0;
+	}
+	static int Axiom_Interactable_GetIsHovered(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.IsHovered ? 1 : 0;
+	}
+	static int Axiom_Interactable_GetIsClicked(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.IsClicked ? 1 : 0;
+	}
+	static int Axiom_Interactable_GetIsPressed(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.IsPressed ? 1 : 0;
+	}
+	static int Axiom_Interactable_GetIsMouseDown(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.IsMouseDown ? 1 : 0;
+	}
+	static int Axiom_Interactable_GetIsMouseUp(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.IsMouseUp ? 1 : 0;
+	}
+
+	// ── UI: Button ──────────────────────────────────────────────────────
+
+	#define BUTTON_COLOR_BINDING(MEMBER, GETTER, SETTER) \
+		static void GETTER(uint64_t entityID, float* r, float* g, float* b, float* a) { \
+			GET_COMPONENT(ButtonComponent, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1)); \
+			*r = comp.MEMBER.r; *g = comp.MEMBER.g; *b = comp.MEMBER.b; *a = comp.MEMBER.a; \
+		} \
+		static void SETTER(uint64_t entityID, float r, float g, float b, float a) { \
+			GET_COMPONENT(ButtonComponent, entityID, ); \
+			comp.MEMBER = Color{ r, g, b, a }; \
+		}
+
+	BUTTON_COLOR_BINDING(NormalColor,   Axiom_Button_GetNormalColor,   Axiom_Button_SetNormalColor)
+	BUTTON_COLOR_BINDING(HoveredColor,  Axiom_Button_GetHoveredColor,  Axiom_Button_SetHoveredColor)
+	BUTTON_COLOR_BINDING(PressedColor,  Axiom_Button_GetPressedColor,  Axiom_Button_SetPressedColor)
+	BUTTON_COLOR_BINDING(DisabledColor, Axiom_Button_GetDisabledColor, Axiom_Button_SetDisabledColor)
+	#undef BUTTON_COLOR_BINDING
+
+	// ── UI: Slider ──────────────────────────────────────────────────────
+
+	static float Axiom_Slider_GetValue(uint64_t entityID) {
+		GET_COMPONENT(SliderComponent, entityID, 0.0f);
+		return comp.Value;
+	}
+	static void Axiom_Slider_SetValue(uint64_t entityID, float value) {
+		GET_COMPONENT(SliderComponent, entityID, );
+		comp.Value = value;
+	}
+	static float Axiom_Slider_GetMinValue(uint64_t entityID) {
+		GET_COMPONENT(SliderComponent, entityID, 0.0f);
+		return comp.MinValue;
+	}
+	static void Axiom_Slider_SetMinValue(uint64_t entityID, float value) {
+		GET_COMPONENT(SliderComponent, entityID, );
+		comp.MinValue = value;
+	}
+	static float Axiom_Slider_GetMaxValue(uint64_t entityID) {
+		GET_COMPONENT(SliderComponent, entityID, 1.0f);
+		return comp.MaxValue;
+	}
+	static void Axiom_Slider_SetMaxValue(uint64_t entityID, float value) {
+		GET_COMPONENT(SliderComponent, entityID, );
+		comp.MaxValue = value;
+	}
+	static int Axiom_Slider_GetWholeNumbers(uint64_t entityID) {
+		GET_COMPONENT(SliderComponent, entityID, 0);
+		return comp.WholeNumbers ? 1 : 0;
+	}
+	static void Axiom_Slider_SetWholeNumbers(uint64_t entityID, int value) {
+		GET_COMPONENT(SliderComponent, entityID, );
+		comp.WholeNumbers = value != 0;
+	}
+	static int Axiom_Slider_GetValueChangedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(SliderComponent, entityID, 0);
+		return comp.ValueChangedThisFrame ? 1 : 0;
+	}
+
+	// ── UI: Toggle ──────────────────────────────────────────────────────
+
+	static int Axiom_Toggle_GetIsOn(uint64_t entityID) {
+		GET_COMPONENT(ToggleComponent, entityID, 0);
+		return comp.IsOn ? 1 : 0;
+	}
+	static void Axiom_Toggle_SetIsOn(uint64_t entityID, int value) {
+		GET_COMPONENT(ToggleComponent, entityID, );
+		comp.IsOn = value != 0;
+	}
+	static int Axiom_Toggle_GetValueChangedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(ToggleComponent, entityID, 0);
+		return comp.ValueChangedThisFrame ? 1 : 0;
+	}
+
+	// ── UI: InputField ──────────────────────────────────────────────────
+
+	static int Axiom_InputField_GetTextBuffer(uint64_t entityID, char* outBuffer, int capacity) {
+		GET_COMPONENT(InputFieldComponent, entityID, CopyStringToBuffer({}, outBuffer, capacity));
+		return CopyStringToBuffer(comp.Text, outBuffer, capacity);
+	}
+	static void Axiom_InputField_SetText(uint64_t entityID, const char* text) {
+		GET_COMPONENT(InputFieldComponent, entityID, );
+		comp.Text = text ? text : "";
+	}
+	static int Axiom_InputField_GetPlaceholderTextBuffer(uint64_t entityID, char* outBuffer, int capacity) {
+		GET_COMPONENT(InputFieldComponent, entityID, CopyStringToBuffer({}, outBuffer, capacity));
+		return CopyStringToBuffer(comp.PlaceholderText, outBuffer, capacity);
+	}
+	static void Axiom_InputField_SetPlaceholderText(uint64_t entityID, const char* text) {
+		GET_COMPONENT(InputFieldComponent, entityID, );
+		comp.PlaceholderText = text ? text : "";
+	}
+	static int Axiom_InputField_GetIsFocused(uint64_t entityID) {
+		GET_COMPONENT(InputFieldComponent, entityID, 0);
+		return comp.IsFocused ? 1 : 0;
+	}
+	static void Axiom_InputField_SetIsFocused(uint64_t entityID, int value) {
+		GET_COMPONENT(InputFieldComponent, entityID, );
+		comp.IsFocused = value != 0;
+	}
+	static int Axiom_InputField_GetSubmittedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(InputFieldComponent, entityID, 0);
+		return comp.SubmittedThisFrame ? 1 : 0;
+	}
+	static int Axiom_InputField_GetCharacterLimit(uint64_t entityID) {
+		GET_COMPONENT(InputFieldComponent, entityID, 0);
+		return comp.CharacterLimit;
+	}
+	static void Axiom_InputField_SetCharacterLimit(uint64_t entityID, int value) {
+		GET_COMPONENT(InputFieldComponent, entityID, );
+		comp.CharacterLimit = value;
+	}
+
+	// ── UI: Dropdown ────────────────────────────────────────────────────
+
+	static int Axiom_Dropdown_GetSelectedIndex(uint64_t entityID) {
+		GET_COMPONENT(DropdownComponent, entityID, 0);
+		return comp.SelectedIndex;
+	}
+	static void Axiom_Dropdown_SetSelectedIndex(uint64_t entityID, int value) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		comp.SelectedIndex = value;
+	}
+	static int Axiom_Dropdown_GetIsOpen(uint64_t entityID) {
+		GET_COMPONENT(DropdownComponent, entityID, 0);
+		return comp.IsOpen ? 1 : 0;
+	}
+	static void Axiom_Dropdown_SetIsOpen(uint64_t entityID, int value) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		comp.IsOpen = value != 0;
+	}
+	static int Axiom_Dropdown_GetSelectionChangedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(DropdownComponent, entityID, 0);
+		return comp.SelectionChangedThisFrame ? 1 : 0;
+	}
+	static int Axiom_Dropdown_GetOptionCount(uint64_t entityID) {
+		GET_COMPONENT(DropdownComponent, entityID, 0);
+		return static_cast<int>(comp.Options.size());
+	}
+	static int Axiom_Dropdown_GetOptionBuffer(uint64_t entityID, int index, char* outBuffer, int capacity) {
+		GET_COMPONENT(DropdownComponent, entityID, CopyStringToBuffer({}, outBuffer, capacity));
+		if (index < 0 || index >= static_cast<int>(comp.Options.size())) {
+			return CopyStringToBuffer({}, outBuffer, capacity);
+		}
+		return CopyStringToBuffer(comp.Options[index], outBuffer, capacity);
+	}
+	static void Axiom_Dropdown_SetOption(uint64_t entityID, int index, const char* text) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		if (index < 0 || index >= static_cast<int>(comp.Options.size())) return;
+		comp.Options[index] = text ? text : "";
+	}
+	static void Axiom_Dropdown_AddOption(uint64_t entityID, const char* text) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		comp.Options.emplace_back(text ? text : "");
+	}
+	static void Axiom_Dropdown_RemoveOption(uint64_t entityID, int index) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		if (index < 0 || index >= static_cast<int>(comp.Options.size())) return;
+		comp.Options.erase(comp.Options.begin() + index);
+	}
+	static void Axiom_Dropdown_ClearOptions(uint64_t entityID) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		comp.Options.clear();
+	}
+
 	#undef GET_COMPONENT
 
 	// ── Registration ────────────────────────────────────────────────────
@@ -1922,6 +2210,81 @@ namespace Axiom {
 		b.Physics2D_OverlapPolygonAll = &Axiom_Physics2D_OverlapPolygonAll;
 		b.Physics2D_ContainsPoint = &Axiom_Physics2D_ContainsPoint;
 		b.Physics2D_ContainsPointAll = &Axiom_Physics2D_ContainsPointAll;
+
+		// ── UI ──────────────────────────────────────────────────────
+		b.RectTransform_GetAnchorMin        = &Axiom_RectTransform_GetAnchorMin;
+		b.RectTransform_SetAnchorMin        = &Axiom_RectTransform_SetAnchorMin;
+		b.RectTransform_GetAnchorMax        = &Axiom_RectTransform_GetAnchorMax;
+		b.RectTransform_SetAnchorMax        = &Axiom_RectTransform_SetAnchorMax;
+		b.RectTransform_GetPivot            = &Axiom_RectTransform_GetPivot;
+		b.RectTransform_SetPivot            = &Axiom_RectTransform_SetPivot;
+		b.RectTransform_GetAnchoredPosition = &Axiom_RectTransform_GetAnchoredPosition;
+		b.RectTransform_SetAnchoredPosition = &Axiom_RectTransform_SetAnchoredPosition;
+		b.RectTransform_GetSizeDelta        = &Axiom_RectTransform_GetSizeDelta;
+		b.RectTransform_SetSizeDelta        = &Axiom_RectTransform_SetSizeDelta;
+		b.RectTransform_GetRotation         = &Axiom_RectTransform_GetRotation;
+		b.RectTransform_SetRotation         = &Axiom_RectTransform_SetRotation;
+		b.RectTransform_GetScale            = &Axiom_RectTransform_GetScale;
+		b.RectTransform_SetScale            = &Axiom_RectTransform_SetScale;
+		b.RectTransform_GetResolvedSize     = &Axiom_RectTransform_GetResolvedSize;
+
+		b.Image_GetColor   = &Axiom_Image_GetColor;
+		b.Image_SetColor   = &Axiom_Image_SetColor;
+		b.Image_GetTexture = &Axiom_Image_GetTexture;
+		b.Image_SetTexture = &Axiom_Image_SetTexture;
+
+		b.Interactable_GetInteractable = &Axiom_Interactable_GetInteractable;
+		b.Interactable_SetInteractable = &Axiom_Interactable_SetInteractable;
+		b.Interactable_GetIsHovered    = &Axiom_Interactable_GetIsHovered;
+		b.Interactable_GetIsClicked    = &Axiom_Interactable_GetIsClicked;
+		b.Interactable_GetIsPressed    = &Axiom_Interactable_GetIsPressed;
+		b.Interactable_GetIsMouseDown  = &Axiom_Interactable_GetIsMouseDown;
+		b.Interactable_GetIsMouseUp    = &Axiom_Interactable_GetIsMouseUp;
+
+		b.Button_GetNormalColor   = &Axiom_Button_GetNormalColor;
+		b.Button_SetNormalColor   = &Axiom_Button_SetNormalColor;
+		b.Button_GetHoveredColor  = &Axiom_Button_GetHoveredColor;
+		b.Button_SetHoveredColor  = &Axiom_Button_SetHoveredColor;
+		b.Button_GetPressedColor  = &Axiom_Button_GetPressedColor;
+		b.Button_SetPressedColor  = &Axiom_Button_SetPressedColor;
+		b.Button_GetDisabledColor = &Axiom_Button_GetDisabledColor;
+		b.Button_SetDisabledColor = &Axiom_Button_SetDisabledColor;
+
+		b.Slider_GetValue                 = &Axiom_Slider_GetValue;
+		b.Slider_SetValue                 = &Axiom_Slider_SetValue;
+		b.Slider_GetMinValue              = &Axiom_Slider_GetMinValue;
+		b.Slider_SetMinValue              = &Axiom_Slider_SetMinValue;
+		b.Slider_GetMaxValue              = &Axiom_Slider_GetMaxValue;
+		b.Slider_SetMaxValue              = &Axiom_Slider_SetMaxValue;
+		b.Slider_GetWholeNumbers          = &Axiom_Slider_GetWholeNumbers;
+		b.Slider_SetWholeNumbers          = &Axiom_Slider_SetWholeNumbers;
+		b.Slider_GetValueChangedThisFrame = &Axiom_Slider_GetValueChangedThisFrame;
+
+		b.Toggle_GetIsOn                  = &Axiom_Toggle_GetIsOn;
+		b.Toggle_SetIsOn                  = &Axiom_Toggle_SetIsOn;
+		b.Toggle_GetValueChangedThisFrame = &Axiom_Toggle_GetValueChangedThisFrame;
+
+		b.InputField_GetTextBuffer            = &Axiom_InputField_GetTextBuffer;
+		b.InputField_SetText                  = &Axiom_InputField_SetText;
+		b.InputField_GetPlaceholderTextBuffer = &Axiom_InputField_GetPlaceholderTextBuffer;
+		b.InputField_SetPlaceholderText       = &Axiom_InputField_SetPlaceholderText;
+		b.InputField_GetIsFocused             = &Axiom_InputField_GetIsFocused;
+		b.InputField_SetIsFocused             = &Axiom_InputField_SetIsFocused;
+		b.InputField_GetSubmittedThisFrame    = &Axiom_InputField_GetSubmittedThisFrame;
+		b.InputField_GetCharacterLimit        = &Axiom_InputField_GetCharacterLimit;
+		b.InputField_SetCharacterLimit        = &Axiom_InputField_SetCharacterLimit;
+
+		b.Dropdown_GetSelectedIndex             = &Axiom_Dropdown_GetSelectedIndex;
+		b.Dropdown_SetSelectedIndex             = &Axiom_Dropdown_SetSelectedIndex;
+		b.Dropdown_GetIsOpen                    = &Axiom_Dropdown_GetIsOpen;
+		b.Dropdown_SetIsOpen                    = &Axiom_Dropdown_SetIsOpen;
+		b.Dropdown_GetSelectionChangedThisFrame = &Axiom_Dropdown_GetSelectionChangedThisFrame;
+		b.Dropdown_GetOptionCount               = &Axiom_Dropdown_GetOptionCount;
+		b.Dropdown_GetOptionBuffer              = &Axiom_Dropdown_GetOptionBuffer;
+		b.Dropdown_SetOption                    = &Axiom_Dropdown_SetOption;
+		b.Dropdown_AddOption                    = &Axiom_Dropdown_AddOption;
+		b.Dropdown_RemoveOption                 = &Axiom_Dropdown_RemoveOption;
+		b.Dropdown_ClearOptions                 = &Axiom_Dropdown_ClearOptions;
 	}
 
 } // namespace Axiom

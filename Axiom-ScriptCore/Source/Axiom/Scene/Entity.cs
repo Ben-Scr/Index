@@ -121,6 +121,21 @@ public class Entity : IEquatable<Entity>
         { typeof(FastBoxCollider2D),     "Fast Box Collider 2D" },
         { typeof(FastCircleCollider2D),  "Fast Circle Collider 2D" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
+
+        // ── UI (Axiom.UI namespace) ──────────────────────────────────
+        // Map each C# UI wrapper to the native ComponentInfo display
+        // name registered in BuiltInComponentRegistration.cpp so
+        // AddComponent / HasComponent / RemoveComponent reach the right
+        // C++ type. Class names alone don't carry the "2D" suffix that
+        // RectTransform2DComponent uses on the C++ side.
+        { typeof(Axiom.UI.RectTransform),  "Rect Transform 2D" },
+        { typeof(Axiom.UI.Image),          "Image" },
+        { typeof(Axiom.UI.Interactable),   "Interactable" },
+        { typeof(Axiom.UI.Button),         "Button" },
+        { typeof(Axiom.UI.Slider),         "Slider" },
+        { typeof(Axiom.UI.Toggle),         "Toggle" },
+        { typeof(Axiom.UI.InputField),     "Input Field" },
+        { typeof(Axiom.UI.Dropdown),       "Dropdown" },
     };
 
     private static string? GetNativeName<T>() where T : Component, new() => GetComponentName(typeof(T));

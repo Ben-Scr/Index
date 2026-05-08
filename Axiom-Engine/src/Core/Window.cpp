@@ -136,6 +136,7 @@ namespace Axiom {
 		glfwSetWindowUserPointer(m_GLFWwindow, this);
 
 		glfwSetKeyCallback(m_GLFWwindow, SetKeyCallback);
+		glfwSetCharCallback(m_GLFWwindow, SetCharCallback);
 		glfwSetMouseButtonCallback(m_GLFWwindow, SetMouseButtonCallback);
 		glfwSetCursorPosCallback(m_GLFWwindow, SetCursorPositionCallback);
 		glfwSetScrollCallback(m_GLFWwindow, SetScrollCallback);
@@ -239,6 +240,15 @@ namespace Axiom {
 		default:
 			break;
 		}
+	}
+
+	void Window::SetCharCallback(GLFWwindow* /*window*/, unsigned int codepoint) {
+		// Drives UI input fields. GLFW only fires char-callback for printable
+		// codepoints (after IME composition) — control keys (Backspace, Enter,
+		// arrow keys) come through the regular key callback, not here.
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		app->m_Input.OnChar(static_cast<uint32_t>(codepoint));
 	}
 
 	void Window::SetMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {

@@ -21,6 +21,27 @@
 // Single source of truth for built-in components — names, categories, properties.
 namespace Axiom {
 	namespace {
+		// File-scope helpers: can be called from non-capturing lambdas
+		// that decay into the raw function pointers ComponentInfo's
+		// serialize / deserialize slots require.
+		Json::Value UIColorToJson(const Color& c) {
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("r", Json::Value(c.r));
+			v.AddMember("g", Json::Value(c.g));
+			v.AddMember("b", Json::Value(c.b));
+			v.AddMember("a", Json::Value(c.a));
+			return v;
+		}
+		Color UIColorFromJson(const Json::Value& v, const Color& fallback) {
+			Color c = fallback;
+			if (!v.IsObject()) return c;
+			if (const Json::Value* x = v.FindMember("r")) c.r = static_cast<float>(x->AsDoubleOr(c.r));
+			if (const Json::Value* x = v.FindMember("g")) c.g = static_cast<float>(x->AsDoubleOr(c.g));
+			if (const Json::Value* x = v.FindMember("b")) c.b = static_cast<float>(x->AsDoubleOr(c.b));
+			if (const Json::Value* x = v.FindMember("a")) c.a = static_cast<float>(x->AsDoubleOr(c.a));
+			return c;
+		}
+
 		template<typename T>
 		void RegisterComponent(SceneManager& sceneManager, const std::string& displayName,
 			ComponentCategory category = ComponentCategory::Component,
@@ -445,55 +466,172 @@ namespace Axiom {
 		// ── UI widgets ──────────────────────────────────────────────
 		// All show up in the inspector's "UI" tab. The Interactable
 		// component is the input-state primitive; Button/Slider/etc.
-		// are visual presets that read it. They have no inspector
-		// fields beyond what the struct exposes — defaults are sane.
+		// are visual presets that read it. Each carries a registry-driven
+		// serialize / deserialize callback so they round-trip via .scene
+		// without bloating SceneSerializerDeserialize.cpp.
 
-		RegisterComponent<InteractableComponent>(sceneManager, "Interactable",
-			ComponentCategory::Component, "UI", "Interactable",
-			{
-				Properties::Make("Interactable", "Interactable", &InteractableComponent::Interactable),
-			});
+		// Color (de)serialize uses the free helpers UIColorToJson /
+		// UIColorFromJson at file scope — keeps the lambdas below
+		// non-capturing so they decay to the raw function pointers
+		// ComponentInfo::serialize / deserialize require.
 
-		RegisterComponent<ButtonComponent>(sceneManager, "Button",
-			ComponentCategory::Component, "UI", "Button",
-			{
-				Properties::Make("NormalColor",   "Normal Color",   &ButtonComponent::NormalColor),
-				Properties::Make("HoveredColor",  "Hovered Color",  &ButtonComponent::HoveredColor),
-				Properties::Make("PressedColor",  "Pressed Color",  &ButtonComponent::PressedColor),
-				Properties::Make("DisabledColor", "Disabled Color", &ButtonComponent::DisabledColor),
-			});
+		ComponentInfo interactableInfo{ "Interactable", "UI", ComponentCategory::Component };
+		interactableInfo.serializedName = "Interactable";
+		interactableInfo.properties = {
+			Properties::Make("Interactable", "Interactable", &InteractableComponent::Interactable),
+		};
+		interactableInfo.serialize = [](Entity e) -> Json::Value {
+			const auto& c = e.GetComponent<InteractableComponent>();
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("interactable", Json::Value(c.Interactable));
+			return v;
+		};
+		interactableInfo.deserialize = [](Entity e, const Json::Value& v) {
+			auto& c = e.GetComponent<InteractableComponent>();
+			if (const Json::Value* m = v.FindMember("interactable")) c.Interactable = m->AsBoolOr(c.Interactable);
+		};
+		sceneManager.RegisterComponentType<InteractableComponent>(interactableInfo);
 
-		RegisterComponent<SliderComponent>(sceneManager, "Slider",
-			ComponentCategory::Component, "UI", "Slider",
-			{
-				Properties::MakeWith<float>("Value", "Value",
-					[](const Entity& e) { return e.GetComponent<SliderComponent>().Value; },
-					[](Entity& e, float v) { e.GetComponent<SliderComponent>().Value = v; },
-					[]() { PropertyMetadata m; m.DragSpeed = 0.01f; return m; }()),
-				Properties::Make("MinValue",     "Min Value",     &SliderComponent::MinValue),
-				Properties::Make("MaxValue",     "Max Value",     &SliderComponent::MaxValue),
-				Properties::Make("WholeNumbers", "Whole Numbers", &SliderComponent::WholeNumbers),
-			});
+		ComponentInfo buttonInfo{ "Button", "UI", ComponentCategory::Component };
+		buttonInfo.serializedName = "Button";
+		buttonInfo.properties = {
+			Properties::Make("NormalColor",   "Normal Color",   &ButtonComponent::NormalColor),
+			Properties::Make("HoveredColor",  "Hovered Color",  &ButtonComponent::HoveredColor),
+			Properties::Make("PressedColor",  "Pressed Color",  &ButtonComponent::PressedColor),
+			Properties::Make("DisabledColor", "Disabled Color", &ButtonComponent::DisabledColor),
+		};
+		buttonInfo.serialize = [](Entity e) -> Json::Value {
+			const auto& c = e.GetComponent<ButtonComponent>();
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("normal",   UIColorToJson(c.NormalColor));
+			v.AddMember("hovered",  UIColorToJson(c.HoveredColor));
+			v.AddMember("pressed",  UIColorToJson(c.PressedColor));
+			v.AddMember("disabled", UIColorToJson(c.DisabledColor));
+			return v;
+		};
+		buttonInfo.deserialize = [](Entity e, const Json::Value& v) {
+			auto& c = e.GetComponent<ButtonComponent>();
+			if (const Json::Value* m = v.FindMember("normal"))   c.NormalColor   = UIColorFromJson(*m, c.NormalColor);
+			if (const Json::Value* m = v.FindMember("hovered"))  c.HoveredColor  = UIColorFromJson(*m, c.HoveredColor);
+			if (const Json::Value* m = v.FindMember("pressed"))  c.PressedColor  = UIColorFromJson(*m, c.PressedColor);
+			if (const Json::Value* m = v.FindMember("disabled")) c.DisabledColor = UIColorFromJson(*m, c.DisabledColor);
+		};
+		sceneManager.RegisterComponentType<ButtonComponent>(buttonInfo);
 
-		RegisterComponent<InputFieldComponent>(sceneManager, "Input Field",
-			ComponentCategory::Component, "UI", "InputField",
-			{
-				Properties::Make("Text",            "Text",            &InputFieldComponent::Text),
-				Properties::Make("PlaceholderText", "Placeholder",     &InputFieldComponent::PlaceholderText),
-				Properties::Make("CharacterLimit",  "Character Limit", &InputFieldComponent::CharacterLimit),
-			});
+		ComponentInfo sliderInfo{ "Slider", "UI", ComponentCategory::Component };
+		sliderInfo.serializedName = "Slider";
+		sliderInfo.properties = {
+			Properties::MakeWith<float>("Value", "Value",
+				[](const Entity& e) { return e.GetComponent<SliderComponent>().Value; },
+				[](Entity& e, float v) { e.GetComponent<SliderComponent>().Value = v; },
+				[]() { PropertyMetadata m; m.DragSpeed = 0.01f; return m; }()),
+			Properties::Make("MinValue",     "Min Value",     &SliderComponent::MinValue),
+			Properties::Make("MaxValue",     "Max Value",     &SliderComponent::MaxValue),
+			Properties::Make("WholeNumbers", "Whole Numbers", &SliderComponent::WholeNumbers),
+		};
+		sliderInfo.serialize = [](Entity e) -> Json::Value {
+			const auto& c = e.GetComponent<SliderComponent>();
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("value",        Json::Value(c.Value));
+			v.AddMember("min",          Json::Value(c.MinValue));
+			v.AddMember("max",          Json::Value(c.MaxValue));
+			v.AddMember("wholeNumbers", Json::Value(c.WholeNumbers));
+			return v;
+		};
+		sliderInfo.deserialize = [](Entity e, const Json::Value& v) {
+			auto& c = e.GetComponent<SliderComponent>();
+			if (const Json::Value* m = v.FindMember("value"))        c.Value        = static_cast<float>(m->AsDoubleOr(c.Value));
+			if (const Json::Value* m = v.FindMember("min"))          c.MinValue     = static_cast<float>(m->AsDoubleOr(c.MinValue));
+			if (const Json::Value* m = v.FindMember("max"))          c.MaxValue     = static_cast<float>(m->AsDoubleOr(c.MaxValue));
+			if (const Json::Value* m = v.FindMember("wholeNumbers")) c.WholeNumbers = m->AsBoolOr(c.WholeNumbers);
+		};
+		sceneManager.RegisterComponentType<SliderComponent>(sliderInfo);
 
-		RegisterComponent<DropdownComponent>(sceneManager, "Dropdown",
-			ComponentCategory::Component, "UI", "Dropdown",
-			{
-				Properties::Make("SelectedIndex", "Selected Index", &DropdownComponent::SelectedIndex),
-			});
+		ComponentInfo inputFieldInfo{ "Input Field", "UI", ComponentCategory::Component };
+		inputFieldInfo.serializedName = "InputField";
+		inputFieldInfo.properties = {
+			Properties::Make("Text",            "Text",            &InputFieldComponent::Text),
+			Properties::Make("PlaceholderText", "Placeholder",     &InputFieldComponent::PlaceholderText),
+			Properties::Make("CharacterLimit",  "Character Limit", &InputFieldComponent::CharacterLimit),
+			Properties::Make("TextColor",       "Text Color",      &InputFieldComponent::TextColor),
+			Properties::Make("PlaceholderColor","Placeholder Color", &InputFieldComponent::PlaceholderColor),
+		};
+		inputFieldInfo.serialize = [](Entity e) -> Json::Value {
+			const auto& c = e.GetComponent<InputFieldComponent>();
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("text",             Json::Value(c.Text));
+			v.AddMember("placeholder",      Json::Value(c.PlaceholderText));
+			v.AddMember("characterLimit",   Json::Value(c.CharacterLimit));
+			v.AddMember("textColor",        UIColorToJson(c.TextColor));
+			v.AddMember("placeholderColor", UIColorToJson(c.PlaceholderColor));
+			return v;
+		};
+		inputFieldInfo.deserialize = [](Entity e, const Json::Value& v) {
+			auto& c = e.GetComponent<InputFieldComponent>();
+			if (const Json::Value* m = v.FindMember("text"))             c.Text             = m->AsStringOr(c.Text);
+			if (const Json::Value* m = v.FindMember("placeholder"))      c.PlaceholderText  = m->AsStringOr(c.PlaceholderText);
+			if (const Json::Value* m = v.FindMember("characterLimit"))   c.CharacterLimit   = m->AsIntOr(c.CharacterLimit);
+			if (const Json::Value* m = v.FindMember("textColor"))        c.TextColor        = UIColorFromJson(*m, c.TextColor);
+			if (const Json::Value* m = v.FindMember("placeholderColor")) c.PlaceholderColor = UIColorFromJson(*m, c.PlaceholderColor);
+		};
+		sceneManager.RegisterComponentType<InputFieldComponent>(inputFieldInfo);
 
-		RegisterComponent<ToggleComponent>(sceneManager, "Toggle",
-			ComponentCategory::Component, "UI", "Toggle",
-			{
-				Properties::Make("IsOn", "Is On", &ToggleComponent::IsOn),
-			});
+		ComponentInfo dropdownInfo{ "Dropdown", "UI", ComponentCategory::Component };
+		dropdownInfo.serializedName = "Dropdown";
+		dropdownInfo.properties = {
+			Properties::Make("SelectedIndex", "Selected Index", &DropdownComponent::SelectedIndex),
+			Properties::Make("OptionRowHeight", "Row Height", &DropdownComponent::OptionRowHeight),
+			Properties::Make("PopupBackgroundColor", "Popup Background", &DropdownComponent::PopupBackgroundColor),
+			Properties::Make("OptionTextColor",      "Option Text Color", &DropdownComponent::OptionTextColor),
+			Properties::Make("OptionHoverColor",     "Option Hover Color", &DropdownComponent::OptionHoverColor),
+		};
+		dropdownInfo.serialize = [](Entity e) -> Json::Value {
+			const auto& c = e.GetComponent<DropdownComponent>();
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("selectedIndex",   Json::Value(c.SelectedIndex));
+			v.AddMember("rowHeight",       Json::Value(c.OptionRowHeight));
+			v.AddMember("popupBackground", UIColorToJson(c.PopupBackgroundColor));
+			v.AddMember("optionTextColor", UIColorToJson(c.OptionTextColor));
+			v.AddMember("optionHoverColor",UIColorToJson(c.OptionHoverColor));
+			Json::Value optionsArr = Json::Value::MakeArray();
+			for (const std::string& opt : c.Options) {
+				optionsArr.Append(Json::Value(opt));
+			}
+			v.AddMember("options", std::move(optionsArr));
+			return v;
+		};
+		dropdownInfo.deserialize = [](Entity e, const Json::Value& v) {
+			auto& c = e.GetComponent<DropdownComponent>();
+			if (const Json::Value* m = v.FindMember("selectedIndex"))   c.SelectedIndex        = m->AsIntOr(c.SelectedIndex);
+			if (const Json::Value* m = v.FindMember("rowHeight"))       c.OptionRowHeight      = static_cast<float>(m->AsDoubleOr(c.OptionRowHeight));
+			if (const Json::Value* m = v.FindMember("popupBackground")) c.PopupBackgroundColor = UIColorFromJson(*m, c.PopupBackgroundColor);
+			if (const Json::Value* m = v.FindMember("optionTextColor")) c.OptionTextColor      = UIColorFromJson(*m, c.OptionTextColor);
+			if (const Json::Value* m = v.FindMember("optionHoverColor"))c.OptionHoverColor     = UIColorFromJson(*m, c.OptionHoverColor);
+			if (const Json::Value* m = v.FindMember("options"); m && m->IsArray()) {
+				c.Options.clear();
+				for (const Json::Value& item : m->GetArray()) {
+					c.Options.push_back(item.AsStringOr(""));
+				}
+			}
+		};
+		sceneManager.RegisterComponentType<DropdownComponent>(dropdownInfo);
+
+		ComponentInfo toggleInfo{ "Toggle", "UI", ComponentCategory::Component };
+		toggleInfo.serializedName = "Toggle";
+		toggleInfo.properties = {
+			Properties::Make("IsOn", "Is On", &ToggleComponent::IsOn),
+		};
+		toggleInfo.serialize = [](Entity e) -> Json::Value {
+			const auto& c = e.GetComponent<ToggleComponent>();
+			Json::Value v = Json::Value::MakeObject();
+			v.AddMember("isOn", Json::Value(c.IsOn));
+			return v;
+		};
+		toggleInfo.deserialize = [](Entity e, const Json::Value& v) {
+			auto& c = e.GetComponent<ToggleComponent>();
+			if (const Json::Value* m = v.FindMember("isOn")) c.IsOn = m->AsBoolOr(c.IsOn);
+		};
+		sceneManager.RegisterComponentType<ToggleComponent>(toggleInfo);
 
 		// HierarchyComponent is real but managed via Entity::SetParent;
 		// users don't add it from the Add Component popup. Tagged so the

@@ -252,6 +252,88 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float, float, float*, int, ulong*, int, int> Physics2D_OverlapPolygonAll;
     public delegate* unmanaged<float, float, int, ulong*, int> Physics2D_ContainsPoint;
     public delegate* unmanaged<float, float, ulong*, int, int> Physics2D_ContainsPointAll;
+
+    // ── UI: RectTransform2D ──────────────────────────────────────
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetAnchorMin;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetAnchorMin;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetAnchorMax;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetAnchorMax;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetPivot;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetPivot;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetAnchoredPosition;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetAnchoredPosition;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetSizeDelta;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetSizeDelta;
+    public delegate* unmanaged<ulong, float> RectTransform_GetRotation;
+    public delegate* unmanaged<ulong, float, void> RectTransform_SetRotation;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetScale;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetScale;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetResolvedSize;
+
+    // ── UI: Image ────────────────────────────────────────────────
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Image_GetColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Image_SetColor;
+    public delegate* unmanaged<ulong, ulong> Image_GetTexture;
+    public delegate* unmanaged<ulong, ulong, void> Image_SetTexture;
+
+    // ── UI: Interactable ─────────────────────────────────────────
+    public delegate* unmanaged<ulong, int> Interactable_GetInteractable;
+    public delegate* unmanaged<ulong, int, void> Interactable_SetInteractable;
+    public delegate* unmanaged<ulong, int> Interactable_GetIsHovered;
+    public delegate* unmanaged<ulong, int> Interactable_GetIsClicked;
+    public delegate* unmanaged<ulong, int> Interactable_GetIsPressed;
+    public delegate* unmanaged<ulong, int> Interactable_GetIsMouseDown;
+    public delegate* unmanaged<ulong, int> Interactable_GetIsMouseUp;
+
+    // ── UI: Button ───────────────────────────────────────────────
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetDisabledColor;
+
+    // ── UI: Slider ───────────────────────────────────────────────
+    public delegate* unmanaged<ulong, float> Slider_GetValue;
+    public delegate* unmanaged<ulong, float, void> Slider_SetValue;
+    public delegate* unmanaged<ulong, float> Slider_GetMinValue;
+    public delegate* unmanaged<ulong, float, void> Slider_SetMinValue;
+    public delegate* unmanaged<ulong, float> Slider_GetMaxValue;
+    public delegate* unmanaged<ulong, float, void> Slider_SetMaxValue;
+    public delegate* unmanaged<ulong, int> Slider_GetWholeNumbers;
+    public delegate* unmanaged<ulong, int, void> Slider_SetWholeNumbers;
+    public delegate* unmanaged<ulong, int> Slider_GetValueChangedThisFrame;
+
+    // ── UI: Toggle ───────────────────────────────────────────────
+    public delegate* unmanaged<ulong, int> Toggle_GetIsOn;
+    public delegate* unmanaged<ulong, int, void> Toggle_SetIsOn;
+    public delegate* unmanaged<ulong, int> Toggle_GetValueChangedThisFrame;
+
+    // ── UI: InputField ───────────────────────────────────────────
+    public delegate* unmanaged<ulong, byte*, int, int> InputField_GetTextBuffer;
+    public delegate* unmanaged<ulong, byte*, void> InputField_SetText;
+    public delegate* unmanaged<ulong, byte*, int, int> InputField_GetPlaceholderTextBuffer;
+    public delegate* unmanaged<ulong, byte*, void> InputField_SetPlaceholderText;
+    public delegate* unmanaged<ulong, int> InputField_GetIsFocused;
+    public delegate* unmanaged<ulong, int, void> InputField_SetIsFocused;
+    public delegate* unmanaged<ulong, int> InputField_GetSubmittedThisFrame;
+    public delegate* unmanaged<ulong, int> InputField_GetCharacterLimit;
+    public delegate* unmanaged<ulong, int, void> InputField_SetCharacterLimit;
+
+    // ── UI: Dropdown ─────────────────────────────────────────────
+    public delegate* unmanaged<ulong, int> Dropdown_GetSelectedIndex;
+    public delegate* unmanaged<ulong, int, void> Dropdown_SetSelectedIndex;
+    public delegate* unmanaged<ulong, int> Dropdown_GetIsOpen;
+    public delegate* unmanaged<ulong, int, void> Dropdown_SetIsOpen;
+    public delegate* unmanaged<ulong, int> Dropdown_GetSelectionChangedThisFrame;
+    public delegate* unmanaged<ulong, int> Dropdown_GetOptionCount;
+    public delegate* unmanaged<ulong, int, byte*, int, int> Dropdown_GetOptionBuffer;
+    public delegate* unmanaged<ulong, int, byte*, void> Dropdown_SetOption;
+    public delegate* unmanaged<ulong, byte*, void> Dropdown_AddOption;
+    public delegate* unmanaged<ulong, int, void> Dropdown_RemoveOption;
+    public delegate* unmanaged<ulong, void> Dropdown_ClearOptions;
 }
 
 internal static unsafe class NativeCallbacks

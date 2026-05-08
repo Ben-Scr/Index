@@ -40,6 +40,7 @@ namespace Axiom {
 
         m_ScrollValue = 0.f;
         m_MouseDelta = { 0, 0 };
+        m_CharsThisFrame.clear();
 
         const bool inputRight = GetKey(KeyCode::D) || GetKey(KeyCode::Right);
         const bool inputUp = GetKey(KeyCode::W) || GetKey(KeyCode::Up);
@@ -49,6 +50,38 @@ namespace Axiom {
         const float x = inputRight ? 1.f : (inputLeft ? -1.f : 0.f);
         const float y = inputUp ? 1.f : (inputDown ? -1.f : 0.f);
         m_Axis = { x, y };
+    }
+
+    void Input::OnChar(uint32_t codepoint) {
+        // Filter out 0 (defensive — GLFW shouldn't send it but some drivers
+        // surface stray null codepoints during composition).
+        if (codepoint == 0) return;
+        m_CharsThisFrame.push_back(codepoint);
+    }
+
+    std::string Input::GetTypedTextUtf8() const {
+        std::string out;
+        out.reserve(m_CharsThisFrame.size() * 4);
+        for (uint32_t cp : m_CharsThisFrame) {
+            // UTF-8 encoder. Same shape as the standard 4-step branchy
+            // encoder; kept inline so Input has no extra dependencies.
+            if (cp < 0x80) {
+                out.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800) {
+                out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else if (cp < 0x10000) {
+                out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else if (cp < 0x110000) {
+                out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+        }
+        return out;
     }
 
     void Input::OnKeyDown(int key) {

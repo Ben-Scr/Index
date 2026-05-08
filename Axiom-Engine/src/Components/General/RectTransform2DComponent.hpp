@@ -17,18 +17,18 @@ namespace Axiom {
 	//     (0, 0) puts the bottom-left at the anchor. Also the centre of
 	//     rotation and scale.
 	//   AnchoredPosition — offset from the anchor (or anchor mid-point
-	//     when anchors differ) to the pivot, in world units.
+	//     when anchors differ) to the pivot, in pixel units.
 	//   SizeDelta — additional size on top of the stretched anchor span.
 	//     For point anchors (min == max) this *is* the size.
 	//
-	// World-space placement (no parent or parent has no RectTransform2D):
-	//     bottomLeft = AnchoredPosition - Pivot * SizeDelta
-	//     topRight   = bottomLeft + SizeDelta
+	// The rect is laid out in centered screen-space: the origin (0, 0) is
+	// the centre of the window, +X right, +Y up. Without a parent, the
+	// "parent rect" is the full window viewport. Positions are pixels.
 	//
-	// The legacy fields Position, Width, Height, Rotation, Scale are
-	// kept so existing scenes/inspectors keep working — internally they
-	// shadow AnchoredPosition / SizeDelta. Newer code should prefer the
-	// anchor-aware API.
+	// UILayoutSystem walks the hierarchy each frame and writes the
+	// resolved AABB into ResolvedMin / ResolvedMax (also centered screen
+	// space). UIRenderer + UIEventSystem read those for actual drawing
+	// and hit-testing — game code should treat them as read-only.
 	struct RectTransform2DComponent {
 		// Anchored layout (Unity-style). Defaults match a centred,
 		// 100x100 rect with a centred pivot — the common "drop in a
@@ -39,44 +39,73 @@ namespace Axiom {
 		Vec2 AnchoredPosition{ 0.0f, 0.0f };
 		Vec2 SizeDelta{ 100.0f, 100.0f };
 
-		// Local-space rotation (radians) + scale, applied around Pivot.
+		// Local rotation (radians) + scale, applied around Pivot.
 		float Rotation = 0.0f;
 		Vec2 Scale{ 1.0f, 1.0f };
 
-		// ── Convenience accessors (point-anchor case) ─────────────────
-		// These keep working for the "no parent / point anchors" path
-		// that 90% of UI ends up using; for parent-stretched rects use
-		// UI helper functions in the renderer / event system that have
-		// access to the parent's resolved rect.
-		Vec2 GetSize() const {
+		// ── Transient resolved screen rect (NOT serialized) ───────────
+		// Filled by UILayoutSystem each frame. Bottom-left and top-right
+		// corners of the rect in centered screen-space (origin = window
+		// centre, +Y up). When no UILayoutSystem has run yet, these
+		// default to the AuthoredAABB() result.
+		Vec2 ResolvedMin{ 0.0f, 0.0f };
+		Vec2 ResolvedMax{ 0.0f, 0.0f };
+		// World-space pivot point (resolved). Cached for renderer rotation.
+		Vec2 ResolvedPivot{ 0.0f, 0.0f };
+		// Sum of this entity's local rotation and ancestors' rotations.
+		// Used by the renderer for rotated UI elements.
+		float ResolvedRotation = 0.0f;
+		// Has UILayoutSystem written into the resolved fields this frame?
+		// Renderer / event system fall back to the authored unparented
+		// rect when this is false to keep newly-created entities visible
+		// before the first layout pass.
+		bool ResolvedValid = false;
+
+		// ── Authored convenience (point-anchor / unparented case) ─────
+		// These fall back to the authored values, useful as the initial
+		// state before the first layout tick or for components that
+		// haven't been added to a scene yet.
+		Vec2 GetAuthoredSize() const {
 			return Vec2{ SizeDelta.x * Scale.x, SizeDelta.y * Scale.y };
 		}
 
-		Vec2 GetBottomLeft() const {
-			const Vec2 size = GetSize();
+		Vec2 GetAuthoredBottomLeft() const {
+			const Vec2 size = GetAuthoredSize();
 			return Vec2{
 				AnchoredPosition.x - size.x * Pivot.x,
 				AnchoredPosition.y - size.y * Pivot.y
 			};
 		}
 
-		Vec2 GetTopRight() const {
-			const Vec2 bl = GetBottomLeft();
-			const Vec2 size = GetSize();
+		Vec2 GetAuthoredTopRight() const {
+			const Vec2 bl = GetAuthoredBottomLeft();
+			const Vec2 size = GetAuthoredSize();
 			return Vec2{ bl.x + size.x, bl.y + size.y };
 		}
 
-		Vec2 GetCenter() const {
-			const Vec2 bl = GetBottomLeft();
-			const Vec2 size = GetSize();
-			return Vec2{ bl.x + size.x * 0.5f, bl.y + size.y * 0.5f };
+		// ── Resolved (read these from gameplay code) ──────────────────
+		Vec2 GetBottomLeft() const {
+			return ResolvedValid ? ResolvedMin : GetAuthoredBottomLeft();
 		}
-
-		bool ContainsPoint(const Vec2& worldPoint) const {
+		Vec2 GetTopRight() const {
+			return ResolvedValid ? ResolvedMax : GetAuthoredTopRight();
+		}
+		Vec2 GetSize() const {
 			const Vec2 bl = GetBottomLeft();
 			const Vec2 tr = GetTopRight();
-			return worldPoint.x >= bl.x && worldPoint.x <= tr.x
-				&& worldPoint.y >= bl.y && worldPoint.y <= tr.y;
+			return Vec2{ tr.x - bl.x, tr.y - bl.y };
+		}
+		Vec2 GetCenter() const {
+			const Vec2 bl = GetBottomLeft();
+			const Vec2 tr = GetTopRight();
+			return Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };
+		}
+
+		bool ContainsPoint(const Vec2& screenPoint) const {
+			const Vec2 bl = GetBottomLeft();
+			const Vec2 tr = GetTopRight();
+			return screenPoint.x >= bl.x && screenPoint.x <= tr.x
+				&& screenPoint.y >= bl.y && screenPoint.y <= tr.y;
 		}
 	};
 

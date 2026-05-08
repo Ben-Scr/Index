@@ -21,45 +21,6 @@ namespace Axiom {
         constexpr size_t k_VerticesPerGlyph = 6;
         constexpr size_t k_InitialVertexCapacity = 1024;
 
-        // Resolve a TextRendererComponent's runtime FontHandle from its serialized
-        // FontAssetId. Caches into ResolvedFont so subsequent frames skip
-        // the FontManager lookup entirely. Falls back to the default font
-        // when the asset is missing — matches sprite-renderer's "fallback
-        // texture" behavior for the same UX reason: empty editor view is
-        // worse than wrong-but-visible text.
-        Font* ResolveFont(TextRendererComponent& text) {
-            if (FontManager::IsValid(text.ResolvedFont)) {
-                Font* font = FontManager::GetFont(text.ResolvedFont);
-                if (font) {
-                    return font;
-                }
-            }
-
-            const uint64_t uuid = static_cast<uint64_t>(text.FontAssetId);
-            if (uuid != 0) {
-                text.ResolvedFont = FontManager::LoadFontByUUID(uuid, text.FontSize);
-                if (Font* f = FontManager::GetFont(text.ResolvedFont)) {
-                    return f;
-                }
-            }
-
-            text.ResolvedFont = FontManager::GetDefaultFont();
-            Font* fallback = FontManager::GetFont(text.ResolvedFont);
-            if (!fallback) {
-                // One-shot: surface the failure in the log instead of silently
-                // rendering blank text. Users who see no text would otherwise
-                // have no idea whether the renderer is broken or just couldn't
-                // find a font asset to draw with.
-                static bool s_LoggedMissingFont = false;
-                if (!s_LoggedMissingFont) {
-                    s_LoggedMissingFont = true;
-                    AIM_CORE_WARN_TAG("TextRenderer",
-                        "No font available - assign one in the inspector or ensure AxiomAssets/Fonts/DefaultSans-Regular.ttf is shipped next to the executable.");
-                }
-            }
-            return fallback;
-        }
-
         // Pixel-space width of a single line at the font's baked size.
         // Used for left/center/right alignment offset. `letterSpacing` is
         // the same screen-pixel-domain value we add per advance step in
@@ -88,6 +49,39 @@ namespace Axiom {
             }
             return width;
         }
+    }
+
+    Font* TextRenderer::ResolveFont(TextRendererComponent& text) {
+        if (FontManager::IsValid(text.ResolvedFont)) {
+            Font* font = FontManager::GetFont(text.ResolvedFont);
+            if (font) {
+                return font;
+            }
+        }
+
+        const uint64_t uuid = static_cast<uint64_t>(text.FontAssetId);
+        if (uuid != 0) {
+            text.ResolvedFont = FontManager::LoadFontByUUID(uuid, text.FontSize);
+            if (Font* f = FontManager::GetFont(text.ResolvedFont)) {
+                return f;
+            }
+        }
+
+        text.ResolvedFont = FontManager::GetDefaultFont();
+        Font* fallback = FontManager::GetFont(text.ResolvedFont);
+        if (!fallback) {
+            // One-shot: surface the failure in the log instead of silently
+            // rendering blank text. Users who see no text would otherwise
+            // have no idea whether the renderer is broken or just couldn't
+            // find a font asset to draw with.
+            static bool s_LoggedMissingFont = false;
+            if (!s_LoggedMissingFont) {
+                s_LoggedMissingFont = true;
+                AIM_CORE_WARN_TAG("TextRenderer",
+                    "No font available - assign one in the inspector or ensure AxiomAssets/Fonts/DefaultSans-Regular.ttf is shipped next to the executable.");
+            }
+        }
+        return fallback;
     }
 
     TextRenderer::TextRenderer() = default;
@@ -273,6 +267,124 @@ namespace Axiom {
         }
     }
 
+    void TextRenderer::RenderInstances(std::span<const TextDrawCmd> commands, const glm::mat4& mvp) {
+        m_LastFrameGlyphCount = 0;
+        m_LastFrameDrawCalls = 0;
+        if (!m_IsInitialized || !m_Shader || !m_Shader->IsValid() || commands.empty()) {
+            return;
+        }
+
+        m_Vertices.clear();
+        m_Runs.clear();
+
+        // Sort indices into commands rather than the input span (caller
+        // owns it and may need it intact for later use).
+        std::vector<size_t> order;
+        order.reserve(commands.size());
+        for (size_t i = 0; i < commands.size(); ++i) {
+            if (commands[i].FontPtr && !commands[i].Text.empty()) {
+                order.push_back(i);
+            }
+        }
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const auto& ca = commands[a];
+            const auto& cb = commands[b];
+            if (ca.SortingLayer != cb.SortingLayer) return ca.SortingLayer < cb.SortingLayer;
+            if (ca.SortingOrder != cb.SortingOrder) return ca.SortingOrder < cb.SortingOrder;
+            return ca.FontPtr < cb.FontPtr;
+        });
+
+        for (size_t i = 0; i < order.size(); ) {
+            const TextDrawCmd& head = commands[order[i]];
+            GlyphRun run;
+            run.Key.AtlasTexture = head.FontPtr->GetAtlasTexture();
+            run.Key.SortingOrder = head.SortingOrder;
+            run.Key.SortingLayer = head.SortingLayer;
+            run.VertexStart = m_Vertices.size();
+
+            size_t j = i;
+            while (j < order.size()) {
+                const TextDrawCmd& cmd = commands[order[j]];
+                if (cmd.FontPtr->GetAtlasTexture() != run.Key.AtlasTexture
+                    || cmd.SortingOrder != run.Key.SortingOrder
+                    || cmd.SortingLayer != run.Key.SortingLayer)
+                {
+                    break;
+                }
+                // EmitText still expects std::string&; build a temporary
+                // backed by string_view's contents. Cheap because EmitText
+                // doesn't keep a reference past the call.
+                std::string buffer(cmd.Text);
+                EmitText(*cmd.FontPtr, buffer, cmd.X, cmd.Y, cmd.Scale,
+                    cmd.Tint, cmd.Align, cmd.LetterSpacing);
+                ++j;
+            }
+
+            run.VertexCount = m_Vertices.size() - run.VertexStart;
+            if (run.VertexCount > 0) {
+                m_Runs.push_back(run);
+            }
+            i = j;
+        }
+
+        if (m_Vertices.empty()) {
+            return;
+        }
+
+        m_Shader->Submit();
+        if (m_uMVP >= 0) {
+            glUniformMatrix4fv(m_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
+        }
+
+        glBindVertexArray(m_VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
+
+        const size_t requiredBytes = m_Vertices.size() * sizeof(TextVertex);
+        EnsureGpuCapacity(requiredBytes);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(requiredBytes), m_Vertices.data());
+
+        GLboolean prevBlend = glIsEnabled(GL_BLEND);
+        GLint prevBlendSrcRgb = GL_ONE;
+        GLint prevBlendDstRgb = GL_ZERO;
+        GLint prevBlendSrcAlpha = GL_ONE;
+        GLint prevBlendDstAlpha = GL_ZERO;
+        GLint prevBlendEquationRgb = GL_FUNC_ADD;
+        GLint prevBlendEquationAlpha = GL_FUNC_ADD;
+        glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlendSrcRgb);
+        glGetIntegerv(GL_BLEND_DST_RGB, &prevBlendDstRgb);
+        glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcAlpha);
+        glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstAlpha);
+        glGetIntegerv(GL_BLEND_EQUATION_RGB, &prevBlendEquationRgb);
+        glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &prevBlendEquationAlpha);
+        if (!prevBlend) glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Text always rides on top of opaque sprites; disable depth so
+        // multi-line text doesn't z-fight with itself when the projection
+        // squashes glyphs onto the same plane.
+        const GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+        if (prevDepth) glDisable(GL_DEPTH_TEST);
+
+        glActiveTexture(GL_TEXTURE0);
+        for (const GlyphRun& run : m_Runs) {
+            glBindTexture(GL_TEXTURE_2D, run.Key.AtlasTexture);
+            glDrawArrays(GL_TRIANGLES,
+                static_cast<GLint>(run.VertexStart),
+                static_cast<GLsizei>(run.VertexCount));
+            ++m_LastFrameDrawCalls;
+        }
+
+        glBlendEquationSeparate(prevBlendEquationRgb, prevBlendEquationAlpha);
+        glBlendFuncSeparate(prevBlendSrcRgb, prevBlendDstRgb, prevBlendSrcAlpha, prevBlendDstAlpha);
+        if (!prevBlend) glDisable(GL_BLEND);
+        if (prevDepth) glEnable(GL_DEPTH_TEST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindVertexArray(0);
+        glUseProgram(0);
+
+        m_LastFrameGlyphCount = m_Vertices.size() / k_VerticesPerGlyph;
+    }
+
     void TextRenderer::RenderScene(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB) {
         m_LastFrameGlyphCount = 0;
         m_LastFrameDrawCalls = 0;
@@ -280,17 +392,14 @@ namespace Axiom {
             return;
         }
 
-        m_Vertices.clear();
-        m_Runs.clear();
         // Reuse m_Pending's capacity across frames — the per-frame text-list size
         // is roughly stable, and the inner clear() keeps capacity intact so we
         // avoid the per-frame heap churn of a fresh local vector.
         m_Pending.clear();
 
-        // Walk all visible TextRendererComponents, sorted by atlas/layer for
-        // batching. We collect per-text quads first into m_Vertices,
-        // then emit one draw call per atlas+layer change in a final
-        // pass — same shape as Renderer2D's batch loop.
+        // Walk all visible TextRendererComponents on entities with a
+        // world-space Transform2D (separate from UI text, which lives on
+        // RectTransform2D and is rendered by UIRenderer).
         entt::registry& registry = scene.GetRegistry();
 
         auto view = registry.view<TextRendererComponent, Transform2DComponent>(entt::exclude<DisabledTag>);
@@ -315,12 +424,6 @@ namespace Axiom {
                 if (!AABB::Intersects(viewportAABB, textBounds)) continue;
             }
 
-            // Glyph metrics from stb are in atlas-pixels. Convert to
-            // world units via k_TextPixelsPerWorldUnit so a default
-            // 32 px font sits visually next to a 1×1 sprite instead of
-            // dwarfing the entire viewport. The (FontSize / bakedSize)
-            // factor lets a different requested size scale the cached
-            // atlas (slight blur away from the bake).
             const float bakedSize = font->GetPixelSize() > 0.0f ? font->GetPixelSize() : text.FontSize;
             const float drawScale = (text.FontSize / bakedSize)
                 * tr.Scale.x
@@ -340,93 +443,24 @@ namespace Axiom {
             m_Pending.push_back(p);
         }
 
-        // Sort: layer → order → atlas. Atlas changes drive draw-call
-        // splits, so grouping by atlas after layer/order minimizes flips
-        // while preserving render order.
-        std::sort(m_Pending.begin(), m_Pending.end(), [](const PendingText& a, const PendingText& b) {
-            if (a.SortingLayer != b.SortingLayer) return a.SortingLayer < b.SortingLayer;
-            if (a.SortingOrder != b.SortingOrder) return a.SortingOrder < b.SortingOrder;
-            return a.FontPtr < b.FontPtr;
-        });
-
-        // Build vertex buffer + per-run records.
-        for (size_t i = 0; i < m_Pending.size(); ) {
-            GlyphRun run;
-            run.Key.AtlasTexture = m_Pending[i].FontPtr->GetAtlasTexture();
-            run.Key.SortingOrder = m_Pending[i].SortingOrder;
-            run.Key.SortingLayer = m_Pending[i].SortingLayer;
-            run.VertexStart = m_Vertices.size();
-
-            size_t j = i;
-            while (j < m_Pending.size()
-                && m_Pending[j].FontPtr->GetAtlasTexture() == run.Key.AtlasTexture
-                && m_Pending[j].SortingOrder == run.Key.SortingOrder
-                && m_Pending[j].SortingLayer == run.Key.SortingLayer) {
-                EmitText(*m_Pending[j].FontPtr, *m_Pending[j].Text,
-                    m_Pending[j].WorldX, m_Pending[j].WorldY,
-                    m_Pending[j].Scale, m_Pending[j].Tint, m_Pending[j].Align,
-                    m_Pending[j].LetterSpacing);
-                ++j;
-            }
-
-            run.VertexCount = m_Vertices.size() - run.VertexStart;
-            if (run.VertexCount > 0) {
-                m_Runs.push_back(run);
-            }
-            i = j;
+        // Build TextDrawCmd list and dispatch.
+        std::vector<TextDrawCmd> commands;
+        commands.reserve(m_Pending.size());
+        for (const PendingText& p : m_Pending) {
+            TextDrawCmd cmd;
+            cmd.FontPtr = p.FontPtr;
+            cmd.Text = std::string_view(*p.Text);
+            cmd.X = p.WorldX;
+            cmd.Y = p.WorldY;
+            cmd.Scale = p.Scale;
+            cmd.LetterSpacing = p.LetterSpacing;
+            cmd.Tint = p.Tint;
+            cmd.Align = p.Align;
+            cmd.SortingOrder = p.SortingOrder;
+            cmd.SortingLayer = p.SortingLayer;
+            commands.push_back(cmd);
         }
-
-        if (m_Vertices.empty()) {
-            return;
-        }
-
-        // Upload + draw.
-        m_Shader->Submit();
-        if (m_uMVP >= 0) {
-            glUniformMatrix4fv(m_uMVP, 1, GL_FALSE, glm::value_ptr(vp));
-        }
-
-        glBindVertexArray(m_VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
-
-        const size_t requiredBytes = m_Vertices.size() * sizeof(TextVertex);
-        EnsureGpuCapacity(requiredBytes);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(requiredBytes), m_Vertices.data());
-
-        // Standard non-premultiplied blend for the alpha mask.
-        GLboolean prevBlend = glIsEnabled(GL_BLEND);
-        GLint prevBlendSrcRgb = GL_ONE;
-        GLint prevBlendDstRgb = GL_ZERO;
-        GLint prevBlendSrcAlpha = GL_ONE;
-        GLint prevBlendDstAlpha = GL_ZERO;
-        GLint prevBlendEquationRgb = GL_FUNC_ADD;
-        GLint prevBlendEquationAlpha = GL_FUNC_ADD;
-        glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlendSrcRgb);
-        glGetIntegerv(GL_BLEND_DST_RGB, &prevBlendDstRgb);
-        glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcAlpha);
-        glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstAlpha);
-        glGetIntegerv(GL_BLEND_EQUATION_RGB, &prevBlendEquationRgb);
-        glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &prevBlendEquationAlpha);
-        if (!prevBlend) glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-        glActiveTexture(GL_TEXTURE0);
-        for (const GlyphRun& run : m_Runs) {
-            glBindTexture(GL_TEXTURE_2D, run.Key.AtlasTexture);
-            glDrawArrays(GL_TRIANGLES,
-                static_cast<GLint>(run.VertexStart),
-                static_cast<GLsizei>(run.VertexCount));
-            ++m_LastFrameDrawCalls;
-        }
-
-        glBlendEquationSeparate(prevBlendEquationRgb, prevBlendEquationAlpha);
-        glBlendFuncSeparate(prevBlendSrcRgb, prevBlendDstRgb, prevBlendSrcAlpha, prevBlendDstAlpha);
-        if (!prevBlend) glDisable(GL_BLEND);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindVertexArray(0);
-        glUseProgram(0);
-
-        m_LastFrameGlyphCount = m_Vertices.size() / k_VerticesPerGlyph;
+        RenderInstances(commands, vp);
     }
 
 }

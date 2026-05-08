@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <glm/mat4x4.hpp>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Axiom {
@@ -16,6 +18,7 @@ namespace Axiom {
     class Scene;
     class Shader;
     class Font;
+    struct TextRendererComponent;
 
     // Per-vertex layout pushed to the GPU. Six of these per visible glyph,
     // built fresh every frame — keeps the implementation simple at a
@@ -31,6 +34,34 @@ namespace Axiom {
         float G = 1.0f;
         float B = 1.0f;
         float A = 1.0f;
+    };
+
+    // Generic text-draw command for `RenderInstances`. Used by both the
+    // entity-driven world-space pass and the UI renderer (which builds a
+    // command list of widget labels, dropdown popup options, etc).
+    //
+    //   FontPtr — already-resolved Font (call ResolveFont on a
+    //     TextRendererComponent or FontManager directly).
+    //   Text — non-owning view into the source string. Caller must keep
+    //     it alive for the duration of the RenderInstances call.
+    //   X / Y — baseline origin in the same world units `mvp` projects.
+    //     (For screen-space UI text, the same centered-screen-space
+    //     coords RectTransform2D resolves to.)
+    //   Scale — multiplier from atlas pixels to world units. Built from
+    //     (FontSize / atlasBakedSize) / k_TextPixelsPerWorldUnit for
+    //     entity-driven text; for raw screen-space text use
+    //     (desiredPixelHeight / atlasBakedSize).
+    struct AXIOM_API TextDrawCmd {
+        Font* FontPtr = nullptr;
+        std::string_view Text;
+        float X = 0.0f;
+        float Y = 0.0f;
+        float Scale = 1.0f;
+        float LetterSpacing = 0.0f;
+        Color Tint{};
+        TextAlignment Align = TextAlignment::Left;
+        int16_t SortingOrder = 0;
+        uint8_t SortingLayer = 0;
     };
 
     class AXIOM_API TextRenderer {
@@ -51,6 +82,18 @@ namespace Axiom {
         // default. Within text, sorting follows (SortingLayer,
         // SortingOrder, font atlas) for batching efficiency.
         void RenderScene(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB);
+
+        // Generic batched text draw. Sorts the supplied commands by
+        // (layer, order, atlas) and emits them with the same shader /
+        // VAO pipeline as the entity-driven path. UIRenderer calls this
+        // for screen-space widget labels + dropdown popups.
+        void RenderInstances(std::span<const TextDrawCmd> commands, const glm::mat4& mvp);
+
+        // Resolve a TextRendererComponent's runtime FontHandle through
+        // FontManager, caching into ResolvedFont so subsequent frames
+        // skip the lookup. Falls back to the engine default font when
+        // the asset is missing — same UX as world-space text.
+        static Font* ResolveFont(TextRendererComponent& text);
 
         // Drop GL state. Must run while the GL context is still alive.
         void Shutdown();

@@ -17,6 +17,7 @@
 #include "Systems/ParticleUpdateSystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/UIEventSystem.hpp"
+#include "Systems/UILayoutSystem.hpp"
 #include "Core/Application.hpp"
 #include "Core/ApplicationConfig.hpp"
 #include "Events/SceneEvents.hpp"
@@ -45,6 +46,16 @@ namespace Axiom {
 			// UI, rendering) sees up-to-date world transforms composed from
 			// each entity's Local* offsets and its parent's world transform.
 			definition.AddSystem<TransformHierarchySystem>();
+
+			// UI layout pass — resolves every RectTransform2D against the
+			// window viewport + parent rects so UIEventSystem (hit-tests)
+			// and UIRenderer (draws) read up-to-date screen-space AABBs.
+			// Gated on the renderer being enabled because layout needs the
+			// window viewport to be live; without a window we'd skip the
+			// pass entirely anyway.
+			if (config.EnableRenderer2D) {
+				definition.AddSystem<UILayoutSystem>();
+			}
 
 			// ParticleUpdateSystem only does useful work when there's a renderer
 			// to issue draws — skip it for headless / non-rendering apps.
