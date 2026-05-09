@@ -37,6 +37,7 @@
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <filesystem>
@@ -104,13 +105,21 @@ namespace Axiom {
 			return left == right;
 		}
 
-		void BuildOverridePatch(const Value& prefabValue, const Value& instanceValue, const std::string& prefix, Value& overrides) {
+		void BuildOverridePatch(const Value& prefabValue, const Value& instanceValue, const std::string& prefix, Value& overrides, int depth = 0) {
+			// Cap matches the JSON parser's depth limit so a pathological
+			// nested-object instance can't blow the stack here.
+			constexpr int k_MaxDepth = 256;
+			if (depth > k_MaxDepth) {
+				AIM_CORE_WARN_TAG("SceneSerializer", "BuildOverridePatch depth cap ({}) exceeded at '{}' - skipping nested overrides", k_MaxDepth, prefix);
+				return;
+			}
+
 			if (prefabValue.IsObject() && instanceValue.IsObject()) {
 				for (const auto& [key, instanceMember] : instanceValue.GetObject()) {
 					const Value* prefabMember = prefabValue.FindMember(key);
 					const std::string path = prefix.empty() ? key : prefix + "." + key;
 					if (prefabMember && prefabMember->IsObject() && instanceMember.IsObject()) {
-						BuildOverridePatch(*prefabMember, instanceMember, path, overrides);
+						BuildOverridePatch(*prefabMember, instanceMember, path, overrides, depth + 1);
 						continue;
 					}
 
@@ -597,6 +606,13 @@ namespace Axiom {
 			// resolves it back into an EntityHandle in a second pass after
 			// all entities exist (entity handles are runtime-local and
 			// can't be persisted directly). Roots have no field at all.
+			//
+			// `childIndex` is the entity's position in its parent's
+			// Children vector. Deserialize uses it as the canonical
+			// source-of-truth for child order so the on-disk array
+			// position never silently changes a parent's child layout
+			// (e.g. a Slider's [Fill, Handle] order surviving regardless
+			// of how the file was written).
 			if (registry.all_of<HierarchyComponent>(entity)) {
 				const auto& hc = registry.get<HierarchyComponent>(entity);
 				if (hc.Parent != entt::null
@@ -605,6 +621,16 @@ namespace Axiom {
 				{
 					const uint64_t parentUuid = static_cast<uint64_t>(registry.get<UUIDComponent>(hc.Parent).Id);
 					entityValue.AddMember("parentUuid", Value(std::to_string(parentUuid)));
+
+					if (registry.all_of<HierarchyComponent>(hc.Parent)) {
+						const auto& parentHc = registry.get<HierarchyComponent>(hc.Parent);
+						for (size_t i = 0; i < parentHc.Children.size(); ++i) {
+							if (parentHc.Children[i] == entity) {
+								entityValue.AddMember("childIndex", Value(static_cast<int>(i)));
+								break;
+							}
+						}
+					}
 				}
 			}
 
@@ -676,6 +702,8 @@ namespace Axiom {
 				textValue.AddMember("a", Value(text.Color.a));
 				textValue.AddMember("alignment", Value(static_cast<int>(text.HAlign)));
 				textValue.AddMember("letterSpacing", Value(text.LetterSpacing));
+				textValue.AddMember("wrapMode", Value(static_cast<int>(text.WrapMode)));
+				textValue.AddMember("wrapWidth", Value(text.WrapWidth));
 				textValue.AddMember("sortOrder", Value(static_cast<int>(text.SortingOrder)));
 				textValue.AddMember("sortLayer", Value(static_cast<int>(text.SortingLayer)));
 				entityValue.AddMember("TextRenderer", std::move(textValue));
@@ -891,9 +919,9 @@ namespace Axiom {
 				rectValue.AddMember("posY", Value(rectTransform.AnchoredPosition.y));
 				rectValue.AddMember("sizeX", Value(rectTransform.SizeDelta.x));
 				rectValue.AddMember("sizeY", Value(rectTransform.SizeDelta.y));
-				rectValue.AddMember("rotation", Value(rectTransform.Rotation));
-				rectValue.AddMember("scaleX", Value(rectTransform.Scale.x));
-				rectValue.AddMember("scaleY", Value(rectTransform.Scale.y));
+				rectValue.AddMember("rotation", Value(rectTransform.LocalRotation));
+				rectValue.AddMember("scaleX", Value(rectTransform.LocalScale.x));
+				rectValue.AddMember("scaleY", Value(rectTransform.LocalScale.y));
 				entityValue.AddMember("RectTransform2D", std::move(rectValue));
 			}
 
@@ -904,6 +932,8 @@ namespace Axiom {
 				imageValue.AddMember("g", Value(image.Color.g));
 				imageValue.AddMember("b", Value(image.Color.b));
 				imageValue.AddMember("a", Value(image.Color.a));
+				imageValue.AddMember("sortOrder", Value(static_cast<int>(image.SortingOrder)));
+				imageValue.AddMember("sortLayer", Value(static_cast<int>(image.SortingLayer)));
 
 				uint64_t textureAssetId = static_cast<uint64_t>(image.TextureAssetId);
 				if (textureAssetId == 0) {
@@ -1017,9 +1047,26 @@ namespace Axiom {
 
 		Value systemsValue = Value::MakeArray();
 		for (const std::string& className : scene.GetGameSystemClassNames()) {
-			if (!className.empty()) {
+			if (className.empty()) continue;
+
+			// Compact form: classes without authored field values stay as a
+			// bare string so existing scenes round-trip byte-identical. Adding
+			// the object form only when there's something to store keeps git
+			// diffs and old-format compatibility clean.
+			const auto* overrides = scene.GetGameSystemFieldValues(className);
+			if (!overrides || overrides->empty()) {
 				systemsValue.Append(Value(className));
+				continue;
 			}
+
+			Value entry = Value::MakeObject();
+			entry.AddMember("className", Value(className));
+			Value fieldsObj = Value::MakeObject();
+			for (const auto& [fieldName, fieldValue] : *overrides) {
+				fieldsObj.AddMember(fieldName, Value(fieldValue));
+			}
+			entry.AddMember("fields", std::move(fieldsObj));
+			systemsValue.Append(std::move(entry));
 		}
 		root.AddMember("systems", std::move(systemsValue));
 
@@ -1027,6 +1074,16 @@ namespace Axiom {
 		auto& registry = scene.GetRegistry();
 		auto view = registry.view<entt::entity>();
 		std::vector<entt::entity> entities(view.begin(), view.end());
+
+		// entt iterates the dense storage in reverse-insertion order
+		// (newest first). Writing the JSON in that order means deserialize
+		// re-creates entities newest-first, so the new registry's iteration
+		// is *also* reversed — and the editor's hierarchy panel, which
+		// rebuilds its order by walking the new view backwards, ends up
+		// flipping the on-screen order on every save+reload roundtrip.
+		// Reversing here pins the JSON to original creation order so a
+		// roundtrip is a true identity.
+		std::reverse(entities.begin(), entities.end());
 
 		for (const entt::entity entity : entities) {
 			if (IsNestedPrefabInstanceChild(scene, entity)) {

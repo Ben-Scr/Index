@@ -15,24 +15,6 @@ namespace Axiom {
 		Destroy();
 	}
 
-	Box2DWorld::Box2DWorld(Box2DWorld&& other) noexcept
-		: m_WorldId(other.m_WorldId), m_Dispatcher(std::move(other.m_Dispatcher)), m_BodyBindings(std::move(other.m_BodyBindings)) {
-		other.m_WorldId = b2_nullWorldId;
-	}
-
-	Box2DWorld& Box2DWorld::operator=(Box2DWorld&& other) noexcept {
-		if (this == &other) {
-			return *this;
-		}
-
-		Destroy();
-		m_WorldId = other.m_WorldId;
-		m_Dispatcher = std::move(other.m_Dispatcher);
-		m_BodyBindings = std::move(other.m_BodyBindings);
-		other.m_WorldId = b2_nullWorldId;
-		return *this;
-	}
-
 	void Box2DWorld::Step(float dt) {
 		b2World_Step(m_WorldId, dt, 5);
 	}
@@ -182,6 +164,14 @@ namespace Axiom {
 			}
 			m_BodyBindings.erase(id);
 		}
+
+		// Even after every body is destroyed, the dispatcher's m_activeContacts
+		// can still hold ContactKey entries whose ShapeA/ShapeB referenced bodies
+		// of the destroyed scene — UnregisterShape only removes entries on a
+		// matching shape id, but bodies destroyed *before* their shape ids were
+		// looked up (e.g. wholesale teardown paths) leave dangling rows. Sweep
+		// them by Scene* so a subsequent contact query can't return a freed Scene.
+		m_Dispatcher.PurgeContactsForScene(scene);
 	}
 
 	CollisionDispatcher& Box2DWorld::GetDispatcher() { return m_Dispatcher; }

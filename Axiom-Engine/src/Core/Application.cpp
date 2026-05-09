@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Application.hpp"
 #include "Assets/AssetRegistry.hpp"
+#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/Renderer2D.hpp"
@@ -56,6 +57,16 @@ namespace Axiom {
 
 	Application::~Application()
 	{
+		// Defensive teardown for paths that destroyed the Application without
+		// ever calling Run() (e.g. an Initialize-time exception in a non-Run
+		// host or a unit test). Run()'s normal exit already calls Shutdown,
+		// which sets m_IsShuttingDown back to false at the end — so we use
+		// (window-still-alive AND not-currently-shutting-down) as the signal
+		// that no Shutdown has happened yet.
+		if (!m_IsShuttingDown && m_Window) {
+			Shutdown(false);
+		}
+
 		if (s_Instance == this) {
 			s_Instance = nullptr;
 		}
@@ -146,6 +157,9 @@ namespace Axiom {
 					// Snapshot prev-state BEFORE polling so GetKeyDown/Up reflect events from this frame.
 					m_Input.Update();
 					glfwPollEvents();
+					// PostPoll AFTER glfwPollEvents so derived state (axis) sees this
+					// frame's keys, not last frame's.
+					m_Input.PostPoll();
 					TryCompleteQuitRequest();
 
 					// Scale at the accumulator input so TimeScale controls step *frequency*.
@@ -281,6 +295,16 @@ namespace Axiom {
 		OpenGL::Initialize(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
 		AIM_INFO_TAG("OpenGL", "Initialization took " + StringHelper::ToString(timer));
 
+		// TextureManager must come before Renderer2D: Renderer2D::Initialize
+		// hard-asserts that the default Square texture is registered (it's
+		// the unresolved-sprite fallback), and that registration happens
+		// inside TextureManager::Initialize -> LoadDefaultTextures.
+		if (m_Configuration.EnableTextureManager) {
+			timer.Reset();
+			TextureManager::Initialize();
+			AIM_INFO_TAG("TextureManager", "Initialization took " + StringHelper::ToString(timer));
+		}
+
 		if (m_Configuration.EnableRenderer2D) {
 			timer.Reset();
 			m_Renderer2D = std::make_unique<Renderer2D>();
@@ -312,12 +336,6 @@ namespace Axiom {
 			m_PhysicsSystem2D = std::make_unique<PhysicsSystem2D>();
 			m_PhysicsSystem2D->Initialize();
 			AIM_INFO_TAG("PhysicsSystem", "Initialization took " + StringHelper::ToString(timer));
-		}
-
-		if (m_Configuration.EnableTextureManager) {
-			timer.Reset();
-			TextureManager::Initialize();
-			AIM_INFO_TAG("TextureManager", "Initialization took " + StringHelper::ToString(timer));
 		}
 
 		// FontManager piggy-backs on Renderer2D's GL context but lives on
@@ -371,7 +389,18 @@ namespace Axiom {
 
 			AxiomProject* project = ProjectManager::GetCurrentProject();
 			if (project && !project->AppIconPath.empty()) {
-				TextureHandle h = TextureManager::LoadTexture(project->AppIconPath);
+				// AppIconPath is stored project-relative (e.g.
+				// "Assets/icon.png"). TextureManager::ResolveTexturePath
+				// only checks CWD / engine AxiomAssets / <exe>/Assets/Textures,
+				// none of which equal "<project>/Assets/icon.png" once the
+				// editor or runtime is launched from anywhere other than
+				// the project dir. Prepend the project root explicitly so
+				// the load works regardless of the working directory.
+				std::filesystem::path iconPath(project->AppIconPath);
+				if (!iconPath.is_absolute()) {
+					iconPath = std::filesystem::path(project->RootDirectory) / project->AppIconPath;
+				}
+				TextureHandle h = TextureManager::LoadTexture(iconPath.string());
 				Texture2D* tex = TextureManager::GetTexture(h);
 				if (tex && tex->IsValid()) {
 					m_Window->SetWindowIcon(tex);
@@ -387,6 +416,12 @@ namespace Axiom {
 		m_SceneManager->InitializeStartupScenes();
 
 		ScriptEngine::RaiseApplicationStart();
+
+		// Baseline for Time.TimeSinceStartup / Time.RealtimeSinceStartup —
+		// excludes window/GL/scene/package init from the "since game start" clock.
+		// In editor preview the editor calls MarkGameStart() again on play-mode
+		// entry so each play session starts at zero.
+		m_Time.MarkGameStart();
 	}
 
 	void Application::BeginFrame() {
@@ -472,7 +507,11 @@ namespace Axiom {
 			});
 
 		dispatcher.Dispatch<FileDropEvent>([this](FileDropEvent& e) {
-			m_PendingFileDrops = e.GetPaths();
+			// Append rather than replace: GLFW can fire multiple drop events in
+			// the same frame (drag of N files split across batches), and the
+			// previous assignment dropped earlier batches before TakePendingFileDrops ran.
+			const auto& paths = e.GetPaths();
+			m_PendingFileDrops.insert(m_PendingFileDrops.end(), paths.begin(), paths.end());
 			return false;
 			});
 
@@ -556,15 +595,21 @@ namespace Axiom {
 		LayerDispatchGuard postRenderGuard(m_LayerStack);
 		for (Layer* layer : SnapshotLayerOrder()) {
 			AXIOM_TRY_CATCH_LOG(layer->OnPostRender(*this));
-		}
-
+		} 
+		 
 		if (m_GuiRenderer)
 			AXIOM_TRY_CATCH_LOG(m_GuiRenderer->EndFrame());
 		if (m_GizmoRenderer2D) {
 			// Explicit gizmo pass — used to be a hidden draw inside EndFrame.
 			// Now declared as its own step in the render pipeline.
 			if (Gizmo::GetShowInRuntime()) {
-				AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->Render(GizmoLayerMask::Shared));
+				// Resolve VP from the runtime main camera. The renderer no
+				// longer reaches into Camera2DComponent::Main() implicitly
+				// (per audit H3) — callers thread the VP they want gizmos
+				// projected against. No camera = no draw.
+				if (Camera2DComponent* cam = Camera2DComponent::Main()) {
+					AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
+				}
 			}
 			AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}
@@ -617,7 +662,9 @@ namespace Axiom {
 		if (m_GizmoRenderer2D) {
 			AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->BeginFrame());
 			if (Gizmo::GetShowInRuntime()) {
-				AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->Render(GizmoLayerMask::Shared));
+				if (Camera2DComponent* cam = Camera2DComponent::Main()) {
+					AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
+				}
 			}
 			AXIOM_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}

@@ -2,6 +2,7 @@
 #include "Core/Application.hpp"
 #include "RuntimeLogLayer.hpp"
 #include "RuntimeProfilerLayer.hpp"
+#include "RuntimeSplashLayer.hpp"
 #include "RuntimeStatsLayer.hpp"
 #include "Scene/SceneDefinition.hpp"
 #include "Scene/SceneManager.hpp"
@@ -89,10 +90,20 @@ public:
 			EntityHelper::CreateCamera2DEntity();
 		}
 
+		AxiomProject* project = ProjectManager::GetCurrentProject();
+
+		// Splash screen as an overlay so it draws ABOVE every gameplay
+		// layer until it self-hides at the end of its timeline. Skipped
+		// for projects that opt out (`SplashScreen.Enabled == false`)
+		// and for the no-project fallback (still want a fast path for
+		// engine smoke tests / sample scene runs).
+		if (project && project->SplashScreen.Enabled) {
+			PushOverlay<RuntimeSplashLayer>("RuntimeSplash");
+		}
+
 		// Push the runtime profiler layer only when the project opted into it.
 		// (When --no-profiler was passed at premake time, the layer is built
 		// as a no-op shell, so this push costs essentially nothing.)
-		AxiomProject* project = ProjectManager::GetCurrentProject();
 		if (project && project->Profiler.EnableInRuntime) {
 			PushLayer<RuntimeProfilerLayer>("RuntimeProfiler");
 		}

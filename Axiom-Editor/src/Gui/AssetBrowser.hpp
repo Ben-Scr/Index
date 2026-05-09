@@ -96,6 +96,14 @@ namespace Axiom {
 		void CreateNativeComponent(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
+		// Copy a built-in default texture (Square / Circle / 9Sliced /
+		// Capsule / Hexagon / etc.) from the engine's
+		// AxiomAssets/Textures/Default/ folder into `parentDir`. Used by
+		// the Create > Texture submenu. `sourceFile` is the file name
+		// inside Textures/Default/ (e.g. "Square.png"); `displayName`
+		// is what the file will be renamed to (sans extension).
+		void CreateDefaultTexture(const std::string& parentDir,
+			const std::string& sourceFile, const std::string& displayName);
 		// Generic file creator used by the Create > File submenu (Text, JSON,
 		// Binary, ...). Writes `defaultContent` (may be empty) to a file named
 		// `<baseName><extension>` in `parentDir`, suffixed " (N)" on collision,
@@ -140,9 +148,6 @@ namespace Axiom {
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;
 
 		ThumbnailCache m_Thumbnails;
-
-		// Pending OS file drops — set externally, consumed in Render()
-		std::vector<std::string> m_PendingExternalDrops;
 	};
 
 }

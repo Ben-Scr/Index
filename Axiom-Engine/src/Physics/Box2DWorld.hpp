@@ -13,8 +13,6 @@ namespace Axiom {
 namespace Axiom {
 
     class Box2DWorld {
-        friend class Physics2D;
-
     public:
 		Box2DWorld();
 		~Box2DWorld();
@@ -22,8 +20,14 @@ namespace Axiom {
 		Box2DWorld(const Box2DWorld&) = delete;
 		Box2DWorld& operator=(const Box2DWorld&) = delete;
 
-		Box2DWorld(Box2DWorld&& other) noexcept;
-		Box2DWorld& operator=(Box2DWorld&& other) noexcept;
+		// Move is deleted by design. The dispatcher's CollisionDispatcher holds
+		// raw b2ShapeId / b2BodyId keys that point into b2WorldId — moving a
+		// Box2DWorld would leave the dispatcher associated with the wrong world
+		// id (the stored ones are now in the moved-from world). std::optional<>
+		// uses emplace at the call site (see PhysicsSystem2D), which doesn't
+		// require movability.
+		Box2DWorld(Box2DWorld&&) = delete;
+		Box2DWorld& operator=(Box2DWorld&&) = delete;
 
         void Step(float dt);
 

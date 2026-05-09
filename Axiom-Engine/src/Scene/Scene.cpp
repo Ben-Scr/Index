@@ -46,6 +46,7 @@ namespace Axiom {
 				: m_ClassName(std::move(className)) {}
 
 			const std::string& GetClassName() const { return m_ClassName; }
+			uint32_t GetHandle() const { return m_Handle; }
 
 			void Start(Scene& scene) override
 			{
@@ -55,6 +56,7 @@ namespace Axiom {
 						return;
 					}
 					m_Handle = ScriptEngine::CreateGameSystemInstance(m_ClassName, scene.GetName());
+					ApplyFieldOverrides(scene);
 				}
 
 				if (m_Handle != 0) {
@@ -81,6 +83,7 @@ namespace Axiom {
 						return; // Warn lives in Start so we don't double-log
 					}
 					m_Handle = ScriptEngine::CreateGameSystemInstance(m_ClassName, scene.GetName());
+					ApplyFieldOverrides(scene);
 				}
 				if (m_Handle != 0 && !m_AwakeInvoked) {
 					ScriptEngine::InvokeGameSystemAwake(m_Handle);
@@ -127,6 +130,23 @@ namespace Axiom {
 			}
 
 		private:
+			// Push the scene's stored editor-time field values onto the
+			// freshly-created managed instance. Mirrors how ScriptComponent
+			// flushes PendingFieldValues for EntityScripts after their
+			// CreateScriptInstance call: the instance starts with class
+			// defaults, then we overwrite any field the user authored in
+			// the inspector before Awake/Start runs.
+			void ApplyFieldOverrides(Scene& scene)
+			{
+				if (m_Handle == 0) return;
+				const auto* overrides = scene.GetGameSystemFieldValues(m_ClassName);
+				if (!overrides) return;
+
+				for (const auto& [fieldName, value] : *overrides) {
+					ScriptEngine::SetGameSystemField(m_Handle, fieldName.c_str(), value.c_str());
+				}
+			}
+
 			std::string m_ClassName;
 			uint32_t m_Handle = 0;
 			bool m_EnableInvoked = false;
@@ -189,6 +209,17 @@ namespace Axiom {
 		if (origin != EntityOrigin::Runtime && !Application::GetIsPlaying()) {
 			m_Dirty = true;
 		}
+		// Pulse the UI rebuild gate so freshly-created widgets get their
+		// derived visuals (slider fill stretch, scrollbar handle size,
+		// dropdown label text, etc.) refreshed on the next OnPreRender pass.
+		// Without this, a slider created from EntityHelper::CreateUISlider
+		// or via the editor's "Create UI > Slider" menu has its fill
+		// invisible until the user drags the value off its initial setting,
+		// because UIEventSystem's preview path early-outs on !IsUIDirty().
+		// Runtime-spawned widgets (game code instantiating a Slider prefab
+		// while playing) need the same pulse — m_Dirty's edit-mode guard
+		// would otherwise skip the runtime case entirely.
+		m_UIDirty = true;
 		return entityHandle;
 	}
 
@@ -330,6 +361,60 @@ namespace Axiom {
 		return true;
 	}
 
+	uint64_t Scene::GetEntityPersistentID(EntityHandle entity) const {
+		if (entity == entt::null || !m_Registry.valid(entity) || !m_Registry.all_of<UUIDComponent>(entity)) {
+			return 0;
+		}
+		return static_cast<uint64_t>(m_Registry.get<UUIDComponent>(entity).Id);
+	}
+
+	bool Scene::TryResolveEntityRef(uint64_t entityId, EntityHandle& outHandle) const {
+		outHandle = entt::null;
+		if (entityId == 0) {
+			return false;
+		}
+
+		if (TryResolveRuntimeID(entityId, outHandle)) {
+			return true;
+		}
+
+		// Fall back to a UUIDComponent scan. Saved scene files persist the
+		// SceneGUID (= UUIDComponent.Id for Scene-origin entities); after
+		// reload that ID won't appear in m_RuntimeIdToEntity but UUIDComponent
+		// preserves it. Linear scan is fine: scenes hold O(1k) entities and
+		// this only runs in the editor display + reference-picker path.
+		auto view = m_Registry.view<UUIDComponent>();
+		for (EntityHandle handle : view) {
+			if (static_cast<uint64_t>(view.get<UUIDComponent>(handle).Id) == entityId) {
+				outHandle = handle;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void Scene::DeferEntityRefFixup(std::function<void()> fixup) {
+		if (fixup) {
+			m_PendingEntityRefFixups.emplace_back(std::move(fixup));
+		}
+	}
+
+	void Scene::RunPendingEntityRefFixups() {
+		// Fixups can in principle queue more fixups (a closure that
+		// re-resolves and finds another forward-only ref), so swap-and-
+		// drain in a loop until the queue is stable. In practice one
+		// pass is enough — every fixup just looks up an existing UUID —
+		// but the loop guards against future schemes that build the
+		// scene incrementally.
+		while (!m_PendingEntityRefFixups.empty()) {
+			std::vector<std::function<void()>> batch;
+			batch.swap(m_PendingEntityRefFixups);
+			for (auto& fn : batch) {
+				if (fn) fn();
+			}
+		}
+	}
+
 	bool Scene::TryResolveSceneGUID(AssetGUID sceneGuid, EntityHandle& outHandle) const {
 		outHandle = entt::null;
 		const uint64_t guidValue = static_cast<uint64_t>(sceneGuid);
@@ -350,6 +435,13 @@ namespace Axiom {
 	void Scene::DestroyEntity(EntityHandle nativeEntity) { DestroyEntityInternal(nativeEntity, true); }
 
 	void Scene::ClearEntities() {
+		// Invalidate the main-camera cache up front and gate the destroy hooks
+		// so each Camera2DComponent destruction doesn't re-enter
+		// RefreshMainCameraSelection mid-iteration (which scans the still-
+		// mutating registry).
+		m_MainCameraEntity = entt::null;
+		m_TearingDown = true;
+
 		auto view = m_Registry.view<entt::entity>();
 		std::vector<EntityHandle> entities;
 		entities.reserve(view.size());
@@ -363,9 +455,18 @@ namespace Axiom {
 				DestroyEntityInternal(entity, false);
 			}
 		}
+
+		m_TearingDown = false;
 	}
 
-	void Scene::MarkDirty() { if (!Application::GetIsPlaying()) m_Dirty = true; }
+	void Scene::MarkDirty() {
+		if (!Application::GetIsPlaying()) m_Dirty = true;
+		// Pulse the UI rebuild signal in both modes: edit-mode edits drive
+		// the OnPreRender refresh path, and runtime calls (e.g. game code
+		// that toggles a slider entity in/out of the scene) still want the
+		// rebuild gate to fire at least once on the next frame.
+		m_UIDirty = true;
+	}
 
 	bool Scene::HasGameSystem(const std::string& className) const
 	{
@@ -407,6 +508,7 @@ namespace Axiom {
 		}
 
 		m_GameSystemClassNames.erase(m_GameSystemClassNames.begin() + static_cast<std::ptrdiff_t>(index));
+		m_GameSystemFieldOverrides.erase(className);
 		MarkDirty();
 		return true;
 	}
@@ -512,6 +614,35 @@ namespace Axiom {
 			}
 		}
 		m_GameSystemClassNames.clear();
+		m_GameSystemFieldOverrides.clear();
+	}
+
+	uint32_t Scene::GetGameSystemHandle(const std::string& className) const
+	{
+		for (const auto& sysPtr : m_Systems) {
+			const auto* managedSystem = dynamic_cast<const ManagedGameSystem*>(sysPtr.get());
+			if (managedSystem && managedSystem->GetClassName() == className) {
+				return managedSystem->GetHandle();
+			}
+		}
+		return 0;
+	}
+
+	void Scene::SetGameSystemFieldValue(const std::string& className, const std::string& fieldName, const std::string& value)
+	{
+		m_GameSystemFieldOverrides[className][fieldName] = value;
+	}
+
+	const std::unordered_map<std::string, std::string>* Scene::GetGameSystemFieldValues(const std::string& className) const
+	{
+		auto it = m_GameSystemFieldOverrides.find(className);
+		if (it == m_GameSystemFieldOverrides.end()) return nullptr;
+		return &it->second;
+	}
+
+	void Scene::ClearGameSystemFieldOverrides(const std::string& className)
+	{
+		m_GameSystemFieldOverrides.erase(className);
 	}
 
 	bool Scene::SetGameSystemEnabled(const std::string& className, bool enabled)
@@ -604,6 +735,16 @@ namespace Axiom {
 
 		if (markDirty && !Application::GetIsPlaying()) {
 			m_Dirty = true;
+		}
+		// Symmetric with CreateEntityHandle: destroying an entity (or one
+		// of its children) can change which Fill/Handle/Checkmark/Label a
+		// widget auto-resolves to, or take a tinted Image out of view —
+		// pulse the UI rebuild gate so the next OnPreRender refreshes the
+		// remaining widgets. `markDirty=false` means we're in the middle
+		// of a cascade destroy — the outermost call already pulsed the
+		// flag, so the inner recursion doesn't need to.
+		if (markDirty) {
+			m_UIDirty = true;
 		}
 
 		// Cascade-destroy any children, and unhook from the parent's child list, before
@@ -747,21 +888,23 @@ namespace Axiom {
 			}
 		}
 
-		if (systemsToDestroy.size() < enabledSystemCount) {
-			for (const auto& systemPointer : m_Systems) {
-				ISystem* system = systemPointer.get();
-				if (alreadyQueued.contains(system)) {
-					continue;
-				}
-				if (!system->IsEnabled()) {
-					continue;
-				}
-
-				systemsToDestroy.push_back(system);
-				if (systemsToDestroy.size() >= enabledSystemCount) {
-					break;
-				}
+		// Second pass: every enabled, not-yet-queued system in m_Systems gets
+		// OnDestroy. The cap (enabledSystemCount) constrains the FIRST pass —
+		// it represents how many m_AwakenedSystems entries the rollback should
+		// cover when a partial Awake failed. Capping the second pass too would
+		// silently skip OnDestroy on systems registered AFTER AwakeSystems
+		// (e.g. AddGameSystem mid-play), leaking their resources. We always
+		// want to tear those down regardless of enabledSystemCount.
+		for (const auto& systemPointer : m_Systems) {
+			ISystem* system = systemPointer.get();
+			if (alreadyQueued.contains(system)) {
+				continue;
 			}
+			if (!system->IsEnabled()) {
+				continue;
+			}
+
+			systemsToDestroy.push_back(system);
 		}
 
 		std::exception_ptr firstFailure;
@@ -832,6 +975,13 @@ namespace Axiom {
 
 	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
+		// Body adoption invariant: when a Rigidbody2D is added to an entity that already
+		// holds a Box/Circle/Polygon collider, the rigidbody adopts the collider's body
+		// and BOTH components mirror the same b2BodyId. On destroy, whichever path
+		// actually calls b2DestroyBody MUST also zero the sibling component's m_BodyId.
+		// If we don't, Box2D body-id recycling (long sessions / generation wrap) can
+		// alias the stale id to a fresh, unrelated body — silent corruption with no log.
+		//
 		// Skip Box2D body creation for editor-preview scenes (e.g. prefab inspector
 		// thumbnails). Without this gate, every preview entity would push a real body
 		// into the singleton physics world and corrupt simulation state on the live scene.
@@ -887,16 +1037,23 @@ namespace Axiom {
 			registry.all_of<PolygonCollider2DComponent>(entity);
 
 		if (IsEntityBeingDestroyed(entity)) {
+			// Body ownership invariant: collider's Destroy() will b2DestroyBody the
+			// shared body, so we MUST zero our mirrored m_BodyId here — otherwise
+			// rb2D.m_BodyId outlives the underlying body and a recycled b2BodyId
+			// can later alias an unrelated entity's body.
 			if (registry.all_of<BoxCollider2DComponent>(entity)) {
 				registry.get<BoxCollider2DComponent>(entity).Destroy();
+				rb2D.m_BodyId = b2_nullBodyId;
 				return;
 			}
 			if (registry.all_of<CircleCollider2DComponent>(entity)) {
 				registry.get<CircleCollider2DComponent>(entity).Destroy();
+				rb2D.m_BodyId = b2_nullBodyId;
 				return;
 			}
 			if (registry.all_of<PolygonCollider2DComponent>(entity)) {
 				registry.get<PolygonCollider2DComponent>(entity).Destroy();
+				rb2D.m_BodyId = b2_nullBodyId;
 				return;
 			}
 		}
@@ -906,6 +1063,9 @@ namespace Axiom {
 		}
 		else {
 			rb2D.Destroy();
+			// Defensive: rb2D.Destroy() destroys the body. Make sure any mirror is
+			// cleared even if the collider branch above didn't run.
+			rb2D.m_BodyId = b2_nullBodyId;
 		}
 	}
 
@@ -948,6 +1108,11 @@ namespace Axiom {
 		}
 		else {
 			boxCollider2D.Destroy();
+			// Body ownership invariant (mirror): if some other path leaves a stale
+			// Rigidbody2D adjacent to a destroyed collider-owned body, zero its mirror.
+			if (registry.all_of<Rigidbody2DComponent>(entity)) {
+				registry.get<Rigidbody2DComponent>(entity).m_BodyId = b2_nullBodyId;
+			}
 		}
 	}
 
@@ -986,6 +1151,10 @@ namespace Axiom {
 		}
 		else {
 			circleCollider.Destroy();
+			// Body ownership invariant (mirror): zero a stale rigidbody mirror.
+			if (registry.all_of<Rigidbody2DComponent>(entity)) {
+				registry.get<Rigidbody2DComponent>(entity).m_BodyId = b2_nullBodyId;
+			}
 		}
 	}
 
@@ -1022,6 +1191,10 @@ namespace Axiom {
 		}
 		else {
 			polygonCollider.Destroy();
+			// Body ownership invariant (mirror): zero a stale rigidbody mirror.
+			if (registry.all_of<Rigidbody2DComponent>(entity)) {
+				registry.get<Rigidbody2DComponent>(entity).m_BodyId = b2_nullBodyId;
+			}
 		}
 	}
 
@@ -1067,6 +1240,13 @@ namespace Axiom {
 	{
 		Camera2DComponent& camera2D = GetComponent<Camera2DComponent>(entity);
 		camera2D.Destroy();
+
+		// During ClearEntities() every entity is being destroyed; refreshing
+		// the cache mid-loop would just pick another doomed entity and waste
+		// a registry scan per camera. ClearEntities clears the cache up front.
+		if (m_TearingDown) {
+			return;
+		}
 
 		if (m_MainCameraEntity == entity) {
 			RefreshMainCameraSelection(registry, entt::null, entity);

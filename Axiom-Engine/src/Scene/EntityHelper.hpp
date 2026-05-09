@@ -93,6 +93,21 @@ namespace Axiom {
         // SliderComponent::HandleEntity).
         static Entity CreateUISlider(Scene& scene);
 
+        // Progress Bar: read-only horizontal slider. Same components as
+        // CreateUISlider but with IsReadOnly = true and an additional
+        // child TextRenderer the slider system fills with "{N}%" of the
+        // current normalised value. No Handle child — the fill itself
+        // is the only moving piece.
+        static Entity CreateUIProgressBar(Scene& scene);
+
+        // Circular Slider: ring-shaped value control. The arc is drawn
+        // procedurally by GuiRenderer (no Image / texture required), the
+        // hit-test is the ring annulus, and dragging follows the cursor's
+        // angle around the centre. Created with a default 200×200 rect
+        // and a 20 px thickness; tweak StartAngle / Sweep / Clockwise on
+        // the component to make a half-ring or reverse-direction dial.
+        static Entity CreateUICircularSlider(Scene& scene);
+
         // Single-line text field: RectTransform2D + Image (background) +
         // Interactable + InputField, with a child TextRenderer for
         // the entered text / placeholder.
@@ -105,6 +120,22 @@ namespace Axiom {
         // Toggle / checkbox: RectTransform2D + Image (box) + Interactable
         // + Toggle, with a child Image for the checkmark.
         static Entity CreateUIToggle(Scene& scene);
+
+        // Scrollbar: RectTransform2D + Image (track) + Interactable +
+        // Scrollbar, with a child Image (Handle) that owns its own
+        // InteractableComponent so dragging the thumb works.
+        static Entity CreateUIScrollbar(Scene& scene);
+
+        // Scroll Rect: RectTransform2D + Image (background) +
+        // Interactable + ScrollRect, with a Viewport child clipping a
+        // Content child. Two scrollbars are created and parented.
+        static Entity CreateUIScrollRect(Scene& scene);
+
+        // Empty UI rect with a HorizontalLayoutGroup attached. Children
+        // added under it get arranged left-to-right.
+        static Entity CreateUIHorizontalLayout(Scene& scene);
+        static Entity CreateUIVerticalLayout(Scene& scene);
+        static Entity CreateUIGridLayout(Scene& scene);
     };
 
 }

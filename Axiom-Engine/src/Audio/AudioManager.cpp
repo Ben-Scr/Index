@@ -8,6 +8,7 @@
 #include "Serialization/Path.hpp"
 
 #include "Components/Audio/AudioSourceComponent.hpp"
+#include "Core/Application.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 
@@ -87,6 +88,7 @@ namespace Axiom {
 
 
 	bool AudioManager::Initialize() {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::Initialize must be called on the main thread");
 		if (s_IsInitialized) {
 			AIM_CORE_WARN("AudioManager already initialized");
 			return true;
@@ -115,6 +117,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::Shutdown() {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::Shutdown must be called on the main thread");
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("AudioManager isn't initialized");
 			return;
@@ -135,6 +138,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::Update() {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::Update must be called on the main thread");
 		if (!s_IsInitialized) {
 			return;
 		}
@@ -199,7 +203,16 @@ namespace Axiom {
 			if (StartOneShotInstance(request.Handle, request.Volume)) {
 				s_soundsPlayedThisFrame++;
 				ThrottleSound(request.Handle);
-				s_activeSoundCount++;
+				// Don't ++s_activeSoundCount here. The increment-and-decrement-per-call
+				// pattern drifts under any unmodelled lifecycle event (failed start that
+				// half-allocated a slot, sound-stopped-mid-frame race with the audio
+				// thread, RecycleSoundInstance that bypassed CleanupFinishedSounds).
+				// RecalculateActiveSoundCount is O(MAX_CONCURRENT_SOUNDS) = 64 — cheap
+				// enough to be the single source of truth. The next Update tick refreshes
+				// the count via Update -> CleanupFinishedSounds -> RecalculateActiveSoundCount.
+				// Update the in-flight count locally so the next loop iteration's bound
+				// check stays accurate within this call.
+				RecalculateActiveSoundCount();
 				startsThisCall++;
 			}
 		}
@@ -225,10 +238,12 @@ namespace Axiom {
 	}
 
 	void AudioManager::SetMaxConcurrentSounds(uint32_t maxSounds) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::SetMaxConcurrentSounds must be called on the main thread");
 		s_maxConcurrentSounds = Min(maxSounds, 128u);
 	}
 
 	void AudioManager::SetMaxSoundsPerFrame(uint32_t maxPerFrame) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::SetMaxSoundsPerFrame must be called on the main thread");
 		s_maxSoundsPerFrame = Min(maxPerFrame, 16u);
 	}
 
@@ -237,6 +252,7 @@ namespace Axiom {
 	}
 
 	AudioHandle AudioManager::LoadAudio(const std::string_view& path) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::LoadAudio must be called on the main thread");
 		if (!s_IsInitialized) {
 			AIM_CORE_ERROR("[{}] AudioManager not initialized", ErrorCodeToString(AxiomErrorCode::NotInitialized));
 			return AudioHandle();
@@ -276,6 +292,7 @@ namespace Axiom {
 	}
 
 	AudioHandle AudioManager::LoadAudioByUUID(uint64_t assetId) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::LoadAudioByUUID must be called on the main thread");
 		if (assetId == 0) {
 			return AudioHandle();
 		}
@@ -302,6 +319,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::UnloadAudio(const AudioHandle& audioHandle) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::UnloadAudio must be called on the main thread");
 		if (!audioHandle.IsValid()) {
 			return;
 		}
@@ -336,6 +354,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::UnloadAllAudio() {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::UnloadAllAudio must be called on the main thread");
 
 		for (size_t i = 0; i < s_soundInstances.size(); ++i) {
 			auto& slot = s_soundInstances[i];
@@ -359,6 +378,7 @@ namespace Axiom {
 	}
 
 	size_t AudioManager::PurgeUnreferenced() {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::PurgeUnreferenced must be called on the main thread");
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("AudioManager isn't initialized");
 			return 0;
@@ -400,6 +420,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::PlayAudioSource(AudioSourceComponent& source) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::PlayAudioSource must be called on the main thread");
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("AudioManager not initialized");
 			return;
@@ -444,6 +465,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::PauseAudioSource(AudioSourceComponent& source) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::PauseAudioSource must be called on the main thread");
 		if (!s_IsInitialized || source.GetInstanceId() == 0) {
 			return;
 		}
@@ -455,6 +477,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::StopAudioSource(AudioSourceComponent& source) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::StopAudioSource must be called on the main thread");
 		if (!s_IsInitialized || source.GetInstanceId() == 0) {
 			return;
 		}
@@ -464,6 +487,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::ResumeAudioSource(AudioSourceComponent& source) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::ResumeAudioSource must be called on the main thread");
 		if (!s_IsInitialized || source.GetInstanceId() == 0) {
 			return;
 		}
@@ -475,6 +499,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::SetMasterVolume(float volume) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::SetMasterVolume must be called on the main thread");
 		s_masterVolume = Max(0.0f, volume);
 
 		if (s_IsInitialized) {
@@ -483,6 +508,7 @@ namespace Axiom {
 	}
 
 	void AudioManager::PlayOneShot(const AudioHandle& audioHandle, float volume) {
+		AIM_CORE_ASSERT(Application::IsMainThread(), AxiomErrorCode::Undefined, "AudioManager::PlayOneShot must be called on the main thread");
 		if (!s_IsInitialized || !audioHandle.IsValid()) {
 			return;
 		}
@@ -500,7 +526,10 @@ namespace Axiom {
 
 		if (StartOneShotInstance(audioHandle, volume)) {
 			s_soundsPlayedThisFrame++;
-			s_activeSoundCount++;
+			// See ProcessSoundQueue — RecalculateActiveSoundCount() is the single
+			// source of truth so the count can't drift across recycle/stop paths
+			// that skip a paired decrement.
+			RecalculateActiveSoundCount();
 			ThrottleSound(audioHandle);
 		}
 	}
@@ -635,10 +664,18 @@ namespace Axiom {
 				s_soundInstances.pop_back();
 			}
 			else {
-				// Bump generation before re-queueing so the failed slot can't be confused
-				// with the next caller's freshly-minted handle.
-				s_soundInstances[index]->Generation = static_cast<uint16_t>(reuseGeneration + 1u);
+				// Capture the bumped generation BEFORE resetting the slot. Mirroring
+				// RecycleSoundInstance: write to a brand-new sentinel SoundInstance so
+				// the slot is non-null when CreateSoundInstance reads
+				// s_soundInstances[index]->Generation on the next reuse. The previous
+				// order wrote Generation into the about-to-be-destroyed instance, then
+				// reset() to nullptr, then re-queued an index whose slot lookup yielded
+				// reuseGeneration=0 — silently aliasing stale handles.
+				const uint16_t nextGeneration = static_cast<uint16_t>(reuseGeneration + 1u);
 				s_soundInstances[index].reset();
+				s_soundInstances[index] = std::make_unique<SoundInstance>();
+				s_soundInstances[index]->Generation = nextGeneration;
+				s_soundInstances[index]->IsValid = false;
 				s_freeInstanceIndices.push_back(index);
 			}
 			return 0;
@@ -654,8 +691,13 @@ namespace Axiom {
 				s_soundInstances.pop_back();
 			}
 			else {
-				s_soundInstances[index]->Generation = static_cast<uint16_t>(reuseGeneration + 1u);
+				// Same capture-then-rebuild pattern as the data-source-init failure
+				// branch above — see comment there.
+				const uint16_t nextGeneration = static_cast<uint16_t>(reuseGeneration + 1u);
 				s_soundInstances[index].reset();
+				s_soundInstances[index] = std::make_unique<SoundInstance>();
+				s_soundInstances[index]->Generation = nextGeneration;
+				s_soundInstances[index]->IsValid = false;
 				s_freeInstanceIndices.push_back(index);
 			}
 			return 0;

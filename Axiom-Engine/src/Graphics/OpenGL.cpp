@@ -5,10 +5,18 @@
 
 namespace Axiom {
 	bool OpenGL::s_IsInitialized = false;
+	std::string OpenGL::s_VersionString;
+	std::string OpenGL::s_VendorString;
+	std::string OpenGL::s_RendererString;
+
+	static std::string GLStringOrEmpty(GLenum name) {
+		const GLubyte* s = glGetString(name);
+		return s ? std::string(reinterpret_cast<const char*>(s)) : std::string{};
+	}
 
 	bool OpenGL::Initialize(const GLInitSpecifications& glInitSpecs) {
 		if (s_IsInitialized) return false;
-		 
+
 		AIM_ASSERT(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress), AxiomErrorCode::Undefined, "Failed to initialize OpenGL");
 		SetClearColor(glInitSpecs.ClearColor);
 
@@ -16,9 +24,17 @@ namespace Axiom {
 		BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		CullFace(glInitSpecs.CullingMode);
 
+		s_VersionString  = GLStringOrEmpty(GL_VERSION);
+		s_VendorString   = GLStringOrEmpty(GL_VENDOR);
+		s_RendererString = GLStringOrEmpty(GL_RENDERER);
+
 		s_IsInitialized = true;
 		return true;
 	}
+
+	const std::string& OpenGL::GetVersionString()  { return s_VersionString; }
+	const std::string& OpenGL::GetVendorString()   { return s_VendorString; }
+	const std::string& OpenGL::GetRendererString() { return s_RendererString; }
 	void OpenGL::BlendFunc(GLenum sFactor, GLenum dFactor) {
 		glBlendFunc(sFactor, dFactor);
 	}

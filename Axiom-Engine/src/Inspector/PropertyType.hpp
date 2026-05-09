@@ -119,6 +119,19 @@ namespace Axiom {
 
 		// Strings
 		String,
+		// Ordered list of strings. The drawer renders one row per
+		// entry with text input + delete button, plus an "add row"
+		// button at the end. Used by widgets that author small
+		// option arrays from the inspector (e.g. Dropdown.Options).
+		StringList,
+		// Ordered list of items of an arbitrary primitive PropertyType
+		// (stored in PropertyMetadata::ListItemType). The drawer
+		// renders the item-type-specific widget per row plus a remove
+		// button, with "+ Add" at the bottom. Use this when authoring
+		// arrays of ints, floats, vectors, colors, etc., from the
+		// inspector — `StringList` stays for the legacy string-only
+		// path so existing serializers don't change shape.
+		List,
 
 		// Vectors
 		Vec2,
@@ -174,6 +187,8 @@ namespace Axiom {
 		case PropertyType::Float:        return "float";
 		case PropertyType::Double:       return "double";
 		case PropertyType::String:       return "string";
+		case PropertyType::StringList:   return "stringList";
+		case PropertyType::List:         return "list";
 		case PropertyType::Vec2:         return "vector2";
 		case PropertyType::Vec3:         return "vector3";
 		case PropertyType::Vec4:         return "vector4";
@@ -212,6 +227,8 @@ namespace Axiom {
 		if (text == "float")       return PropertyType::Float;
 		if (text == "double")      return PropertyType::Double;
 		if (text == "string")      return PropertyType::String;
+		if (text == "stringList")  return PropertyType::StringList;
+		if (text == "list")        return PropertyType::List;
 		if (text == "vector2")     return PropertyType::Vec2;
 		if (text == "vector3")     return PropertyType::Vec3;
 		if (text == "vector4")     return PropertyType::Vec4;

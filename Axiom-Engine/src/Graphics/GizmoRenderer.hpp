@@ -13,23 +13,36 @@ namespace Axiom {
     class Camera2DComponent;
     class Shader;
 
+    // Internal upload-format vertex (declared here so the static buffer
+    // member can be defined in the .cpp). The class doesn't expose this
+    // type — it only ever flows through FlushGizmosImpl.
+    struct GizmoUploadVertex {
+        float x, y, z;
+        float r, g, b, a;
+    };
+
     class AXIOM_API GizmoRenderer2D {
     public:
         static bool Initialize();
         static void Shutdown();
         static void OnResize(int w, int h);
         static void BeginFrame(uint16_t viewId = 1);
-        static void Render(GizmoLayerMask layerMask = GizmoLayerMask::Shared);
         static void EndFrame();
 
+        // Render gizmos through the supplied view-projection. Mirrors
+        // GuiRenderer::ComputeWorldUIPixelScale's discipline: callers
+        // must thread the VP they want the gizmos projected against —
+        // the renderer never reaches into Camera2DComponent::Main()
+        // implicitly. The legacy `Render(GizmoLayerMask)` overload was
+        // removed in favour of this one to keep the engine render path
+        // free of camera lookups.
         static void RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask = GizmoLayerMask::All);
 
     private:
         static void BuildGeometry(GizmoLayerMask layerMask);
-        // E18: single private flush helper takes an optional VP. nullopt means
-        // "use Camera2DComponent::Main()'s VP" (legacy FlushGizmos behavior);
-        // a value means "use the supplied VP" (legacy FlushGizmosWithVP).
-        static void FlushGizmosImpl(const glm::mat4* vpOverride);
+        // Draw the built geometry through `vp`. No fallback to a global
+        // camera — if you don't have a VP, you don't have a draw.
+        static void FlushGizmosImpl(const glm::mat4& vp);
 
         static bool m_IsInitialized;
         static std::unique_ptr<Shader> m_GizmoShader;
@@ -39,6 +52,10 @@ namespace Axiom {
         // indices 65536+ down to 0+, aliasing them onto early vertices and
         // rendering garbage whenever a busy frame pushed past the limit.
         static std::vector<uint32_t> m_GizmoIndices;
+        // Reused upload-format scratch buffer; preserves capacity across
+        // frames. Was a TU-scope global, now lives on the class so its
+        // lifetime is tied to GizmoRenderer2D's static state.
+        static std::vector<GizmoUploadVertex> s_UploadBuffer;
 
         static uint16_t m_GizmoViewId;
 

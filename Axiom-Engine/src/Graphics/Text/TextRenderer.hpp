@@ -1,6 +1,7 @@
 #pragma once
 #include "Collections/AABB.hpp"
 #include "Collections/Color.hpp"
+#include "Collections/Vec2.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Core/Export.hpp"
 #include "Graphics/Text/FontHandle.hpp"
@@ -60,8 +61,38 @@ namespace Axiom {
         float LetterSpacing = 0.0f;
         Color Tint{};
         TextAlignment Align = TextAlignment::Left;
+        // Wrap strategy + width in atlas-pixel units (same domain as
+        // glyph advances — no Scale baked in). When Wrap == None the
+        // renderer keeps its legacy single-line-per-`\n` behaviour;
+        // otherwise lines exceeding WrapWidthPixels are broken at word
+        // boundaries (Word) or arbitrary glyphs (Character). 0 / negative
+        // WrapWidthPixels also short-circuits to no-wrap so callers can
+        // safely default it.
+        TextWrapMode Wrap = TextWrapMode::None;
+        float WrapWidthPixels = 0.0f;
         int16_t SortingOrder = 0;
         uint8_t SortingLayer = 0;
+        // Hierarchy walk index used by GuiRenderer as a tiebreaker
+        // after (SortingLayer, SortingOrder). Lower values draw first
+        // (further back). Mirrors Instance44::DrawIndex so the merged
+        // image+text sort space stays coherent.
+        std::uint32_t DrawIndex = 0;
+
+        // Optional clip rect (centered-screen-space pixels). Mirrors
+        // Instance44::HasClip / ClipMin / ClipMax — GuiRenderer
+        // applies glScissor for text under a UI Mask ancestor.
+        bool HasClip = false;
+        Vec2 ClipMin{};
+        Vec2 ClipMax{};
+
+        // Optional rotation around Pivot (radians). Default 0 = identity,
+        // and EmitText short-circuits the rotation step entirely so the
+        // overwhelmingly common axis-aligned text path stays a hot loop
+        // of plain quad emits. Set on UI text whose RectTransform has a
+        // non-zero composed rotation; the world-space TextRenderer path
+        // (Renderer2D-driven) doesn't use this and leaves it at zero.
+        float Rotation = 0.0f;
+        Vec2 Pivot{};
     };
 
     class AXIOM_API TextRenderer {
@@ -95,6 +126,26 @@ namespace Axiom {
         // the asset is missing — same UX as world-space text.
         static Font* ResolveFont(TextRendererComponent& text);
 
+        // Same as ResolveFont but bakes the atlas at an explicit pixel
+        // size — used by GuiRenderer to bake at the on-screen size when
+        // the text rides a scaled RectTransform, so a 2× scaled label
+        // renders from a 2× atlas (sharp) instead of upscaling a 1×
+        // atlas (blurry).
+        static Font* ResolveFontAtPixelSize(TextRendererComponent& text, float pixelSize);
+
+        // Measure the text's natural width and height in atlas-pixel units
+        // (the same domain as glyph XAdvance). Width = max line width
+        // across `\n`-separated lines. Height = font.GetLineHeight() ×
+        // line count. Used by UILayoutSystem to auto-size a host
+        // RectTransform2D when the TextRendererComponent is set to
+        // wrap mode "None" — the rect should hug the text rather than
+        // require manual width/height authoring.
+        //
+        // Caller is responsible for converting the result to screen
+        // pixels (multiply by `text.FontSize / font.GetPixelSize()` —
+        // same `drawScale` math the renderer uses).
+        static Vec2 MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing);
+
         // Drop GL state. Must run while the GL context is still alive.
         void Shutdown();
 
@@ -115,27 +166,14 @@ namespace Axiom {
             size_t VertexCount = 0;
         };
 
-        // Per-text scratch entry. Kept as a member type so the working buffer
-        // can be reused across frames (see m_Pending) instead of reallocating
-        // every RenderScene call.
-        struct PendingText {
-            Font* FontPtr = nullptr;
-            const std::string* Text = nullptr;
-            float WorldX = 0.0f;
-            float WorldY = 0.0f;
-            float Scale = 1.0f;
-            float LetterSpacing = 0.0f;
-            Color Tint{};
-            TextAlignment Align = TextAlignment::Left;
-            int16_t SortingOrder = 0;
-            uint8_t SortingLayer = 0;
-        };
-
         void EnsureGpuCapacity(size_t requiredBytes);
-        void EmitText(Font& font, const std::string& text,
+        void EmitText(Font& font, std::string_view text,
             float worldX, float worldY,
             float scale, const Color& color,
-            TextAlignment alignment, float letterSpacing);
+            TextAlignment alignment, float letterSpacing,
+            TextWrapMode wrapMode = TextWrapMode::None,
+            float wrapWidthPixels = 0.0f,
+            float rotation = 0.0f, Vec2 pivot = Vec2{ 0.0f, 0.0f });
 
         bool m_IsInitialized = false;
 
@@ -146,7 +184,17 @@ namespace Axiom {
         // Reused across frames so we don't allocate in the hot path.
         std::vector<TextVertex> m_Vertices;
         std::vector<GlyphRun> m_Runs;
-        std::vector<PendingText> m_Pending;
+        // Visual-line ranges produced by EmitText's wrap pass. (begin,
+        // end) byte-offsets into the source string; persists across
+        // calls so the wrap loop doesn't churn the heap.
+        std::vector<std::pair<size_t, size_t>> m_WrapScratch;
+        // m_PendingDrawCmds is the per-frame TextDrawCmd buffer used by
+        // RenderScene before dispatching through RenderInstances. Held as
+        // a member so its capacity persists across frames (no per-frame
+        // heap churn). m_Order is the sort-permutation scratch used by
+        // RenderInstances; same reuse contract.
+        std::vector<TextDrawCmd> m_PendingDrawCmds;
+        std::vector<size_t> m_Order;
 
         std::unique_ptr<Shader> m_Shader;
         int m_uMVP = -1;

@@ -6,6 +6,7 @@
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/ImageComponent.hpp"
+#include "Core/Application.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 
@@ -15,6 +16,22 @@
 
 namespace Axiom {
 	namespace {
+		// Every TextureManager entry point touches the GL context (binding samplers,
+		// allocating texture storage, freeing GPU handles). The GL context lives on
+		// the main thread, so calling these from a worker is undefined regardless of
+		// whether s_Textures itself is mutated. The assertion catches future async
+		// asset-streaming work the moment it goes wrong rather than after a
+		// silent driver crash.
+		bool EnsureTextureManagerThread(const char* methodName) {
+			if (Application::IsMainThread()) {
+				return true;
+			}
+			AIM_CORE_ASSERT(false, AxiomErrorCode::InvalidArgument,
+				fmt::format("TextureManager::{} must be called from the main thread (GL context is bound here).",
+					methodName));
+			return false;
+		}
+
 		struct TextureLookupKey {
 			std::string Path;
 			Filter SamplerFilter = Filter::Point;
@@ -129,6 +146,7 @@ namespace Axiom {
 	}
 
 	void TextureManager::Initialize() {
+		if (!EnsureTextureManagerThread("Initialize")) return;
 		if (s_IsInitialized) {
 			AIM_CORE_WARN("TextureManager is already initialized");
 			return;
@@ -152,6 +170,7 @@ namespace Axiom {
 	}
 
 	void TextureManager::Shutdown() {
+		if (!EnsureTextureManagerThread("Shutdown")) return;
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("TextureManager isn't initialized");
 			return;
@@ -171,6 +190,7 @@ namespace Axiom {
 	}
 
 	TextureHandle TextureManager::LoadTexture(const std::string_view& path, Filter filter, Wrap u, Wrap v) {
+		if (!EnsureTextureManagerThread("LoadTexture")) return TextureHandle::Invalid();
 		if (!s_IsInitialized) {
 			AIM_CORE_ERROR("[{}] TextureManager isn't initialized", ErrorCodeToString(AxiomErrorCode::NotInitialized));
 			return TextureHandle::Invalid();
@@ -310,6 +330,7 @@ namespace Axiom {
 	}
 
 	void TextureManager::UnloadTexture(TextureHandle handle) {
+		if (!EnsureTextureManagerThread("UnloadTexture")) return;
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("TextureManager isn't initialized");
 			return;
@@ -467,6 +488,7 @@ namespace Axiom {
 	}
 
 	void TextureManager::UnloadAll(bool defaultTextures) {
+		if (!EnsureTextureManagerThread("UnloadAll")) return;
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("TextureManager isn't initialized");
 			return;
@@ -559,6 +581,7 @@ namespace Axiom {
 	}
 
 	size_t TextureManager::PurgeUnreferenced() {
+		if (!EnsureTextureManagerThread("PurgeUnreferenced")) return 0;
 		if (!s_IsInitialized) {
 			AIM_CORE_WARN("TextureManager isn't initialized");
 			return 0;

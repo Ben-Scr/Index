@@ -32,14 +32,45 @@ namespace Axiom {
 		// Persistence
 		std::string StartupScene = "SampleScene";
 		std::string LastOpenedScene = "SampleScene";
-		std::string GameViewAspect = "Free Aspect";
+		std::string GameViewAspect = "16:9";
 		bool GameViewVsync = true;
 
 		// Build settings
-		int BuildWidth = 1280;
-		int BuildHeight = 720;
-		bool BuildFullscreen = false;
+		int BuildWidth = 1920;
+		int BuildHeight = 1080;
+		bool BuildFullscreen = true;
 		bool BuildResizable = true;
+
+		// Optional override for the produced .exe filename. Empty = use the
+		// project Name (the historical behaviour). Stored without an
+		// extension; the build step appends the platform extension. Useful
+		// when shipping under a marketing name that differs from the
+		// internal project identifier ("MyGame" project -> "Acme Quest.exe").
+		std::string ExecutableName;
+
+		// UI scaling — applied by UILayoutSystem to every RectTransform2D
+		// so SizeDelta and AnchoredPosition values are interpreted as
+		// "reference pixels" at the resolution the UI was authored for.
+		// At runtime, the layout multiplies them by `currentSize /
+		// referenceSize` so a 100-px button stays visually 100 reference-
+		// pixels wide regardless of the actual window size.
+		//
+		// UIReferenceWidth / Height: the resolution the UI was authored
+		// at. Defaults to the build resolution (1280x720) so a freshly-
+		// created project's preview matches its shipped size.
+		//
+		// UIScaleMatch (0..1): controls how the scale factor blends
+		// between width-driven and height-driven scaling. Same model as
+		// Unity's CanvasScaler "Match Width Or Height":
+		//   • 0.0 → only width matters (UI grows with window width).
+		//   • 1.0 → only height matters (UI grows with window height).
+		//   • 0.5 → balanced (geometric mean of width and height ratios).
+		// 0.5 is a sensible default for most layouts; bump toward 1.0 for
+		// HUDs anchored to the top/bottom edges, toward 0.0 for side-bar
+		// menus.
+		int UIReferenceWidth = 1920;
+		int UIReferenceHeight = 1080;
+		float UIScaleMatch = 0.5f;
 		std::string AppIconPath;
 		std::vector<std::string> BuildSceneList;
 		std::vector<GlobalSystemRegistration> GlobalSystems;
@@ -90,6 +121,27 @@ namespace Axiom {
 		};
 		BuildProfile ActiveBuildProfile = BuildProfile::Development;
 
+		// Splash screen — shown briefly before the first scene loads in
+		// shipped builds. Disabled = no splash, scene loads immediately.
+		// Enabled with no custom values produces the engine default
+		// (Axiom version + platform + build profile, faded in/out).
+		// SplashImagePath is an optional foreground image (relative
+		// project path, same convention as AppIconPath); when empty the
+		// default Axiom logo from AxiomAssets/Textures/Axiom64.png is
+		// used. SplashCustomText, when non-empty, replaces the engine-
+		// generated subtitle line.
+		struct SplashScreenSettings {
+			bool Enabled = true;
+			float DurationSeconds = 2.5f;
+			float FadeInSeconds = 0.5f;
+			float FadeOutSeconds = 0.5f;
+			std::string ImagePath;
+			std::string CustomText;
+			float BackgroundR = 0.05f;
+			float BackgroundG = 0.05f;
+			float BackgroundB = 0.07f;
+		} SplashScreen;
+
 		// User-defined preprocessor symbols. Get baked into BOTH the C#
 		// .csproj's <DefineConstants> AND the native scripts' CMakeLists
 		// target_compile_definitions on every script compile. Useful for
@@ -119,6 +171,16 @@ namespace Axiom {
 		// project file having reached the disk (e.g. before clearing dirty state, before
 		// triggering project regen) MUST check the return value.
 		bool Save() const;
+
+		// Write `Packages/AxiomDefines.props` next to the .csproj. This file is
+		// imported by the .csproj and bakes in CustomDefines + the active build
+		// profile so Visual Studio's IntelliSense sees them as active (without
+		// it, command-line `-p:DefineConstants=...` only affects MSBuild and
+		// `#if XD` blocks render as inactive in the editor even though they
+		// compile correctly). Idempotent — safe to call every Save.
+		// `outAddedImport` is set to true if the .csproj was patched to add
+		// the missing Import line (older projects pre-date this mechanism).
+		bool WriteManagedDefinesProps(bool* outAddedImport = nullptr) const;
 
 		static std::string GetActiveBuildConfiguration();
 		static std::string GetActiveBuildDefineConstant();

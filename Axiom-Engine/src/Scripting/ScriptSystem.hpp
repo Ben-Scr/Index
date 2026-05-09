@@ -5,6 +5,7 @@
 #include "Serialization/FileWatcher.hpp"
 #include "Core/Export.hpp"
 #include "Utils/Process.hpp"
+#include <atomic>
 #include <string>
 #include <memory>
 #include <cstddef>
@@ -78,6 +79,15 @@ namespace Axiom {
 		static inline std::string m_NativeTargetName;
 		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_NativeRebuildTask;
 		static inline bool m_NativeRebuildQueued = false;
+
+		// True while teardown of managed/native scripts is in progress. The queued-
+		// rebuild dispatch path (OnPreRender) must not replay a queued rebuild while
+		// teardown is mid-flight — a queued rebuild kicked off mid-teardown would
+		// race with the in-progress LoadUserAssembly / NativeHost::LoadDLL and could
+		// reload an assembly that the teardown loop hasn't finished destroying
+		// instances from yet. Atomic in case future profiler/watcher threads peek
+		// at it; today the field is touched only on the main thread.
+		static inline std::atomic<bool> m_TeardownInProgress{false};
 	};
 
 } // namespace Axiom

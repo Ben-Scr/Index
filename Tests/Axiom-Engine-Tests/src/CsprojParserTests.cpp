@@ -170,7 +170,7 @@ TEST_CASE("ParseInstalledPackagesFromXml — malformed input returns empty witho
 TEST_CASE("ParseInstalledPackagesFromXml — packages across multiple ItemGroups are collected") {
 	const std::string xml = R"(<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
-    <Compile Include="Assets\Scripts\**\*.cs" />
+    <Compile Include="Assets\**\*.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="A" Version="1.0.0" />
@@ -231,7 +231,7 @@ TEST_CASE("ParseInstalledPackagesFromXml — real Axiom-generated .csproj layout
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Assets\Scripts\**\*.cs" />
+    <Compile Include="Assets\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>

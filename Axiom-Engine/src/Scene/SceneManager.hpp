@@ -65,10 +65,18 @@ namespace Axiom {
 			return index < m_LoadedScenes.size() ? m_LoadedScenes[index].get() : nullptr;
 		}
 
+		// Reentrancy contract: callbacks MAY append to m_LoadedScenes (e.g. a
+		// callback triggers a scene load) but MUST NOT remove or shrink the
+		// vector mid-iteration. We re-read size() each step so newly appended
+		// scenes get visited; an underlying pointer reaching nullptr (scene
+		// torn down by a callback) is filtered by the IsLoaded check. This
+		// mirrors UpdateScenes' index-based loop in SceneManager.cpp and avoids
+		// per-call vector copies that the old `auto scenes = m_LoadedScenes`
+		// pattern incurred.
 		template<typename TFunc>
 		void ForeachLoadedScene(TFunc&& func) {
-			auto scenes = m_LoadedScenes;
-			for (const std::shared_ptr<Scene>& scenePointer : scenes) {
+			for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {
+				const std::shared_ptr<Scene>& scenePointer = m_LoadedScenes[i];
 				// IsLoaded filter — scene can briefly sit in the list after its flag is cleared.
 				if (scenePointer && scenePointer->IsLoaded()) func(*scenePointer);
 			}
@@ -76,8 +84,8 @@ namespace Axiom {
 
 		template<typename TFunc>
 		void ForeachLoadedScene(TFunc&& func) const {
-			auto scenes = m_LoadedScenes;
-			for (const std::shared_ptr<Scene>& scenePointer : scenes) {
+			for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {
+				const std::shared_ptr<Scene>& scenePointer = m_LoadedScenes[i];
 				if (scenePointer && scenePointer->IsLoaded()) func(*scenePointer);
 			}
 		}

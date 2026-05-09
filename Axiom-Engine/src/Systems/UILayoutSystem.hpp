@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Export.hpp"
 #include "Scene/ISystem.hpp"
 
 namespace Axiom {
@@ -12,8 +13,10 @@ namespace Axiom {
 	// Exposed as a free function so it can run from BOTH UILayoutSystem
 	// (in play mode, before UIEventSystem) and UIRenderer (every frame,
 	// including editor mode, after UIEventSystem mutates authored
-	// values like the slider handle's AnchoredPosition).
-	void ComputeUILayout(Scene& scene);
+	// values like the slider handle's AnchoredPosition). Marked
+	// AXIOM_API so the editor can refresh layout before reading
+	// resolved coords for gizmo overlays.
+	AXIOM_API void ComputeUILayout(Scene& scene);
 
 	// Walks every RectTransform2DComponent in the scene each frame and
 	// writes the resolved screen-space AABB into ResolvedMin / ResolvedMax.

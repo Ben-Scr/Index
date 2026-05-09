@@ -134,6 +134,25 @@ namespace Axiom {
 		fontCfg.SizePixels = 13.0f * dpiScale;
 		io.Fonts->AddFontDefault(&fontCfg);
 
+		// Merge a Latin-1 supplement glyph fallback onto the default font.
+		// ImGui's bundled ProggyClean only ships ASCII glyphs, so anything
+		// 0xA0-0xFF (German umlauts, French/Spanish accents, ©/®/°/±/etc.)
+		// renders as '?'. We additionally point AddFontFromFileTTF at a
+		// real TTF with Latin-1 coverage and merge ONLY that range so the
+		// editor font otherwise looks identical to before. NotoSans-
+		// Regular.ttf is the engine-bundled fallback (large character set,
+		// SIL OFL).
+		const std::string notoPath = Path::Combine(Path::ResolveAxiomAssets("Fonts"), "NotoSans-Regular.ttf");
+		if (std::filesystem::exists(notoPath)) {
+			ImFontConfig latinCfg;
+			latinCfg.MergeMode = true;
+			latinCfg.SizePixels = 13.0f * dpiScale;
+			latinCfg.PixelSnapH = true;
+			static const ImWchar latin1Range[] = { 0x00A0, 0x00FF, 0 };
+			io.Fonts->AddFontFromFileTTF(notoPath.c_str(),
+				13.0f * dpiScale, &latinCfg, latin1Range);
+		}
+
 		AIM_VERIFY(ImGui_ImplGlfw_InitForOpenGL(glfwWindow, true), "Failed to init glfw for imgui!");
 		AIM_VERIFY(ImGui_ImplOpenGL3_Init("#version 330 core"), "Failed to init openGL3 for imgui!");
 

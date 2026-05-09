@@ -71,10 +71,17 @@ namespace Axiom {
 
 	uint64_t GetEntityScriptId(const Scene& scene, EntityHandle handle)
 	{
+		// Persistent UUID — see ScriptEngine::CreateScriptInstance for the
+		// rationale. Every entity ID handed to managed code goes through
+		// here (FindEntity, parent/child queries, raycasts, instantiate,
+		// collision callbacks) so they all line up with the script's own
+		// Entity.ID and with serialized component-ref fields. Falls back to
+		// the entt handle integer when the entity has no UUIDComponent yet
+		// (mid-construction race), matching prior behavior.
 		if (scene.IsValid(handle)) {
-			const uint64_t runtimeId = scene.GetRuntimeID(handle);
-			if (runtimeId != 0) {
-				return runtimeId;
+			const uint64_t persistentId = scene.GetEntityPersistentID(handle);
+			if (persistentId != 0) {
+				return persistentId;
 			}
 		}
 
@@ -83,19 +90,13 @@ namespace Axiom {
 
 	bool TryResolveEntityByUUID(const Scene& scene, uint64_t entityID, EntityHandle& outHandle)
 	{
-		if (scene.TryResolveRuntimeID(entityID, outHandle)) {
-			return true;
-		}
-
-		auto view = scene.GetRegistry().view<UUIDComponent>();
-		for (EntityHandle handle : view) {
-			if (static_cast<uint64_t>(view.get<UUIDComponent>(handle).Id) == entityID) {
-				outHandle = handle;
-				return true;
-			}
-		}
-
-		return false;
+		// Single source of truth for "given an entity ID from C# (which may be
+		// a RuntimeID handed out by an older binding, or a persistent UUID
+		// stored in a serialized field), find the live EntityHandle". The
+		// editor's display resolver (ReferencePicker) and this runtime
+		// resolver share Scene::TryResolveEntityRef so a ref the editor shows
+		// as valid is also resolvable from script code.
+		return scene.TryResolveEntityRef(entityID, outHandle);
 	}
 
 	bool ResolveEntityReference(uint64_t entityID, Scene*& outScene, EntityHandle& outHandle)
@@ -152,12 +153,22 @@ namespace Axiom {
 	// this thread-local. Managed code that holds the pointer past the next binding
 	// call on the same thread reads stale or different content. The Buffer variants
 	// (those whose C# signature ends with `out byte[]` or `(IntPtr, int)`) copy the
-	// string into caller-owned memory and are safe; the no-Buffer variants are kept
-	// only for backwards compatibility with older C# entry points.
+	// string into caller-owned memory and are safe.
 	//
-	// Migration plan: every legacy entry point should be marked [Obsolete] on the C#
-	// side and routed through its Buffer variant. Once no callers remain, delete the
-	// legacy thunks. Do not add new legacy-style bindings.
+	// Audit (2026-05): the legacy non-Buffer thunks (Entity_GetManagedComponentFields,
+	// NameComponent_GetName, TextRenderer_GetText, Asset_GetPath/DisplayName/FindAll,
+	// Scene_GetActiveSceneName/EntityNameByUUID/LoadedSceneNameAt) were removed
+	// entirely; the Axiom-ScriptCore C# layer already routes every string-returning
+	// call through its Buffer variant (see Axiom-ScriptCore/Source/Axiom/Core/InternalCalls.cs),
+	// and NativeBindings was updated in lockstep with C# NativeBindingsStruct.
+	// Do not reintroduce no-Buffer string returns: a thread-local buffer race across
+	// re-entrant bindings was the original hazard.
+	//
+	// s_StringReturnBuffer survives because ScriptBindingsScene.cpp's clipboard
+	// thunk uses it as a one-shot scratch space across the two-call buffer pattern
+	// (capacity=0 to learn required size, then capacity=N to copy). Its scope is
+	// strictly local to each binding invocation — it must NEVER be returned to
+	// managed code as a const char*.
 	thread_local std::string s_StringReturnBuffer;
 
 	// C++ exceptions MUST NOT propagate across the C++/C# boundary — managed code
@@ -282,21 +293,20 @@ namespace Axiom {
 		return removed;
 	}
 
-	static const char* Axiom_Entity_GetManagedComponentFields(uint64_t entityID, const char* componentName)
+	static int Axiom_Entity_GetManagedComponentFieldsBuffer(uint64_t entityID, const char* componentName, char* outBuffer, int capacity)
 	{
 		AIM_BINDING_TRY {
-			s_StringReturnBuffer = "{}";
 			Scene* scene = nullptr;
 			EntityHandle handle = entt::null;
 			const std::string className = componentName ? componentName : "";
 			if (className.empty() || !ResolveEntityReference(entityID, scene, handle)
 				|| !scene->HasComponent<ScriptComponent>(handle)) {
-				return s_StringReturnBuffer.c_str();
+				return CopyCStringToBuffer("{}", outBuffer, capacity);
 			}
 
 			const auto& scriptComponent = scene->GetComponent<ScriptComponent>(handle);
 			if (!scriptComponent.HasManagedComponent(className)) {
-				return s_StringReturnBuffer.c_str();
+				return CopyCStringToBuffer("{}", outBuffer, capacity);
 			}
 
 			Json::Value root = Json::Value::MakeObject();
@@ -308,14 +318,9 @@ namespace Axiom {
 				root.AddMember(key.substr(prefix.size()), Json::Value(value));
 			}
 
-			s_StringReturnBuffer = Json::Stringify(root, false);
-			return s_StringReturnBuffer.c_str();
-		} AIM_BINDING_CATCH("{}");
-	}
-
-	static int Axiom_Entity_GetManagedComponentFieldsBuffer(uint64_t entityID, const char* componentName, char* outBuffer, int capacity)
-	{
-		return CopyCStringToBuffer(Axiom_Entity_GetManagedComponentFields(entityID, componentName), outBuffer, capacity);
+			const std::string serialized = Json::Stringify(root, false);
+			return CopyCStringToBuffer(serialized.c_str(), outBuffer, capacity);
+		} AIM_BINDING_CATCH(CopyCStringToBuffer("{}", outBuffer, capacity));
 	}
 
 	static int Axiom_Entity_GetIsStatic(uint64_t entityID)
@@ -345,7 +350,30 @@ namespace Axiom {
 		scene->MarkDirty();
 	}
 
+	// Authored "Enabled" — the value of the inspector checkbox. True
+	// when this entity itself isn't user-disabled, regardless of any
+	// ancestor's state. A child whose parent is disabled has both
+	// DisabledTag and InheritedDisabledTag, so the parent's disable
+	// doesn't drag this checkbox off; the user keeps their authored
+	// intent for when the parent re-enables.
 	static int Axiom_Entity_GetIsEnabled(uint64_t entityID)
+	{
+		Scene* scene = nullptr;
+		EntityHandle handle = entt::null;
+		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
+		// Authored-disabled = DisabledTag without InheritedDisabledTag.
+		// Anything else (no tag, or inherited-only tag) is authored-enabled.
+		const bool authoredDisabled = scene->HasComponent<DisabledTag>(handle)
+			&& !scene->HasComponent<InheritedDisabledTag>(handle);
+		return authoredDisabled ? 0 : 1;
+	}
+
+	// Effective "EnabledInHierarchy" — the runtime active flag. False
+	// when this entity is disabled for any reason (authored OR inherited
+	// from an ancestor). Engine systems already filter their views with
+	// `entt::exclude<DisabledTag>`, so callers that mean "is this entity
+	// actually live this frame" should use this, not GetIsEnabled.
+	static int Axiom_Entity_GetIsEnabledInHierarchy(uint64_t entityID)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
@@ -359,8 +387,15 @@ namespace Axiom {
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle)) return;
 
+		// Compare against the authored state, not the effective one — a
+		// SetIsEnabled(true) on a child whose parent is disabled is a
+		// no-op for the runtime DisabledTag (still inherited-disabled)
+		// but flips the authored intent so the next parent re-enable
+		// cascade restores it. SetEnabled() handles that bookkeeping.
 		const bool shouldBeEnabled = isEnabled != 0;
-		const bool currentlyEnabled = !scene->HasComponent<DisabledTag>(handle);
+		const bool authoredDisabled = scene->HasComponent<DisabledTag>(handle)
+			&& !scene->HasComponent<InheritedDisabledTag>(handle);
+		const bool currentlyEnabled = !authoredDisabled;
 		if (shouldBeEnabled == currentlyEnabled) return;
 
 		scene->GetEntity(handle).SetEnabled(shouldBeEnabled);
@@ -416,7 +451,7 @@ namespace Axiom {
 
 		Entity entity = scene->GetEntity(handle);
 		if (info->has && info->has(entity)) return 1;
-		info->add(entity);
+		SceneManager::Get().GetComponentRegistry().AddWithDependencies(entity, info->typeId);
 		return 1;
 	}
 
@@ -504,18 +539,13 @@ namespace Axiom {
 
 	// ── Scene ───────────────────────────────────────────────────────────
 
-	static const char* Axiom_Scene_GetActiveSceneName() {
-		AIM_BINDING_TRY {
-			Scene* scene = GetScene();
-			if (!scene) { s_StringReturnBuffer.clear(); return s_StringReturnBuffer.c_str(); }
-			s_StringReturnBuffer = scene->GetName();
-			return s_StringReturnBuffer.c_str();
-		} AIM_BINDING_CATCH("");
-	}
-
 	static int Axiom_Scene_GetActiveSceneNameBuffer(char* outBuffer, int capacity)
 	{
-		return CopyCStringToBuffer(Axiom_Scene_GetActiveSceneName(), outBuffer, capacity);
+		AIM_BINDING_TRY {
+			Scene* scene = GetScene();
+			if (!scene) return CopyCStringToBuffer("", outBuffer, capacity);
+			return CopyCStringToBuffer(scene->GetName().c_str(), outBuffer, capacity);
+		} AIM_BINDING_CATCH(CopyCStringToBuffer("", outBuffer, capacity));
 	}
 
 	static int CountSceneEntities(const Scene& scene) {
@@ -543,33 +573,26 @@ namespace Axiom {
 		return CountSceneEntities(*scene);
 	}
 
-	static const char* Axiom_Scene_GetEntityNameByUUID(uint64_t uuid) {
+	static int Axiom_Scene_GetEntityNameByUUIDBuffer(uint64_t uuid, char* outBuffer, int capacity)
+	{
 		Scene* scene = GetScene();
-		if (!scene) { s_StringReturnBuffer.clear(); return s_StringReturnBuffer.c_str(); }
+		if (!scene) return CopyCStringToBuffer("", outBuffer, capacity);
 
 		Scene* resolvedScene = nullptr;
 		EntityHandle resolvedHandle = entt::null;
 		if (ResolveEntityReference(uuid, resolvedScene, resolvedHandle)
 			&& resolvedScene
 			&& resolvedScene->HasComponent<NameComponent>(resolvedHandle)) {
-			s_StringReturnBuffer = resolvedScene->GetComponent<NameComponent>(resolvedHandle).Name;
-			return s_StringReturnBuffer.c_str();
+			return CopyCStringToBuffer(resolvedScene->GetComponent<NameComponent>(resolvedHandle).Name.c_str(), outBuffer, capacity);
 		}
 
 		auto view = scene->GetRegistry().view<UUIDComponent, NameComponent>();
 		for (auto [ent, uuidComp, nameComp] : view.each()) {
 			if (static_cast<uint64_t>(uuidComp.Id) == uuid) {
-				s_StringReturnBuffer = nameComp.Name;
-				return s_StringReturnBuffer.c_str();
+				return CopyCStringToBuffer(nameComp.Name.c_str(), outBuffer, capacity);
 			}
 		}
-		s_StringReturnBuffer.clear();
-		return s_StringReturnBuffer.c_str();
-	}
-
-	static int Axiom_Scene_GetEntityNameByUUIDBuffer(uint64_t uuid, char* outBuffer, int capacity)
-	{
-		return CopyCStringToBuffer(Axiom_Scene_GetEntityNameByUUID(uuid), outBuffer, capacity);
+		return CopyCStringToBuffer("", outBuffer, capacity);
 	}
 
 	static int LoadSceneByName(const char* sceneName, bool additive) {
@@ -641,20 +664,14 @@ namespace Axiom {
 		return static_cast<int>(SceneManager::Get().GetLoadedSceneCount());
 	}
 
-	static const char* Axiom_Scene_GetLoadedSceneNameAt(int index) {
+	static int Axiom_Scene_GetLoadedSceneNameAtBuffer(int index, char* outBuffer, int capacity)
+	{
 		if (index < 0) {
-			s_StringReturnBuffer.clear();
-			return s_StringReturnBuffer.c_str();
+			return CopyCStringToBuffer("", outBuffer, capacity);
 		}
 
 		const Scene* scene = SceneManager::Get().GetLoadedSceneAt(static_cast<size_t>(index));
-		s_StringReturnBuffer = scene ? scene->GetName() : "";
-		return s_StringReturnBuffer.c_str();
-	}
-
-	static int Axiom_Scene_GetLoadedSceneNameAtBuffer(int index, char* outBuffer, int capacity)
-	{
-		return CopyCStringToBuffer(Axiom_Scene_GetLoadedSceneNameAt(index), outBuffer, capacity);
+		return CopyCStringToBuffer(scene ? scene->GetName().c_str() : "", outBuffer, capacity);
 	}
 
 	// ── Scene Query ─────────────────────────────────────────────────────
@@ -733,30 +750,20 @@ namespace Axiom {
 		return AssetRegistry::GetOrCreateAssetUUID(path);
 	}
 
-	static const char* Axiom_Asset_GetPath(uint64_t assetId)
-	{
-		AIM_BINDING_TRY {
-			s_StringReturnBuffer = AssetRegistry::ResolvePath(assetId);
-			return s_StringReturnBuffer.c_str();
-		} AIM_BINDING_CATCH("");
-	}
-
 	static int Axiom_Asset_GetPathBuffer(uint64_t assetId, char* outBuffer, int capacity)
 	{
-		return CopyCStringToBuffer(Axiom_Asset_GetPath(assetId), outBuffer, capacity);
-	}
-
-	static const char* Axiom_Asset_GetDisplayName(uint64_t assetId)
-	{
 		AIM_BINDING_TRY {
-			s_StringReturnBuffer = AssetRegistry::GetDisplayName(assetId);
-			return s_StringReturnBuffer.c_str();
-		} AIM_BINDING_CATCH("");
+			const std::string path = AssetRegistry::ResolvePath(assetId);
+			return CopyCStringToBuffer(path.c_str(), outBuffer, capacity);
+		} AIM_BINDING_CATCH(CopyCStringToBuffer("", outBuffer, capacity));
 	}
 
 	static int Axiom_Asset_GetDisplayNameBuffer(uint64_t assetId, char* outBuffer, int capacity)
 	{
-		return CopyCStringToBuffer(Axiom_Asset_GetDisplayName(assetId), outBuffer, capacity);
+		AIM_BINDING_TRY {
+			const std::string name = AssetRegistry::GetDisplayName(assetId);
+			return CopyCStringToBuffer(name.c_str(), outBuffer, capacity);
+		} AIM_BINDING_CATCH(CopyCStringToBuffer("", outBuffer, capacity));
 	}
 
 	static int Axiom_Asset_GetKind(uint64_t assetId)
@@ -764,7 +771,7 @@ namespace Axiom {
 		return static_cast<int>(AssetRegistry::GetKind(assetId));
 	}
 
-	static const char* Axiom_Asset_FindAll(const char* pathPrefix, int kind)
+	static int Axiom_Asset_FindAllBuffer(const char* pathPrefix, int kind, char* outBuffer, int capacity)
 	{
 		AIM_BINDING_TRY {
 			Json::Value ids = Json::Value::MakeArray();
@@ -774,14 +781,9 @@ namespace Axiom {
 				ids.Append(Json::Value(std::to_string(record.Id)));
 			}
 
-			s_StringReturnBuffer = Json::Stringify(ids, false);
-			return s_StringReturnBuffer.c_str();
-		} AIM_BINDING_CATCH("[]");
-	}
-
-	static int Axiom_Asset_FindAllBuffer(const char* pathPrefix, int kind, char* outBuffer, int capacity)
-	{
-		return CopyCStringToBuffer(Axiom_Asset_FindAll(pathPrefix, kind), outBuffer, capacity);
+			const std::string serialized = Json::Stringify(ids, false);
+			return CopyCStringToBuffer(serialized.c_str(), outBuffer, capacity);
+		} AIM_BINDING_CATCH(CopyCStringToBuffer("[]", outBuffer, capacity));
 	}
 
 	static int Axiom_Texture_LoadAsset(uint64_t assetId)
@@ -924,22 +926,15 @@ namespace Axiom {
 
 	// ── NameComponent ───────────────────────────────────────────────────
 
-	static const char* Axiom_NameComponent_GetName(uint64_t entityID)
+	static int Axiom_NameComponent_GetNameBuffer(uint64_t entityID, char* outBuffer, int capacity)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle) || !scene->HasComponent<NameComponent>(handle)) {
-			s_StringReturnBuffer.clear();
-			return s_StringReturnBuffer.c_str();
+			return CopyCStringToBuffer("", outBuffer, capacity);
 		}
 
-		s_StringReturnBuffer = scene->GetComponent<NameComponent>(handle).Name;
-		return s_StringReturnBuffer.c_str();
-	}
-
-	static int Axiom_NameComponent_GetNameBuffer(uint64_t entityID, char* outBuffer, int capacity)
-	{
-		return CopyCStringToBuffer(Axiom_NameComponent_GetName(entityID), outBuffer, capacity);
+		return CopyCStringToBuffer(scene->GetComponent<NameComponent>(handle).Name.c_str(), outBuffer, capacity);
 	}
 
 	static void Axiom_NameComponent_SetName(uint64_t entityID, const char* name)
@@ -1177,21 +1172,14 @@ namespace Axiom {
 
 	// ── TextRenderer ────────────────────────────────────────────────────
 
-	static const char* Axiom_TextRenderer_GetText(uint64_t entityID)
+	static int Axiom_TextRenderer_GetTextBuffer(uint64_t entityID, char* outBuffer, int capacity)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle) || !scene->HasComponent<TextRendererComponent>(handle)) {
-			s_StringReturnBuffer.clear();
-			return s_StringReturnBuffer.c_str();
+			return CopyCStringToBuffer("", outBuffer, capacity);
 		}
-		s_StringReturnBuffer = scene->GetComponent<TextRendererComponent>(handle).Text;
-		return s_StringReturnBuffer.c_str();
-	}
-
-	static int Axiom_TextRenderer_GetTextBuffer(uint64_t entityID, char* outBuffer, int capacity)
-	{
-		return CopyCStringToBuffer(Axiom_TextRenderer_GetText(entityID), outBuffer, capacity);
+		return CopyCStringToBuffer(scene->GetComponent<TextRendererComponent>(handle).Text.c_str(), outBuffer, capacity);
 	}
 
 	static void Axiom_TextRenderer_SetText(uint64_t entityID, const char* text)
@@ -1271,6 +1259,30 @@ namespace Axiom {
 	{
 		GET_COMPONENT(TextRendererComponent, entityID, );
 		comp.HAlign = static_cast<TextAlignment>(align);
+	}
+
+	static int Axiom_TextRenderer_GetWrapMode(uint64_t entityID)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, 0);
+		return static_cast<int>(comp.WrapMode);
+	}
+
+	static void Axiom_TextRenderer_SetWrapMode(uint64_t entityID, int mode)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.WrapMode = static_cast<TextWrapMode>(mode);
+	}
+
+	static float Axiom_TextRenderer_GetWrapWidth(uint64_t entityID)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, 0.0f);
+		return comp.WrapWidth;
+	}
+
+	static void Axiom_TextRenderer_SetWrapWidth(uint64_t entityID, float width)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.WrapWidth = width;
 	}
 
 	static int Axiom_TextRenderer_GetSortingOrder(uint64_t entityID)
@@ -1882,13 +1894,19 @@ namespace Axiom {
 		GET_COMPONENT(RectTransform2DComponent, entityID, );
 		comp.SizeDelta = { x, y };
 	}
+	// Get* returns the world (resolved) value written by UILayoutSystem;
+	// Set* writes the authored Local* value. Mirrors the Transform2D
+	// pattern — for a root rect Local and world match, but for a parented
+	// rect "set Rotation = 0" should mean "axis-align this rect inside
+	// its parent", not "wipe ancestors' rotations". Writes to the world
+	// field would be overwritten on the next layout pass anyway.
 	static float Axiom_RectTransform_GetRotation(uint64_t entityID) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, 0.0f);
 		return comp.Rotation;
 	}
 	static void Axiom_RectTransform_SetRotation(uint64_t entityID, float rotation) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, );
-		comp.Rotation = rotation;
+		comp.LocalRotation = rotation;
 	}
 	static void Axiom_RectTransform_GetScale(uint64_t entityID, float* outX, float* outY) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 1.0f, *outY = 1.0f));
@@ -1896,7 +1914,23 @@ namespace Axiom {
 	}
 	static void Axiom_RectTransform_SetScale(uint64_t entityID, float x, float y) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, );
-		comp.Scale = { x, y };
+		comp.LocalScale = { x, y };
+	}
+	static float Axiom_RectTransform_GetLocalRotation(uint64_t entityID) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, 0.0f);
+		return comp.LocalRotation;
+	}
+	static void Axiom_RectTransform_SetLocalRotation(uint64_t entityID, float rotation) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.LocalRotation = rotation;
+	}
+	static void Axiom_RectTransform_GetLocalScale(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 1.0f, *outY = 1.0f));
+		*outX = comp.LocalScale.x; *outY = comp.LocalScale.y;
+	}
+	static void Axiom_RectTransform_SetLocalScale(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+		comp.LocalScale = { x, y };
 	}
 	static void Axiom_RectTransform_GetResolvedSize(uint64_t entityID, float* outW, float* outH) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outW = 0.0f, *outH = 0.0f));
@@ -1924,6 +1958,22 @@ namespace Axiom {
 		comp.TextureHandle = (assetId != 0)
 			? TextureManager::LoadTextureByUUID(assetId)
 			: TextureHandle{};
+	}
+	static int Axiom_Image_GetSortingOrder(uint64_t entityID) {
+		GET_COMPONENT(ImageComponent, entityID, 0);
+		return comp.SortingOrder;
+	}
+	static void Axiom_Image_SetSortingOrder(uint64_t entityID, int order) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		comp.SortingOrder = static_cast<int16_t>(order);
+	}
+	static int Axiom_Image_GetSortingLayer(uint64_t entityID) {
+		GET_COMPONENT(ImageComponent, entityID, 0);
+		return comp.SortingLayer;
+	}
+	static void Axiom_Image_SetSortingLayer(uint64_t entityID, int layer) {
+		GET_COMPONENT(ImageComponent, entityID, );
+		comp.SortingLayer = static_cast<uint8_t>(layer);
 	}
 
 	// ── UI: Interactable ────────────────────────────────────────────────
@@ -1956,24 +2006,211 @@ namespace Axiom {
 		GET_COMPONENT(InteractableComponent, entityID, 0);
 		return comp.IsMouseUp ? 1 : 0;
 	}
+	static int Axiom_Interactable_GetFocusable(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.Focusable ? 1 : 0;
+	}
+	static void Axiom_Interactable_SetFocusable(uint64_t entityID, int value) {
+		GET_COMPONENT(InteractableComponent, entityID, );
+		comp.Focusable = value != 0;
+		// When opting out at runtime, drop any leftover focus state so
+		// the next UIFocusSystem tick doesn't see a stale "I'm focused"
+		// flag on a non-focusable widget.
+		if (!comp.Focusable) {
+			comp.IsFocused = false;
+		}
+	}
+	static int Axiom_Interactable_GetIsFocused(uint64_t entityID) {
+		GET_COMPONENT(InteractableComponent, entityID, 0);
+		return comp.IsFocused ? 1 : 0;
+	}
+	static void Axiom_Interactable_SetIsFocused(uint64_t entityID, int value) {
+		GET_COMPONENT(InteractableComponent, entityID, );
+		// Programmatic focus is honoured for one frame. UIFocusSystem
+		// reconciles next tick — if the widget isn't Focusable, the
+		// flag will be cleared and IsFocused will drop back to false.
+		comp.IsFocused = (value != 0);
+	}
 
-	// ── UI: Button ──────────────────────────────────────────────────────
+	// ── UI: state-color bindings (Button / Toggle / Slider /
+	//       InputField / Dropdown) ─────────────────────────────────────
+	// Every interactable widget exposes the same Normal/Hovered/Pressed/
+	// Disabled palette to script. The macro generates one
+	// {get,set}-by-color-channel pair per (component, member) — channel-
+	// based marshaling matches how every other Color/Vector binding in
+	// this file talks to managed code, so we don't need a struct layout
+	// agreement with C# for `Color`.
 
-	#define BUTTON_COLOR_BINDING(MEMBER, GETTER, SETTER) \
+	#define WIDGET_COLOR_BINDING(COMP, MEMBER, GETTER, SETTER) \
 		static void GETTER(uint64_t entityID, float* r, float* g, float* b, float* a) { \
-			GET_COMPONENT(ButtonComponent, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1)); \
+			GET_COMPONENT(COMP, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1)); \
 			*r = comp.MEMBER.r; *g = comp.MEMBER.g; *b = comp.MEMBER.b; *a = comp.MEMBER.a; \
 		} \
 		static void SETTER(uint64_t entityID, float r, float g, float b, float a) { \
-			GET_COMPONENT(ButtonComponent, entityID, ); \
+			GET_COMPONENT(COMP, entityID, ); \
 			comp.MEMBER = Color{ r, g, b, a }; \
 		}
 
-	BUTTON_COLOR_BINDING(NormalColor,   Axiom_Button_GetNormalColor,   Axiom_Button_SetNormalColor)
-	BUTTON_COLOR_BINDING(HoveredColor,  Axiom_Button_GetHoveredColor,  Axiom_Button_SetHoveredColor)
-	BUTTON_COLOR_BINDING(PressedColor,  Axiom_Button_GetPressedColor,  Axiom_Button_SetPressedColor)
-	BUTTON_COLOR_BINDING(DisabledColor, Axiom_Button_GetDisabledColor, Axiom_Button_SetDisabledColor)
-	#undef BUTTON_COLOR_BINDING
+	WIDGET_COLOR_BINDING(ButtonComponent, NormalColor,   Axiom_Button_GetNormalColor,   Axiom_Button_SetNormalColor)
+	WIDGET_COLOR_BINDING(ButtonComponent, HoveredColor,  Axiom_Button_GetHoveredColor,  Axiom_Button_SetHoveredColor)
+	WIDGET_COLOR_BINDING(ButtonComponent, PressedColor,  Axiom_Button_GetPressedColor,  Axiom_Button_SetPressedColor)
+	WIDGET_COLOR_BINDING(ButtonComponent, DisabledColor, Axiom_Button_GetDisabledColor, Axiom_Button_SetDisabledColor)
+
+	WIDGET_COLOR_BINDING(SliderComponent, NormalColor,   Axiom_Slider_GetNormalColor,   Axiom_Slider_SetNormalColor)
+	WIDGET_COLOR_BINDING(SliderComponent, HoveredColor,  Axiom_Slider_GetHoveredColor,  Axiom_Slider_SetHoveredColor)
+	WIDGET_COLOR_BINDING(SliderComponent, PressedColor,  Axiom_Slider_GetPressedColor,  Axiom_Slider_SetPressedColor)
+	WIDGET_COLOR_BINDING(SliderComponent, DisabledColor, Axiom_Slider_GetDisabledColor, Axiom_Slider_SetDisabledColor)
+
+	WIDGET_COLOR_BINDING(ToggleComponent, NormalColor,   Axiom_Toggle_GetNormalColor,   Axiom_Toggle_SetNormalColor)
+	WIDGET_COLOR_BINDING(ToggleComponent, HoveredColor,  Axiom_Toggle_GetHoveredColor,  Axiom_Toggle_SetHoveredColor)
+	WIDGET_COLOR_BINDING(ToggleComponent, PressedColor,  Axiom_Toggle_GetPressedColor,  Axiom_Toggle_SetPressedColor)
+	WIDGET_COLOR_BINDING(ToggleComponent, DisabledColor, Axiom_Toggle_GetDisabledColor, Axiom_Toggle_SetDisabledColor)
+
+	WIDGET_COLOR_BINDING(InputFieldComponent, NormalColor,   Axiom_InputField_GetNormalColor,   Axiom_InputField_SetNormalColor)
+	WIDGET_COLOR_BINDING(InputFieldComponent, HoveredColor,  Axiom_InputField_GetHoveredColor,  Axiom_InputField_SetHoveredColor)
+	WIDGET_COLOR_BINDING(InputFieldComponent, PressedColor,  Axiom_InputField_GetPressedColor,  Axiom_InputField_SetPressedColor)
+	WIDGET_COLOR_BINDING(InputFieldComponent, DisabledColor, Axiom_InputField_GetDisabledColor, Axiom_InputField_SetDisabledColor)
+
+	WIDGET_COLOR_BINDING(DropdownComponent, NormalColor,   Axiom_Dropdown_GetNormalColor,   Axiom_Dropdown_SetNormalColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, HoveredColor,  Axiom_Dropdown_GetHoveredColor,  Axiom_Dropdown_SetHoveredColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, PressedColor,  Axiom_Dropdown_GetPressedColor,  Axiom_Dropdown_SetPressedColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, DisabledColor, Axiom_Dropdown_GetDisabledColor, Axiom_Dropdown_SetDisabledColor)
+
+	// Optional focus-state tint — alpha == 0 sentinel = "skip", so
+	// scripts can read / write a fully-zeroed color to opt out of any
+	// visual focus indicator without affecting navigation.
+	WIDGET_COLOR_BINDING(ButtonComponent,    FocusedColor, Axiom_Button_GetFocusedColor,    Axiom_Button_SetFocusedColor)
+	WIDGET_COLOR_BINDING(ToggleComponent,    FocusedColor, Axiom_Toggle_GetFocusedColor,    Axiom_Toggle_SetFocusedColor)
+	WIDGET_COLOR_BINDING(SliderComponent,    FocusedColor, Axiom_Slider_GetFocusedColor,    Axiom_Slider_SetFocusedColor)
+	WIDGET_COLOR_BINDING(InputFieldComponent,FocusedColor, Axiom_InputField_GetFocusedColor,Axiom_InputField_SetFocusedColor)
+	WIDGET_COLOR_BINDING(DropdownComponent,  FocusedColor, Axiom_Dropdown_GetFocusedColor,  Axiom_Dropdown_SetFocusedColor)
+	#undef WIDGET_COLOR_BINDING
+
+	// ── UI: TransitionMode + per-state sprite UUIDs ─────────────────
+	// Same approach as the color bindings — one (get,set) pair per
+	// (component, member) generated from a small macro pair so adding
+	// a new widget is one line per state.
+	#define WIDGET_TRANSITIONMODE_BINDING(COMP, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return static_cast<int>(comp.TransitionMode); \
+		} \
+		static void SETTER(uint64_t entityID, int mode) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.TransitionMode = static_cast<UITransitionMode>(mode); \
+		}
+
+	#define WIDGET_SPRITE_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static uint64_t GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0ull); \
+			return static_cast<uint64_t>(comp.MEMBER); \
+		} \
+		static void SETTER(uint64_t entityID, uint64_t uuid) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = UUID(uuid); \
+		}
+
+	WIDGET_TRANSITIONMODE_BINDING(ButtonComponent,    Axiom_Button_GetTransitionMode,    Axiom_Button_SetTransitionMode)
+	WIDGET_TRANSITIONMODE_BINDING(ToggleComponent,    Axiom_Toggle_GetTransitionMode,    Axiom_Toggle_SetTransitionMode)
+	WIDGET_TRANSITIONMODE_BINDING(SliderComponent,    Axiom_Slider_GetTransitionMode,    Axiom_Slider_SetTransitionMode)
+	WIDGET_TRANSITIONMODE_BINDING(InputFieldComponent,Axiom_InputField_GetTransitionMode,Axiom_InputField_SetTransitionMode)
+	WIDGET_TRANSITIONMODE_BINDING(DropdownComponent,  Axiom_Dropdown_GetTransitionMode,  Axiom_Dropdown_SetTransitionMode)
+
+	WIDGET_SPRITE_BINDING(ButtonComponent, NormalSprite,   Axiom_Button_GetNormalSprite,   Axiom_Button_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(ButtonComponent, HoveredSprite,  Axiom_Button_GetHoveredSprite,  Axiom_Button_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(ButtonComponent, PressedSprite,  Axiom_Button_GetPressedSprite,  Axiom_Button_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(ButtonComponent, DisabledSprite, Axiom_Button_GetDisabledSprite, Axiom_Button_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(ButtonComponent, FocusedSprite,  Axiom_Button_GetFocusedSprite,  Axiom_Button_SetFocusedSprite)
+
+	WIDGET_SPRITE_BINDING(ToggleComponent, NormalSprite,   Axiom_Toggle_GetNormalSprite,   Axiom_Toggle_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(ToggleComponent, HoveredSprite,  Axiom_Toggle_GetHoveredSprite,  Axiom_Toggle_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(ToggleComponent, PressedSprite,  Axiom_Toggle_GetPressedSprite,  Axiom_Toggle_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(ToggleComponent, DisabledSprite, Axiom_Toggle_GetDisabledSprite, Axiom_Toggle_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(ToggleComponent, FocusedSprite,  Axiom_Toggle_GetFocusedSprite,  Axiom_Toggle_SetFocusedSprite)
+
+	WIDGET_SPRITE_BINDING(SliderComponent, NormalSprite,   Axiom_Slider_GetNormalSprite,   Axiom_Slider_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(SliderComponent, HoveredSprite,  Axiom_Slider_GetHoveredSprite,  Axiom_Slider_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(SliderComponent, PressedSprite,  Axiom_Slider_GetPressedSprite,  Axiom_Slider_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(SliderComponent, DisabledSprite, Axiom_Slider_GetDisabledSprite, Axiom_Slider_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(SliderComponent, FocusedSprite,  Axiom_Slider_GetFocusedSprite,  Axiom_Slider_SetFocusedSprite)
+
+	WIDGET_SPRITE_BINDING(InputFieldComponent, NormalSprite,   Axiom_InputField_GetNormalSprite,   Axiom_InputField_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(InputFieldComponent, HoveredSprite,  Axiom_InputField_GetHoveredSprite,  Axiom_InputField_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(InputFieldComponent, PressedSprite,  Axiom_InputField_GetPressedSprite,  Axiom_InputField_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(InputFieldComponent, DisabledSprite, Axiom_InputField_GetDisabledSprite, Axiom_InputField_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(InputFieldComponent, FocusedSprite,  Axiom_InputField_GetFocusedSprite,  Axiom_InputField_SetFocusedSprite)
+
+	WIDGET_SPRITE_BINDING(DropdownComponent, NormalSprite,   Axiom_Dropdown_GetNormalSprite,   Axiom_Dropdown_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(DropdownComponent, HoveredSprite,  Axiom_Dropdown_GetHoveredSprite,  Axiom_Dropdown_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(DropdownComponent, PressedSprite,  Axiom_Dropdown_GetPressedSprite,  Axiom_Dropdown_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(DropdownComponent, DisabledSprite, Axiom_Dropdown_GetDisabledSprite, Axiom_Dropdown_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(DropdownComponent, FocusedSprite,  Axiom_Dropdown_GetFocusedSprite,  Axiom_Dropdown_SetFocusedSprite)
+	#undef WIDGET_TRANSITIONMODE_BINDING
+	#undef WIDGET_SPRITE_BINDING
+
+	// ── UI: IsReadOnly + entity-ref + popup-option-color bindings ──
+	// IsReadOnly applies to Toggle / Slider / Dropdown (InputField
+	// already has its own dedicated binding from earlier). Entity-ref
+	// fields marshal as the persistent UUID (the same encoding the
+	// editor's reference picker uses), so refs survive scene reload.
+	#define WIDGET_BOOL_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return comp.MEMBER ? 1 : 0; \
+		} \
+		static void SETTER(uint64_t entityID, int value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = (value != 0); \
+		}
+
+	#define WIDGET_ENTITYREF_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static uint64_t GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0ull); \
+			if (comp.MEMBER == entt::null) return 0ull; \
+			return scene->GetEntityPersistentID(comp.MEMBER); \
+		} \
+		static void SETTER(uint64_t entityID, uint64_t refUuid) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			if (refUuid == 0) { comp.MEMBER = entt::null; return; } \
+			EntityHandle resolved = entt::null; \
+			if (scene->TryResolveEntityRef(refUuid, resolved)) { \
+				comp.MEMBER = resolved; \
+			} \
+		}
+
+	WIDGET_BOOL_BINDING(ToggleComponent,   IsReadOnly, Axiom_Toggle_GetIsReadOnly,   Axiom_Toggle_SetIsReadOnly)
+	WIDGET_BOOL_BINDING(SliderComponent,   IsReadOnly, Axiom_Slider_GetIsReadOnly,   Axiom_Slider_SetIsReadOnly)
+	WIDGET_BOOL_BINDING(DropdownComponent, IsReadOnly, Axiom_Dropdown_GetIsReadOnly, Axiom_Dropdown_SetIsReadOnly)
+
+	WIDGET_ENTITYREF_BINDING(ButtonComponent,     TargetGraphic,    Axiom_Button_GetTargetGraphic,        Axiom_Button_SetTargetGraphic)
+	WIDGET_ENTITYREF_BINDING(SliderComponent,     FillEntity,       Axiom_Slider_GetFillEntity,           Axiom_Slider_SetFillEntity)
+	WIDGET_ENTITYREF_BINDING(SliderComponent,     HandleEntity,     Axiom_Slider_GetHandleEntity,         Axiom_Slider_SetHandleEntity)
+	WIDGET_ENTITYREF_BINDING(SliderComponent,     BackgroundEntity, Axiom_Slider_GetBackgroundEntity,     Axiom_Slider_SetBackgroundEntity)
+	WIDGET_ENTITYREF_BINDING(ToggleComponent,     CheckmarkEntity,  Axiom_Toggle_GetCheckmarkEntity,      Axiom_Toggle_SetCheckmarkEntity)
+	WIDGET_ENTITYREF_BINDING(InputFieldComponent, TextEntity,       Axiom_InputField_GetTextEntity,       Axiom_InputField_SetTextEntity)
+	WIDGET_ENTITYREF_BINDING(DropdownComponent,   LabelEntity,      Axiom_Dropdown_GetLabelEntity,        Axiom_Dropdown_SetLabelEntity)
+
+	// New per-state popup option colors. Reuse the existing color
+	// macro so the marshalling shape stays identical.
+	#define WIDGET_COLOR_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static void GETTER(uint64_t entityID, float* r, float* g, float* b, float* a) { \
+			GET_COMPONENT(COMP, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1)); \
+			*r = comp.MEMBER.r; *g = comp.MEMBER.g; *b = comp.MEMBER.b; *a = comp.MEMBER.a; \
+		} \
+		static void SETTER(uint64_t entityID, float r, float g, float b, float a) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = Color{ r, g, b, a }; \
+		}
+
+	WIDGET_COLOR_BINDING(DropdownComponent, OptionNormalColor,    Axiom_Dropdown_GetOptionNormalColor,    Axiom_Dropdown_SetOptionNormalColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, OptionHoverColor,     Axiom_Dropdown_GetOptionHoverColor,     Axiom_Dropdown_SetOptionHoverColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, OptionPressedColor,   Axiom_Dropdown_GetOptionPressedColor,   Axiom_Dropdown_SetOptionPressedColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, OptionSelectedColor,  Axiom_Dropdown_GetOptionSelectedColor,  Axiom_Dropdown_SetOptionSelectedColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, PopupBackgroundColor, Axiom_Dropdown_GetPopupBackgroundColor, Axiom_Dropdown_SetPopupBackgroundColor)
+	WIDGET_COLOR_BINDING(DropdownComponent, OptionTextColor,      Axiom_Dropdown_GetOptionTextColor,      Axiom_Dropdown_SetOptionTextColor)
+	#undef WIDGET_COLOR_BINDING
+	#undef WIDGET_BOOL_BINDING
+	#undef WIDGET_ENTITYREF_BINDING
 
 	// ── UI: Slider ──────────────────────────────────────────────────────
 
@@ -2013,6 +2250,16 @@ namespace Axiom {
 		GET_COMPONENT(SliderComponent, entityID, 0);
 		return comp.ValueChangedThisFrame ? 1 : 0;
 	}
+	// Snapshot Value into LastObservedValue so the next UIEventSystem
+	// tick's diff sees no change and skips firing OnValueChanged.
+	// Called from C# Slider.SetValue right before its immediate-fire
+	// path so a programmatic change with notifyEvent=true doesn't
+	// double up via the diff one frame later.
+	static void Axiom_Slider_MarkValueObserved(uint64_t entityID) {
+		GET_COMPONENT(SliderComponent, entityID, );
+		comp.LastObservedValue = comp.Value;
+		comp.ValueObserved = true;
+	}
 
 	// ── UI: Toggle ──────────────────────────────────────────────────────
 
@@ -2027,6 +2274,12 @@ namespace Axiom {
 	static int Axiom_Toggle_GetValueChangedThisFrame(uint64_t entityID) {
 		GET_COMPONENT(ToggleComponent, entityID, 0);
 		return comp.ValueChangedThisFrame ? 1 : 0;
+	}
+	// See Axiom_Slider_MarkValueObserved — same role for Toggle.IsOn.
+	static void Axiom_Toggle_MarkIsOnObserved(uint64_t entityID) {
+		GET_COMPONENT(ToggleComponent, entityID, );
+		comp.LastObservedIsOn = comp.IsOn;
+		comp.ValueObserved = true;
 	}
 
 	// ── UI: InputField ──────────────────────────────────────────────────
@@ -2090,6 +2343,12 @@ namespace Axiom {
 		GET_COMPONENT(DropdownComponent, entityID, 0);
 		return comp.SelectionChangedThisFrame ? 1 : 0;
 	}
+	// See Axiom_Slider_MarkValueObserved — same role for Dropdown.SelectedIndex.
+	static void Axiom_Dropdown_MarkSelectedIndexObserved(uint64_t entityID) {
+		GET_COMPONENT(DropdownComponent, entityID, );
+		comp.LastObservedSelectedIndex = comp.SelectedIndex;
+		comp.SelectionObserved = true;
+	}
 	static int Axiom_Dropdown_GetOptionCount(uint64_t entityID) {
 		GET_COMPONENT(DropdownComponent, entityID, 0);
 		return static_cast<int>(comp.Options.size());
@@ -2137,18 +2396,20 @@ namespace Axiom {
 		b.Entity_HasComponent = &Axiom_Entity_HasComponent;
 		b.Entity_AddComponent = &Axiom_Entity_AddComponent;
 		b.Entity_RemoveComponent = &Axiom_Entity_RemoveComponent;
-		// Deprecated: legacy non-buffer slot returns a pointer to a static thread-local
-		// scratch buffer that races across calls. Managed code only uses the *Buffer
-		// variant; keep wired commented-out so this trap is never set again.
-		// b.Entity_GetManagedComponentFields = &Axiom_Entity_GetManagedComponentFields;
+		// Note: legacy non-buffer string slots (Entity_GetManagedComponentFields,
+		// NameComponent_GetName, TextRenderer_GetText, Asset_GetPath/DisplayName/FindAll,
+		// Scene_GetActiveSceneName/EntityNameByUUID/LoadedSceneNameAt) were removed
+		// from both NativeBindings (C++) and NativeBindingsStruct (C#) — they returned
+		// a pointer to a thread-local scratch buffer that raced across calls. Managed
+		// code only ever used the *Buffer variants. Don't reintroduce the unbuffered
+		// slots without a thread-safe scheme.
 		b.Entity_GetManagedComponentFieldsBuffer = &Axiom_Entity_GetManagedComponentFieldsBuffer;
 		b.Entity_GetIsStatic = &Axiom_Entity_GetIsStatic;
 		b.Entity_SetIsStatic = &Axiom_Entity_SetIsStatic;
-		b.Entity_GetIsEnabled = &Axiom_Entity_GetIsEnabled;
-		b.Entity_SetIsEnabled = &Axiom_Entity_SetIsEnabled;
+		b.Entity_GetIsEnabled            = &Axiom_Entity_GetIsEnabled;
+		b.Entity_GetIsEnabledInHierarchy = &Axiom_Entity_GetIsEnabledInHierarchy;
+		b.Entity_SetIsEnabled            = &Axiom_Entity_SetIsEnabled;
 
-		// Deprecated: legacy non-buffer string slot — see Entity_GetManagedComponentFields above.
-		// b.NameComponent_GetName = &Axiom_NameComponent_GetName;
 		b.NameComponent_GetNameBuffer = &Axiom_NameComponent_GetNameBuffer;
 		b.NameComponent_SetName = &Axiom_NameComponent_SetName;
 
@@ -2180,8 +2441,6 @@ namespace Axiom {
 		b.SpriteRenderer_GetSortingLayer = &Axiom_SpriteRenderer_GetSortingLayer;
 		b.SpriteRenderer_SetSortingLayer = &Axiom_SpriteRenderer_SetSortingLayer;
 
-		// Deprecated: legacy non-buffer string slot — see Entity_GetManagedComponentFields above.
-		// b.TextRenderer_GetText = &Axiom_TextRenderer_GetText;
 		b.TextRenderer_GetTextBuffer = &Axiom_TextRenderer_GetTextBuffer;
 		b.TextRenderer_SetText = &Axiom_TextRenderer_SetText;
 		b.TextRenderer_GetFont = &Axiom_TextRenderer_GetFont;
@@ -2194,6 +2453,10 @@ namespace Axiom {
 		b.TextRenderer_SetLetterSpacing = &Axiom_TextRenderer_SetLetterSpacing;
 		b.TextRenderer_GetHAlign = &Axiom_TextRenderer_GetHAlign;
 		b.TextRenderer_SetHAlign = &Axiom_TextRenderer_SetHAlign;
+		b.TextRenderer_GetWrapMode = &Axiom_TextRenderer_GetWrapMode;
+		b.TextRenderer_SetWrapMode = &Axiom_TextRenderer_SetWrapMode;
+		b.TextRenderer_GetWrapWidth = &Axiom_TextRenderer_GetWrapWidth;
+		b.TextRenderer_SetWrapWidth = &Axiom_TextRenderer_SetWrapWidth;
 		b.TextRenderer_GetSortingOrder = &Axiom_TextRenderer_GetSortingOrder;
 		b.TextRenderer_SetSortingOrder = &Axiom_TextRenderer_SetSortingOrder;
 		b.TextRenderer_GetSortingLayer = &Axiom_TextRenderer_GetSortingLayer;
@@ -2271,8 +2534,6 @@ namespace Axiom {
 		b.FastCircleCollider2D_GetRadius = &Axiom_FastCircleCollider2D_GetRadius;
 		b.FastCircleCollider2D_SetRadius = &Axiom_FastCircleCollider2D_SetRadius;
 
-		// Deprecated: legacy non-buffer string slot — see Entity_GetManagedComponentFields above.
-		// b.Scene_GetActiveSceneName = &Axiom_Scene_GetActiveSceneName;
 		b.Scene_GetActiveSceneNameBuffer = &Axiom_Scene_GetActiveSceneNameBuffer;
 		b.Scene_GetEntityCount = &Axiom_Scene_GetEntityCount;
 		b.Scene_GetEntityCountByName = &Axiom_Scene_GetEntityCountByName;
@@ -2285,10 +2546,7 @@ namespace Axiom {
 		b.Scene_SetGlobalSystemEnabled = &Axiom_Scene_SetGlobalSystemEnabled;
 		b.Scene_DoesSceneExist = &Axiom_Scene_DoesSceneExist;
 		b.Scene_GetLoadedCount = &Axiom_Scene_GetLoadedCount;
-		b.Scene_GetLoadedSceneNameAt = &Axiom_Scene_GetLoadedSceneNameAt;
 		b.Scene_GetLoadedSceneNameAtBuffer = &Axiom_Scene_GetLoadedSceneNameAtBuffer;
-		// Deprecated: legacy non-buffer string slot — see Entity_GetManagedComponentFields above.
-		// b.Scene_GetEntityNameByUUID = &Axiom_Scene_GetEntityNameByUUID;
 		b.Scene_GetEntityNameByUUIDBuffer = &Axiom_Scene_GetEntityNameByUUIDBuffer;
 		b.Scene_QueryEntities = &Axiom_Scene_QueryEntities;
 		b.Scene_QueryEntitiesFiltered = &Axiom_Scene_QueryEntitiesFiltered;
@@ -2297,13 +2555,9 @@ namespace Axiom {
 
 		b.Asset_IsValid = &Axiom_Asset_IsValid;
 		b.Asset_GetOrCreateUUIDFromPath = &Axiom_Asset_GetOrCreateUUIDFromPath;
-		// Deprecated: legacy non-buffer string slots — see Entity_GetManagedComponentFields above.
-		// b.Asset_GetPath = &Axiom_Asset_GetPath;
 		b.Asset_GetPathBuffer = &Axiom_Asset_GetPathBuffer;
-		// b.Asset_GetDisplayName = &Axiom_Asset_GetDisplayName;
 		b.Asset_GetDisplayNameBuffer = &Axiom_Asset_GetDisplayNameBuffer;
 		b.Asset_GetKind = &Axiom_Asset_GetKind;
-		// b.Asset_FindAll = &Axiom_Asset_FindAll;
 		b.Asset_FindAllBuffer = &Axiom_Asset_FindAllBuffer;
 		b.Texture_LoadAsset = &Axiom_Texture_LoadAsset;
 		b.Texture_GetWidth = &Axiom_Texture_GetWidth;
@@ -2363,12 +2617,20 @@ namespace Axiom {
 		b.RectTransform_SetRotation         = &Axiom_RectTransform_SetRotation;
 		b.RectTransform_GetScale            = &Axiom_RectTransform_GetScale;
 		b.RectTransform_SetScale            = &Axiom_RectTransform_SetScale;
+		b.RectTransform_GetLocalRotation    = &Axiom_RectTransform_GetLocalRotation;
+		b.RectTransform_SetLocalRotation    = &Axiom_RectTransform_SetLocalRotation;
+		b.RectTransform_GetLocalScale       = &Axiom_RectTransform_GetLocalScale;
+		b.RectTransform_SetLocalScale       = &Axiom_RectTransform_SetLocalScale;
 		b.RectTransform_GetResolvedSize     = &Axiom_RectTransform_GetResolvedSize;
 
-		b.Image_GetColor   = &Axiom_Image_GetColor;
-		b.Image_SetColor   = &Axiom_Image_SetColor;
-		b.Image_GetTexture = &Axiom_Image_GetTexture;
-		b.Image_SetTexture = &Axiom_Image_SetTexture;
+		b.Image_GetColor        = &Axiom_Image_GetColor;
+		b.Image_SetColor        = &Axiom_Image_SetColor;
+		b.Image_GetTexture      = &Axiom_Image_GetTexture;
+		b.Image_SetTexture      = &Axiom_Image_SetTexture;
+		b.Image_GetSortingOrder = &Axiom_Image_GetSortingOrder;
+		b.Image_SetSortingOrder = &Axiom_Image_SetSortingOrder;
+		b.Image_GetSortingLayer = &Axiom_Image_GetSortingLayer;
+		b.Image_SetSortingLayer = &Axiom_Image_SetSortingLayer;
 
 		b.Interactable_GetInteractable = &Axiom_Interactable_GetInteractable;
 		b.Interactable_SetInteractable = &Axiom_Interactable_SetInteractable;
@@ -2377,6 +2639,10 @@ namespace Axiom {
 		b.Interactable_GetIsPressed    = &Axiom_Interactable_GetIsPressed;
 		b.Interactable_GetIsMouseDown  = &Axiom_Interactable_GetIsMouseDown;
 		b.Interactable_GetIsMouseUp    = &Axiom_Interactable_GetIsMouseUp;
+		b.Interactable_GetFocusable    = &Axiom_Interactable_GetFocusable;
+		b.Interactable_SetFocusable    = &Axiom_Interactable_SetFocusable;
+		b.Interactable_GetIsFocused    = &Axiom_Interactable_GetIsFocused;
+		b.Interactable_SetIsFocused    = &Axiom_Interactable_SetIsFocused;
 
 		b.Button_GetNormalColor   = &Axiom_Button_GetNormalColor;
 		b.Button_SetNormalColor   = &Axiom_Button_SetNormalColor;
@@ -2396,10 +2662,28 @@ namespace Axiom {
 		b.Slider_GetWholeNumbers          = &Axiom_Slider_GetWholeNumbers;
 		b.Slider_SetWholeNumbers          = &Axiom_Slider_SetWholeNumbers;
 		b.Slider_GetValueChangedThisFrame = &Axiom_Slider_GetValueChangedThisFrame;
+		b.Slider_MarkValueObserved        = &Axiom_Slider_MarkValueObserved;
+		b.Slider_GetNormalColor   = &Axiom_Slider_GetNormalColor;
+		b.Slider_SetNormalColor   = &Axiom_Slider_SetNormalColor;
+		b.Slider_GetHoveredColor  = &Axiom_Slider_GetHoveredColor;
+		b.Slider_SetHoveredColor  = &Axiom_Slider_SetHoveredColor;
+		b.Slider_GetPressedColor  = &Axiom_Slider_GetPressedColor;
+		b.Slider_SetPressedColor  = &Axiom_Slider_SetPressedColor;
+		b.Slider_GetDisabledColor = &Axiom_Slider_GetDisabledColor;
+		b.Slider_SetDisabledColor = &Axiom_Slider_SetDisabledColor;
 
 		b.Toggle_GetIsOn                  = &Axiom_Toggle_GetIsOn;
 		b.Toggle_SetIsOn                  = &Axiom_Toggle_SetIsOn;
 		b.Toggle_GetValueChangedThisFrame = &Axiom_Toggle_GetValueChangedThisFrame;
+		b.Toggle_MarkIsOnObserved         = &Axiom_Toggle_MarkIsOnObserved;
+		b.Toggle_GetNormalColor   = &Axiom_Toggle_GetNormalColor;
+		b.Toggle_SetNormalColor   = &Axiom_Toggle_SetNormalColor;
+		b.Toggle_GetHoveredColor  = &Axiom_Toggle_GetHoveredColor;
+		b.Toggle_SetHoveredColor  = &Axiom_Toggle_SetHoveredColor;
+		b.Toggle_GetPressedColor  = &Axiom_Toggle_GetPressedColor;
+		b.Toggle_SetPressedColor  = &Axiom_Toggle_SetPressedColor;
+		b.Toggle_GetDisabledColor = &Axiom_Toggle_GetDisabledColor;
+		b.Toggle_SetDisabledColor = &Axiom_Toggle_SetDisabledColor;
 
 		b.InputField_GetTextBuffer            = &Axiom_InputField_GetTextBuffer;
 		b.InputField_SetText                  = &Axiom_InputField_SetText;
@@ -2410,18 +2694,147 @@ namespace Axiom {
 		b.InputField_GetSubmittedThisFrame    = &Axiom_InputField_GetSubmittedThisFrame;
 		b.InputField_GetCharacterLimit        = &Axiom_InputField_GetCharacterLimit;
 		b.InputField_SetCharacterLimit        = &Axiom_InputField_SetCharacterLimit;
+		b.InputField_GetNormalColor   = &Axiom_InputField_GetNormalColor;
+		b.InputField_SetNormalColor   = &Axiom_InputField_SetNormalColor;
+		b.InputField_GetHoveredColor  = &Axiom_InputField_GetHoveredColor;
+		b.InputField_SetHoveredColor  = &Axiom_InputField_SetHoveredColor;
+		b.InputField_GetPressedColor  = &Axiom_InputField_GetPressedColor;
+		b.InputField_SetPressedColor  = &Axiom_InputField_SetPressedColor;
+		b.InputField_GetDisabledColor = &Axiom_InputField_GetDisabledColor;
+		b.InputField_SetDisabledColor = &Axiom_InputField_SetDisabledColor;
 
 		b.Dropdown_GetSelectedIndex             = &Axiom_Dropdown_GetSelectedIndex;
 		b.Dropdown_SetSelectedIndex             = &Axiom_Dropdown_SetSelectedIndex;
 		b.Dropdown_GetIsOpen                    = &Axiom_Dropdown_GetIsOpen;
 		b.Dropdown_SetIsOpen                    = &Axiom_Dropdown_SetIsOpen;
 		b.Dropdown_GetSelectionChangedThisFrame = &Axiom_Dropdown_GetSelectionChangedThisFrame;
+		b.Dropdown_MarkSelectedIndexObserved    = &Axiom_Dropdown_MarkSelectedIndexObserved;
 		b.Dropdown_GetOptionCount               = &Axiom_Dropdown_GetOptionCount;
 		b.Dropdown_GetOptionBuffer              = &Axiom_Dropdown_GetOptionBuffer;
 		b.Dropdown_SetOption                    = &Axiom_Dropdown_SetOption;
 		b.Dropdown_AddOption                    = &Axiom_Dropdown_AddOption;
 		b.Dropdown_RemoveOption                 = &Axiom_Dropdown_RemoveOption;
 		b.Dropdown_ClearOptions                 = &Axiom_Dropdown_ClearOptions;
+		b.Dropdown_GetNormalColor   = &Axiom_Dropdown_GetNormalColor;
+		b.Dropdown_SetNormalColor   = &Axiom_Dropdown_SetNormalColor;
+		b.Dropdown_GetHoveredColor  = &Axiom_Dropdown_GetHoveredColor;
+		b.Dropdown_SetHoveredColor  = &Axiom_Dropdown_SetHoveredColor;
+		b.Dropdown_GetPressedColor  = &Axiom_Dropdown_GetPressedColor;
+		b.Dropdown_SetPressedColor  = &Axiom_Dropdown_SetPressedColor;
+		b.Dropdown_GetDisabledColor = &Axiom_Dropdown_GetDisabledColor;
+		b.Dropdown_SetDisabledColor = &Axiom_Dropdown_SetDisabledColor;
+
+		b.Button_GetFocusedColor    = &Axiom_Button_GetFocusedColor;
+		b.Button_SetFocusedColor    = &Axiom_Button_SetFocusedColor;
+		b.Toggle_GetFocusedColor    = &Axiom_Toggle_GetFocusedColor;
+		b.Toggle_SetFocusedColor    = &Axiom_Toggle_SetFocusedColor;
+		b.Slider_GetFocusedColor    = &Axiom_Slider_GetFocusedColor;
+		b.Slider_SetFocusedColor    = &Axiom_Slider_SetFocusedColor;
+		b.InputField_GetFocusedColor= &Axiom_InputField_GetFocusedColor;
+		b.InputField_SetFocusedColor= &Axiom_InputField_SetFocusedColor;
+		b.Dropdown_GetFocusedColor  = &Axiom_Dropdown_GetFocusedColor;
+		b.Dropdown_SetFocusedColor  = &Axiom_Dropdown_SetFocusedColor;
+
+		b.Button_GetTransitionMode     = &Axiom_Button_GetTransitionMode;
+		b.Button_SetTransitionMode     = &Axiom_Button_SetTransitionMode;
+		b.Toggle_GetTransitionMode     = &Axiom_Toggle_GetTransitionMode;
+		b.Toggle_SetTransitionMode     = &Axiom_Toggle_SetTransitionMode;
+		b.Slider_GetTransitionMode     = &Axiom_Slider_GetTransitionMode;
+		b.Slider_SetTransitionMode     = &Axiom_Slider_SetTransitionMode;
+		b.InputField_GetTransitionMode = &Axiom_InputField_GetTransitionMode;
+		b.InputField_SetTransitionMode = &Axiom_InputField_SetTransitionMode;
+		b.Dropdown_GetTransitionMode   = &Axiom_Dropdown_GetTransitionMode;
+		b.Dropdown_SetTransitionMode   = &Axiom_Dropdown_SetTransitionMode;
+
+		b.Button_GetNormalSprite   = &Axiom_Button_GetNormalSprite;
+		b.Button_SetNormalSprite   = &Axiom_Button_SetNormalSprite;
+		b.Button_GetHoveredSprite  = &Axiom_Button_GetHoveredSprite;
+		b.Button_SetHoveredSprite  = &Axiom_Button_SetHoveredSprite;
+		b.Button_GetPressedSprite  = &Axiom_Button_GetPressedSprite;
+		b.Button_SetPressedSprite  = &Axiom_Button_SetPressedSprite;
+		b.Button_GetDisabledSprite = &Axiom_Button_GetDisabledSprite;
+		b.Button_SetDisabledSprite = &Axiom_Button_SetDisabledSprite;
+		b.Button_GetFocusedSprite  = &Axiom_Button_GetFocusedSprite;
+		b.Button_SetFocusedSprite  = &Axiom_Button_SetFocusedSprite;
+
+		b.Toggle_GetNormalSprite   = &Axiom_Toggle_GetNormalSprite;
+		b.Toggle_SetNormalSprite   = &Axiom_Toggle_SetNormalSprite;
+		b.Toggle_GetHoveredSprite  = &Axiom_Toggle_GetHoveredSprite;
+		b.Toggle_SetHoveredSprite  = &Axiom_Toggle_SetHoveredSprite;
+		b.Toggle_GetPressedSprite  = &Axiom_Toggle_GetPressedSprite;
+		b.Toggle_SetPressedSprite  = &Axiom_Toggle_SetPressedSprite;
+		b.Toggle_GetDisabledSprite = &Axiom_Toggle_GetDisabledSprite;
+		b.Toggle_SetDisabledSprite = &Axiom_Toggle_SetDisabledSprite;
+		b.Toggle_GetFocusedSprite  = &Axiom_Toggle_GetFocusedSprite;
+		b.Toggle_SetFocusedSprite  = &Axiom_Toggle_SetFocusedSprite;
+
+		b.Slider_GetNormalSprite   = &Axiom_Slider_GetNormalSprite;
+		b.Slider_SetNormalSprite   = &Axiom_Slider_SetNormalSprite;
+		b.Slider_GetHoveredSprite  = &Axiom_Slider_GetHoveredSprite;
+		b.Slider_SetHoveredSprite  = &Axiom_Slider_SetHoveredSprite;
+		b.Slider_GetPressedSprite  = &Axiom_Slider_GetPressedSprite;
+		b.Slider_SetPressedSprite  = &Axiom_Slider_SetPressedSprite;
+		b.Slider_GetDisabledSprite = &Axiom_Slider_GetDisabledSprite;
+		b.Slider_SetDisabledSprite = &Axiom_Slider_SetDisabledSprite;
+		b.Slider_GetFocusedSprite  = &Axiom_Slider_GetFocusedSprite;
+		b.Slider_SetFocusedSprite  = &Axiom_Slider_SetFocusedSprite;
+
+		b.InputField_GetNormalSprite   = &Axiom_InputField_GetNormalSprite;
+		b.InputField_SetNormalSprite   = &Axiom_InputField_SetNormalSprite;
+		b.InputField_GetHoveredSprite  = &Axiom_InputField_GetHoveredSprite;
+		b.InputField_SetHoveredSprite  = &Axiom_InputField_SetHoveredSprite;
+		b.InputField_GetPressedSprite  = &Axiom_InputField_GetPressedSprite;
+		b.InputField_SetPressedSprite  = &Axiom_InputField_SetPressedSprite;
+		b.InputField_GetDisabledSprite = &Axiom_InputField_GetDisabledSprite;
+		b.InputField_SetDisabledSprite = &Axiom_InputField_SetDisabledSprite;
+		b.InputField_GetFocusedSprite  = &Axiom_InputField_GetFocusedSprite;
+		b.InputField_SetFocusedSprite  = &Axiom_InputField_SetFocusedSprite;
+
+		b.Dropdown_GetNormalSprite   = &Axiom_Dropdown_GetNormalSprite;
+		b.Dropdown_SetNormalSprite   = &Axiom_Dropdown_SetNormalSprite;
+		b.Dropdown_GetHoveredSprite  = &Axiom_Dropdown_GetHoveredSprite;
+		b.Dropdown_SetHoveredSprite  = &Axiom_Dropdown_SetHoveredSprite;
+		b.Dropdown_GetPressedSprite  = &Axiom_Dropdown_GetPressedSprite;
+		b.Dropdown_SetPressedSprite  = &Axiom_Dropdown_SetPressedSprite;
+		b.Dropdown_GetDisabledSprite = &Axiom_Dropdown_GetDisabledSprite;
+		b.Dropdown_SetDisabledSprite = &Axiom_Dropdown_SetDisabledSprite;
+		b.Dropdown_GetFocusedSprite  = &Axiom_Dropdown_GetFocusedSprite;
+		b.Dropdown_SetFocusedSprite  = &Axiom_Dropdown_SetFocusedSprite;
+
+		b.Toggle_GetIsReadOnly   = &Axiom_Toggle_GetIsReadOnly;
+		b.Toggle_SetIsReadOnly   = &Axiom_Toggle_SetIsReadOnly;
+		b.Slider_GetIsReadOnly   = &Axiom_Slider_GetIsReadOnly;
+		b.Slider_SetIsReadOnly   = &Axiom_Slider_SetIsReadOnly;
+		b.Dropdown_GetIsReadOnly = &Axiom_Dropdown_GetIsReadOnly;
+		b.Dropdown_SetIsReadOnly = &Axiom_Dropdown_SetIsReadOnly;
+
+		b.Button_GetTargetGraphic     = &Axiom_Button_GetTargetGraphic;
+		b.Button_SetTargetGraphic     = &Axiom_Button_SetTargetGraphic;
+		b.Slider_GetFillEntity        = &Axiom_Slider_GetFillEntity;
+		b.Slider_SetFillEntity        = &Axiom_Slider_SetFillEntity;
+		b.Slider_GetHandleEntity      = &Axiom_Slider_GetHandleEntity;
+		b.Slider_SetHandleEntity      = &Axiom_Slider_SetHandleEntity;
+		b.Slider_GetBackgroundEntity  = &Axiom_Slider_GetBackgroundEntity;
+		b.Slider_SetBackgroundEntity  = &Axiom_Slider_SetBackgroundEntity;
+		b.Toggle_GetCheckmarkEntity   = &Axiom_Toggle_GetCheckmarkEntity;
+		b.Toggle_SetCheckmarkEntity   = &Axiom_Toggle_SetCheckmarkEntity;
+		b.InputField_GetTextEntity    = &Axiom_InputField_GetTextEntity;
+		b.InputField_SetTextEntity    = &Axiom_InputField_SetTextEntity;
+		b.Dropdown_GetLabelEntity     = &Axiom_Dropdown_GetLabelEntity;
+		b.Dropdown_SetLabelEntity     = &Axiom_Dropdown_SetLabelEntity;
+
+		b.Dropdown_GetOptionNormalColor   = &Axiom_Dropdown_GetOptionNormalColor;
+		b.Dropdown_SetOptionNormalColor   = &Axiom_Dropdown_SetOptionNormalColor;
+		b.Dropdown_GetOptionHoverColor    = &Axiom_Dropdown_GetOptionHoverColor;
+		b.Dropdown_SetOptionHoverColor    = &Axiom_Dropdown_SetOptionHoverColor;
+		b.Dropdown_GetOptionPressedColor  = &Axiom_Dropdown_GetOptionPressedColor;
+		b.Dropdown_SetOptionPressedColor  = &Axiom_Dropdown_SetOptionPressedColor;
+		b.Dropdown_GetOptionSelectedColor = &Axiom_Dropdown_GetOptionSelectedColor;
+		b.Dropdown_SetOptionSelectedColor = &Axiom_Dropdown_SetOptionSelectedColor;
+		b.Dropdown_GetPopupBackgroundColor = &Axiom_Dropdown_GetPopupBackgroundColor;
+		b.Dropdown_SetPopupBackgroundColor = &Axiom_Dropdown_SetPopupBackgroundColor;
+		b.Dropdown_GetOptionTextColor      = &Axiom_Dropdown_GetOptionTextColor;
+		b.Dropdown_SetOptionTextColor      = &Axiom_Dropdown_SetOptionTextColor;
 	}
 
 } // namespace Axiom

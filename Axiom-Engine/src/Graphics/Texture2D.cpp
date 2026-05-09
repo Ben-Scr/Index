@@ -38,6 +38,16 @@ namespace Axiom {
 		m_Tex = o.m_Tex; o.m_Tex = 0;
 		m_Width = o.m_Width; m_Height = o.m_Height; m_Channels = o.m_Channels;
 		m_Filter = o.m_Filter; m_WrapU = o.m_WrapU; m_WrapV = o.m_WrapV; m_HasMips = o.m_HasMips;
+		// Zero the source's metadata + sampler state so a moved-from
+		// Texture2D doesn't observably retain dimensions or sampler bits
+		// from the old GL handle. The handle itself is already zeroed
+		// above; matching the rest keeps Destroy() and IsValid() coherent
+		// on the moved-from instance.
+		o.m_Width = 0; o.m_Height = 0; o.m_Channels = 0;
+		o.m_Filter = Filter::Point;
+		o.m_WrapU = Wrap::Clamp;
+		o.m_WrapV = Wrap::Clamp;
+		o.m_HasMips = true;
 	}
 
 	Texture2D& Texture2D::operator=(Texture2D&& o) noexcept {
@@ -46,6 +56,13 @@ namespace Axiom {
 			m_Tex = o.m_Tex; o.m_Tex = 0;
 			m_Width = o.m_Width; m_Height = o.m_Height; m_Channels = o.m_Channels;
 			m_Filter = o.m_Filter; m_WrapU = o.m_WrapU; m_WrapV = o.m_WrapV; m_HasMips = o.m_HasMips;
+			// See move ctor: zero source metadata + sampler state so the
+			// moved-from instance doesn't keep stale values around.
+			o.m_Width = 0; o.m_Height = 0; o.m_Channels = 0;
+			o.m_Filter = Filter::Point;
+			o.m_WrapU = Wrap::Clamp;
+			o.m_WrapV = Wrap::Clamp;
+			o.m_HasMips = true;
 		}
 		return *this;
 	}
@@ -151,6 +168,13 @@ namespace Axiom {
 
 	void Texture2D::ApplySamplerParams() const {
 		if (!m_Tex) return;
+		// Save the currently bound texture on unit 0 so we can restore it
+		// when we're done. Previously this method ended with glBindTexture(..., 0)
+		// which silently unbinds whatever the caller had bound — e.g. a Submit()
+		// followed by SetFilter() inside the same draw setup would lose the
+		// caller's binding without warning.
+		GLint savedBinding = 0;
+		glGetIntegerv(GL_TEXTURE_BINDING_2D, &savedBinding);
 		glBindTexture(GL_TEXTURE_2D, m_Tex);
 
 		auto wrapU = static_cast<GLint>(m_WrapU);
@@ -195,7 +219,7 @@ namespace Axiom {
 #endif
 		}
 
-		glBindTexture(GL_TEXTURE_2D, 0);
+		glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(savedBinding));
 	}
 
 	void Texture2D::Submit(uint8_t unit) const {

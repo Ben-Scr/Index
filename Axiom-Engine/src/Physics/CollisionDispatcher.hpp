@@ -120,49 +120,107 @@ namespace Axiom {
 			const ContactStayCallback& onStay = {}) {
 			b2ContactEvents ev = b2World_GetContactEvents(world);
 
-			// Callbacks may destroy entities and re-enter UnregisterShape; DispatchSafe snapshots first.
+			// SNAPSHOT PHASE — resolve every event's entity / scene / contact-point
+			// data BEFORE running any user callback. A user callback in DispatchSafe
+			// may destroy entities, which invalidates the b2ShapeId / b2BodyId that
+			// later events would otherwise dereference via b2Shape_GetBody. Resolving
+			// up front means the dispatch loop only touches our pre-resolved Collision2D
+			// values; raw box2d ids are never read after the first user callback fires.
+			//
+			// The Pending* vectors are member-cached so the steady-state allocation
+			// cost is zero — clear() preserves capacity across frames.
+			m_pendingBegin.clear();
+			m_pendingEnd.clear();
+			m_pendingHit.clear();
+			m_pendingBegin.reserve(ev.beginCount);
+			m_pendingEnd.reserve(ev.endCount);
+			m_pendingHit.reserve(ev.hitCount);
+
 			for (int i = 0; i < ev.beginCount; ++i) {
 				auto& e = ev.beginEvents[i];
-				auto collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape);
+				if (!b2Shape_IsValid(e.shapeIdA) || !b2Shape_IsValid(e.shapeIdB)) continue;
+				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape);
 				m_activeContacts[MakeContactKey(e.shapeIdA, e.shapeIdB)] = { e.shapeIdA, e.shapeIdB, collision2D };
-				if (onBegin) onBegin(collision2D);
-				DispatchSafe(e.shapeIdA, collision2D, m_begin);
-				DispatchSafe(e.shapeIdB, collision2D, m_begin);
+				m_pendingBegin.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
 			}
 
 			for (int i = 0; i < ev.endCount; ++i) {
 				auto& e = ev.endEvents[i];
-				auto collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape);
 				const ContactKey key = MakeContactKey(e.shapeIdA, e.shapeIdB);
+				Collision2D collision2D;
 				if (auto active = m_activeContacts.find(key); active != m_activeContacts.end()) {
 					collision2D = active->second.Collision;
 					m_activeContacts.erase(active);
 				}
-				if (onEnd) onEnd(collision2D);
-				DispatchSafe(e.shapeIdA, collision2D, m_end);
-				DispatchSafe(e.shapeIdB, collision2D, m_end);
+				else if (b2Shape_IsValid(e.shapeIdA) && b2Shape_IsValid(e.shapeIdB)) {
+					collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape);
+				}
+				else {
+					// Both shapes already invalid and no cached active contact —
+					// nothing safe to dispatch.
+					continue;
+				}
+				m_pendingEnd.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
 			}
 
 			for (int i = 0; i < ev.hitCount; ++i) {
 				auto& e = ev.hitEvents[i];
-				auto collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape, Vec2{ e.point.x, e.point.y });
+				if (!b2Shape_IsValid(e.shapeIdA) || !b2Shape_IsValid(e.shapeIdB)) continue;
+				Collision2D collision2D = MakeCollision(e.shapeIdA, e.shapeIdB, resolveShape, Vec2{ e.point.x, e.point.y });
 				const ContactKey key = MakeContactKey(e.shapeIdA, e.shapeIdB);
 				if (auto active = m_activeContacts.find(key); active != m_activeContacts.end()) {
 					active->second.Collision.contactPoint = collision2D.contactPoint;
 				}
-				DispatchSafe(e.shapeIdA, collision2D, m_hit);
-				DispatchSafe(e.shapeIdB, collision2D, m_hit);
+				m_pendingHit.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
+			}
+
+			// Snapshot stay events too — m_activeContacts can be mutated by Begin/End
+			// dispatch callbacks (which may destroy entities and re-enter
+			// UnregisterShape), so we materialize the values now.
+			m_pendingStay.clear();
+			if (onStay) {
+				m_pendingStay.reserve(m_activeContacts.size());
+				for (const auto& [_, active] : m_activeContacts) {
+					m_pendingStay.push_back(active.Collision);
+				}
+			}
+
+			// DISPATCH PHASE — only touches pre-resolved data. Even if a user callback
+			// destroys entities, the resolved Collision2D values are already snapshotted.
+			for (const PendingDispatch& p : m_pendingBegin) {
+				if (onBegin) onBegin(p.Collision);
+				DispatchSafe(p.ShapeA, p.Collision, m_begin);
+				DispatchSafe(p.ShapeB, p.Collision, m_begin);
+			}
+
+			for (const PendingDispatch& p : m_pendingEnd) {
+				if (onEnd) onEnd(p.Collision);
+				DispatchSafe(p.ShapeA, p.Collision, m_end);
+				DispatchSafe(p.ShapeB, p.Collision, m_end);
+			}
+
+			for (const PendingDispatch& p : m_pendingHit) {
+				DispatchSafe(p.ShapeA, p.Collision, m_hit);
+				DispatchSafe(p.ShapeB, p.Collision, m_hit);
 			}
 
 			if (onStay) {
-				// Snapshot because callbacks may destroy entities and invalidate active contacts.
-				std::vector<Collision2D> stayCollisions;
-				stayCollisions.reserve(m_activeContacts.size());
-				for (const auto& [_, active] : m_activeContacts) {
-					stayCollisions.push_back(active.Collision);
-				}
-				for (const Collision2D& c : stayCollisions) {
+				for (const Collision2D& c : m_pendingStay) {
 					onStay(c);
+				}
+			}
+		}
+
+		// Public so Box2DWorld::DestroyAllBodiesForScene can scrub stale entries
+		// when a scene is torn down (a Step/Process boundary issue).
+		void PurgeContactsForScene(Scene* scene) {
+			if (!scene) return;
+			for (auto it = m_activeContacts.begin(); it != m_activeContacts.end(); ) {
+				if (it->second.Collision.sceneA == scene || it->second.Collision.sceneB == scene) {
+					it = m_activeContacts.erase(it);
+				}
+				else {
+					++it;
 				}
 			}
 		}
@@ -244,6 +302,15 @@ namespace Axiom {
 			for (auto& cb : snapshot) cb(e);
 		}
 
+		// Pre-resolved per-event payload used by the snapshot+dispatch flow in
+		// Process(). Stored in member-cached vectors so steady-state allocation
+		// stays at zero across frames (clear() preserves capacity).
+		struct PendingDispatch {
+			b2ShapeId ShapeA;
+			b2ShapeId ShapeB;
+			Collision2D Collision;
+		};
+
 		std::unordered_map<b2ShapeId,
 			std::vector<ContactBeginCallback>,
 			ShapeIdHash,
@@ -251,5 +318,11 @@ namespace Axiom {
 		std::unordered_map<b2ShapeId, std::vector<ContactEndCallback>, ShapeIdHash, ShapeIdEqual> m_end;
 		std::unordered_map<b2ShapeId, std::vector<ContactHitCallback>, ShapeIdHash, ShapeIdEqual> m_hit;
 		std::unordered_map<ContactKey, ActiveContact, ContactKeyHash> m_activeContacts;
+
+		// Snapshot buffers reused across Process() calls to avoid per-frame allocs.
+		std::vector<PendingDispatch> m_pendingBegin;
+		std::vector<PendingDispatch> m_pendingEnd;
+		std::vector<PendingDispatch> m_pendingHit;
+		std::vector<Collision2D>     m_pendingStay;
 	};
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Loader;
+using Axiom.Coroutines;
 
 namespace Axiom.Interop;
 /// <summary>
@@ -307,6 +308,12 @@ internal static class ScriptInstanceManager
         DispatchToScripts(script => script.OnSceneUnloaded(scene), nameof(EntityScript.OnSceneUnloaded));
     }
 
+    [UnmanagedCallersOnly]
+    public static void RaiseUiEventDispatch()
+    {
+        Axiom.UI.UIEventDispatcher.Tick();
+    }
+
     private static void UnloadCurrentUserAssemblyContext()
     {
         if (s_UserLoadContext == null)
@@ -425,6 +432,10 @@ internal static class ScriptInstanceManager
     public static void InvokeOnDestroy(int handle)
     {
         if (!s_Instances.TryGetValue(handle, out var data)) return;
+        // Cancel coroutines BEFORE user OnDestroy so any pending awaits unwind
+        // with OCE rather than racing against the script's teardown logic.
+        try { data.Instance._CancelPendingCoroutines(); }
+        catch (Exception ex) { Log.Error($"Exception cancelling coroutines: {ex}"); }
         try { data.Instance.OnDestroy(); }
         catch (TargetInvocationException ex) { Log.Error($"Exception in OnDestroy(): {ex.InnerException}"); }
         catch (Exception ex) { Log.Error($"Exception in OnDestroy(): {ex}"); }
@@ -677,6 +688,7 @@ internal static class ScriptInstanceManager
 
             if (s_UserLoadContext != null)
             {
+                CancelAllInstanceCoroutines();
                 s_Instances.Clear();
                 s_GameSystems.Clear();
                 s_GameSystemAwoken.Clear();
@@ -707,6 +719,7 @@ internal static class ScriptInstanceManager
     [UnmanagedCallersOnly]
     public static void UnloadUserAssembly()
     {
+        CancelAllInstanceCoroutines();
         s_Instances.Clear();
         s_GameSystems.Clear();
         s_GameSystemAwoken.Clear();
@@ -715,6 +728,33 @@ internal static class ScriptInstanceManager
         ReleaseFieldJsonBuffer();
 
         UnloadCurrentUserAssemblyContext();
+    }
+
+    [UnmanagedCallersOnly]
+    public static void PumpCoroutinesUpdate(float deltaTime)
+    {
+        CoroutineScheduler.PumpUpdate(deltaTime);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void PumpCoroutinesFixedUpdate()
+    {
+        CoroutineScheduler.PumpFixedUpdate();
+    }
+
+    // Cancel every live script's destroy CTS, then drop every pending
+    // scheduler entry. Called both from per-script teardown's bulk path
+    // (LoadUserAssembly when re-loading, UnloadUserAssembly during hot
+    // reload) so any captured user-ALC types are released for the GC
+    // dance in UnloadCurrentUserAssemblyContext.
+    private static void CancelAllInstanceCoroutines()
+    {
+        foreach (var data in s_Instances.Values)
+        {
+            try { data.Instance._CancelPendingCoroutines(); }
+            catch (Exception ex) { Log.Error($"Exception cancelling coroutines during reload: {ex}"); }
+        }
+        CoroutineScheduler.Reset();
     }
 
     // ── Field reflection for [ShowInEditor] ──────────────────────
@@ -769,23 +809,96 @@ internal static class ScriptInstanceManager
         try
         {
             if (!s_Instances.TryGetValue(handle, out var data)) return;
-
-            string fieldName = Marshal.PtrToStringUTF8((IntPtr)fieldNamePtr) ?? "";
-            string valueStr = Marshal.PtrToStringUTF8((IntPtr)valuePtr) ?? "";
-
-            var instance = data.Instance;
-            var field = instance.GetType().GetField(fieldName,
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-            if (field == null) return;
-
-            object? parsed = ParseFieldValue(field.FieldType, valueStr);
-            if (parsed != null)
-                field.SetValue(instance, parsed);
+            ApplyFieldEdit(data.Instance, fieldNamePtr, valuePtr);
         }
         catch (Exception ex)
         {
             Log.Error($"SetScriptField failed: {ex.Message}");
         }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe byte* GetGameSystemFields(int handle)
+    {
+        try
+        {
+            if (!s_GameSystems.TryGetValue(handle, out var system))
+                return NullTerminated("[]");
+
+            return SerializeInstanceFields(system, typeof(GameSystem));
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetGameSystemFields failed: {ex.Message}");
+            return NullTerminated("[]");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void SetGameSystemField(int handle, byte* fieldNamePtr, byte* valuePtr)
+    {
+        try
+        {
+            if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+            ApplyFieldEdit(system, fieldNamePtr, valuePtr);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"SetGameSystemField failed: {ex.Message}");
+        }
+    }
+
+    // Shared field-write path for both EntityScript and GameSystem instances:
+    // resolves the field by name, parses the string-encoded value, and writes
+    // it back through reflection. Skips silently when the field doesn't exist
+    // or the value can't be parsed — matches the existing SetScriptField
+    // tolerance, since the editor may post stale field names after a script
+    // edit.
+    private static unsafe void ApplyFieldEdit(object instance, byte* fieldNamePtr, byte* valuePtr)
+    {
+        string fieldName = Marshal.PtrToStringUTF8((IntPtr)fieldNamePtr) ?? "";
+        string valueStr = Marshal.PtrToStringUTF8((IntPtr)valuePtr) ?? "";
+
+        var field = instance.GetType().GetField(fieldName,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field == null) return;
+
+        object? parsed = ParseFieldValue(field.FieldType, valueStr);
+        if (parsed != null)
+            field.SetValue(instance, parsed);
+    }
+
+    // Walks every instance field, drops fields declared on the supplied base
+    // type (so EntityScript / GameSystem boilerplate stays out of the
+    // inspector), and emits the same JSON shape the editor already parses for
+    // [ShowInEditor]. Centralising it keeps GetScriptFields and
+    // GetGameSystemFields in lock-step so the C++ inspector sees identical
+    // payloads regardless of which kind of script the field lives on.
+    private static unsafe byte* SerializeInstanceFields(object instance, Type ignoreBaseType)
+    {
+        var type = instance.GetType();
+        var fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append('[');
+        bool first = true;
+
+        foreach (var field in fields)
+        {
+            if (field.DeclaringType == ignoreBaseType) continue;
+            if (!IsFieldEditorVisible(field)) continue;
+
+            string fieldType = MapFieldType(field.FieldType);
+            if (fieldType == "unsupported") continue;
+
+            object? val = field.GetValue(instance);
+            if (!first) sb.Append(',');
+            first = false;
+            AppendFieldJson(sb, field, val);
+        }
+
+        sb.Append(']');
+        return NullTerminated(sb.ToString());
     }
 
     private static string MapFieldType(Type t)
@@ -1062,7 +1175,13 @@ internal static class ScriptInstanceManager
             if (t == typeof(AudioRef)) return new AudioRef(ParseAssetUUID(s));
             if (t.IsSubclassOf(typeof(Component)))
             {
-                // Format: "EntityID:ComponentName"
+                // Format: "EntityID:ComponentName".
+                // Routes through Entity.GetComponentByType so the script's
+                // inspector-assigned field shares the same Component
+                // instance as entity.GetComponent<T>(). Without that
+                // sharing, UI event subscriptions (Button.OnClicked etc.)
+                // attach to a different Component than UIEventDispatcher
+                // invokes, and handlers silently never fire.
                 var sep = s.IndexOf(':');
                 if (sep > 0)
                 {
@@ -1073,10 +1192,7 @@ internal static class ScriptInstanceManager
 
                     if (entityId != 0)
                     {
-                        var entity = new Entity(entityId);
-                        var comp = (Component)Activator.CreateInstance(t)!;
-                        comp.Entity = entity;
-                        return comp;
+                        return new Entity(entityId).GetComponentByType(t);
                     }
                 }
                 return null;
@@ -1170,6 +1286,33 @@ internal static class ScriptInstanceManager
             hasSpace = true;
         }
 
+        // EnabledIf — gate this row on another field's value. Mirrors the
+        // native PropertyMetadata::EnabledIfFn path. The C++ inspector
+        // resolves the gate at draw time using the per-entity field-value
+        // snapshot it already builds for multi-edit, so no extra round-trip
+        // is needed.
+        string enabledIfField = "";
+        string enabledIfValue = "";
+        bool hasEnabledIf = false;
+        bool enabledIfAny = false;  // true == "enable when any truthy value" (no expected value supplied)
+        var enabledIfAttr = field.GetCustomAttribute<EnabledIfAttribute>();
+        if (enabledIfAttr != null)
+        {
+            enabledIfField = enabledIfAttr.FieldName;
+            hasEnabledIf = true;
+            if (enabledIfAttr.ExpectedValue == null)
+            {
+                enabledIfAny = true;
+            }
+            else
+            {
+                // Format using the same wire shape FormatFieldValue uses for
+                // that type so the C++ side can string-compare directly
+                // against the snapshot it already has.
+                enabledIfValue = FormatFieldValue(enabledIfAttr.ExpectedValue.GetType(), enabledIfAttr.ExpectedValue);
+            }
+        }
+
         sb.Append("{\"name\":\"").Append(EscapeJson(field.Name))
           .Append("\",\"displayName\":\"").Append(EscapeJson(displayName))
           .Append("\",\"type\":\"").Append(fieldType)
@@ -1182,7 +1325,11 @@ internal static class ScriptInstanceManager
           .Append("\",\"headerContent\":\"").Append(EscapeJson(headerContent))
           .Append("\",\"headerSize\":").Append(headerSize.ToString(ic))
           .Append(",\"hasSpace\":").Append(hasSpace ? "true" : "false")
-          .Append(",\"spaceHeight\":").Append(spaceHeight.ToString(ic));
+          .Append(",\"spaceHeight\":").Append(spaceHeight.ToString(ic))
+          .Append(",\"hasEnabledIf\":").Append(hasEnabledIf ? "true" : "false")
+          .Append(",\"enabledIfField\":\"").Append(EscapeJson(enabledIfField))
+          .Append("\",\"enabledIfValue\":\"").Append(EscapeJson(enabledIfValue))
+          .Append("\",\"enabledIfAny\":").Append(enabledIfAny ? "true" : "false");
 
         if (field.FieldType.IsEnum)
         {
@@ -1270,6 +1417,8 @@ internal static class ScriptInstanceManager
             {
                 if (field.DeclaringType == typeof(EntityScript)) continue;
                 if (field.DeclaringType == typeof(Component)) continue;
+                if (field.DeclaringType == typeof(GameSystem)) continue;
+                if (field.DeclaringType == typeof(GlobalSystem)) continue;
                 if (!IsFieldEditorVisible(field)) continue;
 
                 string fieldType = MapFieldType(field.FieldType);

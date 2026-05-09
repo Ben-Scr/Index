@@ -23,7 +23,15 @@ namespace Axiom {
 	}
 
 	void Time::SetFixedDeltaTime(float step) {
-		step = Clamp(step, 0.f, 1.f);
+		// 0 silently disables FixedUpdate (Application::Run zeroes the accumulator
+		// and skips dispatch when fixedDt <= 0). Clamp to a sane minimum and warn
+		// so misconfigured callers don't get mysteriously dead physics + scripts.
+		constexpr float k_MinFixedStep = 1.f / 240.f;
+		if (step <= 0.f) {
+			AIM_CORE_WARN_TAG("Time", "SetFixedDeltaTime({}) is non-positive; clamping to {} ({} Hz). FixedUpdate would otherwise be disabled.", step, k_MinFixedStep, 1.f / k_MinFixedStep);
+			step = k_MinFixedStep;
+		}
+		step = Clamp(step, k_MinFixedStep, 1.f);
 		m_FixedDeltaTime = step;
 	}
 
@@ -34,8 +42,23 @@ namespace Axiom {
 
 	float Time::GetSimulatedElapsedTime() const { return m_SimulatedElapsedTime; }
 
+	float Time::GetRealtimeSinceStartup() const {
+		if (!m_GameStarted) return 0.0f;
+		std::chrono::duration<float> elapsed = Clock::now() - m_GameStartTime;
+		return elapsed.count();
+	}
+
+	void Time::MarkGameStart() {
+		m_GameStartTime = Clock::now();
+		m_GameSimulatedElapsedTime = 0.0f;
+		m_GameStarted = true;
+	}
+
 	void Time::Update(float deltaTime) {
 		m_DeltaTime = deltaTime;
 		m_SimulatedElapsedTime += m_DeltaTime * m_TimeScale;
+		if (m_GameStarted) {
+			m_GameSimulatedElapsedTime += m_DeltaTime * m_TimeScale;
+		}
 	}
 }

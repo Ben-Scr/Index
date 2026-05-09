@@ -305,11 +305,19 @@ namespace Axiom {
 	void NativeScriptHost::DestroyInstance(NativeScript* script)
 	{
 		if (!script) return;
-		TryInvokeOnDestroy(script);
 
+		// Erase from the live-instance list BEFORE invoking OnDestroy. A user
+		// OnDestroy can re-enter the host (DestroyInstance(other), DestroyAllInstances,
+		// reload, etc.); if the entry is still in m_LiveInstances during the user
+		// callback, a re-entrant DestroyAllInstances iterating the snapshot would
+		// double-destroy this very pointer — and a Reload that walks the list and
+		// invokes DestroyFn would too. Erasing first makes the re-entrant path see
+		// an already-removed pointer and skip it.
 		auto it = std::find(m_LiveInstances.begin(), m_LiveInstances.end(), script);
 		if (it != m_LiveInstances.end())
 			m_LiveInstances.erase(it);
+
+		TryInvokeOnDestroy(script);
 
 		script->m_EntityID = 0;
 		script->m_Entity = entt::null;

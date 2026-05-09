@@ -364,6 +364,14 @@ namespace Axiom::Json {
 						return false;
 					}
 
+					// Warn on duplicate keys during parse (the runtime AddMember
+					// upsert path is intentional for BuildOverridePatch, but
+					// duplicate keys in the JSON input are a parser-level
+					// surprise the caller almost certainly wants to know about).
+					if (objectValue.FindMember(key) != nullptr) {
+						AIM_CORE_WARN_TAG("Serialization",
+							"Duplicate JSON key '{}' encountered while parsing — last occurrence wins", key);
+					}
 					objectValue.AddMember(std::move(key), std::move(childValue));
 
 					SkipWhitespace();
@@ -435,7 +443,14 @@ namespace Axiom::Json {
 			}
 
 			void SkipWhitespace() {
-				while (!IsAtEnd() && std::isspace(static_cast<unsigned char>(m_Text[m_Position]))) {
+				// JSON spec defines exactly four whitespace characters; std::isspace
+				// is locale-aware and may treat e.g. \v / \f as whitespace, which
+				// would silently accept malformed JSON in non-C locales.
+				while (!IsAtEnd()) {
+					const char c = m_Text[m_Position];
+					if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+						break;
+					}
 					m_Position++;
 				}
 			}

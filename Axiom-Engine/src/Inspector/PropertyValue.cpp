@@ -1,19 +1,37 @@
 #include "pch.hpp"
 #include "Inspector/PropertyValue.hpp"
 
-#include <cstdio>
-#include <cstdlib>
+#include <charconv>
+#include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace Axiom {
 
 	namespace {
+		// All conversions go through std::to_chars / std::from_chars so the
+		// wire format is locale-immune (LC_NUMERIC won't turn "3.14" into
+		// "3,14" or fail to parse it). The matching parser-side fix lives in
+		// Json.cpp around lines 321-323.
 		std::string FormatFloat(double v) {
 			char buf[64];
-			std::snprintf(buf, sizeof(buf), "%g", v);
-			return buf;
+			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general);
+			if (ec != std::errc{}) {
+				return {};
+			}
+			return std::string(buf, ptr);
+		}
+
+		std::string FormatInt(int v) {
+			char buf[32];
+			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v);
+			if (ec != std::errc{}) {
+				return {};
+			}
+			return std::string(buf, ptr);
 		}
 
 		std::vector<std::string> Split(const std::string& s, char sep) {
@@ -29,11 +47,63 @@ namespace Axiom {
 		}
 
 		float ToFloat(const std::string& s) {
-			return static_cast<float>(std::atof(s.c_str()));
+			float result = 0.0f;
+			const char* first = s.data();
+			const char* last = first + s.size();
+			auto [ptr, ec] = std::from_chars(first, last, result);
+			(void)ptr;
+			if (ec != std::errc{}) {
+				return 0.0f;
+			}
+			return result;
 		}
 
 		int ToInt(const std::string& s) {
-			return std::atoi(s.c_str());
+			int result = 0;
+			const char* first = s.data();
+			const char* last = first + s.size();
+			auto [ptr, ec] = std::from_chars(first, last, result);
+			(void)ptr;
+			if (ec != std::errc{}) {
+				return 0;
+			}
+			return result;
+		}
+
+		int64_t ToInt64(const std::string& s) {
+			int64_t result = 0;
+			const char* first = s.data();
+			const char* last = first + s.size();
+			auto [ptr, ec] = std::from_chars(first, last, result);
+			(void)ptr;
+			if (ec != std::errc{}) {
+				return 0;
+			}
+			return result;
+		}
+
+		uint64_t ToUInt64(const std::string& s) {
+			uint64_t result = 0;
+			const char* first = s.data();
+			const char* last = first + s.size();
+			auto [ptr, ec] = std::from_chars(first, last, result);
+			(void)ptr;
+			if (ec != std::errc{}) {
+				return 0;
+			}
+			return result;
+		}
+
+		double ToDouble(const std::string& s) {
+			double result = 0.0;
+			const char* first = s.data();
+			const char* last = first + s.size();
+			auto [ptr, ec] = std::from_chars(first, last, result);
+			(void)ptr;
+			if (ec != std::errc{}) {
+				return 0.0;
+			}
+			return result;
 		}
 	}
 
@@ -66,38 +136,52 @@ namespace Axiom {
 			return FormatFloat(FloatValue);
 		case PropertyType::String:
 			return StringValue;
+		case PropertyType::StringList: {
+			// Wire format: items joined by '\n', with embedded literal
+			// '\n' / '\\' inside an item escaped as `\n` / `\\`. This
+			// keeps the round-trip reversible without needing a real
+			// JSON encoder for the simple list-of-strings case.
+			std::string out;
+			for (size_t i = 0; i < StringListValue.size(); ++i) {
+				if (i > 0) out.push_back('\n');
+				for (char c : StringListValue[i]) {
+					if (c == '\\') out.append("\\\\");
+					else if (c == '\n') out.append("\\n");
+					else out.push_back(c);
+				}
+			}
+			return out;
+		}
+		case PropertyType::List:
+			// Native-only path today — descriptors built via
+			// Properties::MakeList own the round-trip through their Get/Set
+			// lambdas (no string serialization needed in-process). The C#
+			// side hasn't shipped list-of-T support yet, so there's nothing
+			// for ToString to encode here. Return empty rather than asserting
+			// so any accidental call path keeps the round-trip lossless-empty.
+			return {};
 		case PropertyType::Vec2: {
-			char buf[64];
-			std::snprintf(buf, sizeof(buf), "%g,%g", FloatVec[0], FloatVec[1]);
-			return buf;
+			return FormatFloat(FloatVec[0]) + "," + FormatFloat(FloatVec[1]);
 		}
 		case PropertyType::Vec3: {
-			char buf[96];
-			std::snprintf(buf, sizeof(buf), "%g,%g,%g", FloatVec[0], FloatVec[1], FloatVec[2]);
-			return buf;
+			return FormatFloat(FloatVec[0]) + "," + FormatFloat(FloatVec[1]) + "," +
+				FormatFloat(FloatVec[2]);
 		}
 		case PropertyType::Vec4:
 		case PropertyType::Color: {
-			char buf[128];
-			std::snprintf(buf, sizeof(buf), "%g,%g,%g,%g",
-				FloatVec[0], FloatVec[1], FloatVec[2], FloatVec[3]);
-			return buf;
+			return FormatFloat(FloatVec[0]) + "," + FormatFloat(FloatVec[1]) + "," +
+				FormatFloat(FloatVec[2]) + "," + FormatFloat(FloatVec[3]);
 		}
 		case PropertyType::IntVec2: {
-			char buf[64];
-			std::snprintf(buf, sizeof(buf), "%d,%d", IntVec[0], IntVec[1]);
-			return buf;
+			return FormatInt(IntVec[0]) + "," + FormatInt(IntVec[1]);
 		}
 		case PropertyType::IntVec3: {
-			char buf[96];
-			std::snprintf(buf, sizeof(buf), "%d,%d,%d", IntVec[0], IntVec[1], IntVec[2]);
-			return buf;
+			return FormatInt(IntVec[0]) + "," + FormatInt(IntVec[1]) + "," +
+				FormatInt(IntVec[2]);
 		}
 		case PropertyType::IntVec4: {
-			char buf[128];
-			std::snprintf(buf, sizeof(buf), "%d,%d,%d,%d",
-				IntVec[0], IntVec[1], IntVec[2], IntVec[3]);
-			return buf;
+			return FormatInt(IntVec[0]) + "," + FormatInt(IntVec[1]) + "," +
+				FormatInt(IntVec[2]) + "," + FormatInt(IntVec[3]);
 		}
 		case PropertyType::TextureRef:
 		case PropertyType::AudioRef:
@@ -130,33 +214,98 @@ namespace Axiom {
 		case PropertyType::Int64:
 		case PropertyType::Enum:
 		case PropertyType::FlagEnum:
-			v.IntValue = std::strtoll(text.c_str(), nullptr, 10);
+			v.IntValue = ToInt64(text);
+			// Clamp narrower signed types so an out-of-range string can't
+			// poison the in-memory value with bits the field can't hold.
+			switch (type) {
+			case PropertyType::Int8:
+				v.IntValue = std::clamp<int64_t>(v.IntValue, INT8_MIN, INT8_MAX);
+				break;
+			case PropertyType::Int16:
+				v.IntValue = std::clamp<int64_t>(v.IntValue, INT16_MIN, INT16_MAX);
+				break;
+			case PropertyType::Int32:
+				v.IntValue = std::clamp<int64_t>(v.IntValue, INT32_MIN, INT32_MAX);
+				break;
+			case PropertyType::Enum:
+				// TODO: validate against EnumDescriptor::Options when the
+				// descriptor is plumbed through to PropertyValue. For now
+				// clamp to int32 range — the typical underlying type.
+				v.IntValue = std::clamp<int64_t>(v.IntValue, INT32_MIN, INT32_MAX);
+				break;
+			case PropertyType::FlagEnum:
+				// TODO: mask against the OR of EnumDescriptor::Options[].Value
+				// when the descriptor is plumbed through to PropertyValue,
+				// to reject undeclared bits. The drawer-side mask is the
+				// authoritative gate today.
+				v.IntValue = std::clamp<int64_t>(v.IntValue, INT32_MIN, INT32_MAX);
+				break;
+			default:
+				break;
+			}
 			break;
 		case PropertyType::UInt8:
 		case PropertyType::UInt16:
 		case PropertyType::UInt32:
 		case PropertyType::UInt64:
-			v.UIntValue = std::strtoull(text.c_str(), nullptr, 10);
+			v.UIntValue = ToUInt64(text);
+			switch (type) {
+			case PropertyType::UInt8:
+				v.UIntValue = std::clamp<uint64_t>(v.UIntValue, 0u, UINT8_MAX);
+				break;
+			case PropertyType::UInt16:
+				v.UIntValue = std::clamp<uint64_t>(v.UIntValue, 0u, UINT16_MAX);
+				break;
+			case PropertyType::UInt32:
+				v.UIntValue = std::clamp<uint64_t>(v.UIntValue, 0u, UINT32_MAX);
+				break;
+			default:
+				break;
+			}
 			break;
 		case PropertyType::EntityRef: {
 			static constexpr std::string_view prefabPrefix = "prefab:";
 			if (text.rfind(prefabPrefix, 0) == 0) {
 				v.StringValue = "prefab";
-				v.UIntValue = std::strtoull(text.c_str() + prefabPrefix.size(), nullptr, 10);
+				v.UIntValue = ToUInt64(text.substr(prefabPrefix.size()));
 			}
 			else {
 				v.StringValue.clear();
-				v.UIntValue = text.empty() ? 0 : std::strtoull(text.c_str(), nullptr, 10);
+				v.UIntValue = text.empty() ? 0 : ToUInt64(text);
 			}
 			break;
 		}
 		case PropertyType::Float:
 		case PropertyType::Double:
-			v.FloatValue = std::atof(text.c_str());
+			v.FloatValue = ToDouble(text);
 			break;
 		case PropertyType::String:
 			v.StringValue = text;
 			break;
+		case PropertyType::StringList: {
+			// Inverse of ToString's wire format. Empty input → empty
+			// list (NOT a list with one empty string), so a freshly-
+			// initialised StringList round-trips as no entries.
+			v.StringListValue.clear();
+			if (text.empty()) break;
+			std::string current;
+			for (size_t i = 0; i < text.size(); ++i) {
+				char c = text[i];
+				if (c == '\\' && i + 1 < text.size()) {
+					char next = text[i + 1];
+					if (next == 'n')      { current.push_back('\n'); ++i; continue; }
+					if (next == '\\')     { current.push_back('\\'); ++i; continue; }
+				}
+				if (c == '\n') {
+					v.StringListValue.push_back(std::move(current));
+					current.clear();
+					continue;
+				}
+				current.push_back(c);
+			}
+			v.StringListValue.push_back(std::move(current));
+			break;
+		}
 		case PropertyType::Vec2:
 		case PropertyType::Vec3:
 		case PropertyType::Vec4:
@@ -187,15 +336,15 @@ namespace Axiom {
 		case PropertyType::AssetRef:
 		case PropertyType::SceneRef:
 		case PropertyType::FontRef:
-			v.UIntValue = text.empty() ? 0 : std::strtoull(text.c_str(), nullptr, 10);
+			v.UIntValue = text.empty() ? 0 : ToUInt64(text);
 			break;
 		case PropertyType::PrefabRef: {
 			static constexpr std::string_view prefix = "prefab:";
 			if (text.rfind(prefix, 0) == 0) {
-				v.UIntValue = std::strtoull(text.c_str() + prefix.size(), nullptr, 10);
+				v.UIntValue = ToUInt64(text.substr(prefix.size()));
 			}
 			else if (!text.empty()) {
-				v.UIntValue = std::strtoull(text.c_str(), nullptr, 10);
+				v.UIntValue = ToUInt64(text);
 			}
 			break;
 		}
@@ -206,11 +355,17 @@ namespace Axiom {
 				v.StringValue.clear();
 			}
 			else {
-				v.UIntValue = std::strtoull(text.substr(0, sep).c_str(), nullptr, 10);
+				v.UIntValue = ToUInt64(text.substr(0, sep));
 				v.StringValue = text.substr(sep + 1);
 			}
 			break;
 		}
+		case PropertyType::List:
+			// Same rationale as ToString — native-only, no string round-trip
+			// needed for in-process descriptors. Falls through with an empty
+			// ListValue so a caller that ignores the type tag still gets a
+			// well-formed PropertyValue.
+			break;
 		}
 		return v;
 	}

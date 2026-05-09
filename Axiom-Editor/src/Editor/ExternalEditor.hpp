@@ -30,6 +30,12 @@ namespace Axiom {
 		/// rather than the OS default application.
 		static bool IsScriptExtension(const std::string& ext);
 
+		/// M29: join any in-flight launcher worker threads. Called from
+		/// the editor layer's OnDetach so that detached CreateProcessW
+		/// helpers (one fast launcher, one Sleep(4000)+two-step VS
+		/// launcher) don't outlive the editor's main loop.
+		static void JoinPendingLaunchThreads();
+
 	private:
 		static std::string ResolveProjectContext(const std::string& filePath, const std::string& ext);
 		static void SavePreferences();

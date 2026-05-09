@@ -18,6 +18,14 @@ public class Entity : IEquatable<Entity>
 {
     public static readonly Entity Invalid = new(0);
 
+    // Shared identity cache for managed Component wrappers — keyed by (entity, type) so any
+    // Entity wrapper instance pointing at the same entity ID resolves the same Component
+    // object. Originally added to preserve managed-script field state across cached lookups;
+    // now also load-bearing for *native* UI components, which carry per-instance event
+    // subscriptions (Button.OnClicked, Slider.OnValueChanged, etc.). UIEventDispatcher
+    // creates fresh Entity wrappers each frame, so without this shared store the dispatcher
+    // would see a different Button instance than the user's script and the events would
+    // silently no-op.
     private static readonly Dictionary<(ulong EntityID, Type ComponentType), Component> s_ManagedComponentStore = new();
 
     private readonly Dictionary<Type, Component> m_ComponentCache = new();
@@ -62,6 +70,13 @@ public class Entity : IEquatable<Entity>
         }
     }
 
+    // Authored "Enabled" — mirrors the inspector checkbox. True when
+    // the user hasn't disabled this specific entity, even if an
+    // ancestor is disabled (in which case the engine still treats this
+    // as inactive at runtime — see IsEnabledInHierarchy). Setting this
+    // toggles the user's intent: when the parent later re-enables, an
+    // authored-enabled child comes back; an authored-disabled child
+    // stays off.
     public bool IsEnabled
     {
         get => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabled(ID);
@@ -71,6 +86,15 @@ public class Entity : IEquatable<Entity>
                 InternalCalls.Entity_SetIsEnabled(ID, value);
         }
     }
+
+    // Effective active flag — true only when this entity AND every
+    // ancestor are enabled. Matches what engine systems see (they
+    // filter their views with the runtime DisabledTag). Use this for
+    // gameplay checks like "is this widget actually live this frame";
+    // use IsEnabled to read or write the inspector-visible authored
+    // state.
+    public bool IsEnabledInHierarchy
+        => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabledInHierarchy(ID);
 
     public Transform2D Transform
     {
@@ -164,8 +188,7 @@ public class Entity : IEquatable<Entity>
         if (type == typeof(Transform2D))
             m_TransformComponent = null;
 
-        if (!s_NativeComponentNames.ContainsKey(type))
-            InvalidateManagedComponent(ID, type);
+        InvalidateManagedComponent(ID, type);
     }
 
     private void InvalidateAllCachedComponents()
@@ -253,33 +276,49 @@ public class Entity : IEquatable<Entity>
 
     public T? GetComponent<T>() where T : Component, new()
     {
+        return GetComponentByType(typeof(T)) as T;
+    }
+
+    // Non-generic resolution path used by GetComponent<T> AND by script-field
+    // deserialization (ParseFieldValue) so an inspector-assigned `Button` /
+    // `Slider` / etc. field returns the SAME wrapper that subsequent
+    // entity.GetComponent<T>() calls return. Without this, a script field
+    // and the UIEventDispatcher would each see a different Component
+    // instance — the user's `+= handler` would attach to one and the
+    // dispatcher would invoke the other, silently dropping every event
+    // (the original "OnClicked never fires" bug). The cache is keyed on
+    // (entityID, type) so ANY Entity wrapper pointing at the same id
+    // collapses to one shared Component instance.
+    internal Component? GetComponentByType(Type type)
+    {
         if (IsPrefabAsset)
             return null;
 
-        Type type = typeof(T);
-        if (!HasComponent<T>())
+        string? nativeName = GetComponentName(type);
+        if (nativeName == null)
+            return null;
+
+        if (!InternalCalls.Entity_HasComponent(ID, nativeName))
         {
             InvalidateCachedComponent(type);
             return null;
         }
 
         if (m_ComponentCache.TryGetValue(type, out Component? cached))
-            return cached as T;
+            return cached;
 
-        if (!s_NativeComponentNames.ContainsKey(type)
-            && s_ManagedComponentStore.TryGetValue((ID, type), out Component? storedComponent))
+        if (s_ManagedComponentStore.TryGetValue((ID, type), out Component? storedComponent))
         {
             m_ComponentCache[type] = storedComponent;
-            return storedComponent as T;
+            return storedComponent;
         }
 
-        var component = new T { Entity = this };
+        var component = (Component)Activator.CreateInstance(type)!;
+        component.Entity = this;
         if (!s_NativeComponentNames.ContainsKey(type))
-        {
             ApplyManagedFieldValues(component, InternalCalls.Entity_GetManagedComponentFields(ID, type.Name));
-            s_ManagedComponentStore[(ID, type)] = component;
-        }
 
+        s_ManagedComponentStore[(ID, type)] = component;
         m_ComponentCache[type] = component;
         return component;
     }

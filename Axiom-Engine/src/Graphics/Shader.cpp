@@ -153,6 +153,11 @@ namespace Axiom {
     }
 
     Shader Shader::FromBinary(const std::string& binaryPath) {
+        // Hard cap on the data we'll allocate for a header-claimed payload.
+        // Real shader binaries are well under this; the cap is a defence
+        // against a corrupted header that asks us to allocate gigabytes.
+        constexpr GLsizei k_MaxShaderBinaryBytes = 16 * 1024 * 1024; // 16 MB
+
         std::ifstream file(binaryPath, std::ios::binary);
         if (!file.is_open()) {
             return Shader(static_cast<GLuint>(0));
@@ -162,6 +167,26 @@ namespace Axiom {
         file.read(reinterpret_cast<char*>(&header), sizeof(header));
         if (!file || header.magic != kAxiomShaderMagic || header.version != kAxiomShaderVersion || header.dataLength <= 0) {
             AIM_CORE_WARN_TAG("Shader", "Invalid binary shader header: " + binaryPath);
+            return Shader(static_cast<GLuint>(0));
+        }
+
+        // Cross-check the header's claimed payload size against the actual
+        // remaining file size and our hard cap. A torn/forged header could
+        // otherwise drive an arbitrary allocation before std::ifstream ever
+        // notices the truncation.
+        std::error_code fsEc;
+        const auto onDiskSize = std::filesystem::file_size(binaryPath, fsEc);
+        const std::uintmax_t bytesAfterHeader = (!fsEc && onDiskSize >= sizeof(header))
+            ? (onDiskSize - sizeof(header)) : 0;
+        if (header.dataLength > k_MaxShaderBinaryBytes
+            || (!fsEc && static_cast<std::uintmax_t>(header.dataLength) > bytesAfterHeader))
+        {
+            AIM_CORE_ERROR_TAG("Shader",
+                "Binary shader header reports implausible dataLength ({} bytes) for file '{}' (cap {}, on-disk after-header {}). Refusing to load.",
+                static_cast<long long>(header.dataLength),
+                binaryPath,
+                static_cast<long long>(k_MaxShaderBinaryBytes),
+                static_cast<long long>(bytesAfterHeader));
             return Shader(static_cast<GLuint>(0));
         }
 

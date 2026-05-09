@@ -503,9 +503,16 @@ namespace Axiom::ImGuiUtils {
 		BeginInspectorFieldRow(label);
 		const bool anyChanged = MultiEdit::MultiItemRow(componentCount, [&](int c) -> bool {
 			ImGui::PushID(c);
-			float channelValue = values[c];
+			// Capture the pre-edit channel value: when only this channel is
+			// edited we must NOT broadcast the other channels' (possibly
+			// mixed) sampled values onto every selected entity. ImGui::DragFloat
+			// returns true on commit; only propagate when the user actually
+			// produced a delta on THIS channel.
+			const float pre = values[c];
+			float channelValue = pre;
 			const char* fmt = mixedMask[c] ? "-" : format;
-			const bool changed = ImGui::DragFloat("##c", &channelValue, speed, vmin, vmax, fmt);
+			const bool committed = ImGui::DragFloat("##c", &channelValue, speed, vmin, vmax, fmt);
+			const bool changed = committed && channelValue != pre;
 			if (changed) {
 				for (const Entity& e : entities) setChan(e, c, channelValue);
 				MarkSelectionDirty(entities);
@@ -549,11 +556,16 @@ namespace Axiom::ImGuiUtils {
 		else {
 			// Per-channel drag fallback when any channel differs across the
 			// selection — ColorEdit4 cannot show per-channel "mixed" state.
+			// Same C7 caveat as DragFloatNMulti: only write when the channel
+			// the user touched actually moved, so we never broadcast a
+			// sampled "mixed primary" value onto every entity.
 			anyChanged = MultiEdit::MultiItemRow(4, [&](int c) -> bool {
 				ImGui::PushID(c);
-				float channelValue = values[c];
+				const float pre = values[c];
+				float channelValue = pre;
 				const char* fmt = mixedMask[c] ? "-" : "%.3f";
-				const bool changed = ImGui::DragFloat("##c", &channelValue, 0.005f, 0.0f, 1.0f, fmt);
+				const bool committed = ImGui::DragFloat("##c", &channelValue, 0.005f, 0.0f, 1.0f, fmt);
+				const bool changed = committed && channelValue != pre;
 				if (changed) {
 					for (const Entity& e : entities) setChan(e, c, channelValue);
 					MarkSelectionDirty(entities);

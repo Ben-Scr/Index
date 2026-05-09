@@ -20,6 +20,28 @@ namespace Axiom {
 		float  (*Application_GetTimeScale)();
 		void   (*Application_SetTimeScale)(float scale);
 		int    (*Application_IsEditor)(); // 1 = host is editor, 0 = standalone runtime
+		int    (*Application_GetClipboardStringBuffer)(char* outBuffer, int capacity);
+		void   (*Application_SetClipboardString)(const char* value);
+		int    (*Application_GetVsyncEnabled)();
+		void   (*Application_SetVsyncEnabled)(int enabled);
+
+		// ── Engine ───────────────────────────────────────────────────
+		// Build identity + GPU caps. Two-call buffer pattern for strings:
+		// pass (null, 0) to learn required size, then a sized buffer.
+		int    (*Engine_GetVersionBuffer)(char* outBuffer, int capacity);
+		// "Axiom <version> (<platform> <config>)" — matches AIM_VERSION_LONG.
+		int    (*Engine_GetVersionLongBuffer)(char* outBuffer, int capacity);
+		// 0 = Debug (editor preview), 1 = Development, 2 = Release.
+		int    (*Engine_GetBuildConfiguration)();
+		int    (*Engine_GetPlatformBuffer)(char* outBuffer, int capacity);
+		int    (*Engine_GetGraphicsApiBuffer)(char* outBuffer, int capacity);
+		int    (*Engine_GetGpuVendorBuffer)(char* outBuffer, int capacity);
+		int    (*Engine_GetGpuRendererBuffer)(char* outBuffer, int capacity);
+
+		// ── Time ─────────────────────────────────────────────────────
+		int    (*Time_GetFrameCount)();
+		float  (*Time_GetTimeSinceStartup)();
+		float  (*Time_GetRealtimeSinceStartup)();
 
 		// ── Log ──────────────────────────────────────────────────────
 		void   (*Log_Trace)(const char* message);
@@ -53,15 +75,14 @@ namespace Axiom {
 		int      (*Entity_HasComponent)(uint64_t entityID, const char* componentName);
 		int      (*Entity_AddComponent)(uint64_t entityID, const char* componentName);
 		int      (*Entity_RemoveComponent)(uint64_t entityID, const char* componentName);
-		const char* (*Entity_GetManagedComponentFields)(uint64_t entityID, const char* componentName);
 		int      (*Entity_GetManagedComponentFieldsBuffer)(uint64_t entityID, const char* componentName, char* outBuffer, int capacity);
 		int      (*Entity_GetIsStatic)(uint64_t entityID);
 		void     (*Entity_SetIsStatic)(uint64_t entityID, int isStatic);
 		int      (*Entity_GetIsEnabled)(uint64_t entityID);
+		int      (*Entity_GetIsEnabledInHierarchy)(uint64_t entityID);
 		void     (*Entity_SetIsEnabled)(uint64_t entityID, int isEnabled);
 
 		// ── NameComponent ────────────────────────────────────────────
-		const char* (*NameComponent_GetName)(uint64_t entityID);
 		int         (*NameComponent_GetNameBuffer)(uint64_t entityID, char* outBuffer, int capacity);
 		void        (*NameComponent_SetName)(uint64_t entityID, const char* name);
 
@@ -96,7 +117,6 @@ namespace Axiom {
 		void (*SpriteRenderer_SetSortingLayer)(uint64_t entityID, int layer);
 
 		// ── TextRenderer ─────────────────────────────────────────────
-		const char* (*TextRenderer_GetText)(uint64_t entityID);
 		int         (*TextRenderer_GetTextBuffer)(uint64_t entityID, char* outBuffer, int capacity);
 		void        (*TextRenderer_SetText)(uint64_t entityID, const char* text);
 		uint64_t    (*TextRenderer_GetFont)(uint64_t entityID);
@@ -109,6 +129,10 @@ namespace Axiom {
 		void        (*TextRenderer_SetLetterSpacing)(uint64_t entityID, float spacing);
 		int         (*TextRenderer_GetHAlign)(uint64_t entityID);
 		void        (*TextRenderer_SetHAlign)(uint64_t entityID, int alignment);
+		int         (*TextRenderer_GetWrapMode)(uint64_t entityID);
+		void        (*TextRenderer_SetWrapMode)(uint64_t entityID, int mode);
+		float       (*TextRenderer_GetWrapWidth)(uint64_t entityID);
+		void        (*TextRenderer_SetWrapWidth)(uint64_t entityID, float width);
 		int         (*TextRenderer_GetSortingOrder)(uint64_t entityID);
 		void        (*TextRenderer_SetSortingOrder)(uint64_t entityID, int order);
 		int         (*TextRenderer_GetSortingLayer)(uint64_t entityID);
@@ -204,7 +228,6 @@ namespace Axiom {
 		void  (*FastCircleCollider2D_SetRadius)(uint64_t entityID, float radius);
 
 		// ── Scene ────────────────────────────────────────────────────
-		const char* (*Scene_GetActiveSceneName)();
 		int         (*Scene_GetActiveSceneNameBuffer)(char* outBuffer, int capacity);
 		int         (*Scene_GetEntityCount)();
 		int         (*Scene_GetEntityCountByName)(const char* sceneName);
@@ -217,9 +240,7 @@ namespace Axiom {
 		void        (*Scene_SetGlobalSystemEnabled)(const char* className, int enabled);
 		int         (*Scene_DoesSceneExist)(const char* sceneName);
 		int         (*Scene_GetLoadedCount)();
-		const char* (*Scene_GetLoadedSceneNameAt)(int index);
 		int         (*Scene_GetLoadedSceneNameAtBuffer)(int index, char* outBuffer, int capacity);
-		const char* (*Scene_GetEntityNameByUUID)(uint64_t uuid);
 		int         (*Scene_GetEntityNameByUUIDBuffer)(uint64_t uuid, char* outBuffer, int capacity);
 		int         (*Scene_QueryEntities)(const char* componentNames, uint64_t* outEntityIDs, int maxOut);
 		int         (*Scene_QueryEntitiesFiltered)(const char* withComponents, const char* withoutComponents, const char* mustHaveComponents, int enableFilter, uint64_t* outEntityIDs, int maxOut);
@@ -227,12 +248,9 @@ namespace Axiom {
 		int         (*Scene_QueryEntitiesFilteredInScene)(const char* sceneName, const char* withComponents, const char* withoutComponents, const char* mustHaveComponents, int enableFilter, uint64_t* outEntityIDs, int maxOut);
 		int         (*Asset_IsValid)(uint64_t assetId);
 		uint64_t    (*Asset_GetOrCreateUUIDFromPath)(const char* path);
-		const char* (*Asset_GetPath)(uint64_t assetId);
 		int         (*Asset_GetPathBuffer)(uint64_t assetId, char* outBuffer, int capacity);
-		const char* (*Asset_GetDisplayName)(uint64_t assetId);
 		int         (*Asset_GetDisplayNameBuffer)(uint64_t assetId, char* outBuffer, int capacity);
 		int         (*Asset_GetKind)(uint64_t assetId);
-		const char* (*Asset_FindAll)(const char* pathPrefix, int kind);
 		int         (*Asset_FindAllBuffer)(const char* pathPrefix, int kind, char* outBuffer, int capacity);
 		int         (*Texture_LoadAsset)(uint64_t assetId);
 		int         (*Texture_GetWidth)(uint64_t assetId);
@@ -296,6 +314,10 @@ namespace Axiom {
 		void (*RectTransform_SetRotation)(uint64_t entityID, float rotation);
 		void (*RectTransform_GetScale)(uint64_t entityID, float* outX, float* outY);
 		void (*RectTransform_SetScale)(uint64_t entityID, float x, float y);
+		float (*RectTransform_GetLocalRotation)(uint64_t entityID);
+		void (*RectTransform_SetLocalRotation)(uint64_t entityID, float rotation);
+		void (*RectTransform_GetLocalScale)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetLocalScale)(uint64_t entityID, float x, float y);
 		void (*RectTransform_GetResolvedSize)(uint64_t entityID, float* outW, float* outH);
 
 		// ── UI: Image ────────────────────────────────────────────────
@@ -303,6 +325,10 @@ namespace Axiom {
 		void (*Image_SetColor)(uint64_t entityID, float r, float g, float b, float a);
 		uint64_t (*Image_GetTexture)(uint64_t entityID);
 		void (*Image_SetTexture)(uint64_t entityID, uint64_t assetId);
+		int  (*Image_GetSortingOrder)(uint64_t entityID);
+		void (*Image_SetSortingOrder)(uint64_t entityID, int order);
+		int  (*Image_GetSortingLayer)(uint64_t entityID);
+		void (*Image_SetSortingLayer)(uint64_t entityID, int layer);
 
 		// ── UI: Interactable ─────────────────────────────────────────
 		int (*Interactable_GetInteractable)(uint64_t entityID);
@@ -312,6 +338,16 @@ namespace Axiom {
 		int (*Interactable_GetIsPressed)(uint64_t entityID);
 		int (*Interactable_GetIsMouseDown)(uint64_t entityID);
 		int (*Interactable_GetIsMouseUp)(uint64_t entityID);
+		// Optional focus / selection navigation. Focusable defaults to
+		// false so existing scenes are not silently included in Tab
+		// order; IsFocused is normally driven by UIFocusSystem but the
+		// setter is honoured for one frame so script-driven focus
+		// (e.g. "open this menu and put focus on the first button")
+		// works without a separate API.
+		int (*Interactable_GetFocusable)(uint64_t entityID);
+		void (*Interactable_SetFocusable)(uint64_t entityID, int value);
+		int (*Interactable_GetIsFocused)(uint64_t entityID);
+		void (*Interactable_SetIsFocused)(uint64_t entityID, int value);
 
 		// ── UI: Button ───────────────────────────────────────────────
 		void (*Button_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
@@ -322,6 +358,123 @@ namespace Axiom {
 		void (*Button_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
 		void (*Button_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
 		void (*Button_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Button_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Button_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+
+		void (*Toggle_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Toggle_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Slider_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Slider_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*InputField_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*InputField_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+
+		// ── UI: TransitionMode + sprite slots ────────────────────────
+		// TransitionMode is the enum that picks ColorTint / SpriteSwap /
+		// None for each widget. Sprite slots are UUIDs (0 == unset).
+		// One slot per state mirrors the *Color slots above.
+		int (*Button_GetTransitionMode)(uint64_t entityID);
+		void (*Button_SetTransitionMode)(uint64_t entityID, int mode);
+		int (*Toggle_GetTransitionMode)(uint64_t entityID);
+		void (*Toggle_SetTransitionMode)(uint64_t entityID, int mode);
+		int (*Slider_GetTransitionMode)(uint64_t entityID);
+		void (*Slider_SetTransitionMode)(uint64_t entityID, int mode);
+		int (*InputField_GetTransitionMode)(uint64_t entityID);
+		void (*InputField_SetTransitionMode)(uint64_t entityID, int mode);
+		int (*Dropdown_GetTransitionMode)(uint64_t entityID);
+		void (*Dropdown_SetTransitionMode)(uint64_t entityID, int mode);
+
+		uint64_t (*Button_GetNormalSprite)(uint64_t entityID);
+		void     (*Button_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Button_GetHoveredSprite)(uint64_t entityID);
+		void     (*Button_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Button_GetPressedSprite)(uint64_t entityID);
+		void     (*Button_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Button_GetDisabledSprite)(uint64_t entityID);
+		void     (*Button_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Button_GetFocusedSprite)(uint64_t entityID);
+		void     (*Button_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		uint64_t (*Toggle_GetNormalSprite)(uint64_t entityID);
+		void     (*Toggle_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Toggle_GetHoveredSprite)(uint64_t entityID);
+		void     (*Toggle_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Toggle_GetPressedSprite)(uint64_t entityID);
+		void     (*Toggle_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Toggle_GetDisabledSprite)(uint64_t entityID);
+		void     (*Toggle_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Toggle_GetFocusedSprite)(uint64_t entityID);
+		void     (*Toggle_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		uint64_t (*Slider_GetNormalSprite)(uint64_t entityID);
+		void     (*Slider_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Slider_GetHoveredSprite)(uint64_t entityID);
+		void     (*Slider_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Slider_GetPressedSprite)(uint64_t entityID);
+		void     (*Slider_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Slider_GetDisabledSprite)(uint64_t entityID);
+		void     (*Slider_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Slider_GetFocusedSprite)(uint64_t entityID);
+		void     (*Slider_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		uint64_t (*InputField_GetNormalSprite)(uint64_t entityID);
+		void     (*InputField_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*InputField_GetHoveredSprite)(uint64_t entityID);
+		void     (*InputField_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*InputField_GetPressedSprite)(uint64_t entityID);
+		void     (*InputField_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*InputField_GetDisabledSprite)(uint64_t entityID);
+		void     (*InputField_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*InputField_GetFocusedSprite)(uint64_t entityID);
+		void     (*InputField_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		uint64_t (*Dropdown_GetNormalSprite)(uint64_t entityID);
+		void     (*Dropdown_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Dropdown_GetHoveredSprite)(uint64_t entityID);
+		void     (*Dropdown_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Dropdown_GetPressedSprite)(uint64_t entityID);
+		void     (*Dropdown_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Dropdown_GetDisabledSprite)(uint64_t entityID);
+		void     (*Dropdown_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Dropdown_GetFocusedSprite)(uint64_t entityID);
+		void     (*Dropdown_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		// ── UI: IsReadOnly + entity-ref + popup-option colors ────────
+		int  (*Toggle_GetIsReadOnly)(uint64_t entityID);
+		void (*Toggle_SetIsReadOnly)(uint64_t entityID, int value);
+		int  (*Slider_GetIsReadOnly)(uint64_t entityID);
+		void (*Slider_SetIsReadOnly)(uint64_t entityID, int value);
+		int  (*Dropdown_GetIsReadOnly)(uint64_t entityID);
+		void (*Dropdown_SetIsReadOnly)(uint64_t entityID, int value);
+
+		uint64_t (*Button_GetTargetGraphic)(uint64_t entityID);
+		void     (*Button_SetTargetGraphic)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*Slider_GetFillEntity)(uint64_t entityID);
+		void     (*Slider_SetFillEntity)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*Slider_GetHandleEntity)(uint64_t entityID);
+		void     (*Slider_SetHandleEntity)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*Slider_GetBackgroundEntity)(uint64_t entityID);
+		void     (*Slider_SetBackgroundEntity)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*Toggle_GetCheckmarkEntity)(uint64_t entityID);
+		void     (*Toggle_SetCheckmarkEntity)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*InputField_GetTextEntity)(uint64_t entityID);
+		void     (*InputField_SetTextEntity)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*Dropdown_GetLabelEntity)(uint64_t entityID);
+		void     (*Dropdown_SetLabelEntity)(uint64_t entityID, uint64_t refUuid);
+
+		void (*Dropdown_GetOptionNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetOptionNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetOptionHoverColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetOptionHoverColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetOptionPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetOptionPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetOptionSelectedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetOptionSelectedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetPopupBackgroundColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetPopupBackgroundColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetOptionTextColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetOptionTextColor)(uint64_t entityID, float r, float g, float b, float a);
 
 		// ── UI: Slider ───────────────────────────────────────────────
 		float (*Slider_GetValue)(uint64_t entityID);
@@ -333,11 +486,29 @@ namespace Axiom {
 		int (*Slider_GetWholeNumbers)(uint64_t entityID);
 		void (*Slider_SetWholeNumbers)(uint64_t entityID, int value);
 		int (*Slider_GetValueChangedThisFrame)(uint64_t entityID);
+		void (*Slider_MarkValueObserved)(uint64_t entityID);
+		void (*Slider_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Slider_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Slider_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Slider_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Slider_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Slider_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Slider_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Slider_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
 
 		// ── UI: Toggle ───────────────────────────────────────────────
 		int (*Toggle_GetIsOn)(uint64_t entityID);
 		void (*Toggle_SetIsOn)(uint64_t entityID, int value);
 		int (*Toggle_GetValueChangedThisFrame)(uint64_t entityID);
+		void (*Toggle_MarkIsOnObserved)(uint64_t entityID);
+		void (*Toggle_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Toggle_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Toggle_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Toggle_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Toggle_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Toggle_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Toggle_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Toggle_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
 
 		// ── UI: InputField ───────────────────────────────────────────
 		int (*InputField_GetTextBuffer)(uint64_t entityID, char* outBuffer, int capacity);
@@ -349,6 +520,14 @@ namespace Axiom {
 		int (*InputField_GetSubmittedThisFrame)(uint64_t entityID);
 		int (*InputField_GetCharacterLimit)(uint64_t entityID);
 		void (*InputField_SetCharacterLimit)(uint64_t entityID, int value);
+		void (*InputField_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*InputField_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*InputField_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*InputField_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*InputField_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*InputField_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*InputField_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*InputField_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
 
 		// ── UI: Dropdown ─────────────────────────────────────────────
 		int (*Dropdown_GetSelectedIndex)(uint64_t entityID);
@@ -356,12 +535,21 @@ namespace Axiom {
 		int (*Dropdown_GetIsOpen)(uint64_t entityID);
 		void (*Dropdown_SetIsOpen)(uint64_t entityID, int value);
 		int (*Dropdown_GetSelectionChangedThisFrame)(uint64_t entityID);
+		void (*Dropdown_MarkSelectedIndexObserved)(uint64_t entityID);
 		int (*Dropdown_GetOptionCount)(uint64_t entityID);
 		int (*Dropdown_GetOptionBuffer)(uint64_t entityID, int index, char* outBuffer, int capacity);
 		void (*Dropdown_SetOption)(uint64_t entityID, int index, const char* text);
 		void (*Dropdown_AddOption)(uint64_t entityID, const char* text);
 		void (*Dropdown_RemoveOption)(uint64_t entityID, int index);
 		void (*Dropdown_ClearOptions)(uint64_t entityID);
+		void (*Dropdown_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void (*Dropdown_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void (*Dropdown_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -419,6 +607,25 @@ namespace Axiom {
 		void    (*InvokeGameSystemAwake)(int32_t handle);
 		void    (*InvokeGameSystemFixedUpdate)(int32_t handle);
 		void    (*InvokeGlobalSystemFixedUpdate)(int32_t handle);
+
+		// ── GameSystem field reflection (appended for binary compat) ──
+		const char* (*GetGameSystemFields)(int32_t handle);
+		void        (*SetGameSystemField)(int32_t handle, const char* fieldName, const char* value);
+
+		// ── UI event dispatch (appended for binary compat) ──
+		// Called by native UIEventSystem once per frame after writing
+		// transient UI state flags. The managed handler iterates UI
+		// components and fans out to static UI events.
+		void        (*RaiseUiEventDispatch)();
+
+		// ── Coroutine pump (appended for binary compat) ──
+		// Drains the AxiomSynchronizationContext queue and ticks
+		// pending EntityScript coroutine awaiters. PumpCoroutinesUpdate
+		// is called once at the top of ScriptSystem::Update with the
+		// frame's scaled delta time; PumpCoroutinesFixedUpdate is
+		// called at the top of ScriptSystem::FixedUpdate.
+		void        (*PumpCoroutinesUpdate)(float deltaTime);
+		void        (*PumpCoroutinesFixedUpdate)();
 	};
 
 } // namespace Axiom

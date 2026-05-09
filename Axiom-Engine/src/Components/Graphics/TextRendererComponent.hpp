@@ -15,6 +15,17 @@ namespace Axiom {
         Right
     };
 
+    // Line-breaking strategy applied on top of explicit `\n` breaks.
+    // None preserves the historical "single line + explicit \n" layout.
+    // Word breaks at the last whitespace before the wrap-width is
+    // exceeded; Character breaks at the next glyph that would overflow
+    // (used for languages or content where word boundaries don't help).
+    enum class TextWrapMode : uint8_t {
+        None = 0,
+        Word,
+        Character
+    };
+
     // Pixels-per-world-unit for text rendering. Glyph metrics from
     // stb_truetype are pixel-domain; world-space is unit-domain, so we
     // divide. 100 mirrors Unity's default and means a 32 px font on a
@@ -68,6 +79,20 @@ namespace Axiom {
         float LetterSpacing = 0.0f;
 
         TextAlignment HAlign = TextAlignment::Left;
+
+        // Line-wrap strategy. None == legacy single-line + explicit `\n`
+        // behaviour; Word / Character break overlong runs at the wrap
+        // width below. UI text on a RectTransform2D wraps inside the
+        // rect's width by default (WrapWidth == 0); set WrapWidth > 0
+        // to override with an explicit pixel width (also the only way
+        // wrapping has an effect on world-space text, where there's no
+        // ambient rect to fall back on).
+        TextWrapMode WrapMode = TextWrapMode::None;
+
+        // Wrap width in screen-pixel units (same domain as FontSize and
+        // LetterSpacing). 0 = use the host RectTransform2D's width if
+        // present, else disable wrapping. Ignored when WrapMode == None.
+        float WrapWidth = 0.0f;
 
         // Sort batch — same semantics as SpriteRendererComponent. Text
         // batches independently from sprites today; the sort key only

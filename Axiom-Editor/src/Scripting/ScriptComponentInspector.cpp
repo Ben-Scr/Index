@@ -53,6 +53,13 @@ namespace Axiom {
 			float ClampMax = 0.0f;
 			bool HasSpace = false;
 			float SpaceHeight = 0.0f;
+			// EnabledIf metadata from [EnabledIf("Field", expectedValue)].
+			// EnabledIfAny == true means "enable when the named field is
+			// truthy" (no expected value supplied to the attribute).
+			bool HasEnabledIf = false;
+			bool EnabledIfAny = false;
+			std::string EnabledIfField;
+			std::string EnabledIfValue;
 			std::shared_ptr<EnumDescriptor> Enum;
 		};
 
@@ -97,6 +104,10 @@ namespace Axiom {
 				if (const Json::Value* v = item.FindMember("headerSize"))     rec.HeaderSize = static_cast<int>(v->AsDoubleOr(0.0));
 				if (const Json::Value* v = item.FindMember("hasSpace"))       rec.HasSpace = v->AsBoolOr(false);
 				if (const Json::Value* v = item.FindMember("spaceHeight"))    rec.SpaceHeight = static_cast<float>(v->AsDoubleOr(0.0));
+				if (const Json::Value* v = item.FindMember("hasEnabledIf"))   rec.HasEnabledIf = v->AsBoolOr(false);
+				if (const Json::Value* v = item.FindMember("enabledIfAny"))   rec.EnabledIfAny = v->AsBoolOr(false);
+				if (const Json::Value* v = item.FindMember("enabledIfField")) rec.EnabledIfField = v->AsStringOr();
+				if (const Json::Value* v = item.FindMember("enabledIfValue")) rec.EnabledIfValue = v->AsStringOr();
 
 				if (rec.TypeTag.rfind("component:", 0) == 0) {
 					rec.ComponentTypeName = rec.TypeTag.substr(10);
@@ -185,6 +196,85 @@ namespace Axiom {
 			return PropertyValue::FromString(type, defaultValue);
 		}
 
+		// "Truthy" check used by EnabledIf when the attribute didn't carry
+		// an expected value. Mirrors the C# definition: bool/integer != 0,
+		// non-empty string, non-empty list. Floats use exact != 0.
+		bool IsValueTruthy(const std::string& valueStr, PropertyType type) {
+			if (valueStr.empty()) return false;
+			switch (type) {
+			case PropertyType::Bool:
+				return valueStr == "true" || valueStr == "True" || valueStr == "1";
+			case PropertyType::Int8:  case PropertyType::Int16:
+			case PropertyType::Int32: case PropertyType::Int64:
+			case PropertyType::Enum:  case PropertyType::FlagEnum: {
+				const PropertyValue parsed = PropertyValue::FromString(type, valueStr);
+				return parsed.IntValue != 0;
+			}
+			case PropertyType::UInt8:  case PropertyType::UInt16:
+			case PropertyType::UInt32: case PropertyType::UInt64: {
+				const PropertyValue parsed = PropertyValue::FromString(type, valueStr);
+				return parsed.UIntValue != 0;
+			}
+			case PropertyType::Float: case PropertyType::Double: {
+				const PropertyValue parsed = PropertyValue::FromString(type, valueStr);
+				return parsed.FloatValue != 0.0;
+			}
+			default:
+				return !valueStr.empty();
+			}
+		}
+
+		// Look up the named field's recorded type from the field-record
+		// list — needed to decide how to compare values for EnabledIf.
+		// Returns None if the field wasn't found (the gate then defaults
+		// to "always enabled" so a typo in the attribute doesn't lock the
+		// row permanently).
+		PropertyType FindFieldType(const std::vector<EditorFieldRecord>& records, const std::string& name) {
+			for (const auto& r : records) {
+				if (r.Name == name) {
+					if (r.TypeTag.rfind("component:", 0) == 0) return PropertyType::ComponentRef;
+					if (r.TypeTag == "entity") return PropertyType::EntityRef;
+					return PropertyTypeFromString(r.TypeTag);
+				}
+			}
+			return PropertyType::None;
+		}
+
+		// Build the EnabledIfFn predicate for a script/managed-component
+		// field. Reads the gate field's value from the shared per-entity
+		// snapshot the inspector already maintains, so the gate sees true
+		// per-entity values during multi-edit (mixed gate fields render
+		// disabled if any entity disagrees).
+		std::function<bool(const Entity&)> BuildScriptEnabledIfPredicate(
+			const EditorFieldRecord& rec, const std::vector<EditorFieldRecord>& siblingRecords,
+			std::shared_ptr<ScriptFieldValueMap> perEntityValues)
+		{
+			if (!rec.HasEnabledIf || rec.EnabledIfField.empty()) return {};
+			const PropertyType gateType = FindFieldType(siblingRecords, rec.EnabledIfField);
+			if (gateType == PropertyType::None) return {};
+
+			std::string targetField = rec.EnabledIfField;
+			std::string expectedValue = rec.EnabledIfValue;
+			bool any = rec.EnabledIfAny;
+			return [perEntityValues, targetField = std::move(targetField),
+					expectedValue = std::move(expectedValue), any, gateType]
+				(const Entity& e) -> bool {
+				if (!perEntityValues) return true;
+				auto eIt = perEntityValues->find(static_cast<uint32_t>(e.GetHandle()));
+				if (eIt == perEntityValues->end()) return true;
+				auto fIt = eIt->second.find(targetField);
+				if (fIt == eIt->second.end()) return true;
+				if (any) return IsValueTruthy(fIt->second, gateType);
+				// Compare via parsed PropertyValue equality so e.g. "1.0"
+				// and "1" match for a float gate, and enum strings match
+				// the integer wire format we serialise the expected value
+				// to from C# (FormatFieldValue uses the int underlying).
+				const PropertyValue current  = PropertyValue::FromString(gateType, fIt->second);
+				const PropertyValue expected = PropertyValue::FromString(gateType, expectedValue);
+				return current == expected;
+			};
+		}
+
 		// Build a PropertyDescriptor that bridges one [ShowInEditor] field to
 		// the unified PropertyDrawer. The Get lambda reads the per-entity
 		// value from the shared snapshot map (so multi-select sees mixed
@@ -194,7 +284,8 @@ namespace Axiom {
 		PropertyDescriptor BuildScriptFieldDescriptor(EditorFieldRecord rec,
 			const std::string& className, std::size_t scriptIndex,
 			bool multiEditEnabled, bool isPlaying,
-			std::shared_ptr<ScriptFieldValueMap> perEntityValues)
+			std::shared_ptr<ScriptFieldValueMap> perEntityValues,
+			const std::vector<EditorFieldRecord>& siblingRecords)
 		{
 			PropertyDescriptor d;
 			d.Name = rec.Name;
@@ -211,6 +302,9 @@ namespace Axiom {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
+				d.Metadata.EnabledIfFn = std::move(pred);
+			}
 
 			d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, type = d.Type]
 				(const Entity& e) -> PropertyValue {
@@ -228,7 +322,8 @@ namespace Axiom {
 
 		PropertyDescriptor BuildManagedComponentFieldDescriptor(EditorFieldRecord rec,
 			const std::string& className,
-			std::shared_ptr<ScriptFieldValueMap> perEntityValues)
+			std::shared_ptr<ScriptFieldValueMap> perEntityValues,
+			const std::vector<EditorFieldRecord>& siblingRecords)
 		{
 			PropertyDescriptor d;
 			d.Name = rec.Name;
@@ -245,6 +340,9 @@ namespace Axiom {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
+				d.Metadata.EnabledIfFn = std::move(pred);
+			}
 
 			d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, type = d.Type]
 				(const Entity& e) -> PropertyValue {
@@ -341,10 +439,52 @@ namespace Axiom {
 			for (auto& rec : records) {
 				const std::string fieldKey = MakeFieldKey(scriptIndex, className, rec.Name);
 				PropertyDescriptor descriptor = BuildScriptFieldDescriptor(
-					rec, className, scriptIndex, multiEditEnabled, isPlaying, perEntityValues);
+					rec, className, scriptIndex, multiEditEnabled, isPlaying, perEntityValues, records);
 				PropertyDrawer::Draw(entities, descriptor, fieldKey);
 			}
 			ImGui::Unindent(8.0f);
+		}
+
+		// Build a descriptor for a GameSystem field. GameSystems are scene-
+		// scoped (no entity), so the Set lambda ignores its Entity argument
+		// and instead writes through Scene::SetGameSystemFieldValue (for
+		// disk persistence) and ScriptEngine::SetGameSystemField (when a
+		// live managed instance exists). The dummy entity span the drawer
+		// receives carries the active Scene pointer so PropertyDrawer's
+		// MarkSceneDirty hook still fires after edits.
+		PropertyDescriptor BuildGameSystemFieldDescriptor(EditorFieldRecord rec,
+			Scene* scene, const std::string& className)
+		{
+			PropertyDescriptor d;
+			d.Name = rec.Name;
+			d.DisplayName = rec.DisplayName;
+			d.Type = ResolveScriptFieldType(rec);
+			d.Metadata.ReadOnly = rec.ReadOnly;
+			d.Metadata.Tooltip = rec.Tooltip;
+			d.Metadata.HeaderContent = rec.HeaderContent;
+			d.Metadata.HeaderSize = rec.HeaderSize;
+			d.Metadata.HasSpace = rec.HasSpace;
+			d.Metadata.SpaceHeight = rec.SpaceHeight;
+			d.Metadata.HasClamp = rec.HasClamp;
+			d.Metadata.ClampMin = rec.ClampMin;
+			d.Metadata.ClampMax = rec.ClampMax;
+			d.Metadata.Enum = rec.Enum;
+			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+
+			d.Get = [value = rec.Value, type = d.Type](const Entity&) -> PropertyValue {
+				return PropertyValue::FromString(type, value);
+			};
+
+			d.Set = [scene, className, fieldName = rec.Name](Entity&, const PropertyValue& v) {
+				if (!scene) return;
+				const std::string newValueStr = v.ToString();
+				scene->SetGameSystemFieldValue(className, fieldName, newValueStr);
+				uint32_t handle = scene->GetGameSystemHandle(className);
+				if (handle != 0) {
+					ScriptEngine::SetGameSystemField(handle, fieldName.c_str(), newValueStr.c_str());
+				}
+			};
+			return d;
 		}
 
 		void RenderFieldsForManagedComponent(ScriptComponent& sc,
@@ -390,7 +530,7 @@ namespace Axiom {
 			ImGui::Indent(8.0f);
 			for (auto& rec : records) {
 				const std::string fieldKey = className + "#component" + std::to_string(componentIndex) + "." + rec.Name;
-				PropertyDescriptor descriptor = BuildManagedComponentFieldDescriptor(rec, className, perEntityValues);
+				PropertyDescriptor descriptor = BuildManagedComponentFieldDescriptor(rec, className, perEntityValues, records);
 				PropertyDrawer::Draw(entities, descriptor, fieldKey);
 			}
 			ImGui::Unindent(8.0f);
@@ -401,24 +541,31 @@ namespace Axiom {
 	namespace {
 		using ScriptPickerEntry = EditorScriptDiscovery::ScriptEntry;
 
-		bool s_ScriptPickerOpen = false;
-		char s_ScriptPickerSearch[128] = {};
-		std::vector<ScriptPickerEntry> s_ScriptPickerEntries;
-		EntityHandle s_ScriptPickerTargetEntity = entt::null;
+		// M28: was four loose TU-statics (s_ScriptPickerOpen, s_ScriptPickerSearch,
+		// s_ScriptPickerEntries, s_ScriptPickerTargetEntity). Wrapped into a single
+		// struct so ScriptComponentInspector::Shutdown can reset them all in one
+		// place when the editor detaches (project switch / hot reload).
+		struct ScriptPickerState {
+			bool Open = false;
+			char Search[128] = {};
+			std::vector<ScriptPickerEntry> Entries;
+			EntityHandle TargetEntity = entt::null;
+		};
+		ScriptPickerState s_PickerState;
 
 		void OpenScriptPicker(EntityHandle entity) {
-			s_ScriptPickerOpen = true;
-			s_ScriptPickerSearch[0] = '\0';
-			s_ScriptPickerTargetEntity = entity;
-			s_ScriptPickerEntries.clear();
-			EditorScriptDiscovery::CollectProjectScriptEntries(s_ScriptPickerEntries);
+			s_PickerState.Open = true;
+			s_PickerState.Search[0] = '\0';
+			s_PickerState.TargetEntity = entity;
+			s_PickerState.Entries.clear();
+			EditorScriptDiscovery::CollectProjectScriptEntries(s_PickerState.Entries);
 		}
 
 		void RenderScriptPicker() {
-			if (!s_ScriptPickerOpen) return;
+			if (!s_PickerState.Open) return;
 
 			ImGui::SetNextWindowSize(ImVec2(320, 380), ImGuiCond_FirstUseEver);
-			if (!ImGui::Begin("Select Script", &s_ScriptPickerOpen)) {
+			if (!ImGui::Begin("Select Script", &s_PickerState.Open)) {
 				ImGui::End();
 				return;
 			}
@@ -426,18 +573,18 @@ namespace Axiom {
 			const float closeButtonSize = ImGui::GetFrameHeight();
 			const float searchWidth = std::max(ImGui::GetContentRegionAvail().x - closeButtonSize - ImGui::GetStyle().ItemSpacing.x, 1.0f);
 			ImGui::SetNextItemWidth(searchWidth);
-			ImGui::InputTextWithHint("##ScriptSearch", "Search...", s_ScriptPickerSearch, sizeof(s_ScriptPickerSearch));
+			ImGui::InputTextWithHint("##ScriptSearch", "Search...", s_PickerState.Search, sizeof(s_PickerState.Search));
 			ImGui::SameLine();
 			if (ImGui::Button("X##ScriptPickerClose", ImVec2(closeButtonSize, closeButtonSize))) {
-				s_ScriptPickerOpen = false;
+				s_PickerState.Open = false;
 			}
 			ImGui::Separator();
 
 			ImGui::BeginChild("##ScriptList");
 
-			std::string filter = ToLowerCopy(std::string(s_ScriptPickerSearch));
+			std::string filter = ToLowerCopy(std::string(s_PickerState.Search));
 
-			for (const auto& entry : s_ScriptPickerEntries) {
+			for (const auto& entry : s_PickerState.Entries) {
 				if (!filter.empty()) {
 					std::string lowerName = ToLowerCopy(entry.ClassName);
 					std::string lowerPath = ToLowerCopy(entry.Path.string());
@@ -453,15 +600,15 @@ namespace Axiom {
 				if (ImGui::Selectable(label.c_str(), false)) {
 					Scene* scene = ScriptEngine::GetScene();
 					if (!scene) scene = SceneManager::Get().GetActiveScene();
-					if (scene && scene->IsValid(s_ScriptPickerTargetEntity)
-						&& scene->HasComponent<ScriptComponent>(s_ScriptPickerTargetEntity)) {
-						auto& sc = scene->GetComponent<ScriptComponent>(s_ScriptPickerTargetEntity);
+					if (scene && scene->IsValid(s_PickerState.TargetEntity)
+						&& scene->HasComponent<ScriptComponent>(s_PickerState.TargetEntity)) {
+						auto& sc = scene->GetComponent<ScriptComponent>(s_PickerState.TargetEntity);
 						if (!sc.HasScript(entry.ClassName, entry.Type)) {
 							sc.AddScript(entry.ClassName, entry.Type);
 							scene->MarkDirty();
 						}
 					}
-					s_ScriptPickerOpen = false;
+					s_PickerState.Open = false;
 				}
 
 				if (ImGui::IsItemHovered() && (truncated || !entry.Path.empty())) {
@@ -623,6 +770,71 @@ namespace Axiom {
 		// Calling RenderPopup here too would render the same popup twice
 		// per frame — duplicating Selectable IDs and triggering ImGui's
 		// "conflicting ID" assertion.
+	}
+
+	void DrawGameSystemFields(Scene& scene, const std::string& className)
+	{
+		if (!ScriptEngine::IsInitialized()) {
+			ImGui::TextDisabled("Script engine not initialized");
+			return;
+		}
+
+		auto& callbacks = ScriptEngine::GetCallbacks();
+		const uint32_t handle = scene.GetGameSystemHandle(className);
+		const bool hasLiveInstance = (handle != 0);
+
+		// Live instance reads see the actual managed state every frame
+		// (matches play-mode behaviour for ScriptComponent fields). Edit
+		// mode falls back to the class's declared defaults — patched
+		// below with whatever the user authored.
+		const char* json = nullptr;
+		if (hasLiveInstance) {
+			json = ScriptEngine::GetGameSystemFields(handle);
+		}
+		else if (callbacks.GetClassFieldDefs) {
+			json = callbacks.GetClassFieldDefs(className.c_str());
+		}
+		if (!json || !*json || (json[0] == '[' && json[1] == ']')) return;
+
+		auto records = ParseEditorFields(json);
+		if (records.empty()) return;
+
+		// In edit mode the JSON only carries class defaults, so overlay
+		// the scene's authored values so the inspector reflects the
+		// state that will be flushed onto the live instance at Awake.
+		// Live instance already returns the up-to-date value so the
+		// patch is unnecessary in that case.
+		if (!hasLiveInstance) {
+			if (const auto* overrides = scene.GetGameSystemFieldValues(className)) {
+				for (auto& rec : records) {
+					auto it = overrides->find(rec.Name);
+					if (it != overrides->end()) rec.Value = it->second;
+				}
+			}
+		}
+
+		// Single-element span carrying the active scene so PropertyDrawer's
+		// MarkSceneDirty hook can dirty the scene on edit. The entity is
+		// otherwise unused — our Get/Set lambdas ignore it.
+		const Entity placeholder = scene.GetEntity(entt::null);
+		const std::span<const Entity> entitySpan(&placeholder, 1);
+
+		for (auto& rec : records) {
+			const std::string fieldKey = "gamesystem:" + className + "." + rec.Name;
+			PropertyDescriptor descriptor = BuildGameSystemFieldDescriptor(std::move(rec), &scene, className);
+			PropertyDrawer::Draw(entitySpan, descriptor, fieldKey);
+		}
+	}
+
+	namespace ScriptComponentInspector {
+		// M28: reset every TU-static the script picker owns, mirroring
+		// ReferencePicker::Shutdown. Called from ImGuiEditorLayer::OnDetach
+		// so a project-switch / hot-reload begins from a clean slate
+		// (no stale entries pointing at the previous project's scripts,
+		// no leftover open flag, no stale entity target).
+		void Shutdown() {
+			s_PickerState = ScriptPickerState{};
+		}
 	}
 
 } // namespace Axiom

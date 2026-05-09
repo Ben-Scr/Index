@@ -33,14 +33,39 @@ namespace Axiom {
 
 	void ScriptEngine::Shutdown()
 	{
-		ShutdownGlobalSystems();
+		// Ordering matters — a managed `OnDestroy` hook on a global system can
+		// re-enter the engine via SetGlobalSystemEnabled / DestroyScriptInstance /
+		// other API, and at that point the runtime is half-torn-down. Setting
+		// s_Initialized=false FIRST makes every reentrant entry point bail at
+		// its `if (!s_Initialized) return;` guard rather than touch live but
+		// being-destroyed state.
+		s_Initialized = false;
+		s_HasUserAssembly = false;
+
+		// Move the live instance list out before iterating so a reentrant
+		// SetGlobalSystemEnabled mutating s_GlobalSystems mid-destroy can't
+		// invalidate the iterator. The local copy is what we tear down; the
+		// real container is cleared up front so any reentrant caller sees an
+		// already-empty world.
+		auto local = std::move(s_GlobalSystems);
+		s_GlobalSystems.clear();
+
+		if (s_Callbacks.DestroyGlobalSystemInstance) {
+			for (auto& instance : local)
+			{
+				if (instance.Handle != 0) {
+					if (s_Callbacks.InvokeGlobalSystemDisable) {
+						s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(instance.Handle));
+					}
+					s_Callbacks.DestroyGlobalSystemInstance(static_cast<int32_t>(instance.Handle));
+				}
+			}
+		}
 
 		// CoreCLR can only init once per process - never close host, only unload assemblies.
 		if (s_Callbacks.UnloadUserAssembly)
 			s_Callbacks.UnloadUserAssembly();
 
-		s_Initialized = false;
-		s_HasUserAssembly = false;
 		s_Callbacks = {};
 		AIM_CORE_INFO_TAG("ScriptEngine", "Script engine shut down (host stays alive)");
 	}
@@ -193,11 +218,19 @@ namespace Axiom {
 			return 0;
 		}
 
+		// Hand the script its persistent UUID, not the volatile RuntimeID:
+		// the same script may also receive component-ref fields that store
+		// the persistent UUID (the editor picker writes UUIDs so refs survive
+		// scene reload). If we passed the RuntimeID here, comparisons like
+		// `script.Entity == component.Entity` would diverge whenever
+		// UUIDComponent.Id != RuntimeID (Scene-origin entities). The native
+		// resolver TryResolveEntityRef accepts either form, so handing back
+		// the UUID does not break any binding.
 		uint64_t entityID = static_cast<uint64_t>(static_cast<uint32_t>(entity));
 		if (s_CurrentScene && s_CurrentScene->IsValid(entity)) {
-			const uint64_t runtimeId = s_CurrentScene->GetRuntimeID(entity);
-			if (runtimeId != 0) {
-				entityID = runtimeId;
+			const uint64_t persistentId = s_CurrentScene->GetEntityPersistentID(entity);
+			if (persistentId != 0) {
+				entityID = persistentId;
 			}
 		}
 
@@ -332,6 +365,11 @@ namespace Axiom {
 	void ScriptEngine::RaiseSceneUnloaded(const std::string& sceneName)
 	{
 		if (s_Initialized && s_Callbacks.RaiseSceneUnloaded) s_Callbacks.RaiseSceneUnloaded(sceneName.c_str());
+	}
+
+	void ScriptEngine::RaiseUiEventDispatch()
+	{
+		if (s_Initialized && s_Callbacks.RaiseUiEventDispatch) s_Callbacks.RaiseUiEventDispatch();
 	}
 
 	uint32_t ScriptEngine::CreateGameSystemInstance(const std::string& className, const std::string& sceneName)
@@ -512,6 +550,28 @@ namespace Axiom {
 				s_Callbacks.InvokeGlobalSystemFixedUpdate(static_cast<int32_t>(instance.Handle));
 			}
 		}
+	}
+
+	const char* ScriptEngine::GetGameSystemFields(uint32_t handle)
+	{
+		if (handle == 0 || !s_Callbacks.GetGameSystemFields) return "[]";
+		return s_Callbacks.GetGameSystemFields(static_cast<int32_t>(handle));
+	}
+
+	void ScriptEngine::SetGameSystemField(uint32_t handle, const char* fieldName, const char* value)
+	{
+		if (handle == 0 || !s_Callbacks.SetGameSystemField) return;
+		s_Callbacks.SetGameSystemField(static_cast<int32_t>(handle), fieldName, value);
+	}
+
+	void ScriptEngine::PumpCoroutinesUpdate(float deltaTime)
+	{
+		if (s_Initialized && s_Callbacks.PumpCoroutinesUpdate) s_Callbacks.PumpCoroutinesUpdate(deltaTime);
+	}
+
+	void ScriptEngine::PumpCoroutinesFixedUpdate()
+	{
+		if (s_Initialized && s_Callbacks.PumpCoroutinesFixedUpdate) s_Callbacks.PumpCoroutinesFixedUpdate();
 	}
 
 } // namespace Axiom

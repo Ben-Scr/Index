@@ -1,7 +1,6 @@
 #include "pch.hpp"
 #include "GizmoRenderer.hpp"
 #include "Shader.hpp"
-#include "Components/Graphics/Camera2DComponent.hpp"
 #include "Gizmo.hpp"
 #include "Serialization/Path.hpp"
 
@@ -10,14 +9,9 @@
 
 namespace Axiom {
 	namespace {
-		struct UploadVertex {
-			float x, y, z;
-			float r, g, b, a;
-		};
+		constexpr GLsizei GizmoVertexStride = static_cast<GLsizei>(sizeof(GizmoUploadVertex));
 
-		constexpr GLsizei GizmoVertexStride = static_cast<GLsizei>(sizeof(UploadVertex));
-
-		static void ConvertVertices(const std::vector<PosColorVertex>& src, std::vector<UploadVertex>& dst) {
+		static void ConvertVertices(const std::vector<PosColorVertex>& src, std::vector<GizmoUploadVertex>& dst) {
 			dst.clear();
 			dst.reserve(src.size());
 			for (const auto& v : src) {
@@ -37,6 +31,7 @@ namespace Axiom {
 	std::unique_ptr<Shader> GizmoRenderer2D::m_GizmoShader;
 	std::vector<PosColorVertex> GizmoRenderer2D::m_GizmoVertices;
 	std::vector<uint32_t> GizmoRenderer2D::m_GizmoIndices;
+	std::vector<GizmoUploadVertex> GizmoRenderer2D::s_UploadBuffer;
 	uint16_t GizmoRenderer2D::m_GizmoViewId = 1;
 	unsigned int GizmoRenderer2D::m_VAO = 0;
 	unsigned int GizmoRenderer2D::m_VBO = 0;
@@ -45,8 +40,6 @@ namespace Axiom {
 	std::size_t GizmoRenderer2D::m_VBOCapacityBytes = 0;
 	std::size_t GizmoRenderer2D::m_EBOCapacityBytes = 0;
 	int GizmoRenderer2D::m_uMVP = -1;
-
-	static std::vector<UploadVertex> s_UploadBuffer;
 
 	namespace {
 		// Power-of-two grow helper; mirrors QuadMesh::NextInstanceCapacity.
@@ -81,7 +74,7 @@ namespace Axiom {
 		glBindVertexArray(m_VAO);
 		glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
 		// Initial capacity sized so first frame's glBufferSubData runs without a realloc.
-		m_VBOCapacityBytes = 4096 * sizeof(UploadVertex);
+		m_VBOCapacityBytes = 4096 * sizeof(GizmoUploadVertex);
 		glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_VBOCapacityBytes), nullptr, GL_DYNAMIC_DRAW);
 
 		glEnableVertexAttribArray(0);
@@ -91,7 +84,7 @@ namespace Axiom {
 		glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, GizmoVertexStride, reinterpret_cast<void*>(sizeof(float) * 3));
 
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
-		m_EBOCapacityBytes = 8192 * sizeof(uint16_t);
+		m_EBOCapacityBytes = 8192 * sizeof(uint32_t);
 		glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_EBOCapacityBytes), nullptr, GL_DYNAMIC_DRAW);
 
 		glBindVertexArray(0);
@@ -219,45 +212,60 @@ namespace Axiom {
 		}
 	}
 
-	void GizmoRenderer2D::Render(GizmoLayerMask layerMask) {
-		if (!m_IsInitialized || !Gizmo::s_IsEnabled)
-			return;
-
-		BuildGeometry(layerMask);
-		// nullptr = use Camera2DComponent::Main() VP.
-		FlushGizmosImpl(nullptr);
-	}
-
 	void GizmoRenderer2D::RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask) {
 		if (!m_IsInitialized || !Gizmo::s_IsEnabled)
 			return;
 
 		BuildGeometry(layerMask);
-		FlushGizmosImpl(&vp);
+		FlushGizmosImpl(vp);
 	}
 
 	// glBufferSubData against grow-only persistent buffer; previously orphan-realloced every frame.
-	void GizmoRenderer2D::FlushGizmosImpl(const glm::mat4* vpOverride) {
+	void GizmoRenderer2D::FlushGizmosImpl(const glm::mat4& vp) {
 		if (!m_IsInitialized || m_GizmoVertices.empty() || !m_GizmoShader || !m_GizmoShader->IsValid())
 			return;
 
+		// Save GL state we mutate so the caller's pipeline is preserved
+		// across the gizmo draw. Mirrors TextRenderer::RenderInstances'
+		// save/restore discipline — without these, the next pass inherits
+		// whatever blend / depth / scissor / line-width we last set.
+		GLfloat savedLineWidth = 1.0f;
+		glGetFloatv(GL_LINE_WIDTH, &savedLineWidth);
+
+		const GLboolean savedBlend = glIsEnabled(GL_BLEND);
+		GLint savedBlendSrcRgb = GL_ONE;
+		GLint savedBlendDstRgb = GL_ZERO;
+		GLint savedBlendSrcAlpha = GL_ONE;
+		GLint savedBlendDstAlpha = GL_ZERO;
+		GLint savedBlendEquationRgb = GL_FUNC_ADD;
+		GLint savedBlendEquationAlpha = GL_FUNC_ADD;
+		glGetIntegerv(GL_BLEND_SRC_RGB, &savedBlendSrcRgb);
+		glGetIntegerv(GL_BLEND_DST_RGB, &savedBlendDstRgb);
+		glGetIntegerv(GL_BLEND_SRC_ALPHA, &savedBlendSrcAlpha);
+		glGetIntegerv(GL_BLEND_DST_ALPHA, &savedBlendDstAlpha);
+		glGetIntegerv(GL_BLEND_EQUATION_RGB, &savedBlendEquationRgb);
+		glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &savedBlendEquationAlpha);
+
+		const GLboolean savedDepth = glIsEnabled(GL_DEPTH_TEST);
+		const GLboolean savedScissor = glIsEnabled(GL_SCISSOR_TEST);
+
 		ConvertVertices(m_GizmoVertices, s_UploadBuffer);
 
-		const std::size_t vboBytes = s_UploadBuffer.size() * sizeof(UploadVertex);
+		const std::size_t vboBytes = s_UploadBuffer.size() * sizeof(GizmoUploadVertex);
 		const std::size_t eboBytes = m_GizmoIndices.size() * sizeof(uint32_t);
 
 		glBindVertexArray(m_VAO);
 
 		glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
 		if (vboBytes > m_VBOCapacityBytes) {
-			m_VBOCapacityBytes = NextBufferCapacityBytes(vboBytes, m_VBOCapacityBytes ? m_VBOCapacityBytes : 4096 * sizeof(UploadVertex));
+			m_VBOCapacityBytes = NextBufferCapacityBytes(vboBytes, m_VBOCapacityBytes ? m_VBOCapacityBytes : 4096 * sizeof(GizmoUploadVertex));
 			glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_VBOCapacityBytes), nullptr, GL_DYNAMIC_DRAW);
 		}
 		glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(vboBytes), s_UploadBuffer.data());
 
 		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_EBO);
 		if (eboBytes > m_EBOCapacityBytes) {
-			m_EBOCapacityBytes = NextBufferCapacityBytes(eboBytes, m_EBOCapacityBytes ? m_EBOCapacityBytes : 8192 * sizeof(uint16_t));
+			m_EBOCapacityBytes = NextBufferCapacityBytes(eboBytes, m_EBOCapacityBytes ? m_EBOCapacityBytes : 8192 * sizeof(uint32_t));
 			glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_EBOCapacityBytes), nullptr, GL_DYNAMIC_DRAW);
 		}
 		glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(eboBytes), m_GizmoIndices.data());
@@ -265,13 +273,7 @@ namespace Axiom {
 		m_GizmoShader->Submit();
 
 		if (m_uMVP >= 0) {
-			if (vpOverride) {
-				glUniformMatrix4fv(m_uMVP, 1, GL_FALSE, glm::value_ptr(*vpOverride));
-			}
-			else if (Camera2DComponent::Main()) {
-				glm::mat4 mvp = Camera2DComponent::Main()->GetViewProjectionMatrix();
-				glUniformMatrix4fv(m_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
-			}
+			glUniformMatrix4fv(m_uMVP, 1, GL_FALSE, glm::value_ptr(vp));
 		}
 
 		glLineWidth(Gizmo::s_LineWidth);
@@ -279,6 +281,15 @@ namespace Axiom {
 
 		glBindVertexArray(0);
 		glUseProgram(0);
+
+		// Restore everything we touched. Order matches TextRenderer's
+		// pattern — equation before func, then enable/disable bits.
+		glLineWidth(savedLineWidth);
+		glBlendEquationSeparate(savedBlendEquationRgb, savedBlendEquationAlpha);
+		glBlendFuncSeparate(savedBlendSrcRgb, savedBlendDstRgb, savedBlendSrcAlpha, savedBlendDstAlpha);
+		if (savedBlend)   glEnable(GL_BLEND);   else glDisable(GL_BLEND);
+		if (savedDepth)   glEnable(GL_DEPTH_TEST);   else glDisable(GL_DEPTH_TEST);
+		if (savedScissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
 	}
 
 	void GizmoRenderer2D::EndFrame() {

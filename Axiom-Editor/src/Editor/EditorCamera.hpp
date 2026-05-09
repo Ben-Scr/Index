@@ -26,6 +26,14 @@ namespace Axiom {
 			UpdateProjection();
 		}
 
+		// Read-only accessors so callers (e.g. prefab-edit mode) can snapshot
+		// the editor's view state when transitioning between contexts and
+		// restore it afterwards. The underlying fields are public for
+		// historical reasons; these getters give a clean read-only surface.
+		Vec2 GetPosition() const { return Position; }
+		float GetOrthographicSize() const { return OrthographicSize; }
+		float GetZoom() const { return Zoom; }
+
 	private:
 		Vec2 Position = { 0.0f, 0.0f };
 		float OrthographicSize = 5.0f;

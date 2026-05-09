@@ -17,6 +17,14 @@ namespace Axiom {
 	class AudioSourceComponent;
 	class Audio;
 
+	/// AudioManager — global audio facade. THREAD CONTRACT: every public static on
+	/// this class is main-thread-only. The internal state (s_audioMap,
+	/// s_soundInstances, s_freeInstanceIndices, s_soundQueue, miniaudio engine) is
+	/// not synchronized; calling from a worker thread is undefined behavior. The
+	/// only state shared with miniaudio's internal audio thread is the per-sound
+	/// `ma_sound`/`ma_resource_manager_data_source` payloads, and even there the
+	/// init/uninit/start/stop entry points must be invoked from the main thread.
+	/// Public statics assert IsMainThread() in debug to catch violators early.
 	class AXIOM_API AudioManager {
 	public:
 		static constexpr uint32_t MAX_CONCURRENT_SOUNDS = 64;

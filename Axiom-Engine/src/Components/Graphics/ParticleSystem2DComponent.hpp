@@ -103,6 +103,18 @@ namespace Axiom {
 
 		void Clear() { m_Particles.clear(); m_Bursts.clear();  m_EmitAccumulator = 0.f; }
 
+		// Re-point this component's emitter back to a (scene, entity) pair.
+		// Used by the duplicate / copy path: assign-copying a component
+		// bypasses the on_construct hook that originally bound m_EmitterScene
+		// / m_EmitterEntity, so the destination would otherwise inherit the
+		// source entity's pointers and drift across scenes / outlive the
+		// original entity. The copyTo callback in the component registry calls
+		// this on the destination after the value-copy.
+		void RebindEmitter(Scene* scene, EntityHandle entity) {
+			m_EmitterScene = scene;
+			m_EmitterEntity = entity;
+		}
+
 		bool PlayOnAwake{ true };
 		ParticleSettings ParticleSettings;
 		EmissionSettings EmissionSettings;

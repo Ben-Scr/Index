@@ -9,11 +9,37 @@
 
 namespace Axiom {
     namespace {
-        // Quantize pixel size to nearest int for cache key. Two requests
-        // for 31.7 px and 32.0 px share the same atlas; sub-pixel size
-        // hinting is not part of the MVP.
+        // Quantize the requested pixel size to a coarser ladder so a
+        // user dragging the FontSize slider doesn't trigger a fresh
+        // atlas bake on every integer step. Each bake runs the full
+        // stbtt_PackFontRanges loop (multi-tier oversample × atlas-side
+        // doubling) on the main thread + a GL upload, so 64 unique
+        // requests in a 1-second drag turn into ~64 synchronous bakes
+        // and a visible FPS drop.
+        //
+        // Rule of thumb: the larger the size, the less perceptually
+        // visible a 1-2 px difference is after GL_LINEAR upscale, so
+        // we step:
+        //   1-16 px:  step 1   (small sizes need precise baking)
+        //   16-32:    step 2
+        //   32-64:    step 4
+        //   64-128:   step 8
+        //   128+:     step 16
+        // A drag through [16, 128] now produces ~30 unique atlases
+        // instead of ~112 — roughly 4× fewer bakes for the same
+        // visual outcome (the renderer's drawScale = requested / baked
+        // already handles intermediate sizes via the atlas's linear
+        // filter).
         int QuantizePixelSize(float pixelSize) {
-            return std::max(1, static_cast<int>(std::lround(pixelSize)));
+            int p = std::max(1, static_cast<int>(std::lround(pixelSize)));
+            auto snap = [](int v, int step) {
+                return ((v + step / 2) / step) * step;
+            };
+            if (p <= 16)  return p;
+            if (p <= 32)  return snap(p, 2);
+            if (p <= 64)  return snap(p, 4);
+            if (p <= 128) return snap(p, 8);
+            return snap(p, 16);
         }
     }
 
@@ -88,8 +114,18 @@ namespace Axiom {
         if (!s_IsInitialized || assetId == 0 || pixelSize <= 0.0f) {
             return FontHandle::Invalid();
         }
+
+        // AssetRegistry has separate DLL/EXE copies (header-only static — see
+        // CLAUDE.md). When the editor imports a new font, only the editor's
+        // copy learns of it; the engine DLL's copy is stale. Force a re-sync
+        // before giving up so newly imported fonts resolve at draw time.
+        // Mirrors the same retry pattern in TextureManager::LoadTextureByUUID.
         if (!AssetRegistry::IsFont(assetId)) {
-            return FontHandle::Invalid();
+            AssetRegistry::MarkDirty();
+            AssetRegistry::Sync();
+            if (!AssetRegistry::IsFont(assetId)) {
+                return FontHandle::Invalid();
+            }
         }
 
         FontHandle existing = FindExisting(assetId, pixelSize);
@@ -97,7 +133,12 @@ namespace Axiom {
             return existing;
         }
 
-        const std::string path = AssetRegistry::ResolvePath(assetId);
+        std::string path = AssetRegistry::ResolvePath(assetId);
+        if (path.empty()) {
+            AssetRegistry::MarkDirty();
+            AssetRegistry::Sync();
+            path = AssetRegistry::ResolvePath(assetId);
+        }
         if (path.empty()) {
             return FontHandle::Invalid();
         }

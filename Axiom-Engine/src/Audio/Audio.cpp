@@ -195,8 +195,11 @@ namespace Axiom {
 	}
 
 	void Audio::Cleanup() {
+		// No shrink_to_fit() — Cleanup is called from the destructor and from the
+		// path that immediately reuses *this, so the next allocation pattern is
+		// either "freed in ~vector" or "filled by LoadFromFile". Shrinking in
+		// between just does an extra alloc/free round-trip for no benefit.
 		m_DecodedFrames.clear();
-		m_DecodedFrames.shrink_to_fit();
 		m_Format = ma_format_unknown;
 		m_Channels = 0;
 		m_SampleRate = 0;

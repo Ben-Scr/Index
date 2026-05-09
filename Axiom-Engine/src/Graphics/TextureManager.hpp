@@ -98,8 +98,15 @@ namespace Axiom {
             }
 
             static bool IsValid(TextureHandle handle) {
-                return handle.index < s_Textures.size() &&
-                    s_Textures[handle.index].IsValid &&
+                // Short-circuit before touching s_Textures: callers (notably
+                // shutdown / scene-teardown code paths) can hold handles past
+                // the manager's lifetime, and indexing into a cleared vector
+                // — even with bounds-checked compares — is fragile. Treating
+                // any handle as invalid before init / after shutdown matches
+                // every other API on this class.
+                if (!s_IsInitialized) return false;
+                if (handle.index >= s_Textures.size()) return false;
+                return s_Textures[handle.index].IsValid &&
                     s_Textures[handle.index].Generation == handle.generation;
             }
 

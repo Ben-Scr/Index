@@ -28,6 +28,20 @@
 #include <chrono>
 
 namespace Axiom {
+
+	// Editor-view debug draw mode (toolbar dropdown). Default renders
+	// the scene normally; Triangle switches glPolygonMode to GL_LINE so
+	// every quad is drawn as its two constituent triangles' edges only;
+	// Mixed runs the full scene render twice — once normally, once in
+	// wireframe — so the user can see the geometry on top of the
+	// shaded result. Affects only the Editor View FBO; the Game View
+	// always renders Default.
+	enum class EditorViewDrawMode : uint8_t {
+		Default = 0,
+		Triangle,
+		Mixed,
+	};
+
 	class ImGuiEditorLayer : public Layer {
 	public:
 		using Layer::Layer;
@@ -116,6 +130,15 @@ namespace Axiom {
 		// reorder (caller should mark scene dirty).
 		bool MoveSiblingNextTo(Scene& scene, EntityHandle dragged, EntityHandle target, bool insertAfter);
 
+		// Resolves a hierarchy drag-drop primary handle into the full set of
+		// entities the gesture should affect. When `primary` is part of the
+		// current multi-selection we return the entire (hierarchy-root-
+		// filtered) selection in selection order; otherwise we return just
+		// `primary`. Filters stale handles. The drag payload itself only
+		// carries the primary entity, so the drop-side resolves the full
+		// set against the editor's selection state at drop time.
+		std::vector<EntityHandle> ResolveDraggedHierarchyEntities(Scene& scene, EntityHandle primary) const;
+
 		// ── Prefab edit mode ──────────────────────────────────────────
 		// Loads `path` into a detached scene and switches the editor's
 		// hierarchy panel + viewport to that scene. The main scene stays
@@ -127,6 +150,11 @@ namespace Axiom {
 		// before tearing the prefab scene down. Either way, returns the
 		// editor to scene-edit mode and clears the prefab selection.
 		void ClosePrefabEditing(bool save);
+		// Persist the in-flight prefab edits to disk and propagate to
+		// live instances WITHOUT exiting prefab edit mode. Used by the
+		// "Save" button in the hierarchy toolbar so the user can keep
+		// iterating on the prefab between explicit save points.
+		bool SavePrefabEditChanges();
 		// True while a detached prefab scene is the editor's focus. The
 		// hierarchy / viewport / inspector all consult this to decide
 		// whether to operate on the detached scene or the active scene.
@@ -145,11 +173,19 @@ namespace Axiom {
 		// the explicit `scene` argument. Used by prefab-edit mode so the
 		// detached prefab scene doesn't get its visuals composited with
 		// the still-loaded "real" scene underneath.
+		//
+		// `uiInWorldSpace` switches the GuiRenderer pass from its default
+		// screen-space ortho to a world-space projection through `vp`.
+		// Used by the Editor View so UI rects pan/zoom with the editor
+		// camera (and selection gizmos line up); the Game View leaves
+		// it false because runtime UI is screen-locked by design.
 		void RenderSceneIntoFBO(ViewportFBO& fbo, Scene& scene,
 			const glm::mat4& vp, const AABB& viewportAABB,
 			bool withGizmos, bool sharedGizmosOnly = false,
 			const Color& clearColor = Color::Background(),
-			bool onlyPassedScene = false);
+			bool onlyPassedScene = false,
+			bool uiInWorldSpace = false,
+			EditorViewDrawMode drawMode = EditorViewDrawMode::Default);
 
 		EntityHandle m_SelectedEntity = entt::null;
 		EntityHandle m_PressedEntity = entt::null;
@@ -170,6 +206,18 @@ namespace Axiom {
 		// Entity ordering for hierarchy drag-reorder
 		std::vector<entt::entity> m_EntityOrder;
 
+		// M30: hierarchy panel was rebuilding the registry-sync diff and
+		// the DFS subtree-emit pass on EVERY frame. The user-visible order
+		// usually doesn't change between frames, so cache the most-recently-
+		// rendered flat list + per-row depths, and only rebuild when an
+		// upstream signal flips m_EntityOrderDirty. New entities pushed onto
+		// m_EntityOrder, scene swap, or any other structural change all
+		// flip this flag; per-frame ImGui interaction (selection, expand/
+		// collapse) does not.
+		bool m_EntityOrderDirty = true;
+		std::vector<entt::entity> m_RenderedEntityOrder;
+		std::vector<int> m_RenderedEntityDepths;
+
 		// ── Prefab edit mode ──────────────────────────────────────────
 		// Owned detached scene that contains the entity tree of the
 		// .prefab being edited. `nullptr` when the editor is in normal
@@ -179,6 +227,23 @@ namespace Axiom {
 		std::string m_PrefabEditPath;
 		EntityHandle m_PrefabEditRootEntity = entt::null;
 		bool m_PrefabEditDirty = false;
+		// Snapshot of the scene-edit editor camera taken at OpenPrefabForEditing
+		// time. Restored on ClosePrefabEditing so the user returns to exactly
+		// the view they had before opening the prefab — the prefab's authored
+		// origin is usually nowhere near the active scene's framing, and forcing
+		// the user to manually pan back to where they were is jarring. The
+		// in-between camera mutations (the auto-focus on the prefab root, and
+		// any user pan/zoom while editing the prefab) write through to the
+		// shared m_EditorCamera and are discarded by this restore path.
+		Vec2 m_PrefabEditSavedCameraPosition{ 0.0f, 0.0f };
+		float m_PrefabEditSavedCameraOrthoSize = 5.0f;
+		float m_PrefabEditSavedCameraZoom = 1.0f;
+		bool m_PrefabEditHasSavedCameraState = false;
+		// Discard-confirmation modal state. Fired when the user clicks
+		// "< Back" (or otherwise tries to leave) while the prefab edit
+		// scene has unsaved changes. The user can Save+Close, Discard
+		// (close without save), or Cancel (stay in edit mode).
+		bool m_ShowPrefabEditDiscardPrompt = false;
 		// Override clear color for the editor viewport while in prefab-
 		// edit mode. The blue tint matches the user-supplied palette and
 		// clearly differentiates prefab editing from scene editing.
@@ -200,6 +265,7 @@ namespace Axiom {
 		EditorCamera m_EditorCamera;
 		bool m_IsEditorViewHovered = false;
 		bool m_IsEditorViewFocused = false;
+		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
 
 		bool m_IsGameViewActive = false;
 		bool m_IsEditorViewActive = false;
@@ -274,9 +340,10 @@ namespace Axiom {
 		bool m_ShowProfiler = false;
 		ProfilerPanel m_ProfilerPanel;
 
-		// Scene list for build
+		// Scene list for build. Re-synced with disk every frame in
+		// RenderBuildPanel so newly-imported scenes auto-appear; manual
+		// drag-drop reordering is preserved across syncs.
 		std::vector<std::string> m_BuildSceneList;
-		bool m_BuildSceneListInitialized = false;
 		int m_DraggedSceneIndex = -1;
 		bool m_PackageManagerInitialized = false;
 		PackageManager m_PackageManager;

@@ -374,8 +374,15 @@ namespace Axiom {
 					std::filesystem::path(project->RootDirectory) / "Packages", canonEc);
 				const std::filesystem::path resolvedDll = std::filesystem::weakly_canonical(
 					std::filesystem::path(localDll), canonEc);
-				const std::string rootStr = packagesRoot.string();
+				std::string rootStr = packagesRoot.string();
 				const std::string dllStr = resolvedDll.string();
+				// Without the trailing separator, "/proj/Packages" would
+				// falsely accept "/proj/PackagesEvil/...". Anchor the
+				// prefix match on a directory boundary by appending the
+				// platform separator before comparing.
+				if (!rootStr.empty() && rootStr.back() != std::filesystem::path::preferred_separator) {
+					rootStr.push_back(std::filesystem::path::preferred_separator);
+				}
 				if (canonEc || rootStr.empty() ||
 					dllStr.size() < rootStr.size() ||
 					dllStr.compare(0, rootStr.size(), rootStr) != 0) {

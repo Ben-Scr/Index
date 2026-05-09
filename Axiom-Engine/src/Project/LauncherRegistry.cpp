@@ -84,10 +84,19 @@ namespace Axiom {
 	void LauncherRegistry::Save() {
 		std::string path = GetRegistryPath();
 
-		// Ensure parent directory exists
-		auto parent = std::filesystem::path(path).parent_path();
-		if (!std::filesystem::exists(parent))
-			std::filesystem::create_directories(parent);
+		// Ensure parent directory exists. create_directories can throw on
+		// permission/IO problems — log and continue so the caller still has
+		// a chance to surface the WriteAllText failure below rather than
+		// crashing the launcher mid-save.
+		try {
+			auto parent = std::filesystem::path(path).parent_path();
+			if (!std::filesystem::exists(parent))
+				std::filesystem::create_directories(parent);
+		}
+		catch (const std::filesystem::filesystem_error& e) {
+			AIM_CORE_WARN_TAG("LauncherRegistry",
+				"Failed to create registry parent directory for '{}': {}", path, e.what());
+		}
 
 		Json::Value root = Json::Value::MakeArray();
 		for (const LauncherProjectEntry& project : m_Projects) {
@@ -97,7 +106,10 @@ namespace Axiom {
 			item.AddMember("lastOpened", project.LastOpened);
 			root.Append(std::move(item));
 		}
-		(void)File::WriteAllText(path, Json::Stringify(root, true));
+		if (!File::WriteAllText(path, Json::Stringify(root, true))) {
+			AIM_CORE_WARN_TAG("LauncherRegistry",
+				"Failed to write launcher registry to '{}'", path);
+		}
 	}
 
 	void LauncherRegistry::AddProject(const std::string& name, const std::string& path) {

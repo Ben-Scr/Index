@@ -193,6 +193,7 @@ public class SpriteRenderer : Component
 // ── TextRenderer ────────────────────────────────────────────────────
 
 public enum TextAlignment { Left = 0, Center = 1, Right = 2 }
+public enum TextWrapMode { None = 0, Word = 1, Character = 2 }
 
 public class TextRenderer : Component
 {
@@ -240,6 +241,18 @@ public class TextRenderer : Component
     {
         get => (TextAlignment)InternalCalls.TextRenderer_GetHAlign(RequireComponent<TextRenderer>());
         set => InternalCalls.TextRenderer_SetHAlign(RequireComponent<TextRenderer>(), (int)value);
+    }
+
+    public TextWrapMode WrapMode
+    {
+        get => (TextWrapMode)InternalCalls.TextRenderer_GetWrapMode(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetWrapMode(RequireComponent<TextRenderer>(), (int)value);
+    }
+
+    public float WrapWidth
+    {
+        get => InternalCalls.TextRenderer_GetWrapWidth(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetWrapWidth(RequireComponent<TextRenderer>(), value);
     }
 
     public int SortingOrder

@@ -20,6 +20,22 @@
 
 namespace Axiom {
 	namespace {
+		// Reject scene/icon strings that try to escape the project tree or carry
+		// shell/OS-control characters. Defense-in-depth: GetSceneFilePath also
+		// guards, but rejecting at load means a tampered axiom-project.json
+		// can't poison BuildSceneList / StartupScene / LastOpenedScene either.
+		bool IsValidSceneName(std::string_view value) {
+			if (value.empty()) return false;
+			if (value.front() == '.') return false;
+			if (value.find("..") != std::string_view::npos) return false;
+			for (char c : value) {
+				if (c == '/' || c == '\\') return false;
+				if (c == ':' || c == '\0') return false;
+				if (c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*') return false;
+			}
+			return true;
+		}
+
 		void ReportCreateProgress(const AxiomProject::CreateProgressCallback& callback, float progress, std::string_view stage) {
 			if (callback) {
 				callback(progress, stage);
@@ -495,8 +511,32 @@ endforeach()
 		root.AddMember("buildHeight", project.BuildHeight);
 		root.AddMember("buildFullscreen", project.BuildFullscreen);
 		root.AddMember("buildResizable", project.BuildResizable);
+		root.AddMember("uiReferenceWidth", project.UIReferenceWidth);
+		root.AddMember("uiReferenceHeight", project.UIReferenceHeight);
+		root.AddMember("uiScaleMatch", project.UIScaleMatch);
 		if (!project.AppIconPath.empty()) {
 			root.AddMember("appIcon", project.AppIconPath);
+		}
+		if (!project.ExecutableName.empty()) {
+			root.AddMember("executableName", project.ExecutableName);
+		}
+
+		{
+			Json::Value splash = Json::Value::MakeObject();
+			splash.AddMember("enabled", project.SplashScreen.Enabled);
+			splash.AddMember("durationSeconds", static_cast<double>(project.SplashScreen.DurationSeconds));
+			splash.AddMember("fadeInSeconds", static_cast<double>(project.SplashScreen.FadeInSeconds));
+			splash.AddMember("fadeOutSeconds", static_cast<double>(project.SplashScreen.FadeOutSeconds));
+			if (!project.SplashScreen.ImagePath.empty()) {
+				splash.AddMember("imagePath", project.SplashScreen.ImagePath);
+			}
+			if (!project.SplashScreen.CustomText.empty()) {
+				splash.AddMember("customText", project.SplashScreen.CustomText);
+			}
+			splash.AddMember("backgroundR", static_cast<double>(project.SplashScreen.BackgroundR));
+			splash.AddMember("backgroundG", static_cast<double>(project.SplashScreen.BackgroundG));
+			splash.AddMember("backgroundB", static_cast<double>(project.SplashScreen.BackgroundB));
+			root.AddMember("splashScreen", std::move(splash));
 		}
 
 		Json::Value buildScenes = Json::Value::MakeArray();
@@ -682,6 +722,15 @@ endforeach()
 	}
 
 	std::string AxiomProject::GetSceneFilePath(const std::string& sceneName) const {
+		// Defense in depth: even though Load() now validates these strings,
+		// GetSceneFilePath is also called from runtime code paths that could
+		// receive untrusted input. Reject anything that contains traversal
+		// characters before we splice it into a filesystem path.
+		if (!IsValidSceneName(sceneName)) {
+			AIM_CORE_WARN_TAG("AxiomProject",
+				"Refusing to resolve scene path for unsafe name '{}'", sceneName);
+			return {};
+		}
 		const std::filesystem::path assetsRoot(AssetsDirectory);
 		const std::string sceneFileName = sceneName + ".scene";
 		std::error_code ec;
@@ -722,7 +771,118 @@ endforeach()
 	}
 
 	bool AxiomProject::Save() const {
-		return File::WriteAllText(ProjectFilePath, Json::Stringify(BuildProjectJson(*this), true));
+		const bool ok = File::WriteAllText(ProjectFilePath, Json::Stringify(BuildProjectJson(*this), true));
+		// Keep the IntelliSense-visible defines file in sync with the project's
+		// CustomDefines + ActiveBuildProfile every time the project is saved.
+		// Failures are logged but non-fatal — a stale props file just means VS
+		// shows the wrong active branches until the next save; runtime
+		// compilation goes through BuildManagedDefineConstants regardless.
+		(void)WriteManagedDefinesProps();
+		return ok;
+	}
+
+	bool AxiomProject::WriteManagedDefinesProps(bool* outAddedImport) const {
+		if (outAddedImport) *outAddedImport = false;
+		if (CsprojPath.empty()) return false;
+
+		// Build the semicolon-separated define list. Mirrors
+		// BuildManagedDefineConstants() but uses literal ';' (props files
+		// don't need the MSBuild command-line %3B escape) and prepends
+		// $(DefineConstants) so the SDK-default DEBUG/TRACE survives.
+		//
+		// AXIOM_EDITOR (NOT AXIOM_BUILD) here: this props file drives
+		// Visual Studio IntelliSense, which represents the editor's
+		// hot-reload compile context — `#if AXIOM_EDITOR` blocks show
+		// as active in VS and `#if AXIOM_BUILD` blocks show as inactive,
+		// mirroring what the editor's `dotnet build … -p:DefineConstants=
+		// AXIOM_EDITOR;…` invocation actually defines. Shipping builds
+		// override DefineConstants on the command line (a global
+		// property), so the props file is ignored at ship time.
+		std::string defines = "$(DefineConstants);AXIOM_EDITOR";
+		const std::string profile = GetActiveBuildProfileDefine();
+		if (!profile.empty()) {
+			defines += ';';
+			defines += profile;
+		}
+		for (const std::string& custom : CustomDefines) {
+			if (custom.empty()) continue;
+			defines += ';';
+			defines += custom;
+		}
+
+		// Emit alongside Packages/AxiomPackages.props so the same .csproj
+		// import pattern works. Don't fail the save if the Packages dir
+		// doesn't exist yet (project might be mid-create) — try to create it.
+		const std::filesystem::path csprojDir =
+			std::filesystem::path(CsprojPath).parent_path();
+		const std::filesystem::path packagesDir = csprojDir / "Packages";
+		std::error_code ec;
+		std::filesystem::create_directories(packagesDir, ec);
+		const std::filesystem::path propsPath = packagesDir / "AxiomDefines.props";
+
+		// Brief, hand-edited header so users who open it understand it
+		// regenerates on every save.
+		std::string contents =
+			"<!-- Auto-generated by the Axiom editor on every project save. -->\n"
+			"<!-- Edit Project Settings → Build Settings → Custom Defines instead. -->\n"
+			"<Project>\n"
+			"  <PropertyGroup>\n"
+			"    <DefineConstants>" + defines + "</DefineConstants>\n"
+			"  </PropertyGroup>\n"
+			"</Project>\n";
+
+		const bool wrote = File::WriteAllText(propsPath.string(), contents);
+		if (!wrote) {
+			AIM_CORE_WARN_TAG("AxiomProject",
+				"Failed to write {} — IntelliSense will not see custom defines.",
+				propsPath.string());
+			return false;
+		}
+
+		// Migration for projects created before this mechanism existed:
+		// inject `<Import Project="Packages/AxiomDefines.props" ... />` if
+		// the .csproj doesn't already have it. Idempotent — looks for the
+		// substring before patching.
+		if (!File::Exists(CsprojPath)) return true;
+		std::string csproj = File::ReadAllText(CsprojPath);
+		if (csproj.find("Packages/AxiomDefines.props") != std::string::npos
+			|| csproj.find("Packages\\AxiomDefines.props") != std::string::npos)
+		{
+			return true;
+		}
+
+		// Insert right after the AxiomPackages.props import so both
+		// Axiom-managed imports stay grouped. Fall back to inserting
+		// before </Project> if the AxiomPackages line isn't found.
+		const std::string anchor = "Packages/AxiomPackages.props";
+		const size_t anchorPos = csproj.find(anchor);
+		const std::string newImport =
+			"\n  <Import Project=\"Packages/AxiomDefines.props\" "
+			"Condition=\"Exists('Packages/AxiomDefines.props')\" />";
+
+		bool patched = false;
+		if (anchorPos != std::string::npos) {
+			const size_t lineEnd = csproj.find('\n', anchorPos);
+			if (lineEnd != std::string::npos) {
+				csproj.insert(lineEnd, newImport);
+				patched = true;
+			}
+		}
+		if (!patched) {
+			const size_t closeTag = csproj.rfind("</Project>");
+			if (closeTag != std::string::npos) {
+				csproj.insert(closeTag, newImport + "\n");
+				patched = true;
+			}
+		}
+		if (patched) {
+			if (File::WriteAllText(CsprojPath, csproj)) {
+				if (outAddedImport) *outAddedImport = true;
+				AIM_CORE_INFO_TAG("AxiomProject",
+					"Migrated '{}' to import AxiomDefines.props.", CsprojPath);
+			}
+		}
+		return true;
 	}
 
 	std::string AxiomProject::GetDefaultProjectsDir() {
@@ -762,13 +922,25 @@ endforeach()
 				if (const Json::Value* startupValue = root.FindMember("startupScene")) {
 					const std::string startupScene = startupValue->AsStringOr();
 					if (!startupScene.empty()) {
-						project.StartupScene = startupScene;
+						if (IsValidSceneName(startupScene)) {
+							project.StartupScene = startupScene;
+						}
+						else {
+							AIM_CORE_WARN_TAG("AxiomProject",
+								"Project '{}': ignoring invalid startupScene '{}'", configPath, startupScene);
+						}
 					}
 				}
 				if (const Json::Value* lastSceneValue = root.FindMember("lastOpenedScene")) {
 					const std::string lastScene = lastSceneValue->AsStringOr();
 					if (!lastScene.empty()) {
-						project.LastOpenedScene = lastScene;
+						if (IsValidSceneName(lastScene)) {
+							project.LastOpenedScene = lastScene;
+						}
+						else {
+							AIM_CORE_WARN_TAG("AxiomProject",
+								"Project '{}': ignoring invalid lastOpenedScene '{}'", configPath, lastScene);
+						}
 					}
 				}
 				if (const Json::Value* gameViewAspectValue = root.FindMember("gameViewAspect")) {
@@ -781,27 +953,80 @@ endforeach()
 					project.GameViewVsync = gameViewVsyncValue->AsBoolOr(true);
 				}
 				if (const Json::Value* buildWidthValue = root.FindMember("buildWidth")) {
-					project.BuildWidth = buildWidthValue->AsIntOr(1280);
+					project.BuildWidth = buildWidthValue->AsIntOr(1920);
 				}
 				if (const Json::Value* buildHeightValue = root.FindMember("buildHeight")) {
-					project.BuildHeight = buildHeightValue->AsIntOr(720);
+					project.BuildHeight = buildHeightValue->AsIntOr(1080);
 				}
 				if (const Json::Value* fullscreenValue = root.FindMember("buildFullscreen")) {
-					project.BuildFullscreen = fullscreenValue->AsBoolOr(false);
+					project.BuildFullscreen = fullscreenValue->AsBoolOr(true);
 				}
 				if (const Json::Value* resizableValue = root.FindMember("buildResizable")) {
 					project.BuildResizable = resizableValue->AsBoolOr(true);
 				}
+				if (const Json::Value* uiRefWidthValue = root.FindMember("uiReferenceWidth")) {
+					project.UIReferenceWidth = std::max(1, uiRefWidthValue->AsIntOr(project.UIReferenceWidth));
+				}
+				if (const Json::Value* uiRefHeightValue = root.FindMember("uiReferenceHeight")) {
+					project.UIReferenceHeight = std::max(1, uiRefHeightValue->AsIntOr(project.UIReferenceHeight));
+				}
+				if (const Json::Value* uiMatchValue = root.FindMember("uiScaleMatch")) {
+					const float raw = static_cast<float>(uiMatchValue->AsDoubleOr(project.UIScaleMatch));
+					project.UIScaleMatch = std::clamp(raw, 0.0f, 1.0f);
+				}
 				if (const Json::Value* iconValue = root.FindMember("appIcon")) {
-					project.AppIconPath = iconValue->AsStringOr();
+					const std::string iconPath = iconValue->AsStringOr();
+					if (iconPath.empty() || IsValidSceneName(iconPath)) {
+						project.AppIconPath = iconPath;
+					}
+					else {
+						AIM_CORE_WARN_TAG("AxiomProject",
+							"Project '{}': ignoring invalid appIcon '{}'", configPath, iconPath);
+					}
+				}
+				if (const Json::Value* exeNameValue = root.FindMember("executableName")) {
+					project.ExecutableName = exeNameValue->AsStringOr();
+				}
+				if (const Json::Value* splashValue = root.FindMember("splashScreen")) {
+					if (const Json::Value* v = splashValue->FindMember("enabled")) {
+						project.SplashScreen.Enabled = v->AsBoolOr(true);
+					}
+					if (const Json::Value* v = splashValue->FindMember("durationSeconds")) {
+						project.SplashScreen.DurationSeconds = static_cast<float>(v->AsDoubleOr(2.5));
+					}
+					if (const Json::Value* v = splashValue->FindMember("fadeInSeconds")) {
+						project.SplashScreen.FadeInSeconds = static_cast<float>(v->AsDoubleOr(0.5));
+					}
+					if (const Json::Value* v = splashValue->FindMember("fadeOutSeconds")) {
+						project.SplashScreen.FadeOutSeconds = static_cast<float>(v->AsDoubleOr(0.5));
+					}
+					if (const Json::Value* v = splashValue->FindMember("imagePath")) {
+						project.SplashScreen.ImagePath = v->AsStringOr();
+					}
+					if (const Json::Value* v = splashValue->FindMember("customText")) {
+						project.SplashScreen.CustomText = v->AsStringOr();
+					}
+					if (const Json::Value* v = splashValue->FindMember("backgroundR")) {
+						project.SplashScreen.BackgroundR = static_cast<float>(v->AsDoubleOr(0.05));
+					}
+					if (const Json::Value* v = splashValue->FindMember("backgroundG")) {
+						project.SplashScreen.BackgroundG = static_cast<float>(v->AsDoubleOr(0.05));
+					}
+					if (const Json::Value* v = splashValue->FindMember("backgroundB")) {
+						project.SplashScreen.BackgroundB = static_cast<float>(v->AsDoubleOr(0.07));
+					}
 				}
 				if (const Json::Value* buildScenesValue = root.FindMember("buildScenes")) {
 					project.BuildSceneList.clear();
 					for (const Json::Value& sceneValue : buildScenesValue->GetArray()) {
 						const std::string sceneName = sceneValue.AsStringOr();
-						if (!sceneName.empty()) {
-							project.BuildSceneList.push_back(sceneName);
+						if (sceneName.empty()) continue;
+						if (!IsValidSceneName(sceneName)) {
+							AIM_CORE_WARN_TAG("AxiomProject",
+								"Project '{}': skipping invalid buildScenes entry '{}'", configPath, sceneName);
+							continue;
 						}
+						project.BuildSceneList.push_back(sceneName);
 					}
 				}
 				if (const Json::Value* globalSystemsValue = root.FindMember("globalSystems")) {
@@ -889,6 +1114,34 @@ endforeach()
 			project.EngineVersion = AIM_VERSION;
 
 		ResolvePaths(project);
+
+		// One-shot migration: projects created before the Assets-wide compile
+		// glob shipped have their csproj locked to "Assets\Scripts\**\*.cs",
+		// so .cs files placed elsewhere under Assets/ silently fail to compile.
+		// Rewrite the narrow glob to the broad one in place. The check is an
+		// exact string match so it stays a no-op once migrated and won't
+		// disturb users who deliberately scoped their compile glob.
+		if (File::Exists(project.CsprojPath)) {
+			std::string csproj = File::ReadAllText(project.CsprojPath);
+			constexpr std::string_view oldGlob = "<Compile Include=\"Assets\\Scripts\\**\\*.cs\" />";
+			constexpr std::string_view newGlob = "<Compile Include=\"Assets\\**\\*.cs\" />";
+			const size_t pos = csproj.find(oldGlob);
+			if (pos != std::string::npos) {
+				csproj.replace(pos, oldGlob.size(), newGlob);
+				if (File::WriteAllText(project.CsprojPath, csproj)) {
+					AIM_CORE_INFO_TAG("AxiomProject", "Migrated csproj compile glob to Assets\\**\\*.cs in '{}'", project.CsprojPath);
+				}
+			}
+		}
+
+		// Refresh AxiomDefines.props so the file on disk matches what the
+		// project just deserialised. This both writes the props file (if
+		// missing) and patches the .csproj to import it (one-shot migration
+		// for projects pre-dating the mechanism). Save() also calls this,
+		// but doing it here too means a fresh open already shows the right
+		// active branches in VS without requiring an explicit save first.
+		(void)project.WriteManagedDefinesProps();
+
 		return project;
 	}
 
@@ -1033,7 +1286,7 @@ endforeach()
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="Assets\Scripts\**\*.cs" />
+    <Compile Include="Assets\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -1045,6 +1298,8 @@ endforeach()
 
   <!-- Auto-generated by Axiom Package Manager every time a package is installed/removed. -->
   <Import Project="Packages/AxiomPackages.props" Condition="Exists('Packages/AxiomPackages.props')" />
+  <!-- Auto-generated on every project save with CustomDefines + active build profile. -->
+  <Import Project="Packages/AxiomDefines.props" Condition="Exists('Packages/AxiomDefines.props')" />
 )CS" + existingPackageRefs + R"CS(
 </Project>
 )CS";

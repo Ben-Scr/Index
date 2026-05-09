@@ -21,6 +21,35 @@ namespace Axiom {
         constexpr size_t k_VerticesPerGlyph = 6;
         constexpr size_t k_InitialVertexCapacity = 1024;
 
+        // Decode the next UTF-8 codepoint starting at byte `idx` in `s`.
+        // Writes the decoded codepoint to `outCp` and the consumed byte
+        // count (1-4) to `outLen`. On a malformed lead/continuation byte
+        // we yield the raw byte as a Latin-1 codepoint with len=1 — that
+        // keeps callers making forward progress and ensures a stray
+        // 0xC3 (the German "ä" lead byte without its continuation) at
+        // least renders something instead of stalling the loop.
+        // Returns false past the end of the string.
+        bool DecodeUtf8(std::string_view s, size_t idx, uint32_t& outCp, int& outLen) {
+            if (idx >= s.size()) { outCp = 0; outLen = 0; return false; }
+            const unsigned char b0 = static_cast<unsigned char>(s[idx]);
+            if (b0 < 0x80) { outCp = b0; outLen = 1; return true; }
+            int needed = 0;
+            uint32_t cp = 0;
+            if      ((b0 & 0xE0) == 0xC0) { needed = 2; cp = b0 & 0x1F; }
+            else if ((b0 & 0xF0) == 0xE0) { needed = 3; cp = b0 & 0x0F; }
+            else if ((b0 & 0xF8) == 0xF0) { needed = 4; cp = b0 & 0x07; }
+            else { outCp = b0; outLen = 1; return true; } // bad lead byte
+            if (idx + needed > s.size()) { outCp = b0; outLen = 1; return true; }
+            for (int i = 1; i < needed; ++i) {
+                const unsigned char b = static_cast<unsigned char>(s[idx + i]);
+                if ((b & 0xC0) != 0x80) { outCp = b0; outLen = 1; return true; }
+                cp = (cp << 6) | (b & 0x3F);
+            }
+            outCp = cp;
+            outLen = needed;
+            return true;
+        }
+
         // Pixel-space width of a single line at the font's baked size.
         // Used for left/center/right alignment offset. `letterSpacing` is
         // the same screen-pixel-domain value we add per advance step in
@@ -30,8 +59,13 @@ namespace Axiom {
             float width = 0.0f;
             uint32_t prev = 0;
             int glyphCount = 0;
-            for (size_t i = 0; i < line.size(); ++i) {
-                const uint32_t cp = static_cast<uint8_t>(line[i]);
+            size_t i = 0;
+            while (i < line.size()) {
+                uint32_t cp = 0;
+                int len = 0;
+                if (!DecodeUtf8(line, i, cp, len)) break;
+                i += static_cast<size_t>(len);
+
                 const GlyphMetrics* g = font.GetGlyph(cp);
                 if (!g) {
                     prev = 0;
@@ -51,17 +85,69 @@ namespace Axiom {
         }
     }
 
+    Vec2 TextRenderer::MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing) {
+        if (text.empty()) {
+            return Vec2{ 0.0f, font.GetLineHeight() };
+        }
+
+        float maxLineWidth = 0.0f;
+        int lineCount = 0;
+        size_t lineStart = 0;
+        const size_t textSize = text.size();
+        while (lineStart <= textSize) {
+            size_t lineEnd = text.find('\n', lineStart);
+            if (lineEnd == std::string_view::npos) {
+                lineEnd = textSize;
+            }
+            std::string_view line(text.data() + lineStart, lineEnd - lineStart);
+            const float w = MeasureLineWidth(font, line, letterSpacing);
+            if (w > maxLineWidth) maxLineWidth = w;
+            ++lineCount;
+            if (lineEnd == textSize) break;
+            lineStart = lineEnd + 1;
+        }
+
+        return Vec2{ maxLineWidth, font.GetLineHeight() * static_cast<float>(lineCount) };
+    }
+
     Font* TextRenderer::ResolveFont(TextRendererComponent& text) {
+        return ResolveFontAtPixelSize(text, text.FontSize);
+    }
+
+    Font* TextRenderer::ResolveFontAtPixelSize(TextRendererComponent& text, float pixelSize) {
+        // The cached ResolvedFont handle is keyed on a single pixel size,
+        // but UI text drawn under a scaled RectTransform wants the atlas
+        // baked at the on-screen size (FontSize × parent scale) for sharp
+        // glyphs — same final raster size as bumping FontSize directly.
+        // FontManager::LoadFontByUUID caches per (assetId, quantized px),
+        // so a scaled-up button shares an atlas with the equivalently-
+        // sized non-scaled label. We refresh ResolvedFont when the
+        // requested pixelSize doesn't match what's currently cached so
+        // an animated scale doesn't keep re-rendering through a stale
+        // smaller atlas.
+        //
+        // Bake size is capped — even with the 4096² atlas + 1× oversample
+        // fallback, a 95-glyph ASCII range stops fitting somewhere around
+        // 256–300 px. Above the cap we bake at the cap and let the
+        // renderer's `drawScale = requested / baked` upscale via the
+        // GL_LINEAR filter. The alternative is silently substituting
+        // DefaultSans for the user's chosen font, which is the bug this
+        // cap exists to prevent.
+        constexpr float k_MaxBakedPixelSize = 192.0f;
+        const float requested = pixelSize > 0.0f ? pixelSize : text.FontSize;
+        const float bakeRequest = std::min(requested, k_MaxBakedPixelSize);
+
         if (FontManager::IsValid(text.ResolvedFont)) {
-            Font* font = FontManager::GetFont(text.ResolvedFont);
-            if (font) {
-                return font;
+            if (Font* font = FontManager::GetFont(text.ResolvedFont)) {
+                if (std::lround(font->GetPixelSize()) == std::lround(bakeRequest)) {
+                    return font;
+                }
             }
         }
 
         const uint64_t uuid = static_cast<uint64_t>(text.FontAssetId);
         if (uuid != 0) {
-            text.ResolvedFont = FontManager::LoadFontByUUID(uuid, text.FontSize);
+            text.ResolvedFont = FontManager::LoadFontByUUID(uuid, bakeRequest);
             if (Font* f = FontManager::GetFont(text.ResolvedFont)) {
                 return f;
             }
@@ -175,26 +261,155 @@ namespace Axiom {
         m_VBOCapacity = newCapacity;
     }
 
-    void TextRenderer::EmitText(Font& font, const std::string& text,
+    void TextRenderer::EmitText(Font& font, std::string_view text,
         float worldX, float worldY,
         float scale, const Color& color,
-        TextAlignment alignment, float letterSpacing) {
+        TextAlignment alignment, float letterSpacing,
+        TextWrapMode wrapMode, float wrapWidthPixels,
+        float rotation, Vec2 pivot) {
 
-        // Iterate per line so explicit `\n` produces wrapping. Future
-        // layout work (auto-wrap, RTL) plugs in here.
+        // Optional rotation around `pivot` (world coords). cos/sin are
+        // computed once per call; the per-vertex branch checks
+        // applyRotation so the unrotated path stays a plain copy. Used
+        // by UI text under a rotated RectTransform — without it,
+        // labels stayed visually upright while their parent rect
+        // rotated, producing the "100% sits horizontal under a tilted
+        // progress bar" symptom.
+        const bool applyRotation = rotation != 0.0f;
+        const float rotC = applyRotation ? std::cos(rotation) : 1.0f;
+        const float rotS = applyRotation ? std::sin(rotation) : 0.0f;
+        auto rot = [&](float x, float y) -> std::pair<float, float> {
+            if (!applyRotation) return { x, y };
+            const float dx = x - pivot.x;
+            const float dy = y - pivot.y;
+            return { pivot.x + rotC * dx - rotS * dy,
+                     pivot.y + rotS * dx + rotC * dy };
+        };
+
+        // Iterate per line so explicit `\n` produces wrapping. Auto-wrap
+        // sub-divides each `\n` segment into one or more "visual lines"
+        // before alignment/emit, so all the existing alignment math
+        // continues to work line-by-line.
         const float lineHeight = font.GetLineHeight() * scale;
 
-        size_t lineStart = 0;
-        int lineIndex = 0;
-        const size_t textSize = text.size();
+        // Wrap-width is supplied in screen-pixel units (the same domain
+        // as font advances); divide by `scale` once so the wrap check
+        // stays in pixel-domain when measuring against MeasureLineWidth.
+        const bool autoWrap =
+            wrapMode != TextWrapMode::None && wrapWidthPixels > 0.0f;
 
-        while (lineStart <= textSize) {
-            size_t lineEnd = text.find('\n', lineStart);
-            if (lineEnd == std::string::npos) {
-                lineEnd = textSize;
+        // Stash visual lines as (start, end) offsets into `text` so we
+        // can run the existing per-line alignment + emit loop unchanged.
+        // m_WrapScratch is a member to avoid per-call heap churn — it's
+        // a small std::vector that stays warm across frames.
+        m_WrapScratch.clear();
+
+        auto emitVisualLine = [&](size_t s, size_t e) {
+            m_WrapScratch.push_back({ s, e });
+        };
+
+        // Wrap a single hard-break segment into one or more visual lines.
+        // Word mode breaks at the last whitespace before the wrap-width;
+        // Character mode breaks at the next overflow glyph. If a single
+        // word doesn't fit, both modes fall back to character splits so
+        // unbreakable runs still render (they just overflow visually).
+        auto wrapSegment = [&](size_t segStart, size_t segEnd) {
+            if (!autoWrap || segStart >= segEnd) {
+                emitVisualLine(segStart, segEnd);
+                return;
             }
 
-            std::string_view line(text.data() + lineStart, lineEnd - lineStart);
+            size_t lineStartIdx = segStart;
+            size_t lastBreakIdx = std::string_view::npos; // last whitespace candidate
+            float widthSinceLineStart = 0.0f;
+            uint32_t prev = 0;
+            int glyphsOnLine = 0;
+
+            // Manual byte index because UTF-8 codepoints are 1-4 bytes;
+            // a for-loop with ++i would step into the middle of a
+            // multi-byte sequence. `glyphStart` captures where the
+            // current codepoint begins so wraps split on glyph
+            // boundaries, never inside a sequence.
+            size_t i = segStart;
+            while (i < segEnd) {
+                const size_t glyphStart = i;
+                uint32_t cp = 0;
+                int len = 0;
+                if (!DecodeUtf8(text, i, cp, len)) break;
+                const size_t nextI = i + static_cast<size_t>(len);
+                i = nextI;
+
+                const GlyphMetrics* g = font.GetGlyph(cp);
+                if (!g) { prev = 0; continue; }
+
+                float advance = g->XAdvance;
+                if (prev != 0) advance += font.GetKerning(prev, cp);
+                if (glyphsOnLine > 0) advance += letterSpacing;
+
+                const float candidate = widthSinceLineStart + advance;
+
+                if (candidate > wrapWidthPixels && glyphsOnLine > 0) {
+                    if (wrapMode == TextWrapMode::Word
+                        && lastBreakIdx != std::string_view::npos
+                        && lastBreakIdx > lineStartIdx)
+                    {
+                        // Break at the last whitespace; consume the
+                        // whitespace itself (skip it on the next line).
+                        emitVisualLine(lineStartIdx, lastBreakIdx);
+                        lineStartIdx = lastBreakIdx + 1;
+                        // Re-measure leftover after the break — could
+                        // be empty, could still overflow if the next
+                        // word alone is too wide. Restart at lineStart
+                        // and re-decode from there.
+                        i = lineStartIdx;
+                        if (i >= segEnd) { lineStartIdx = i; break; }
+                        widthSinceLineStart = 0.0f;
+                        lastBreakIdx = std::string_view::npos;
+                        prev = 0;
+                        glyphsOnLine = 0;
+                        continue;
+                    }
+                    // Character wrap, or word-wrap with no prior break:
+                    // break right before this glyph. Rewind to
+                    // glyphStart so the new line re-decodes it.
+                    emitVisualLine(lineStartIdx, glyphStart);
+                    lineStartIdx = glyphStart;
+                    i = glyphStart;
+                    widthSinceLineStart = 0.0f;
+                    lastBreakIdx = std::string_view::npos;
+                    prev = 0;
+                    glyphsOnLine = 0;
+                    continue;
+                }
+
+                widthSinceLineStart = candidate;
+                if (cp == ' ' || cp == '\t') {
+                    lastBreakIdx = glyphStart;
+                }
+                prev = cp;
+                ++glyphsOnLine;
+            }
+
+            if (lineStartIdx < segEnd) {
+                emitVisualLine(lineStartIdx, segEnd);
+            }
+        };
+
+        size_t segStart = 0;
+        const size_t textSize = text.size();
+        while (segStart <= textSize) {
+            size_t segEnd = text.find('\n', segStart);
+            if (segEnd == std::string_view::npos) {
+                segEnd = textSize;
+            }
+            wrapSegment(segStart, segEnd);
+            if (segEnd == textSize) break;
+            segStart = segEnd + 1;
+        }
+
+        for (size_t lineIndex = 0; lineIndex < m_WrapScratch.size(); ++lineIndex) {
+            const auto [lineBegin, lineEnd] = m_WrapScratch[lineIndex];
+            std::string_view line(text.data() + lineBegin, lineEnd - lineBegin);
             const float lineWidth = MeasureLineWidth(font, line, letterSpacing) * scale;
 
             float alignOffset = 0.0f;
@@ -213,8 +428,13 @@ namespace Axiom {
 
             uint32_t prev = 0;
             int glyphsOnLine = 0;
-            for (size_t i = 0; i < line.size(); ++i) {
-                const uint32_t cp = static_cast<uint8_t>(line[i]);
+            size_t i = 0;
+            while (i < line.size()) {
+                uint32_t cp = 0;
+                int len = 0;
+                if (!DecodeUtf8(line, i, cp, len)) break;
+                i += static_cast<size_t>(len);
+
                 const GlyphMetrics* g = font.GetGlyph(cp);
                 if (!g) {
                     prev = 0;
@@ -240,13 +460,18 @@ namespace Axiom {
                     const float x1 = x0 + g->Width * scale;
                     const float y1 = y0 - g->Height * scale;
 
+                    auto [tlX, tlY] = rot(x0, y0);
+                    auto [trX, trY] = rot(x1, y0);
+                    auto [brX, brY] = rot(x1, y1);
+                    auto [blX, blY] = rot(x0, y1);
+
                     // Two triangles, wound CCW from the camera's view so
                     // the engine-wide GL_BACK cull doesn't drop them.
                     // Sprites use the same BL → BR → TR convention.
-                    TextVertex vTL{ x0, y0, g->U0, g->V0, color.r, color.g, color.b, color.a };
-                    TextVertex vTR{ x1, y0, g->U1, g->V0, color.r, color.g, color.b, color.a };
-                    TextVertex vBR{ x1, y1, g->U1, g->V1, color.r, color.g, color.b, color.a };
-                    TextVertex vBL{ x0, y1, g->U0, g->V1, color.r, color.g, color.b, color.a };
+                    TextVertex vTL{ tlX, tlY, g->U0, g->V0, color.r, color.g, color.b, color.a };
+                    TextVertex vTR{ trX, trY, g->U1, g->V0, color.r, color.g, color.b, color.a };
+                    TextVertex vBR{ brX, brY, g->U1, g->V1, color.r, color.g, color.b, color.a };
+                    TextVertex vBL{ blX, blY, g->U0, g->V1, color.r, color.g, color.b, color.a };
 
                     m_Vertices.push_back(vBL);
                     m_Vertices.push_back(vBR);
@@ -260,10 +485,6 @@ namespace Axiom {
                 ++glyphsOnLine;
                 prev = cp;
             }
-
-            if (lineEnd == textSize) break;
-            lineStart = lineEnd + 1;
-            ++lineIndex;
         }
     }
 
@@ -278,15 +499,16 @@ namespace Axiom {
         m_Runs.clear();
 
         // Sort indices into commands rather than the input span (caller
-        // owns it and may need it intact for later use).
-        std::vector<size_t> order;
-        order.reserve(commands.size());
+        // owns it and may need it intact for later use). m_Order is a
+        // member so its capacity persists across frames — clear() keeps it.
+        m_Order.clear();
+        m_Order.reserve(commands.size());
         for (size_t i = 0; i < commands.size(); ++i) {
             if (commands[i].FontPtr && !commands[i].Text.empty()) {
-                order.push_back(i);
+                m_Order.push_back(i);
             }
         }
-        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        std::sort(m_Order.begin(), m_Order.end(), [&](size_t a, size_t b) {
             const auto& ca = commands[a];
             const auto& cb = commands[b];
             if (ca.SortingLayer != cb.SortingLayer) return ca.SortingLayer < cb.SortingLayer;
@@ -294,8 +516,8 @@ namespace Axiom {
             return ca.FontPtr < cb.FontPtr;
         });
 
-        for (size_t i = 0; i < order.size(); ) {
-            const TextDrawCmd& head = commands[order[i]];
+        for (size_t i = 0; i < m_Order.size(); ) {
+            const TextDrawCmd& head = commands[m_Order[i]];
             GlyphRun run;
             run.Key.AtlasTexture = head.FontPtr->GetAtlasTexture();
             run.Key.SortingOrder = head.SortingOrder;
@@ -303,20 +525,20 @@ namespace Axiom {
             run.VertexStart = m_Vertices.size();
 
             size_t j = i;
-            while (j < order.size()) {
-                const TextDrawCmd& cmd = commands[order[j]];
+            while (j < m_Order.size()) {
+                const TextDrawCmd& cmd = commands[m_Order[j]];
                 if (cmd.FontPtr->GetAtlasTexture() != run.Key.AtlasTexture
                     || cmd.SortingOrder != run.Key.SortingOrder
                     || cmd.SortingLayer != run.Key.SortingLayer)
                 {
                     break;
                 }
-                // EmitText still expects std::string&; build a temporary
-                // backed by string_view's contents. Cheap because EmitText
-                // doesn't keep a reference past the call.
-                std::string buffer(cmd.Text);
-                EmitText(*cmd.FontPtr, buffer, cmd.X, cmd.Y, cmd.Scale,
-                    cmd.Tint, cmd.Align, cmd.LetterSpacing);
+                // EmitText takes string_view directly — no per-glyph-run
+                // std::string allocation.
+                EmitText(*cmd.FontPtr, cmd.Text, cmd.X, cmd.Y, cmd.Scale,
+                    cmd.Tint, cmd.Align, cmd.LetterSpacing,
+                    cmd.Wrap, cmd.WrapWidthPixels,
+                    cmd.Rotation, cmd.Pivot);
                 ++j;
             }
 
@@ -392,10 +614,12 @@ namespace Axiom {
             return;
         }
 
-        // Reuse m_Pending's capacity across frames — the per-frame text-list size
-        // is roughly stable, and the inner clear() keeps capacity intact so we
-        // avoid the per-frame heap churn of a fresh local vector.
-        m_Pending.clear();
+        // Reuse m_PendingDrawCmds's capacity across frames — the per-frame
+        // text-list size is roughly stable, and clear() keeps capacity intact
+        // so we avoid the per-frame heap churn of a fresh local vector. The
+        // entries are populated directly as TextDrawCmd so we can hand the
+        // member to RenderInstances without an intermediate copy.
+        m_PendingDrawCmds.clear();
 
         // Walk all visible TextRendererComponents on entities with a
         // world-space Transform2D (separate from UI text, which lives on
@@ -429,38 +653,29 @@ namespace Axiom {
                 * tr.Scale.x
                 / k_TextPixelsPerWorldUnit;
 
-            PendingText p;
-            p.FontPtr = font;
-            p.Text = &text.Text;
-            p.WorldX = tr.Position.x;
-            p.WorldY = tr.Position.y;
-            p.Scale = drawScale;
-            p.LetterSpacing = text.LetterSpacing;
-            p.Tint = text.Color;
-            p.Align = text.HAlign;
-            p.SortingOrder = text.SortingOrder;
-            p.SortingLayer = text.SortingLayer;
-            m_Pending.push_back(p);
+            TextDrawCmd cmd;
+            cmd.FontPtr = font;
+            cmd.Text = std::string_view(text.Text);
+            cmd.X = tr.Position.x;
+            cmd.Y = tr.Position.y;
+            cmd.Scale = drawScale;
+            cmd.LetterSpacing = text.LetterSpacing;
+            cmd.Tint = text.Color;
+            cmd.Align = text.HAlign;
+            cmd.Wrap = text.WrapMode;
+            // World-space text has no ambient rect, so wrapping is
+            // gated entirely on the explicit per-component WrapWidth.
+            // Express it in atlas-pixel units (same domain MeasureLineWidth
+            // uses) so EmitText doesn't have to know about scale.
+            cmd.WrapWidthPixels = text.WrapWidth > 0.0f
+                ? text.WrapWidth
+                : 0.0f;
+            cmd.SortingOrder = text.SortingOrder;
+            cmd.SortingLayer = text.SortingLayer;
+            m_PendingDrawCmds.push_back(cmd);
         }
 
-        // Build TextDrawCmd list and dispatch.
-        std::vector<TextDrawCmd> commands;
-        commands.reserve(m_Pending.size());
-        for (const PendingText& p : m_Pending) {
-            TextDrawCmd cmd;
-            cmd.FontPtr = p.FontPtr;
-            cmd.Text = std::string_view(*p.Text);
-            cmd.X = p.WorldX;
-            cmd.Y = p.WorldY;
-            cmd.Scale = p.Scale;
-            cmd.LetterSpacing = p.LetterSpacing;
-            cmd.Tint = p.Tint;
-            cmd.Align = p.Align;
-            cmd.SortingOrder = p.SortingOrder;
-            cmd.SortingLayer = p.SortingLayer;
-            commands.push_back(cmd);
-        }
-        RenderInstances(commands, vp);
+        RenderInstances(m_PendingDrawCmds, vp);
     }
 
 }

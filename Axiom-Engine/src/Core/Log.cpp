@@ -7,6 +7,15 @@
 
 namespace Axiom {
 
+	// Single-DLL definitions for the static state previously declared as
+	// inline-static in Log.hpp. Keeping them here ensures the editor EXE and
+	// engine DLL share one set of logger pointers / OnLog subscribers.
+	std::mutex Log::s_StateMutex;
+	bool Log::s_Initialized = false;
+	std::shared_ptr<spdlog::logger> Log::s_CoreLogger;
+	std::shared_ptr<spdlog::logger> Log::s_ClientLogger;
+	std::shared_ptr<spdlog::logger> Log::s_EditorConsoleLogger;
+
 	Event<const Log::Entry&> Log::OnLog;
 
 	void Log::Initialize() {

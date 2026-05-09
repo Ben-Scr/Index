@@ -111,6 +111,14 @@ namespace Axiom {
 			return;
 		}
 
+		// Hard-require the engine's default Square texture: every batch falls
+		// back to this when a sprite's texture is unresolved, and the resolver
+		// only logs once-per-frame on a miss. Without this assert, a missing
+		// fallback would silently hide entire batches in shipping builds.
+		const TextureHandle defaultSquare = TextureManager::GetDefaultTexture(DefaultTexture::Square);
+		AIM_CORE_ASSERT(TextureManager::IsValid(defaultSquare), AxiomErrorCode::InvalidHandle,
+			"Default Square texture is not registered before Renderer2D::Initialize");
+
 #ifdef AXIOM_PROFILER_ENABLED
 		// GpuTimer needs a live GL context.
 		m_GpuTimer = std::make_unique<GpuTimer>();
@@ -125,12 +133,17 @@ namespace Axiom {
 		m_IsInitialized = true;
 	}
 
+	// Reset once per BeginFrame so the missing-fallback warning fires at most
+	// once per frame even if many batches miss in the same frame.
+	namespace { thread_local bool s_WarnedMissingFallbackThisFrame = false; }
+
 	void Renderer2D::BeginFrame() {
 		AXIOM_PROFILE_SCOPE("Rendering");
 #ifdef AXIOM_PROFILER_ENABLED
 		if (m_GpuTimer) m_GpuTimer->BeginFrame();
 #endif
 		Timer timer = Timer();
+		s_WarnedMissingFallbackThisFrame = false;
 
 		if (m_SkipBeginFrameRender) {
 			m_DrawCallsCount = 0;
@@ -141,14 +154,20 @@ namespace Axiom {
 		if (m_OutputFboId != 0) {
 			const int savedW = Window::GetMainViewport()->GetWidth();
 			const int savedH = Window::GetMainViewport()->GetHeight();
-			// Save the *currently bound* draw FBO rather than blindly assuming 0.
-			// ImGui multiviewport, package render passes, etc. may have a non-zero
-			// FBO bound when BeginFrame fires; clobbering it to 0 corrupts the
-			// caller's pipeline state.
+			// Save the *currently bound* draw + read FBOs rather than blindly
+			// assuming 0. ImGui multiviewport, package render passes, etc. may
+			// have non-zero FBOs bound when BeginFrame fires; clobbering them
+			// corrupts the caller's pipeline state. Track DRAW and READ
+			// separately so we restore both — `glBindFramebuffer(GL_FRAMEBUFFER, …)`
+			// targets both points, so reading just one binding back is wrong.
 			GLint savedDrawFbo = 0;
+			GLint savedReadFbo = 0;
 			glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &savedDrawFbo);
+			glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &savedReadFbo);
 
-			glBindFramebuffer(GL_FRAMEBUFFER, m_OutputFboId);
+			// Bind via GL_DRAW_FRAMEBUFFER specifically so we don't clobber
+			// the read FBO (which we restore separately via savedReadFbo).
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_OutputFboId);
 			glViewport(0, 0, m_OutputWidth, m_OutputHeight);
 			Window::GetMainViewport()->SetSize(m_OutputWidth, m_OutputHeight);
 
@@ -165,7 +184,8 @@ namespace Axiom {
 				m_DrawCallsCount = 0;
 			}
 
-			glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(savedDrawFbo));
+			glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(savedDrawFbo));
+			glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(savedReadFbo));
 			glViewport(0, 0, savedW, savedH);
 			Window::GetMainViewport()->SetSize(savedW, savedH);
 			m_OutputFboId = 0;
@@ -337,6 +357,11 @@ namespace Axiom {
 		m_QuadMesh.Bind();
 		glActiveTexture(GL_TEXTURE0);
 
+		// INVARIANT: TextureManager mutation (LoadTexture / UnloadTexture /
+		// PurgeUnreferenced) is not allowed during render. fallbackTexture
+		// is captured once for this batch and assumed stable — a freed
+		// default mid-pass would leave us binding a stale GL name on cache
+		// misses below.
 		const TextureHandle fallbackTexture = TextureManager::GetDefaultTexture(DefaultTexture::Square);
 		m_DrawCallsCount = 0;
 
@@ -369,7 +394,22 @@ namespace Axiom {
 				batchTexture->Submit(0);
 			}
 			else {
-				glBindTexture(GL_TEXTURE_2D, 0);
+				// Both the requested texture and the fallback white square
+				// resolved to nothing — likely the default Square got purged
+				// out from under us, or the GPU upload hasn't completed yet.
+				// Binding texture 0 here samples black on most drivers, which
+				// renders the entire batch as invisible quads (sprite shader
+				// multiplies by texture). Skip the batch entirely instead so
+				// the rest of the frame still composes correctly.
+				if (!s_WarnedMissingFallbackThisFrame) {
+					s_WarnedMissingFallbackThisFrame = true;
+					AIM_CORE_WARN_TAG("Renderer2D",
+						"Default fallback texture is unavailable - skipping {} sprite instance(s) "
+						"this batch. Did TextureManager::PurgeUnreferenced run during render?",
+						batchEnd - batchStart);
+				}
+				batchStart = batchEnd;
+				continue;
 			}
 
 			m_QuadMesh.UploadInstances(std::span<const Instance44>(m_Instances.data() + batchStart, batchEnd - batchStart));

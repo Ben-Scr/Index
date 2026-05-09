@@ -7,6 +7,9 @@
 #include "Project/AxiomProject.hpp"
 
 #include <filesystem>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #ifdef AIM_PLATFORM_WINDOWS
 #include <windows.h>
@@ -14,6 +17,43 @@
 #endif
 
 namespace Axiom {
+
+#ifdef AIM_PLATFORM_WINDOWS
+	namespace {
+		// M29: tracker for the editor-launcher worker threads spawned in
+		// OpenFile (one short-lived `CreateProcessW`, one Sleep(4000) +
+		// secondary CreateProcessW for the cold-start VS path). Tracked
+		// instead of detached so editor shutdown can join them.
+		// FULL JOIN is potentially blocking on the cold-start VS thread
+		// for up to ~4s — see PARTIAL note in the audit.
+		std::mutex s_LaunchMutex;
+		std::vector<std::thread> s_LaunchThreads;
+	}
+
+	static void TrackLaunchThread(std::thread t) {
+		std::scoped_lock lock(s_LaunchMutex);
+		// Drop already-finished threads so the vector doesn't grow without
+		// bound during a long editor session.
+		s_LaunchThreads.erase(
+			std::remove_if(s_LaunchThreads.begin(), s_LaunchThreads.end(),
+				[](std::thread& th) { return !th.joinable(); }),
+			s_LaunchThreads.end());
+		s_LaunchThreads.push_back(std::move(t));
+	}
+#endif
+
+	void ExternalEditor::JoinPendingLaunchThreads() {
+#ifdef AIM_PLATFORM_WINDOWS
+		std::vector<std::thread> drained;
+		{
+			std::scoped_lock lock(s_LaunchMutex);
+			drained.swap(s_LaunchThreads);
+		}
+		for (auto& t : drained) {
+			if (t.joinable()) t.join();
+		}
+#endif
+	}
 
 #ifdef AIM_PLATFORM_WINDOWS
 	// Convert UTF-8 → UTF-16 for Windows wide-API calls. The previous byte-wise
@@ -318,7 +358,15 @@ namespace Axiom {
 				std::string sln = slnPath;
 				std::string file = absPath;
 
-				std::thread([devenvPath, sln, file]() {
+				// M29: tracked instead of detached so editor shutdown can
+				// join. The Sleep(4000) below means JoinPendingLaunchThreads
+				// may block for up to ~4 seconds on a cold-start VS open
+				// that's still in flight when the editor closes — that's
+				// the deliberate trade-off vs. a process leak / stranded
+				// thread past main(). PARTIAL: the secondary CreateProcessW
+				// logic doesn't translate to Process::Run because the
+				// two-step quoting workaround is required for VS2022.
+				std::thread vsLauncher([devenvPath, sln, file]() {
 					// Step 1: Open the solution
 					std::string cmd1 = "\"" + devenvPath + "\" \"" + sln + "\"";
 					std::wstring wcmd1 = Utf8ToWide(cmd1);
@@ -354,7 +402,8 @@ namespace Axiom {
 						CloseHandle(pi2.hProcess);
 						CloseHandle(pi2.hThread);
 					}
-				}).detach();
+				});
+				TrackLaunchThread(std::move(vsLauncher));
 
 				// Return early — the thread handles everything
 				return;
@@ -385,8 +434,9 @@ namespace Axiom {
 		}
 		}
 
-		// Launch async so we don't block the engine editor
-		std::thread([fullCmd]() {
+		// Launch async so we don't block the engine editor.
+		// M29: tracked instead of detached so editor shutdown can join.
+		std::thread launcher([fullCmd]() {
 			std::wstring wcmd = Utf8ToWide(fullCmd);
 			std::vector<wchar_t> buf(wcmd.begin(), wcmd.end());
 			buf.push_back(L'\0');
@@ -401,7 +451,8 @@ namespace Axiom {
 				CloseHandle(pi.hProcess);
 				CloseHandle(pi.hThread);
 			}
-		}).detach();
+		});
+		TrackLaunchThread(std::move(launcher));
 #endif
 	}
 

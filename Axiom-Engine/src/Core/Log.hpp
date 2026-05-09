@@ -87,11 +87,15 @@ namespace Axiom {
 		static bool ShouldLog(Type type, Level level);
 		static void Emit(std::shared_ptr<spdlog::logger>& logger, Level level, std::string_view message);
 
-		inline static std::mutex s_StateMutex;
-		inline static bool s_Initialized = false;
-		inline static std::shared_ptr<spdlog::logger> s_CoreLogger;
-		inline static std::shared_ptr<spdlog::logger> s_ClientLogger;
-		inline static std::shared_ptr<spdlog::logger> s_EditorConsoleLogger;
+		// Defined out-of-line in Log.cpp so a single instance lives inside the
+		// engine DLL. With inline-static in the header, every TU including
+		// Log.hpp would see its own copy across the DLL boundary (the editor
+		// EXE and the engine DLL would each have their own logger pointers).
+		static std::mutex s_StateMutex;
+		static bool s_Initialized;
+		static std::shared_ptr<spdlog::logger> s_CoreLogger;
+		static std::shared_ptr<spdlog::logger> s_ClientLogger;
+		static std::shared_ptr<spdlog::logger> s_EditorConsoleLogger;
 	};
 
 } // namespace Axiom

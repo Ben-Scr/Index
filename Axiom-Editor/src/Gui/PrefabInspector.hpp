@@ -57,6 +57,10 @@ namespace Axiom {
 		std::unique_ptr<Scene> m_PrefabScene;
 		EntityHandle m_RootEntity = entt::null;
 		std::string m_PrefabPath;
+		// Search filter buffer for the AddComponent popup. Persists across
+		// frames so the user's filter survives the popup body re-running on
+		// every render. Cleared when the popup is opened.
+		char m_AddComponentSearchBuffer[128]{};
 	};
 
 }

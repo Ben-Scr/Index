@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace Axiom {
 
@@ -30,6 +31,15 @@ namespace Axiom {
 		std::array<float, 4> FloatVec{ 0, 0, 0, 0 };
 		std::array<int32_t, 4> IntVec{ 0, 0, 0, 0 };
 		std::string StringValue;
+		// Only populated for PropertyType::StringList. Kept outside
+		// the union of trivial scalars so the type stays a regular
+		// C++ object (same model as StringValue above).
+		std::vector<std::string> StringListValue;
+		// Only populated for PropertyType::List. Each element carries
+		// its own PropertyType (matches PropertyMetadata::ListItemType
+		// at the descriptor level) and is boxed/unboxed via the same
+		// detail::Box / detail::Unbox helpers as scalar fields.
+		std::vector<PropertyValue> ListValue;
 
 		// Component refs serialise as "<entityId>:<typeName>". The integer
 		// portion lives in UIntValue; the type name lives in StringValue.
@@ -67,6 +77,10 @@ namespace Axiom {
 				return FloatValue == other.FloatValue;
 			case PropertyType::String:
 				return StringValue == other.StringValue;
+			case PropertyType::StringList:
+				return StringListValue == other.StringListValue;
+			case PropertyType::List:
+				return ListValue == other.ListValue;
 			case PropertyType::Vec2:
 				return FloatVec[0] == other.FloatVec[0]
 					&& FloatVec[1] == other.FloatVec[1];

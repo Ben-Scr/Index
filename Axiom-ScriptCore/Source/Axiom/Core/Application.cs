@@ -27,8 +27,8 @@ public static class Application
 
     public static bool VsyncEnabled
     {
-        get => throw new System.NotImplementedException();
-        set => throw new System.NotImplementedException();
+        get => InternalCalls.Application_GetVsyncEnabled();
+        set => InternalCalls.Application_SetVsyncEnabled(value);
     }
 
     /// <summary>
@@ -71,6 +71,17 @@ public static class Application
     /// </code>
     /// </summary>
     public static bool IsEditor => InternalCalls.Application_IsEditor();
+
+    /// <summary>
+    /// The current OS clipboard contents as a UTF-8 string. Reads/writes the
+    /// system clipboard via the engine's GLFW window. Returns an empty string
+    /// in headless contexts (no window); the setter is a no-op there.
+    /// </summary>
+    public static string ClipboardString
+    {
+        get => InternalCalls.Application_GetClipboardString();
+        set => InternalCalls.Application_SetClipboardString(value);
+    }
 
     /// <summary>
     /// Quits the application. Only works in build mode, ignored in the editor.

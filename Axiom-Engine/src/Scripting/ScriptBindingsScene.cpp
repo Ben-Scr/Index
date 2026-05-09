@@ -35,7 +35,9 @@
 #include "Audio/AudioManager.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Gizmo.hpp"
+#include "Graphics/OpenGL.hpp"
 #include "Physics/Physics2D.hpp"
+#include "Core/Version.hpp"
 
 namespace Axiom {
 	EntityHandle ToEntityHandle(uint64_t id);
@@ -109,6 +111,134 @@ namespace Axiom {
 	static void Axiom_Application_SetTimeScale(float scale) {
 		auto* app = Application::GetInstance();
 		if (app) app->GetTime().SetTimeScale(scale);
+	}
+
+	// Two-call buffer pattern: C# calls once with outBuffer=null/capacity=0 to learn the
+	// required size, then again with a sized buffer. Stash into the thread-local so the
+	// reported size matches the bytes copied on the second call.
+	static int Axiom_Application_GetClipboardStringBuffer(char* outBuffer, int capacity)
+	{
+		auto* window = Application::GetWindow();
+		s_StringReturnBuffer = window ? window->GetClipboardString() : std::string{};
+
+		const int requiredBytes = static_cast<int>(std::min(
+			s_StringReturnBuffer.size(),
+			static_cast<size_t>(std::numeric_limits<int>::max())));
+		if (outBuffer && capacity > 0) {
+			const int bytesToCopy = std::min(requiredBytes, capacity - 1);
+			if (bytesToCopy > 0) {
+				std::memcpy(outBuffer, s_StringReturnBuffer.data(), static_cast<size_t>(bytesToCopy));
+			}
+			outBuffer[bytesToCopy] = '\0';
+		}
+		return requiredBytes;
+	}
+
+	static void Axiom_Application_SetClipboardString(const char* value)
+	{
+		auto* window = Application::GetWindow();
+		if (!window) return;
+		window->SetClipboardString(value ? std::string(value) : std::string{});
+	}
+
+	static int Axiom_Application_GetVsyncEnabled()
+	{
+		return Window::IsVsync() ? 1 : 0;
+	}
+
+	static void Axiom_Application_SetVsyncEnabled(int enabled)
+	{
+		Window::SetVsync(enabled != 0);
+	}
+
+	// ── Engine Bindings ─────────────────────────────────────────────────
+
+	// Same two-call buffer pattern as Application_GetClipboardStringBuffer.
+	static int CopyToManagedBuffer(std::string_view source, char* outBuffer, int capacity)
+	{
+		s_StringReturnBuffer.assign(source);
+		const int requiredBytes = static_cast<int>(std::min(
+			s_StringReturnBuffer.size(),
+			static_cast<size_t>(std::numeric_limits<int>::max())));
+		if (outBuffer && capacity > 0) {
+			const int bytesToCopy = std::min(requiredBytes, capacity - 1);
+			if (bytesToCopy > 0) {
+				std::memcpy(outBuffer, s_StringReturnBuffer.data(), static_cast<size_t>(bytesToCopy));
+			}
+			outBuffer[bytesToCopy] = '\0';
+		}
+		return requiredBytes;
+	}
+
+	static int Axiom_Engine_GetVersionBuffer(char* outBuffer, int capacity)
+	{
+		return CopyToManagedBuffer(AIM_VERSION, outBuffer, capacity);
+	}
+
+	static int Axiom_Engine_GetVersionLongBuffer(char* outBuffer, int capacity)
+	{
+		return CopyToManagedBuffer(AIM_VERSION_LONG, outBuffer, capacity);
+	}
+
+	// 0 = Debug (editor preview), 1 = Development, 2 = Release. Editor mode
+	// always reports Debug — that mirrors the AXIOM_EDITOR define being the
+	// "I am iterating" signal from the C# side. Outside the editor we honor
+	// the project's ActiveBuildProfile which drives AXIOM_BUILD_DEVELOPMENT
+	// vs AXIOM_BUILD_RELEASE for shipped game binaries.
+	static int Axiom_Engine_GetBuildConfiguration()
+	{
+		if (Application::IsEditor()) return 0;
+		auto* project = ProjectManager::GetCurrentProject();
+		if (project && project->ActiveBuildProfile == AxiomProject::BuildProfile::Release) return 2;
+		return 1;
+	}
+
+	static int Axiom_Engine_GetPlatformBuffer(char* outBuffer, int capacity)
+	{
+#if defined(AIM_PLATFORM_WINDOWS)
+		return CopyToManagedBuffer("Windows", outBuffer, capacity);
+#elif defined(AIM_PLATFORM_LINUX)
+		return CopyToManagedBuffer("Linux", outBuffer, capacity);
+#else
+		return CopyToManagedBuffer("Unknown", outBuffer, capacity);
+#endif
+	}
+
+	static int Axiom_Engine_GetGraphicsApiBuffer(char* outBuffer, int capacity)
+	{
+		const std::string& version = OpenGL::GetVersionString();
+		std::string label = version.empty() ? std::string("OpenGL") : "OpenGL " + version;
+		return CopyToManagedBuffer(label, outBuffer, capacity);
+	}
+
+	static int Axiom_Engine_GetGpuVendorBuffer(char* outBuffer, int capacity)
+	{
+		return CopyToManagedBuffer(OpenGL::GetVendorString(), outBuffer, capacity);
+	}
+
+	static int Axiom_Engine_GetGpuRendererBuffer(char* outBuffer, int capacity)
+	{
+		return CopyToManagedBuffer(OpenGL::GetRendererString(), outBuffer, capacity);
+	}
+
+	// ── Time Bindings ───────────────────────────────────────────────────
+
+	static int Axiom_Time_GetFrameCount()
+	{
+		auto* app = Application::GetInstance();
+		return app ? app->GetTime().GetFrameCount() : 0;
+	}
+
+	static float Axiom_Time_GetTimeSinceStartup()
+	{
+		auto* app = Application::GetInstance();
+		return app ? app->GetTime().GetTimeSinceStartup() : 0.0f;
+	}
+
+	static float Axiom_Time_GetRealtimeSinceStartup()
+	{
+		auto* app = Application::GetInstance();
+		return app ? app->GetTime().GetRealtimeSinceStartup() : 0.0f;
 	}
 
 	// ── Log Bindings ────────────────────────────────────────────────────
@@ -236,6 +366,22 @@ namespace Axiom {
 		b.Application_GetFixedUnscaledDeltaTime = &Axiom_Application_GetFixedUnscaledDeltaTime;
 		b.Application_GetTimeScale = &Axiom_Application_GetTimeScale;
 		b.Application_SetTimeScale = &Axiom_Application_SetTimeScale;
+		b.Application_GetClipboardStringBuffer = &Axiom_Application_GetClipboardStringBuffer;
+		b.Application_SetClipboardString = &Axiom_Application_SetClipboardString;
+		b.Application_GetVsyncEnabled = &Axiom_Application_GetVsyncEnabled;
+		b.Application_SetVsyncEnabled = &Axiom_Application_SetVsyncEnabled;
+
+		b.Engine_GetVersionBuffer = &Axiom_Engine_GetVersionBuffer;
+		b.Engine_GetVersionLongBuffer = &Axiom_Engine_GetVersionLongBuffer;
+		b.Engine_GetBuildConfiguration = &Axiom_Engine_GetBuildConfiguration;
+		b.Engine_GetPlatformBuffer = &Axiom_Engine_GetPlatformBuffer;
+		b.Engine_GetGraphicsApiBuffer = &Axiom_Engine_GetGraphicsApiBuffer;
+		b.Engine_GetGpuVendorBuffer = &Axiom_Engine_GetGpuVendorBuffer;
+		b.Engine_GetGpuRendererBuffer = &Axiom_Engine_GetGpuRendererBuffer;
+
+		b.Time_GetFrameCount = &Axiom_Time_GetFrameCount;
+		b.Time_GetTimeSinceStartup = &Axiom_Time_GetTimeSinceStartup;
+		b.Time_GetRealtimeSinceStartup = &Axiom_Time_GetRealtimeSinceStartup;
 
 		b.Log_Trace = &Axiom_Log_Trace;
 		b.Log_Info = &Axiom_Log_Info;

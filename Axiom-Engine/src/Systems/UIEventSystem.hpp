@@ -27,6 +27,15 @@ namespace Axiom {
 	public:
 		void Update(Scene& scene) override;
 
+		// Editor preview: in edit mode Update() is never called (it's gated
+		// on play state), so authored Slider.Value / MinValue / MaxValue
+		// edits don't reach the visual handle / fill children. OnPreRender
+		// runs in both edit and play, so this is the cheapest place to
+		// keep slider visuals in sync with the inspector while the scene
+		// isn't playing. In play mode Update has already refreshed them
+		// this frame, so we skip the redundant pass.
+		void OnPreRender(Scene& scene) override;
+
 	private:
 		// Track which entity we pressed on so a release elsewhere doesn't
 		// register as a click on a different rect, and so a slider drag

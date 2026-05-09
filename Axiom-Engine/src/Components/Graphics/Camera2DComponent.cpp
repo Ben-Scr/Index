@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Camera2DComponent.hpp"
 #include "Collections/Viewport.hpp"
+#include "Components/General/HierarchyComponent.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Scene/Scene.hpp"
@@ -40,14 +41,48 @@ namespace Axiom {
 		UpdateView();
 	}
 
+	namespace {
+		// Resolve the parent of the camera entity (if any) into its world
+		// Transform2DComponent. Returns nullptr when the entity is a root,
+		// has no HierarchyComponent, or the parent is invalid / lacks a
+		// transform — in any of those cases SetPosition/SetRotation can
+		// write the world value through to LocalPosition/LocalRotation
+		// directly because no parent transform composes on top of it.
+		const Transform2DComponent* TryGetParentWorldTransform(Scene* scene, EntityHandle entity) {
+			if (!scene || entity == entt::null || !scene->IsValid(entity)) return nullptr;
+			if (!scene->HasComponent<HierarchyComponent>(entity)) return nullptr;
+			const auto& hierarchy = scene->GetComponent<HierarchyComponent>(entity);
+			if (hierarchy.Parent == entt::null || !scene->IsValid(hierarchy.Parent)) return nullptr;
+			if (!scene->HasComponent<Transform2DComponent>(hierarchy.Parent)) return nullptr;
+			return &scene->GetComponent<Transform2DComponent>(hierarchy.Parent);
+		}
+	}
+
 	void Camera2DComponent::SetPosition(Vec2 p) {
 		if (auto* transform = TryGetTransform()) {
-			// Route through Transform2DComponent::SetPosition so we update the
-			// authored Local* value. Writing transform->Position directly here
+			// `p` is a world-space position. If the camera entity is a child,
+			// LocalPosition has to be `p` expressed in the parent's local
+			// frame — otherwise TransformHierarchySystem will compose
+			// (parentWorld * p) next propagation pass and place the camera
+			// at twice the intended offset. For root entities Local* and
+			// world coincide so the inverse is the identity.
+			Vec2 localP = p;
+			if (const auto* parentTr = TryGetParentWorldTransform(m_OwnerScene, m_OwnerEntity)) {
+				// Inverse of TransformPoint: T^-1 (parent.Position), R^-1
+				// (-parent.Rotation), S^-1 (1/parent.Scale). Zero-scale is
+				// degenerate; fall through to the rotated value to avoid div-by-zero.
+				const Vec2 delta{ p.x - parentTr->Position.x, p.y - parentTr->Position.y };
+				const Vec2 unrotated = Rotate(delta, -parentTr->Rotation);
+				const float invSx = parentTr->Scale.x != 0.0f ? 1.0f / parentTr->Scale.x : 1.0f;
+				const float invSy = parentTr->Scale.y != 0.0f ? 1.0f / parentTr->Scale.y : 1.0f;
+				localP = Vec2{ unrotated.x * invSx, unrotated.y * invSy };
+			}
+			// Route through Transform2DComponent::SetPosition so we update
+			// the authored Local* value. Writing transform->Position directly
 			// would be silently overwritten by the next TransformHierarchySystem
 			// propagation pass (which derives Position from LocalPosition) and
 			// the camera would snap back.
-			transform->SetPosition(p);
+			transform->SetPosition(localP);
 			// Cache the world value too so UpdateView (and any same-frame
 			// reader) sees the new placement before propagation runs.
 			transform->Position = p;
@@ -70,7 +105,14 @@ namespace Axiom {
 
 	void Camera2DComponent::SetRotation(float rad) {
 		if (auto* transform = TryGetTransform()) {
-			transform->SetRotation(rad);
+			// Same logic as SetPosition: `rad` is a world rotation. If we
+			// have a parent, LocalRotation must be the offset from the
+			// parent's world rotation so propagation reproduces `rad`.
+			float localRad = rad;
+			if (const auto* parentTr = TryGetParentWorldTransform(m_OwnerScene, m_OwnerEntity)) {
+				localRad = rad - parentTr->Rotation;
+			}
+			transform->SetRotation(localRad);
 			transform->Rotation = rad;
 			UpdateView();
 		}

@@ -5,11 +5,14 @@
 #include "Serialization/Path.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -245,19 +248,76 @@ namespace Axiom::EditorScriptDiscovery {
 		});
 	}
 
+	// H23: per-frame cache. CollectProjectScriptEntries used to do a
+	// full recursive directory walk on EVERY call — and several call
+	// sites (ImGuiEditorLayer panels, AssetBrowser, ScriptComponentInspector)
+	// invoke it once per frame. With more than a handful of scripts the
+	// cost is visible.
+	//
+	// Cache strategy: a 1-second debounce with explicit MarkDirty(). The
+	// debounce alone is sufficient to fold per-frame thrash within a tick;
+	// MarkDirty is provided so file-mutation paths (script create / rename /
+	// delete) can force an immediate rebuild. Atomic dirty flag + scoped
+	// mutex keeps the cache coherent if a future caller invokes from a
+	// worker thread.
+	//
+	// `inline` statics are guaranteed unique across translation units
+	// (one symbol per program), so the cache is shared by every TU that
+	// includes this header.
+	namespace detail {
+		inline std::vector<ScriptEntry> s_Cache;
+		inline std::atomic<bool> s_Dirty{ true };
+		inline std::chrono::steady_clock::time_point s_LastScan{};
+		inline std::mutex s_CacheMutex;
+	}
+
+	inline void MarkDirty()
+	{
+		detail::s_Dirty.store(true, std::memory_order_release);
+	}
+
 	inline void CollectProjectScriptEntries(std::vector<ScriptEntry>& entries)
 	{
+		using namespace std::chrono;
+		const auto now = steady_clock::now();
+
+		{
+			std::scoped_lock lock(detail::s_CacheMutex);
+			const bool dirty = detail::s_Dirty.load(std::memory_order_acquire);
+			const auto sinceLast = duration_cast<milliseconds>(now - detail::s_LastScan);
+			if (!dirty && sinceLast < milliseconds(1000)) {
+				entries.insert(entries.end(), detail::s_Cache.begin(), detail::s_Cache.end());
+				return;
+			}
+		}
+
+		// Rebuild outside the lock — directory iteration is the slow part
+		// and we don't want to block other readers while it runs. The
+		// cache write is short and re-takes the lock.
+		std::vector<ScriptEntry> rebuilt;
 		if (AxiomProject* project = ProjectManager::GetCurrentProject()) {
-			CollectScriptFiles(std::filesystem::path(project->ScriptsDirectory), entries);
-			CollectScriptFiles(std::filesystem::path(project->NativeSourceDir), entries);
+			// Walk the whole Assets tree so .cs files placed outside the
+			// historical Assets/Scripts/ folder still appear in the
+			// "Add Script" picker. Matches the csproj's `Assets\**\*.cs`
+			// compile glob — discovery and compilation share one root.
+			CollectScriptFiles(std::filesystem::path(project->AssetsDirectory), rebuilt);
+			CollectScriptFiles(std::filesystem::path(project->NativeSourceDir), rebuilt);
 		}
 		else {
 			const std::filesystem::path base = std::filesystem::path(Path::ExecutableDir());
-			CollectScriptFiles(base / ".." / ".." / ".." / "Axiom-Sandbox" / "Source", entries);
-			CollectScriptFiles(base / ".." / ".." / ".." / "Axiom-NativeScripts" / "Source", entries);
+			CollectScriptFiles(base / ".." / ".." / ".." / "Axiom-Sandbox" / "Source", rebuilt);
+			CollectScriptFiles(base / ".." / ".." / ".." / "Axiom-NativeScripts" / "Source", rebuilt);
+		}
+		SortScriptEntries(rebuilt);
+
+		{
+			std::scoped_lock lock(detail::s_CacheMutex);
+			detail::s_Cache = rebuilt;
+			detail::s_LastScan = now;
+			detail::s_Dirty.store(false, std::memory_order_release);
 		}
 
-		SortScriptEntries(entries);
+		entries.insert(entries.end(), rebuilt.begin(), rebuilt.end());
 	}
 
 } // namespace Axiom::EditorScriptDiscovery

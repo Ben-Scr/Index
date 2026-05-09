@@ -46,8 +46,12 @@ namespace Axiom {
 		const glm::mat4 GetViewMatrix() const { return m_ViewMat; }
 		const glm::mat4 GetProjectionMatrix() const { return m_ProjMat; }
 
-		float ViewportWidth() const { return static_cast<float>(m_Viewport->GetWidth()); }
-		float ViewportHeight() const { return static_cast<float>(m_Viewport->GetHeight()); }
+		// Null-guard: cameras created before Initialize() (or after Destroy())
+		// have m_Viewport == nullptr; callers that probe these dimensions
+		// for layout/projection math should see a sentinel zero rather than
+		// crash on the deref.
+		float ViewportWidth() const { return m_Viewport ? static_cast<float>(m_Viewport->GetWidth()) : 0.0f; }
+		float ViewportHeight() const { return m_Viewport ? static_cast<float>(m_Viewport->GetHeight()) : 0.0f; }
 
 		bool IsValid() const { return m_OwnerScene != nullptr; }
 	private:

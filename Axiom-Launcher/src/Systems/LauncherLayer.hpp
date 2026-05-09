@@ -50,6 +50,10 @@ namespace Axiom {
 			bool Failed = false;
 			std::uintmax_t Bytes = 0;
 			std::string Error;
+			// Worker is declared last so it is destroyed first: the jthread destructor
+			// requests stop and joins before the rest of the state is torn down. The
+			// worker captures the task by weak_ptr to avoid a shared_ptr cycle.
+			std::jthread Worker;
 		};
 
 		// Async pipeline run when the user clicks "Open" on a project: regen → build →

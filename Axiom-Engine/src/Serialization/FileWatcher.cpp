@@ -327,7 +327,14 @@ namespace Axiom {
 				resolvedRoot = watchRoot;
 			}
 			const std::string resolvedStr = resolved.string();
-			const std::string rootStr = resolvedRoot.string();
+			std::string rootStr = resolvedRoot.string();
+			// Prefix-compare needs a separator between the root and the
+			// child segment, otherwise "/proj/Assets" would falsely match
+			// "/proj/Assets-Backup/foo.png". Append the platform separator
+			// before the compare to anchor the match on a directory boundary.
+			if (!rootStr.empty() && rootStr.back() != std::filesystem::path::preferred_separator) {
+				rootStr.push_back(std::filesystem::path::preferred_separator);
+			}
 			if (!rootStr.empty() && (resolvedStr.size() < rootStr.size() ||
 				resolvedStr.compare(0, rootStr.size(), rootStr) != 0)) {
 				ec.clear();

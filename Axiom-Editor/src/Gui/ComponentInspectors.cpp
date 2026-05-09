@@ -59,12 +59,18 @@ namespace Axiom {
 		// a stacked (header text, drag-float) pair (Unity's Pos X / Pos Y).
 		// On edit, only the touched channel is written per entity so
 		// untouched channels survive across the selection.
+		// `perColumnDisabled` (optional, may be null) gates each column
+		// individually behind ImGui::BeginDisabled — used by the
+		// RectTransform inspector to lock Width when ContentSizeFitter
+		// or a no-wrap TextRenderer owns the rect, without losing the
+		// drag affordance on the sibling Height column.
 		template <int N, typename ChannelGet, typename ChannelSet>
 		bool DrawColumnLabeledFloatRow(const char* rowId,
 			const char* (&columnLabels)[N],
 			std::span<const Entity> entities,
 			ChannelGet&& getChan, ChannelSet&& setChan,
-			float speed = 0.5f, const char* format = "%.3f")
+			float speed = 0.5f, const char* format = "%.3f",
+			const bool* perColumnDisabled = nullptr)
 		{
 			float values[N];
 			bool  mixed[N];
@@ -92,6 +98,8 @@ namespace Axiom {
 				if (c > 0) ImGui::SameLine(0.0f, spacing);
 				ImGui::PushID(c);
 				ImGui::SetNextItemWidth(colWidth);
+				const bool disabled = perColumnDisabled && perColumnDisabled[c];
+				if (disabled) ImGui::BeginDisabled();
 				float channelValue = values[c];
 				const char* fmt = mixed[c] ? "-" : format;
 				if (ImGui::DragFloat("##c", &channelValue, speed, 0.0f, 0.0f, fmt)) {
@@ -99,6 +107,7 @@ namespace Axiom {
 					ImGuiUtils::MarkSelectionDirty(entities);
 					anyChanged = true;
 				}
+				if (disabled) ImGui::EndDisabled();
 				ImGui::PopID();
 			}
 
@@ -249,10 +258,12 @@ namespace Axiom {
 	}
 
 	// ── ParticleSystem2D ─────────────────────────────────────────────
-	// Stays fully custom: ParticleSettings has variant Shape (Circle/Square)
-	// with per-shape sub-fields, plus a Play/Pause button that doesn't fit
-	// the declarative property model. The component does NOT register
-	// PropertyDescriptors — this drawInspector owns the entire inspector body.
+	// Hybrid: every field is declared in BuiltInComponentRegistration.cpp
+	// (including the Shape variant via Properties::MakeVariantWith and the
+	// Gravity-Value EnabledIf gate). Properties flow through the auto-drawer.
+	// The two non-property bits are the Play / Pause button (a runtime
+	// toggle, not a serialized field) and the texture preview (only sane
+	// with one entity selected).
 
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities)
 	{
@@ -279,142 +290,46 @@ namespace Axiom {
 			}
 		}
 
-		ImGuiUtils::CheckboxMulti("Play On Awake", entities,
-			[](const Entity& e) -> bool { return e.GetComponent<ParticleSystem2DComponent>().PlayOnAwake; },
-			[](const Entity& e, bool v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().PlayOnAwake = v; });
+		// All declarative fields — auto-drawer renders the standard rows
+		// with proper EnabledIf / Variant / Clamp behavior.
+		DrawPropertiesFor<ParticleSystem2DComponent>(entities);
 
-		ImGuiUtils::InputFloatMulti("LifeTime", entities,
-			[](const Entity& e) -> float { return e.GetComponent<ParticleSystem2DComponent>().ParticleSettings.LifeTime; },
-			[](const Entity& e, float v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().ParticleSettings.LifeTime = v; });
-
-		ImGuiUtils::InputFloatMulti("Scale", entities,
-			[](const Entity& e) -> float { return e.GetComponent<ParticleSystem2DComponent>().ParticleSettings.Scale; },
-			[](const Entity& e, float v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().ParticleSettings.Scale = v; });
-
-		ImGuiUtils::InputFloatMulti("Speed", entities,
-			[](const Entity& e) -> float { return e.GetComponent<ParticleSystem2DComponent>().ParticleSettings.Speed; },
-			[](const Entity& e, float v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().ParticleSettings.Speed = v; });
-
-		ImGuiUtils::CheckboxMulti("Gravity", entities,
-			[](const Entity& e) -> bool { return e.GetComponent<ParticleSystem2DComponent>().ParticleSettings.UseGravity; },
-			[](const Entity& e, bool v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().ParticleSettings.UseGravity = v; });
-
-		bool gravityEnabledUniform = true;
-		bool gravityEnabledFirst = false;
-		if (!entities.empty()) {
-			gravityEnabledFirst = entities[0].GetComponent<ParticleSystem2DComponent>().ParticleSettings.UseGravity;
-			for (std::size_t i = 1; i < entities.size(); ++i) {
-				if (entities[i].GetComponent<ParticleSystem2DComponent>().ParticleSettings.UseGravity != gravityEnabledFirst) {
-					gravityEnabledUniform = false;
-					break;
-				}
+		// Texture preview is only meaningful with one entity selected.
+		if (entities.size() == 1) {
+			const auto& ps = entities[0].GetComponent<ParticleSystem2DComponent>();
+			TextureHandle previewHandle = ps.GetTextureHandle();
+			if (!previewHandle.IsValid()) {
+				previewHandle = TextureManager::GetDefaultTexture(DefaultTexture::Square);
+			}
+			if (Texture2D* texture = TextureManager::GetTexture(previewHandle)) {
+				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texture->GetWidth(), texture->GetHeight());
 			}
 		}
-		ImGuiUtils::DrawEnabled(gravityEnabledUniform && gravityEnabledFirst, [&]() {
-			ImGuiUtils::DragFloatNMulti("Gravity Value", entities, 2,
-				[](const Entity& e, int c) -> float {
-					const Vec2& g = e.GetComponent<ParticleSystem2DComponent>().ParticleSettings.Gravity;
-					return c == 0 ? g.x : g.y;
-				},
-				[](const Entity& e, int c, float v) {
-					Vec2& g = const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().ParticleSettings.Gravity;
-					if (c == 0) g.x = v; else g.y = v;
-				});
-		});
+	}
 
-		ImGuiUtils::CheckboxMulti("Random Colors", entities,
-			[](const Entity& e) -> bool { return e.GetComponent<ParticleSystem2DComponent>().ParticleSettings.UseRandomColors; },
-			[](const Entity& e, bool v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().ParticleSettings.UseRandomColors = v; });
-
-		if (ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::PushID("Emission");
-			ImGuiUtils::InputIntMulti("Emit Over Time", entities,
-				[](const Entity& e) -> int { return static_cast<int>(e.GetComponent<ParticleSystem2DComponent>().EmissionSettings.EmitOverTime); },
-				[](const Entity& e, int v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().EmissionSettings.EmitOverTime = static_cast<uint16_t>(std::clamp(v, 0, 65535)); });
-
-			using ShapeType = ParticleSystem2DComponent::ShapeType;
-			auto shapeOf = [](const Entity& e) -> ShapeType {
-				return std::visit([](auto&& s) -> ShapeType {
-					using T = std::decay_t<decltype(s)>;
-					if constexpr (std::is_same_v<T, ParticleSystem2DComponent::CircleParams>) return ShapeType::Circle;
-					else                                                                       return ShapeType::Square;
-					}, e.GetComponent<ParticleSystem2DComponent>().Shape);
-			};
-			ImGuiUtils::EnumComboMulti<ShapeType>("Shape Type", entities,
-				shapeOf,
-				[](const Entity& e, ShapeType v) {
-					auto& ps = const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>();
-					if (v == ShapeType::Circle) ps.Shape = ParticleSystem2DComponent::CircleParams{ 1.f, false };
-					else                        ps.Shape = ParticleSystem2DComponent::SquareParams{ Vec2{ 1.f, 1.f } };
-				});
-
-			ShapeType firstShape = entities.empty() ? ShapeType::Circle : shapeOf(entities[0]);
-			bool shapeUniform = true;
-			for (std::size_t i = 1; i < entities.size(); ++i) {
-				if (shapeOf(entities[i]) != firstShape) { shapeUniform = false; break; }
-			}
-			if (!shapeUniform) {
-				ImGui::TextDisabled("Mixed shape - pick one to apply to all");
-			}
-			else if (firstShape == ShapeType::Circle) {
-				ImGuiUtils::InputFloatMulti("Radius", entities,
-					[](const Entity& e) -> float { return std::get<ParticleSystem2DComponent::CircleParams>(e.GetComponent<ParticleSystem2DComponent>().Shape).Radius; },
-					[](const Entity& e, float v) { std::get<ParticleSystem2DComponent::CircleParams>(const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().Shape).Radius = v; });
-				ImGuiUtils::CheckboxMulti("On Circle Edge", entities,
-					[](const Entity& e) -> bool { return std::get<ParticleSystem2DComponent::CircleParams>(e.GetComponent<ParticleSystem2DComponent>().Shape).IsOnCircle; },
-					[](const Entity& e, bool v) { std::get<ParticleSystem2DComponent::CircleParams>(const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().Shape).IsOnCircle = v; });
-			}
-			else {
-				ImGuiUtils::DragFloatNMulti("Half Extents", entities, 2,
-					[](const Entity& e, int c) -> float {
-						const Vec2& v = std::get<ParticleSystem2DComponent::SquareParams>(e.GetComponent<ParticleSystem2DComponent>().Shape).HalfExtends;
-						return c == 0 ? v.x : v.y;
-					},
-					[](const Entity& e, int c, float v) {
-						Vec2& he = std::get<ParticleSystem2DComponent::SquareParams>(const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().Shape).HalfExtends;
-						if (c == 0) he.x = v; else he.y = v;
-					});
-			}
-			ImGui::PopID();
+	// True when this entity is referenced as the FillEntity of any
+	// SliderComponent in its scene. The slider system writes the
+	// fill's SizeDelta.x each frame; locking the anchors here keeps
+	// the user from authoring a rect setup that the slider's
+	// "anchor=(0,0.5), pivot=(0,0.5), grow rightward" math would
+	// silently break.
+	bool IsEntitySliderFill(const Entity& entity) {
+		const Scene* scene = entity.GetScene();
+		if (!scene) return false;
+		entt::registry& registry = const_cast<entt::registry&>(scene->GetRegistry());
+		const EntityHandle target = entity.GetHandle();
+		auto view = registry.view<SliderComponent>();
+		for (auto&& [_, slider] : view.each()) {
+			if (slider.FillEntity == target) return true;
 		}
+		return false;
+	}
 
-		if (ImGui::CollapsingHeader("Rendering")) {
-			ImGui::PushID("Rendering");
-			ImGuiUtils::ColorEdit4Multi("Color", entities,
-				[](const Entity& e, int c) -> float {
-					const Color& col = e.GetComponent<ParticleSystem2DComponent>().RenderingSettings.Color;
-					return (&col.r)[c];
-				},
-				[](const Entity& e, int c, float v) {
-					Color& col = const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().RenderingSettings.Color;
-					(&col.r)[c] = v;
-				});
-
-			ImGuiUtils::DragIntMulti("Max Particles", entities,
-				[](const Entity& e) -> int { return static_cast<int>(e.GetComponent<ParticleSystem2DComponent>().RenderingSettings.MaxParticles); },
-				[](const Entity& e, int v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().RenderingSettings.MaxParticles = static_cast<uint32_t>(std::max(1, v)); },
-				1.0f, 1, 10000);
-
-			ImGuiUtils::InputIntMulti("Sorting Order", entities,
-				[](const Entity& e) -> int { return static_cast<int>(e.GetComponent<ParticleSystem2DComponent>().RenderingSettings.SortingOrder); },
-				[](const Entity& e, int v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().RenderingSettings.SortingOrder = static_cast<int16_t>(v); });
-
-			ImGuiUtils::InputIntMulti("Sorting Layer", entities,
-				[](const Entity& e) -> int { return static_cast<int>(e.GetComponent<ParticleSystem2DComponent>().RenderingSettings.SortingLayer); },
-				[](const Entity& e, int v) { const_cast<Entity&>(e).GetComponent<ParticleSystem2DComponent>().RenderingSettings.SortingLayer = static_cast<uint8_t>(std::clamp(v, 0, 255)); });
-
-			if (entities.size() == 1) {
-				const auto& ps = entities[0].GetComponent<ParticleSystem2DComponent>();
-				TextureHandle previewHandle = ps.GetTextureHandle();
-				if (!previewHandle.IsValid()) {
-					previewHandle = TextureManager::GetDefaultTexture(DefaultTexture::Square);
-				}
-				if (Texture2D* texture = TextureManager::GetTexture(previewHandle)) {
-					ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texture->GetWidth(), texture->GetHeight());
-				}
-			}
-			ImGui::PopID();
+	bool AnyEntitySliderFill(std::span<const Entity> entities) {
+		for (const auto& e : entities) {
+			if (IsEntitySliderFill(e)) return true;
 		}
+		return false;
 	}
 
 	// ── RectTransform2D ──────────────────────────────────────────────
@@ -427,6 +342,15 @@ namespace Axiom {
 	void DrawRectTransform2DInspector(std::span<const Entity> entities)
 	{
 		using RTC = RectTransform2DComponent;
+
+		// Lock the slider-driven rect fields when this entity is a
+		// SliderComponent's FillEntity. The slider system rewrites
+		// SizeDelta.x every frame and assumes the fill is point-anchored
+		// at the parent's left edge with pivot at the fill's left edge —
+		// editing those fields manually would either be overwritten on
+		// the next tick (Width) or would break the fill's geometry
+		// (anchors / pivot / left-edge AnchoredPosition).
+		const bool fillReadOnly = AnyEntitySliderFill(entities);
 
 		// Position (Pos X / Pos Y) — column-header-above-value layout.
 		const char* posLabels[] = { "Pos X", "Pos Y" };
@@ -442,6 +366,33 @@ namespace Axiom {
 
 		// Size (Width / Height) — same column-header layout. Drag speed of
 		// 1.0f matches the integer-pixel feel users expect for size fields.
+		// Each axis is disabled when something else owns it:
+		//   • ContentSizeFitter with HorizontalFit / VerticalFit — fitter
+		//     overwrites SizeDelta from children every frame, so manual
+		//     edits would just snap back next tick.
+		//   • TextRendererComponent with WrapMode::None — the text's
+		//     measured natural size is written into SizeDelta by
+		//     UILayoutSystem::FitTextNaturalSize each frame; same snap-
+		//     back risk on both axes if the user edited.
+		// On a multi-selection any entity in the list claiming an axis
+		// disables that axis for the whole row — safer than allowing a
+		// partial write some entities would silently revert.
+		bool sizeAxisDisabled[2] = { false, false };
+		for (const Entity& e : entities) {
+			if (e.HasComponent<ContentSizeFitterComponent>()) {
+				const auto& csf = e.GetComponent<ContentSizeFitterComponent>();
+				if (csf.HorizontalFit) sizeAxisDisabled[0] = true;
+				if (csf.VerticalFit)   sizeAxisDisabled[1] = true;
+			}
+			if (e.HasComponent<TextRendererComponent>()) {
+				const auto& text = e.GetComponent<TextRendererComponent>();
+				if (text.WrapMode == TextWrapMode::None) {
+					sizeAxisDisabled[0] = true;
+					sizeAxisDisabled[1] = true;
+				}
+			}
+		}
+
 		const char* sizeLabels[] = { "Width", "Height" };
 		DrawColumnLabeledFloatRow<2>("##Size", sizeLabels, entities,
 			[](const Entity& e, int c) -> float {
@@ -452,16 +403,20 @@ namespace Axiom {
 				Vec2& s = const_cast<Entity&>(e).GetComponent<RTC>().SizeDelta;
 				(c == 0 ? s.x : s.y) = v;
 			},
-			1.0f);
+			1.0f, "%.3f", sizeAxisDisabled);
 
 		// Axis sub-labels reused by every "label + Vec2" row below.
 		const char* xyLabels[] = { "X", "Y" };
 
 		// Anchors group — collapsible to mirror Unity's foldout. Slow drag
-		// speed because anchors live in [0, 1].
+		// speed because anchors live in [0, 1]. When the entity is a
+		// slider Fill, the rows render disabled (read-only) since the
+		// slider's geometry math depends on a fixed anchor configuration.
 		if (ImGui::CollapsingHeader("Anchors", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::PushID("Anchors");
 			ImGui::Indent(8.0f);
+
+			if (fillReadOnly) ImGui::BeginDisabled();
 
 			DrawAxisLabeledVecMulti<2>("Min", xyLabels, entities,
 				[](const Entity& e, int c) -> float {
@@ -483,6 +438,8 @@ namespace Axiom {
 					(c == 0 ? a.x : a.y) = v;
 				});
 
+			if (fillReadOnly) ImGui::EndDisabled();
+
 			ImGui::Unindent(8.0f);
 			ImGui::PopID();
 		}
@@ -499,22 +456,27 @@ namespace Axiom {
 
 		// Rotation: 2D engines only need the Z component, edited in degrees
 		// to match the Transform2D inspector (component stores radians).
+		// Edits write LocalRotation — UILayoutSystem composes it against
+		// the parent's world rotation each frame and writes the result
+		// into the rect's Rotation field.
 		ImGuiUtils::DragFloatMulti("Rotation", entities,
 			[](const Entity& e) -> float {
-				return Degrees(e.GetComponent<RTC>().Rotation);
+				return Degrees(e.GetComponent<RTC>().LocalRotation);
 			},
 			[](const Entity& e, float v) {
-				const_cast<Entity&>(e).GetComponent<RTC>().Rotation = Radians(v);
+				const_cast<Entity&>(e).GetComponent<RTC>().LocalRotation = Radians(v);
 			},
 			1.0f);
 
+		// Scale: edits write LocalScale; UILayoutSystem composes it
+		// (Hadamard) with the parent's world scale into the rect's Scale.
 		DrawAxisLabeledVecMulti<2>("Scale", xyLabels, entities,
 			[](const Entity& e, int c) -> float {
-				const Vec2& s = e.GetComponent<RTC>().Scale;
+				const Vec2& s = e.GetComponent<RTC>().LocalScale;
 				return c == 0 ? s.x : s.y;
 			},
 			[](const Entity& e, int c, float v) {
-				Vec2& s = const_cast<Entity&>(e).GetComponent<RTC>().Scale;
+				Vec2& s = const_cast<Entity&>(e).GetComponent<RTC>().LocalScale;
 				(c == 0 ? s.x : s.y) = v;
 			},
 			0.1f);

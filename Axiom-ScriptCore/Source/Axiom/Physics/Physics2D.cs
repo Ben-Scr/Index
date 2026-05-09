@@ -1,5 +1,5 @@
 using System;
-using static Axiom.Physics.Physics2DShared;
+using static Axiom.Physics.PhysicsShared;
 
 namespace Axiom.Physics;
 
@@ -140,13 +140,4 @@ public static class Physics2D
     {
         return ContainsPoint(origin) != null;
     }
-
-    [Obsolete("Use ContainsPoint.")]
-    public static Entity? OverlapPoint(Vector2 origin) => ContainsPoint(origin);
-
-    [Obsolete("Use ContainsPointAll.")]
-    public static Entity[] OverlapPointAll(Vector2 origin) => ContainsPointAll(origin);
-
-    [Obsolete("Use ContainsPointCheck.")]
-    public static bool OverlapPointCheck(Vector2 origin) => ContainsPointCheck(origin);
 }

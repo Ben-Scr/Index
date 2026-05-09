@@ -3,11 +3,13 @@
 
 #include <imgui.h>
 
+#include "Assets/AssetRegistry.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/ImGuiUtils.hpp"
+#include "Inspector/ReferencePicker.hpp"
 #include "Packages/GitHubSource.hpp"
 #include "Packages/NuGetSource.hpp"
 #include "Project/AxiomProject.hpp"
@@ -53,6 +55,69 @@ namespace Axiom {
 					else if (NeedsCopy(entry.path(), dest)) {
 						std::filesystem::create_directories(dest.parent_path());
 						std::filesystem::copy_file(entry.path(), dest, std::filesystem::copy_options::overwrite_existing);
+						copied++;
+					}
+				}
+				catch (...) {
+				}
+			}
+			return copied;
+		}
+
+		// Variant that skips any file or directory whose path-relative-to-srcDir
+		// has a leading segment matching one of `excludedSegments`. Used to keep
+		// editor-only assets (AxiomAssets/Textures/Editor) out of shipped builds.
+		// Match is case-insensitive on Windows so the Editor folder excludes
+		// regardless of how the user cased it on disk.
+		int CopyDirIncrementalExcluding(const std::filesystem::path& srcDir,
+			const std::filesystem::path& destDir,
+			const std::vector<std::filesystem::path>& excludedRelativePaths)
+		{
+			int copied = 0;
+			std::filesystem::create_directories(destDir);
+
+			auto isExcluded = [&](const std::filesystem::path& rel) {
+				const std::string relStr = rel.generic_string();
+				for (const auto& excluded : excludedRelativePaths) {
+					const std::string excStr = excluded.generic_string();
+					// Match the excluded path itself or anything underneath it.
+#ifdef AIM_PLATFORM_WINDOWS
+					if (relStr.size() >= excStr.size()
+						&& _strnicmp(relStr.c_str(), excStr.c_str(), excStr.size()) == 0
+						&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
+					{
+						return true;
+					}
+#else
+					if (relStr.size() >= excStr.size()
+						&& relStr.compare(0, excStr.size(), excStr) == 0
+						&& (relStr.size() == excStr.size() || relStr[excStr.size()] == '/'))
+					{
+						return true;
+					}
+#endif
+				}
+				return false;
+			};
+
+			for (auto it = std::filesystem::recursive_directory_iterator(srcDir);
+				it != std::filesystem::recursive_directory_iterator(); ++it)
+			{
+				auto rel = std::filesystem::relative(it->path(), srcDir);
+				if (isExcluded(rel)) {
+					if (it->is_directory()) {
+						it.disable_recursion_pending();
+					}
+					continue;
+				}
+				auto dest = destDir / rel;
+				try {
+					if (it->is_directory()) {
+						std::filesystem::create_directories(dest);
+					}
+					else if (NeedsCopy(it->path(), dest)) {
+						std::filesystem::create_directories(dest.parent_path());
+						std::filesystem::copy_file(it->path(), dest, std::filesystem::copy_options::overwrite_existing);
 						copied++;
 					}
 				}
@@ -387,8 +452,10 @@ namespace Axiom {
 
 		const std::filesystem::path runtimeOutputDirectory = exeDir / ".." / "Axiom-Runtime";
 		const std::string runtimeExecutableFilename = GetRuntimeExecutableFilename();
+		const std::string outputExecutableStem = project->ExecutableName.empty()
+			? project->Name : project->ExecutableName;
 		copyFile(runtimeOutputDirectory / runtimeExecutableFilename,
-			outDir / (project->Name + std::filesystem::path(runtimeExecutableFilename).extension().string()),
+			outDir / (outputExecutableStem + std::filesystem::path(runtimeExecutableFilename).extension().string()),
 			"runtime executable");
 		copyFile(runtimeOutputDirectory / GetEngineRuntimeFilename(),
 			outDir / GetEngineRuntimeFilename(),
@@ -445,7 +512,15 @@ namespace Axiom {
 			}
 
 			if (!axiomAssetsSrc.empty() && std::filesystem::exists(axiomAssetsSrc)) {
-				int updatedFiles = CopyDirIncremental(axiomAssetsSrc, outDir / "AxiomAssets");
+				// Editor-only assets (icons, gizmo art, file-type previews)
+				// have no business in a shipped runtime — skip them. The
+				// excluded path is relative to AxiomAssets/, so the
+				// recursive copy walks past Textures/Editor entirely.
+				const std::vector<std::filesystem::path> excluded{
+					std::filesystem::path("Textures") / "Editor",
+				};
+				int updatedFiles = CopyDirIncrementalExcluding(
+					axiomAssetsSrc, outDir / "AxiomAssets", excluded);
 				AIM_INFO_TAG("Build", "AxiomAssets: {} file(s) updated", updatedFiles);
 			}
 			else {
@@ -495,37 +570,43 @@ namespace Axiom {
 
 		AxiomProject* project = ProjectManager::GetCurrentProject();
 		if (project) {
-			if (!m_BuildSceneListInitialized) {
-				m_BuildSceneList.clear();
-				auto assetsDir = std::filesystem::path(project->AssetsDirectory);
-				std::error_code ec;
-				if (std::filesystem::exists(assetsDir, ec) && !ec) {
-					for (std::filesystem::recursive_directory_iterator it(
-							 assetsDir,
-							 std::filesystem::directory_options::skip_permission_denied,
-							 ec),
-						 end;
-						 it != end;
-						 it.increment(ec)) {
-						if (ec) {
-							ec.clear();
-							continue;
-						}
-						if (it->is_regular_file(ec) && !ec && it->path().extension() == ".scene") {
-							m_BuildSceneList.push_back(it->path().stem().string());
-						}
-					}
-				}
+			// Sync m_BuildSceneList with disk every frame so newly-imported
+			// scenes auto-appear and deleted ones drop out, while preserving
+			// any manual drag-drop reordering the user has done within the
+			// panel. AssetRegistry caches the scan, so this is cheap when
+			// nothing has changed since last sync.
+			AssetRegistry::Sync();
+			std::vector<std::string> diskScenes;
+			diskScenes.reserve(m_BuildSceneList.size() + 4);
+			for (const AssetRegistry::Record& record : AssetRegistry::FindAll(AssetKind::Scene)) {
+				diskScenes.push_back(std::filesystem::path(record.Path).stem().string());
+			}
 
-				if (!project->StartupScene.empty()) {
-					auto it = std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), project->StartupScene);
-					if (it != m_BuildSceneList.end() && it != m_BuildSceneList.begin()) {
-						std::string startupScene = *it;
-						m_BuildSceneList.erase(it);
-						m_BuildSceneList.insert(m_BuildSceneList.begin(), startupScene);
-					}
+			// Drop entries whose .scene file no longer exists.
+			m_BuildSceneList.erase(
+				std::remove_if(m_BuildSceneList.begin(), m_BuildSceneList.end(),
+					[&](const std::string& s) {
+						return std::find(diskScenes.begin(), diskScenes.end(), s) == diskScenes.end();
+					}),
+				m_BuildSceneList.end());
+
+			// Append entries the user has not seen yet (new on disk).
+			for (const std::string& stem : diskScenes) {
+				if (std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), stem) == m_BuildSceneList.end()) {
+					m_BuildSceneList.push_back(stem);
 				}
-				m_BuildSceneListInitialized = true;
+			}
+
+			// Pin StartupScene to position [0] so the [Startup] tag and
+			// the runtime's first-loaded scene stay in sync with the
+			// project file's StartupScene field.
+			if (!project->StartupScene.empty()) {
+				auto it = std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), project->StartupScene);
+				if (it != m_BuildSceneList.end() && it != m_BuildSceneList.begin()) {
+					std::string startupScene = *it;
+					m_BuildSceneList.erase(it);
+					m_BuildSceneList.insert(m_BuildSceneList.begin(), startupScene);
+				}
 			}
 
 			if (ImGui::CollapsingHeader("Scene List", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -631,12 +712,21 @@ namespace Axiom {
 				// CMakeLists target_compile_definitions on next compile.
 				// Names only (no `=value`) — Unity-style scripting symbols.
 				ImGui::TextUnformatted("Custom Defines:");
-				ImGui::SetNextItemWidth(-1);
-				ImGui::InputTextWithHint("##NewCustomDefine", "Add a symbol (e.g. STEAM_BUILD)…",
+				// Reserve room for the "Add" button on the right so the
+				// input field doesn't push it off-panel — previously the
+				// input was width=-1 which left the button visually clipped
+				// to a few pixels and made the click target unusable.
+				const float addBtnWidth = ImGui::CalcTextSize("Add").x
+					+ ImGui::GetStyle().FramePadding.x * 2.0f;
+				const float availForInput = ImGui::GetContentRegionAvail().x
+					- addBtnWidth - ImGui::GetStyle().ItemInnerSpacing.x;
+				ImGui::SetNextItemWidth(availForInput);
+				const bool entryEnter = ImGui::InputTextWithHint("##NewCustomDefine",
+					"Add a symbol (e.g. STEAM_BUILD)…",
 					m_CustomDefineEntryBuffer, sizeof(m_CustomDefineEntryBuffer),
 					ImGuiInputTextFlags_EnterReturnsTrue);
-				ImGui::SameLine();
-				bool addClicked = ImGui::Button("Add##CustomDefine");
+				ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+				bool addClicked = ImGui::Button("Add##CustomDefine") || entryEnter;
 				const bool entryReady = m_CustomDefineEntryBuffer[0] != '\0';
 				if (addClicked && entryReady) {
 					std::string newDef(m_CustomDefineEntryBuffer);
@@ -730,6 +820,32 @@ namespace Axiom {
 			ImGui::Unindent(8);
 		}
 
+		// UI scaling — Canvas-Scaler-style. Reference resolution defines
+		// the "pixel unit" the UI was authored in; the layout system
+		// multiplies SizeDelta / AnchoredPosition / padding by
+		// (curResolution / refResolution) so the same scene renders
+		// proportionally on any window size. Defaults are pre-seeded to
+		// match the build resolution so a freshly-created project's
+		// Game View previews 1:1 unless the user opts in.
+		if (ImGui::CollapsingHeader("UI Scaling", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			changed |= ImGui::InputInt("Reference Width##UIRef", &project->UIReferenceWidth);
+			changed |= ImGui::InputInt("Reference Height##UIRef", &project->UIReferenceHeight);
+			if (project->UIReferenceWidth  < 1) project->UIReferenceWidth  = 1;
+			if (project->UIReferenceHeight < 1) project->UIReferenceHeight = 1;
+			changed |= ImGui::SliderFloat("Match Width / Height", &project->UIScaleMatch, 0.0f, 1.0f, "%.2f");
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"0 = scale UI by window WIDTH only.\n"
+					"1 = scale UI by window HEIGHT only.\n"
+					"0.5 = balanced (geometric mean).\n"
+					"\n"
+					"Move toward 1 if your UI hugs the top/bottom edges,\n"
+					"toward 0 if it hugs the left/right edges.");
+			}
+			ImGui::Unindent(8);
+		}
+
 		if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			changed |= ImGui::Checkbox("Show runtime stats overlay (F6)", &project->ShowRuntimeStats);
@@ -737,11 +853,166 @@ namespace Axiom {
 			ImGui::Unindent(8);
 		}
 
+		if (ImGui::CollapsingHeader("Executable", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			ImGui::TextUnformatted("Output Name:");
+			char exeBuf[256];
+			std::string current = project->ExecutableName.empty() ? project->Name : project->ExecutableName;
+			std::snprintf(exeBuf, sizeof(exeBuf), "%s", current.c_str());
+			ImGui::SetNextItemWidth(-1);
+			if (ImGui::InputText("##ExecutableName", exeBuf, sizeof(exeBuf))) {
+				const std::string newName(exeBuf);
+				project->ExecutableName = (newName == project->Name) ? "" : newName;
+				changed = true;
+			}
+			ImGui::TextDisabled("Default: project name (\"%s\"). The platform extension is appended automatically.",
+				project->Name.c_str());
+			ImGui::Unindent(8);
+		}
+
+		if (ImGui::CollapsingHeader("Splash Screen", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			constexpr const char* k_SplashPickerKey = "ProjectSettings.SplashImage";
+
+			if (auto pending = ReferencePicker::ConsumeSelection(k_SplashPickerKey); pending) {
+				const std::string raw = *pending;
+				uint64_t pickedId = 0;
+				try { pickedId = std::stoull(raw); } catch (...) { pickedId = 0; }
+				if (pickedId == 0) {
+					project->SplashScreen.ImagePath.clear();
+					changed = true;
+				}
+				else {
+					std::string absPath = AssetRegistry::ResolvePath(pickedId);
+					if (!absPath.empty()) {
+						std::filesystem::path absFs(absPath);
+						std::filesystem::path assetsDir(project->AssetsDirectory);
+						if (absFs.string().find(assetsDir.string()) == 0) {
+							project->SplashScreen.ImagePath = std::filesystem::relative(absFs, assetsDir.parent_path()).string();
+						}
+						else {
+							project->SplashScreen.ImagePath = absFs.filename().string();
+						}
+						changed = true;
+					}
+				}
+			}
+
+			changed |= ImGui::Checkbox("Enabled##Splash", &project->SplashScreen.Enabled);
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("When off, the runtime loads the startup scene immediately with no splash.");
+			}
+
+			if (project->SplashScreen.Enabled) {
+				ImGui::Spacing();
+				changed |= ImGui::SliderFloat("Duration (s)##Splash",
+					&project->SplashScreen.DurationSeconds, 0.5f, 10.0f, "%.2f");
+				changed |= ImGui::SliderFloat("Fade In (s)##Splash",
+					&project->SplashScreen.FadeInSeconds, 0.0f, 3.0f, "%.2f");
+				changed |= ImGui::SliderFloat("Fade Out (s)##Splash",
+					&project->SplashScreen.FadeOutSeconds, 0.0f, 3.0f, "%.2f");
+
+				ImGui::Spacing();
+				float bg[3] = {
+					project->SplashScreen.BackgroundR,
+					project->SplashScreen.BackgroundG,
+					project->SplashScreen.BackgroundB,
+				};
+				if (ImGui::ColorEdit3("Background##Splash", bg)) {
+					project->SplashScreen.BackgroundR = bg[0];
+					project->SplashScreen.BackgroundG = bg[1];
+					project->SplashScreen.BackgroundB = bg[2];
+					changed = true;
+				}
+
+				ImGui::Spacing();
+				ImGui::TextUnformatted("Image (optional, replaces default Axiom logo):");
+				if (project->SplashScreen.ImagePath.empty()) {
+					ImGui::TextDisabled("(default Axiom logo)");
+				}
+				else {
+					ImGuiUtils::TextDisabledEllipsis(project->SplashScreen.ImagePath);
+				}
+				if (ImGui::Button("Browse...##SplashImage")) {
+					ReferencePicker::OpenForFieldKey(k_SplashPickerKey, "Select Splash Image",
+						ReferencePicker::CollectAssetsByKind(AssetKind::Texture),
+						ReferencePicker::Style::Thumbnails);
+				}
+				if (!project->SplashScreen.ImagePath.empty()) {
+					ImGui::SameLine();
+					if (ImGui::Button("Clear##SplashImage")) {
+						project->SplashScreen.ImagePath.clear();
+						changed = true;
+					}
+				}
+
+				ImGui::Spacing();
+				ImGui::TextUnformatted("Custom Text (optional, replaces version + platform line):");
+				char textBuf[256];
+				std::snprintf(textBuf, sizeof(textBuf), "%s", project->SplashScreen.CustomText.c_str());
+				ImGui::SetNextItemWidth(-1);
+				if (ImGui::InputTextWithHint("##SplashText", "Leave empty for engine default",
+					textBuf, sizeof(textBuf))) {
+					project->SplashScreen.CustomText = textBuf;
+					changed = true;
+				}
+			}
+			ImGui::Unindent(8);
+		}
+
 		if (ImGui::CollapsingHeader("App Icon", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 
+			constexpr const char* k_AppIconPickerKey = "ProjectSettings.AppIcon";
+
+			// AppIconPath is stored as a project-relative path (e.g.
+			// "Assets/icon.png") so the project file stays portable, but
+			// TextureManager::ResolveTexturePath only searches CWD,
+			// engine AxiomAssets, and <exe>/Assets/Textures — none of
+			// which match a path-relative-to-project-root once the editor
+			// is launched from somewhere other than the project dir.
+			// Prepending project->RootDirectory turns it into a path the
+			// `File::Exists(rawPath)` first branch of ResolveTexturePath
+			// accepts.
+			auto resolveProjectRelative = [&](const std::string& rel) -> std::string {
+				std::filesystem::path p(rel);
+				if (p.is_absolute()) return rel;
+				return (std::filesystem::path(project->RootDirectory) / p).string();
+			};
+
+			// Apply a pending picker selection from a previous frame.
+			if (auto pending = ReferencePicker::ConsumeSelection(k_AppIconPickerKey); pending) {
+				const std::string raw = *pending;
+				uint64_t pickedId = 0;
+				try { pickedId = std::stoull(raw); } catch (...) { pickedId = 0; }
+				if (pickedId == 0) {
+					project->AppIconPath.clear();
+					changed = true;
+					Application::GetInstance()->GetWindow()->SetWindowIconFromResource();
+				}
+				else {
+					std::string absPath = AssetRegistry::ResolvePath(pickedId);
+					if (!absPath.empty()) {
+						std::filesystem::path absFs(absPath);
+						std::filesystem::path assetsDir(project->AssetsDirectory);
+						if (absFs.string().find(assetsDir.string()) == 0) {
+							project->AppIconPath = std::filesystem::relative(absFs, assetsDir.parent_path()).string();
+						}
+						else {
+							project->AppIconPath = absFs.filename().string();
+						}
+						changed = true;
+						TextureHandle icon = TextureManager::LoadTexture(resolveProjectRelative(project->AppIconPath));
+						Texture2D* tex = TextureManager::GetTexture(icon);
+						if (tex && tex->IsValid()) {
+							Application::GetInstance()->GetWindow()->SetWindowIcon(tex);
+						}
+					}
+				}
+			}
+
 			if (!project->AppIconPath.empty()) {
-				TextureHandle iconHandle = TextureManager::LoadTexture(project->AppIconPath);
+				TextureHandle iconHandle = TextureManager::LoadTexture(resolveProjectRelative(project->AppIconPath));
 				Texture2D* iconTex = TextureManager::GetTexture(iconHandle);
 				if (iconTex && iconTex->IsValid()) {
 					ImGui::Image(
@@ -754,11 +1025,19 @@ namespace Axiom {
 					ImGuiUtils::TextDisabledEllipsis(project->AppIconPath);
 				}
 
-				if (ImGui::Button("Clear")) {
+				ImGui::BeginGroup();
+				if (ImGui::Button("Browse...##AppIcon")) {
+					ReferencePicker::OpenForFieldKey(k_AppIconPickerKey, "Select App Icon",
+						ReferencePicker::CollectAssetsByKind(AssetKind::Texture),
+						ReferencePicker::Style::Thumbnails);
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Clear##AppIcon")) {
 					project->AppIconPath.clear();
 					changed = true;
 					Application::GetInstance()->GetWindow()->SetWindowIconFromResource();
 				}
+				ImGui::EndGroup();
 
 				if (iconTex && iconTex->IsValid()) {
 					ImGuiUtils::TextDisabledEllipsis(project->AppIconPath);
@@ -766,7 +1045,13 @@ namespace Axiom {
 			}
 			else {
 				ImGui::TextDisabled("No icon set");
-				ImGui::TextDisabled("Drag an image from the Asset Browser");
+				if (ImGui::Button("Browse...##AppIcon")) {
+					ReferencePicker::OpenForFieldKey(k_AppIconPickerKey, "Select App Icon",
+						ReferencePicker::CollectAssetsByKind(AssetKind::Texture),
+						ReferencePicker::Style::Thumbnails);
+				}
+				ImGui::SameLine();
+				ImGui::TextDisabled("or drag an image from the Asset Browser");
 			}
 
 			if (ImGui::BeginDragDropTarget()) {
@@ -786,7 +1071,7 @@ namespace Axiom {
 						}
 						changed = true;
 
-						TextureHandle icon = TextureManager::LoadTexture(project->AppIconPath);
+						TextureHandle icon = TextureManager::LoadTexture(resolveProjectRelative(project->AppIconPath));
 						Texture2D* tex = TextureManager::GetTexture(icon);
 						if (tex && tex->IsValid()) {
 							Application::GetInstance()->GetWindow()->SetWindowIcon(tex);
@@ -869,6 +1154,12 @@ namespace Axiom {
 			ScriptEngine::ShutdownGlobalSystems();
 			ScriptEngine::InitializeGlobalSystems(activeGlobalSystems);
 		}
+
+		// Render any reference picker popup opened from this panel
+		// (App Icon, Splash image). Without this, OpenForFieldKey
+		// stages a request that never gets a render call and the popup
+		// never appears for fields hosted outside the inspector.
+		ReferencePicker::RenderPopup();
 
 		ImGui::End();
 	}
@@ -968,6 +1259,8 @@ namespace Axiom {
 			return entry.Texture.get();
 		}
 
+		// TODO(perf): Synchronous decode on UI thread — large textures cause first-select hitches.
+		// Convert to async-task pattern (see axiom-add-editor-panel skill).
 		auto texture = std::make_unique<Texture2D>(canonicalPath.c_str(), Filter::Point, Wrap::Clamp, Wrap::Clamp);
 		if (!texture->IsValid()) {
 			return nullptr;
@@ -1029,6 +1322,12 @@ namespace Axiom {
 			m_PackageManagerInitialized = true;
 		}
 
+		// Pre-seed a sensible first-open size and minimum constraints so a
+		// freshly-docked panel isn't squashed to its title bar — without
+		// this, ImGui's dock layout could collapse the panel's content
+		// area to 0 px and the user only sees the tab strip.
+		ImGui::SetNextWindowSize(ImVec2(880, 540), ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowSizeConstraints(ImVec2(420, 320), ImVec2(FLT_MAX, FLT_MAX));
 		ImGui::Begin("Package Manager", &m_ShowPackageManager);
 		m_PackageManagerPanel.Render();
 		ImGui::End();

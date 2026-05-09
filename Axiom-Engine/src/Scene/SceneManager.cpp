@@ -17,6 +17,7 @@
 #include "Systems/ParticleUpdateSystem.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/UIEventSystem.hpp"
+#include "Systems/UIFocusSystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
 #include "Core/Application.hpp"
 #include "Core/ApplicationConfig.hpp"
@@ -75,6 +76,17 @@ namespace Axiom {
 			// per-frame Update still walks the entity registry — gate it.
 			if (config.EnableAudio) {
 				definition.AddSystem<AudioUpdateSystem>();
+			}
+
+			// UIFocusSystem updates the keyboard / controller focus
+			// target BEFORE UIEventSystem so its mouse-focus promotion
+			// uses fresh resolved rects and its Activate flag is in
+			// place when UIEventSystem's hit-test loop synthesises a
+			// click. The system is opt-in per-widget (via
+			// InteractableComponent::Focusable) so existing scenes are
+			// untouched even when it's registered.
+			if (config.EnableRenderer2D) {
+				definition.AddSystem<UIFocusSystem>();
 			}
 
 			// UIEventSystem reads mouse position from the scene's main
@@ -339,6 +351,20 @@ namespace Axiom {
 		}
 
 		ReleaseScene(it);
+
+		// Mirror the post-scene-transition sweep in UnloadAllScenes: components on
+		// the released scene held the only refs to some textures and audio clips,
+		// so without this pass those assets stay resident until shutdown.
+		Application* app = Application::GetInstance();
+		if (app) {
+			const ApplicationConfig config = app->GetConfiguration();
+			if (config.EnableTextureManager) {
+				TextureManager::PurgeUnreferenced();
+			}
+			if (config.EnableAudio) {
+				AudioManager::PurgeUnreferenced();
+			}
+		}
 	}
 
 	void SceneManager::ReleaseScene(LoadedSceneList::iterator it) {

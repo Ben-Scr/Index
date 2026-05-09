@@ -1,5 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
+using Axiom.Coroutines;
 
 namespace Axiom.Interop;
 /// <summary>
@@ -60,6 +62,25 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<int, void> InvokeGameSystemAwake;
     public delegate* unmanaged<int, void> InvokeGameSystemFixedUpdate;
     public delegate* unmanaged<int, void> InvokeGlobalSystemFixedUpdate;
+
+    // ── GameSystem field reflection (appended for binary compat) ──
+    public delegate* unmanaged<int, byte*> GetGameSystemFields;
+    public delegate* unmanaged<int, byte*, byte*, void> SetGameSystemField;
+
+    // ── UI event dispatch (appended for binary compat) ──
+    // Native UIEventSystem calls this once per frame after writing
+    // its transient flags so the managed UIEventDispatcher can fan
+    // out the per-instance UI events (Button.OnClick, Slider.OnValueChanged,
+    // etc.) the same frame the engine detected the change.
+    public delegate* unmanaged<void> RaiseUiEventDispatch;
+
+    // ── Coroutine pump (appended for binary compat) ──
+    // Drains the AxiomSynchronizationContext queue and ticks pending
+    // EntityScript coroutine awaiters (frame / seconds / condition).
+    // Called from native ScriptSystem::Update at the top of the frame,
+    // and ScriptSystem::FixedUpdate for fixed-tick continuations.
+    public delegate* unmanaged<float, void> PumpCoroutinesUpdate;
+    public delegate* unmanaged<void> PumpCoroutinesFixedUpdate;
 }
 
 /// <summary>
@@ -130,7 +151,24 @@ internal static class ScriptHostBridge
             managedCallbacks->InvokeGameSystemFixedUpdate = &ScriptInstanceManager.InvokeGameSystemFixedUpdate;
             managedCallbacks->InvokeGlobalSystemFixedUpdate = &ScriptInstanceManager.InvokeGlobalSystemFixedUpdate;
 
+            // ── GameSystem field reflection (appended for binary compat) ──
+            managedCallbacks->GetGameSystemFields = &ScriptInstanceManager.GetGameSystemFields;
+            managedCallbacks->SetGameSystemField = &ScriptInstanceManager.SetGameSystemField;
+
+            // ── UI event dispatch (appended for binary compat) ──
+            managedCallbacks->RaiseUiEventDispatch = &ScriptInstanceManager.RaiseUiEventDispatch;
+
+            // ── Coroutine pump (appended for binary compat) ──
+            managedCallbacks->PumpCoroutinesUpdate = &ScriptInstanceManager.PumpCoroutinesUpdate;
+            managedCallbacks->PumpCoroutinesFixedUpdate = &ScriptInstanceManager.PumpCoroutinesFixedUpdate;
+
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
+
+            // Install the main-thread sync context so any `await` inside
+            // a script resumes on the engine main thread via our per-frame
+            // pump, not on a thread-pool thread. Must run before any user
+            // code (LoadUserAssembly happens later, after this returns).
+            SynchronizationContext.SetSynchronizationContext(AxiomSynchronizationContext.Instance);
             return 0;
         }
         catch (Exception ex)

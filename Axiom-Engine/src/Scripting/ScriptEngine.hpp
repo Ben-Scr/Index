@@ -63,6 +63,7 @@ namespace Axiom {
 		static void RaiseSceneLoaded(const std::string& sceneName);
 		static void RaiseBeforeSceneUnloaded(const std::string& sceneName);
 		static void RaiseSceneUnloaded(const std::string& sceneName);
+		static void RaiseUiEventDispatch();
 
 		static uint32_t CreateGameSystemInstance(const std::string& className, const std::string& sceneName);
 		static void DestroyGameSystemInstance(uint32_t handle);
@@ -86,6 +87,23 @@ namespace Axiom {
 		static void InvokeGameSystemAwake(uint32_t handle);
 		static void InvokeGameSystemFixedUpdate(uint32_t handle);
 		static void InvokeGlobalSystemFixedUpdate(uint32_t handle);
+
+		// Returns a JSON array of [ShowInEditor]-visible fields on the live
+		// GameSystem instance (one entry per field). The pointer is valid
+		// until the next ScriptInstanceManager field call — caller must
+		// parse / copy before invoking another field accessor. Empty array
+		// when the handle is unknown.
+		static const char* GetGameSystemFields(uint32_t handle);
+		// Writes a single field on the live GameSystem instance. `value` is
+		// the editor's string-encoded value (same format ParseFieldValue
+		// expects). No-op when the handle is unknown or the field is missing.
+		static void SetGameSystemField(uint32_t handle, const char* fieldName, const char* value);
+
+		// Drains the EntityScript coroutine queues. Called from
+		// ScriptSystem::Update / FixedUpdate at the top of the frame so
+		// pending awaits resume before user OnUpdate runs.
+		static void PumpCoroutinesUpdate(float deltaTime);
+		static void PumpCoroutinesFixedUpdate();
 
 		static const ManagedCallbacks& GetCallbacks() { return s_Callbacks; }
 

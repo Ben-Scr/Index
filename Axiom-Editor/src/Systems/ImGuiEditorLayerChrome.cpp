@@ -178,7 +178,7 @@ namespace Axiom {
 				auto weakScene = sm.LoadSceneAdditive(sceneName);
 				if (auto loaded = weakScene.lock()) {
 					SceneSerializer::LoadFromFile(*loaded, dropPath);
-					m_EntityOrder.clear();
+					m_EntityOrder.clear(); m_EntityOrderDirty = true;
 				}
 			}
 		}
@@ -191,7 +191,7 @@ namespace Axiom {
 			Scene* active = SceneManager::Get().GetActiveScene();
 			if (active) {
 				SceneSerializer::LoadFromFile(*active, switchPath);
-				m_EntityOrder.clear();
+				m_EntityOrder.clear(); m_EntityOrderDirty = true;
 				AxiomProject* project = ProjectManager::GetCurrentProject();
 				if (project) {
 					project->LastOpenedScene = std::filesystem::path(switchPath).stem().string();
@@ -225,11 +225,21 @@ namespace Axiom {
 			}
 		}
 
-		// Ctrl+S: routes to prefab inspector if open, else saves active scene. Blocked in playmode.
-		// Pass `repeat=false` so holding the key down doesn't re-fire Save every frame
-		// (which would hammer disk + scene serialization at the OS key-repeat rate).
+		// Ctrl+S: routes to whatever the editor is currently editing.
+		// Priority: full prefab-edit mode > asset-side prefab inspector > active scene.
+		// All three paths are blocked during play mode so a stray Ctrl+S doesn't
+		// persist transient play-mode state. Pass `repeat=false` so holding the
+		// key down doesn't re-fire Save every frame (which would hammer disk +
+		// scene serialization at the OS key-repeat rate).
 		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !Application::GetIsPlaying()) {
-			if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
+			if (IsInPrefabEditMode()) {
+				// Full prefab-edit mode: save the detached scene back to its
+				// .prefab without exiting edit mode. Without this branch,
+				// Ctrl+S would save the (hidden) active scene instead of the
+				// thing the user is actually looking at.
+				SavePrefabEditChanges();
+			}
+			else if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
 				m_PrefabInspector.Save();
 			}
 			else {
@@ -249,6 +259,22 @@ namespace Axiom {
 			// Exit playmode and restore scene first
 			if (Application::GetIsPlaying()) {
 				RestoreEditorSceneAfterPlaymode();
+			}
+
+			// If the user is mid-prefab-edit with unsaved changes, auto-save
+			// before exiting. Losing prefab edits to a stray Cmd-W is the same
+			// data-loss class as losing scene edits, but layering another
+			// modal on top of the scene quit dialog gets noisy fast — auto-
+			// save is the safer default here, and matches the
+			// switch-prefab-while-editing path above.
+			if (m_PrefabEditScene && m_PrefabEditScene->IsDirty()) {
+				SavePrefabEditChanges();
+			}
+			// Always tear down prefab edit mode on quit so its detached
+			// scene's destructors run before SceneManager / static state
+			// cleanup, regardless of dirty status.
+			if (m_PrefabEditScene) {
+				ClosePrefabEditing(false);
 			}
 
 			Scene* active = SceneManager::Get().GetActiveScene();
@@ -293,6 +319,38 @@ namespace Axiom {
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(100, 0))) {
 				m_ConfirmDialogPendingPath.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
+		// Prefab-EDIT discard modal — fired when the user clicks "< Back"
+		// in the hierarchy toolbar while the prefab edit scene has
+		// unsaved changes. Distinct from the asset-inspector save prompt
+		// below: that one fires on .prefab→.prefab selection change in
+		// the asset browser; this one fires on full-edit-mode exit.
+		if (m_ShowPrefabEditDiscardPrompt) {
+			ImGui::OpenPopup("Discard Prefab Edits?");
+			m_ShowPrefabEditDiscardPrompt = false;
+		}
+		if (ImGui::BeginPopupModal("Discard Prefab Edits?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			std::string editPrefabName = std::filesystem::path(m_PrefabEditPath).filename().string();
+			if (editPrefabName.empty()) editPrefabName = "the prefab";
+			ImGui::Text("Save changes to %s before closing?", editPrefabName.c_str());
+			ImGui::Spacing();
+
+			if (ImGui::Button("Save", ImVec2(100, 0))) {
+				ClosePrefabEditing(true);
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Don't Save", ImVec2(100, 0))) {
+				ClosePrefabEditing(false);
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+				// Stay in edit mode; modal closes without altering state.
 				ImGui::CloseCurrentPopup();
 			}
 			ImGui::EndPopup();

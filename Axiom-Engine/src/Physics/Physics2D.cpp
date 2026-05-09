@@ -294,7 +294,7 @@ namespace Axiom {
 		}
 
 		auto& phys = PhysicsSystem2D::GetMainPhysicsWorld();
-		b2WorldId world = phys.m_WorldId;
+		b2WorldId world = phys.GetWorldID();
 
 		b2Vec2 o{ origin.x, origin.y };
 		Vec2 nd = Normalized(direction);

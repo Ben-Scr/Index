@@ -326,20 +326,48 @@ namespace Axiom::PropertyDrawer {
 		bool DrawString(std::span<const Entity> entities, const PropertyDescriptor& d) {
 			PropertyValue v;
 			const bool uniform = SampleUniform(entities, d, v);
-			char buf[256]{};
-			if (uniform) std::snprintf(buf, sizeof(buf), "%s", v.StringValue.c_str());
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
-			const bool changed = uniform
-				? ImGui::InputText("##Value", buf, sizeof(buf))
-				: ImGui::InputTextWithHint("##Value", "-", buf, sizeof(buf));
-			ImGui::PopID();
-			if (changed) {
-				PropertyValue out;
-				out.Type = PropertyType::String;
-				out.StringValue = buf;
-				WriteAll(entities, d, out);
+
+			bool changed = false;
+			if (d.Metadata.MultiLine) {
+				// Multi-line mode: bigger buffer (4 KB is plenty for
+				// option-list / description-style fields), height
+				// scales with MultiLineRows so authors get something
+				// closer to a textarea than a one-liner.
+				static constexpr int k_MultiLineCapacity = 4096;
+				std::vector<char> buf(k_MultiLineCapacity, '\0');
+				if (uniform) {
+					std::snprintf(buf.data(), buf.size(), "%s", v.StringValue.c_str());
+				}
+				const int rows = std::max(2, d.Metadata.MultiLineRows);
+				const float lineHeight = ImGui::GetTextLineHeight();
+				const ImVec2 size{ -FLT_MIN, lineHeight * static_cast<float>(rows) + 8.0f };
+				changed = ImGui::InputTextMultiline("##Value", buf.data(), buf.size(), size);
+				if (changed) {
+					PropertyValue out;
+					out.Type = PropertyType::String;
+					out.StringValue.assign(buf.data());
+					WriteAll(entities, d, out);
+				}
 			}
+			else {
+				// 4096 covers realistic single-line use (paths, identifiers,
+				// short prose). Multi-line strings should set MultiLineRows
+				// in metadata to take the InputTextMultiline branch above.
+				char buf[4096]{};
+				if (uniform) std::snprintf(buf, sizeof(buf), "%s", v.StringValue.c_str());
+				changed = uniform
+					? ImGui::InputText("##Value", buf, sizeof(buf))
+					: ImGui::InputTextWithHint("##Value", "-", buf, sizeof(buf));
+				if (changed) {
+					PropertyValue out;
+					out.Type = PropertyType::String;
+					out.StringValue = buf;
+					WriteAll(entities, d, out);
+				}
+			}
+			ImGui::PopID();
 			return changed;
 		}
 
@@ -353,9 +381,15 @@ namespace Axiom::PropertyDrawer {
 			const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
 			const bool any = ImGuiUtils::MultiEdit::MultiItemRow(static_cast<int>(N), [&](int c) -> bool {
 				ImGui::PushID(c);
-				float channel = values[c];
+				// C7: capture pre-edit value, only write on actual delta so
+				// the (possibly "-" mixed) sampled primary value isn't
+				// broadcast onto every selected entity when only one
+				// channel was touched.
+				const float pre = values[c];
+				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
-				const bool changed = ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
+				const bool committed = ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
+				const bool changed = committed && channel != pre;
 				if (changed) WriteFloatChannel(entities, d, static_cast<std::size_t>(c), channel);
 				ImGui::PopID();
 				return changed;
@@ -374,9 +408,12 @@ namespace Axiom::PropertyDrawer {
 			const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
 			const bool any = ImGuiUtils::MultiEdit::MultiItemRow(static_cast<int>(N), [&](int c) -> bool {
 				ImGui::PushID(c);
-				int channel = values[c];
+				// C7: same per-channel delta gate as DrawFloatVec.
+				const int pre = values[c];
+				int channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%d";
-				const bool changed = ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
+				const bool committed = ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
+				const bool changed = committed && channel != pre;
 				if (changed) WriteIntChannel(entities, d, static_cast<std::size_t>(c), channel);
 				ImGui::PopID();
 				return changed;
@@ -405,11 +442,16 @@ namespace Axiom::PropertyDrawer {
 				}
 			}
 			else {
+				// C7: mixed-channel drag fallback. Mirrors the non-mixed
+				// branch above: only commit when the channel the user
+				// touched actually moved.
 				anyChanged = ImGuiUtils::MultiEdit::MultiItemRow(4, [&](int c) -> bool {
 					ImGui::PushID(c);
-					float channel = values[c];
+					const float pre = values[c];
+					float channel = pre;
 					const char* fmt = mixed[c] ? "-" : "%.3f";
-					const bool changed = ImGui::DragFloat("##c", &channel, 0.005f, 0.0f, 1.0f, fmt);
+					const bool committed = ImGui::DragFloat("##c", &channel, 0.005f, 0.0f, 1.0f, fmt);
+					const bool changed = committed && channel != pre;
 					if (changed) WriteFloatChannel(entities, d, static_cast<std::size_t>(c), channel);
 					ImGui::PopID();
 					return changed;
@@ -490,6 +532,7 @@ namespace Axiom::PropertyDrawer {
 			std::string preview;
 			bool anyMixed = false;
 			for (std::size_t b = 0; b < d.Metadata.Enum->Options.size(); ++b) {
+				if (d.Metadata.Enum->Options[b].Value == 0) continue;
 				if (bitMixed[b]) { anyMixed = true; break; }
 			}
 			if (anyMixed) {
@@ -505,6 +548,13 @@ namespace Axiom::PropertyDrawer {
 				}
 				if (preview.empty()) preview = "(None)";
 			}
+
+			// Mask of every declared flag value. Any bits outside this mask
+			// represent undeclared/garbage flags — strip them on write so the
+			// drawer doesn't silently propagate bits that no FlagEnum option
+			// describes (M27).
+			int64_t declaredMask = 0;
+			for (const auto& opt : d.Metadata.Enum->Options) declaredMask |= opt.Value;
 
 			bool changed = false;
 			ImGui::PushID(d.Name.c_str());
@@ -523,6 +573,13 @@ namespace Axiom::PropertyDrawer {
 							PropertyValue current = d.Get(e);
 							if (tmp) current.IntValue |= opt.Value;
 							else     current.IntValue &= ~opt.Value;
+							const int64_t before = current.IntValue;
+							current.IntValue &= declaredMask;
+							if (current.IntValue != before) {
+								AIM_CORE_WARN_TAG("Inspector",
+									"FlagEnum '{}': dropping undeclared bits 0x{:x}",
+									d.Name, static_cast<uint64_t>(before & ~declaredMask));
+							}
 							d.Set(const_cast<Entity&>(e), current);
 							MarkSceneDirty(e);
 						}
@@ -639,7 +696,8 @@ namespace Axiom::PropertyDrawer {
 							const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
 							const Scene* scene = SceneManager::Get().GetActiveScene();
 							if (scene && scene->IsValid(handle)) {
-								outValue.UIntValue = scene->GetRuntimeID(handle);
+								// Persistent UUID — see ReferencePicker::CollectEntities for why.
+								outValue.UIntValue = scene->GetEntityPersistentID(handle);
 								outValue.StringValue.clear();
 								return outValue.UIntValue != 0;
 							}
@@ -672,7 +730,14 @@ namespace Axiom::PropertyDrawer {
 				},
 				[&componentTypeName](PropertyValue& outValue) {
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("COMPONENT_REF")) {
-						std::string refStr(static_cast<const char*>(payload->Data));
+						// Build the string size-aware: ImGui drag-drop payloads are
+						// raw byte buffers, not C strings, so a payload that
+						// happens to lack a terminating NUL would otherwise read
+						// past the end. Trim a trailing NUL if the producer sent
+						// one in the payload size for back-compat.
+						std::string refStr(static_cast<const char*>(payload->Data),
+							static_cast<size_t>(payload->DataSize));
+						if (!refStr.empty() && refStr.back() == '\0') refStr.pop_back();
 						const std::size_t sep = refStr.find(':');
 						if (sep != std::string::npos) {
 							const std::string typeName = refStr.substr(sep + 1);
@@ -685,6 +750,288 @@ namespace Axiom::PropertyDrawer {
 					}
 					return false;
 				});
+		}
+
+		// Generic list-of-T editor (PropertyType::List). Same UX as
+		// DrawStringList — one row per entry, per-row Remove + bottom
+		// Add — but each row dispatches through the same primitive
+		// widget the standalone field would use, picked from
+		// d.Metadata.ListItemType. The whole vector is written back
+		// on any change so MakeListWith's setter sees the full list.
+		bool DrawList(std::span<const Entity> entities, const PropertyDescriptor& d) {
+			PropertyValue v;
+			const bool uniform = SampleUniform(entities, d, v);
+			std::vector<PropertyValue> items = v.ListValue;
+			const PropertyType itemType = d.Metadata.ListItemType;
+
+			ImGui::PushID(d.Name.c_str());
+			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
+			if (!uniform) {
+				ImGui::TextDisabled("— (multiple values, edits overwrite all)");
+			}
+			else {
+				ImGui::TextDisabled("%d %s", static_cast<int>(items.size()),
+					items.size() == 1 ? "item" : "items");
+			}
+
+			bool changed = false;
+			int removeIndex = -1;
+
+			for (std::size_t i = 0; i < items.size(); ++i) {
+				ImGui::PushID(static_cast<int>(i));
+
+				ImGui::AlignTextToFramePadding();
+				ImGui::Text("%2zu", i);
+				ImGui::SameLine();
+
+				const float deleteButtonWidth = ImGui::CalcTextSize("Remove").x
+					+ ImGui::GetStyle().FramePadding.x * 2.0f;
+				const float availWidth = ImGui::GetContentRegionAvail().x;
+				const float spacing = ImGui::GetStyle().ItemSpacing.x;
+				const float widgetWidth = std::max(40.0f, availWidth - deleteButtonWidth - spacing);
+				ImGui::SetNextItemWidth(widgetWidth);
+
+				PropertyValue& item = items[i];
+				item.Type = itemType;
+
+				// Per-item dispatch — limited to scalar / vec / color /
+				// string / enum cases. Asset references inside lists
+				// aren't supported here; if they're needed in future,
+				// route through the existing reference helpers but with
+				// per-row picker keys (not done today).
+				bool itemChanged = false;
+				switch (itemType) {
+				case PropertyType::Bool: {
+					bool b = item.BoolValue;
+					if (ImGui::Checkbox("##v", &b)) { item.BoolValue = b; itemChanged = true; }
+					break;
+				}
+				case PropertyType::Int8:
+				case PropertyType::Int16:
+				case PropertyType::Int32: {
+					int tmp = static_cast<int>(item.IntValue);
+					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
+					if (ImGui::DragInt("##v", &tmp, speed)) { item.IntValue = tmp; itemChanged = true; }
+					break;
+				}
+				case PropertyType::UInt8:
+				case PropertyType::UInt16:
+				case PropertyType::UInt32: {
+					int tmp = static_cast<int>(std::min<uint64_t>(item.UIntValue, INT_MAX));
+					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
+					if (ImGui::DragInt("##v", &tmp, speed, 0, INT_MAX)) {
+						item.UIntValue = static_cast<uint64_t>(std::max(tmp, 0));
+						itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Float: {
+					float tmp = static_cast<float>(item.FloatValue);
+					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
+					if (ImGui::DragFloat("##v", &tmp, speed)) {
+						item.FloatValue = static_cast<double>(tmp); itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Double: {
+					double tmp = item.FloatValue;
+					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
+					if (ImGui::DragScalar("##v", ImGuiDataType_Double, &tmp, speed)) {
+						item.FloatValue = tmp; itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::String: {
+					char buf[1024]{};
+					std::snprintf(buf, sizeof(buf), "%s", item.StringValue.c_str());
+					if (ImGui::InputText("##v", buf, sizeof(buf))) {
+						item.StringValue = buf; itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Vec2: {
+					float vec[2] = { item.FloatVec[0], item.FloatVec[1] };
+					if (ImGui::DragFloat2("##v", vec, 0.1f)) {
+						item.FloatVec[0] = vec[0]; item.FloatVec[1] = vec[1]; itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Vec3: {
+					float vec[3] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2] };
+					if (ImGui::DragFloat3("##v", vec, 0.1f)) {
+						item.FloatVec[0] = vec[0]; item.FloatVec[1] = vec[1]; item.FloatVec[2] = vec[2];
+						itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Vec4: {
+					float vec[4] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2], item.FloatVec[3] };
+					if (ImGui::DragFloat4("##v", vec, 0.1f)) {
+						for (int c = 0; c < 4; ++c) item.FloatVec[c] = vec[c];
+						itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Color: {
+					float vec[4] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2], item.FloatVec[3] };
+					if (ImGui::ColorEdit4("##v", vec)) {
+						for (int c = 0; c < 4; ++c) item.FloatVec[c] = vec[c];
+						itemChanged = true;
+					}
+					break;
+				}
+				case PropertyType::Enum: {
+					if (d.Metadata.Enum && !d.Metadata.Enum->Options.empty()) {
+						const char* preview = "Unknown";
+						for (const auto& opt : d.Metadata.Enum->Options) {
+							if (opt.Value == item.IntValue) { preview = opt.Name.c_str(); break; }
+						}
+						if (ImGui::BeginCombo("##v", preview)) {
+							for (const auto& opt : d.Metadata.Enum->Options) {
+								const bool isSelected = (opt.Value == item.IntValue);
+								if (ImGui::Selectable(opt.Name.c_str(), isSelected)) {
+									item.IntValue = opt.Value; itemChanged = true;
+								}
+								if (isSelected) ImGui::SetItemDefaultFocus();
+							}
+							ImGui::EndCombo();
+						}
+					}
+					break;
+				}
+				default:
+					ImGui::TextDisabled("(unsupported list item type)");
+					break;
+				}
+
+				ImGui::SameLine();
+				if (ImGui::Button("Remove", ImVec2(deleteButtonWidth, 0.0f))) {
+					removeIndex = static_cast<int>(i);
+				}
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this entry");
+
+				if (itemChanged) changed = true;
+				ImGui::PopID();
+			}
+
+			if (removeIndex >= 0 && removeIndex < static_cast<int>(items.size())) {
+				items.erase(items.begin() + removeIndex);
+				changed = true;
+			}
+
+			if (ImGui::Button("+ Add")) {
+				PropertyValue blank;
+				blank.Type = itemType;
+				items.push_back(std::move(blank));
+				changed = true;
+			}
+
+			ImGui::PopID();
+
+			if (changed) {
+				PropertyValue out;
+				out.Type = PropertyType::List;
+				out.ListValue = std::move(items);
+				WriteAll(entities, d, out);
+			}
+			return changed;
+		}
+
+		// String-list editor: one row per entry with delete button,
+		// add-row button at the end. The whole list is written back
+		// on any change (insert / remove / edit), which matches how
+		// MakeStringList's setter expects the full vector each time.
+		// Multi-selection: if the lists differ across entities the
+		// header shows a "—" hint, but edits still write to all (the
+		// list semantics make per-entity diffing more confusing than
+		// helpful for arrays this small).
+		bool DrawStringList(std::span<const Entity> entities, const PropertyDescriptor& d) {
+			PropertyValue v;
+			const bool uniform = SampleUniform(entities, d, v);
+			std::vector<std::string> items = v.StringListValue;
+
+			ImGui::PushID(d.Name.c_str());
+			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
+			if (!uniform) {
+				ImGui::TextDisabled("— (multiple values, edits overwrite all)");
+			}
+			else {
+				ImGui::TextDisabled("%d %s", static_cast<int>(items.size()),
+					items.size() == 1 ? "item" : "items");
+			}
+
+			bool changed = false;
+			int removeIndex = -1;
+
+			for (size_t i = 0; i < items.size(); ++i) {
+				ImGui::PushID(static_cast<int>(i));
+
+				// Per-row layout: index label · text input (stretched) ·
+				// delete button. The delete button is fixed-width so it
+				// doesn't collapse when the inspector is narrow.
+				ImGui::AlignTextToFramePadding();
+				ImGui::Text("%2zu", i);
+				ImGui::SameLine();
+
+				// "Remove" label (instead of a single-glyph "X") because
+				// dropdown-option rows are visually similar to the regular
+				// inspector field rows above them — a 1-character button
+				// reads as decoration; a worded button reads as an action,
+				// which makes the disposability of each option obvious.
+				const float deleteButtonWidth = ImGui::CalcTextSize("Remove").x
+					+ ImGui::GetStyle().FramePadding.x * 2.0f;
+				const float availWidth = ImGui::GetContentRegionAvail().x;
+				const float spacing = ImGui::GetStyle().ItemSpacing.x;
+				ImGui::SetNextItemWidth(std::max(40.0f, availWidth - deleteButtonWidth - spacing));
+
+				char buf[256]{};
+				std::snprintf(buf, sizeof(buf), "%s", items[i].c_str());
+				if (ImGui::InputText("##entry", buf, sizeof(buf))) {
+					items[i] = buf;
+					changed = true;
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Remove", ImVec2(deleteButtonWidth, 0.0f))) {
+					removeIndex = static_cast<int>(i);
+				}
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this entry");
+				ImGui::PopID();
+			}
+
+			if (removeIndex >= 0 && removeIndex < static_cast<int>(items.size())) {
+				items.erase(items.begin() + removeIndex);
+				changed = true;
+			}
+
+			if (ImGui::Button("+ Add")) {
+				items.emplace_back();
+				changed = true;
+			}
+
+			ImGui::PopID();
+
+			if (changed) {
+				PropertyValue out;
+				out.Type = PropertyType::StringList;
+				out.StringListValue = std::move(items);
+				WriteAll(entities, d, out);
+			}
+			return changed;
+		}
+
+	} // namespace
+
+	namespace {
+
+		// Resolve EnabledIfFn across the multi-selection. Returns false iff
+		// any entity in the span returns false from the predicate. An empty
+		// span or no predicate means "always enabled".
+		bool EvaluateEnabledIf(std::span<const Entity> entities, const PropertyDescriptor& d) {
+			if (!d.Metadata.EnabledIfFn) return true;
+			for (const Entity& e : entities) {
+				if (!d.Metadata.EnabledIfFn(e)) return false;
+			}
+			return true;
 		}
 
 	} // namespace
@@ -703,7 +1050,8 @@ namespace Axiom::PropertyDrawer {
 			ImGui::Dummy(ImVec2(0.0f, d.Metadata.SpaceHeight));
 		}
 
-		const bool readOnly = d.Metadata.ReadOnly;
+		const bool enabled = EvaluateEnabledIf(entities, d);
+		const bool readOnly = d.Metadata.ReadOnly || !enabled;
 		if (readOnly) ImGui::BeginDisabled();
 
 		bool changed = false;
@@ -722,6 +1070,8 @@ namespace Axiom::PropertyDrawer {
 		case PropertyType::Float:   changed = DrawFloat(entities, d); break;
 		case PropertyType::Double:  changed = DrawDouble(entities, d); break;
 		case PropertyType::String:  changed = DrawString(entities, d); break;
+		case PropertyType::StringList: changed = DrawStringList(entities, d); break;
+		case PropertyType::List:    changed = DrawList(entities, d); break;
 		case PropertyType::Vec2:    changed = DrawFloatVec<2>(entities, d); break;
 		case PropertyType::Vec3:    changed = DrawFloatVec<3>(entities, d); break;
 		case PropertyType::Vec4:    changed = DrawFloatVec<4>(entities, d); break;
@@ -760,6 +1110,33 @@ namespace Axiom::PropertyDrawer {
 			ImGui::SetTooltip("%s", d.Metadata.Tooltip.c_str());
 		}
 
+		// Variant branches: if the descriptor declares branches, dispatch
+		// to the matching branch by sampling the discriminator value across
+		// the selection. Mixed discriminators show a hint instead of any
+		// branch — there's no sensible way to reconcile different shapes.
+		// The branches' EnabledIf still applies (they go through Draw too).
+		if (!d.VariantBranches.empty() && !entities.empty()) {
+			PropertyValue tag;
+			const bool tagUniform = SampleUniform(entities, d, tag);
+			ImGui::Indent(8.0f);
+			if (!tagUniform) {
+				ImGui::TextDisabled("Mixed variant — pick one to apply to all");
+			}
+			else {
+				const PropertyDescriptor::Branch* matching = nullptr;
+				for (const auto& branch : d.VariantBranches) {
+					if (branch.TagValue == tag.IntValue) { matching = &branch; break; }
+				}
+				if (matching) {
+					for (const PropertyDescriptor& sub : matching->Properties) {
+						const std::string subKey = fieldKey + "." + sub.Name;
+						Draw(entities, sub, subKey);
+					}
+				}
+			}
+			ImGui::Unindent(8.0f);
+		}
+
 		return changed;
 	}
 
@@ -773,8 +1150,55 @@ namespace Axiom::PropertyDrawer {
 		std::span<const PropertyDescriptor> descriptors,
 		const std::string& fieldKeyPrefix)
 	{
+		// Section logic: a property with HeaderContent opens a collapsible
+		// CollapsingHeader. Subsequent header-less properties render inside
+		// that section. The next property with HeaderContent closes the
+		// previous section and opens a new one. Properties before the first
+		// header render at top-level. End-of-list closes any open section.
+		//
+		// To avoid the per-property inline separator render in Draw() from
+		// duplicating the section header, we strip HeaderContent on a
+		// per-property copy before passing to Draw. The cost (one std::string
+		// copy per header'd row) is negligible against the rest of the
+		// inspector's work.
+		bool sectionOpen = false;
+		bool sectionVisible = false;
 		for (const PropertyDescriptor& desc : descriptors) {
-			DrawWithPrefix(entities, desc, fieldKeyPrefix);
+			const bool startsSection = !desc.Metadata.HeaderContent.empty();
+			if (startsSection) {
+				if (sectionOpen) {
+					sectionOpen = false;
+				}
+				ImGui::Spacing();
+				const std::string headerLabel = desc.Metadata.HeaderContent
+					+ "##" + fieldKeyPrefix + "_" + desc.Metadata.HeaderContent;
+				sectionVisible = ImGui::CollapsingHeader(
+					headerLabel.c_str(),
+					ImGuiTreeNodeFlags_DefaultOpen);
+				sectionOpen = true;
+				// No Indent() here — earlier we did, but ImGui's inspector
+				// row layout is split into a fixed label column + a value
+				// column, and indenting the row eats label-column width
+				// enough to clip "Control Child Width" / similar long
+				// labels into "Control Child Widt" with the checkbox
+				// pushed onto the next line. The CollapsingHeader itself
+				// is enough visual nesting; the rows inside don't need
+				// extra horizontal offset.
+			}
+
+			if (sectionOpen && !sectionVisible) {
+				continue;
+			}
+
+			if (startsSection) {
+				PropertyDescriptor inner = desc;
+				inner.Metadata.HeaderContent.clear();
+				inner.Metadata.HeaderSize = 0;
+				DrawWithPrefix(entities, inner, fieldKeyPrefix);
+			}
+			else {
+				DrawWithPrefix(entities, desc, fieldKeyPrefix);
+			}
 		}
 	}
 

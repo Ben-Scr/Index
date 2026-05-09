@@ -149,19 +149,30 @@ namespace Axiom {
 		}
 
 		// Reserve bottom strip; each tab is a scrollable child so the tab bar stays anchored.
+		// statusHeight = 0 when there's no message; the tab content's
+		// BeginChild then gets size (0, 0) which fills available space.
 		const float statusHeight = !m_StatusMessage.empty() ? ImGui::GetFrameHeightWithSpacing() : 0.0f;
 
 		if (ImGui::BeginTabBar("##PackageManagerTabs")) {
 			if (ImGui::BeginTabItem("Search Packages")) {
 				m_TabIndex = 0;
-				ImGui::BeginChild("##SearchScroll", ImVec2(0.0f, -statusHeight), false);
+				// ImGuiChildFlags_None / size (0,0) fills remaining area;
+				// using -statusHeight reserves space ONLY when we have a
+				// status to show, otherwise the child fills the tab page
+				// completely so the filter row + Axiom Registry header
+				// always have non-zero width.
+				const ImVec2 childSize = (statusHeight > 0.0f)
+					? ImVec2(0.0f, -statusHeight) : ImVec2(0.0f, 0.0f);
+				ImGui::BeginChild("##SearchScroll", childSize, false);
 				RenderSearchPackagesTab();
 				ImGui::EndChild();
 				ImGui::EndTabItem();
 			}
 			if (ImGui::BeginTabItem("In Project")) {
 				m_TabIndex = 1;
-				ImGui::BeginChild("##InProjectScroll", ImVec2(0.0f, -statusHeight), false);
+				const ImVec2 childSize = (statusHeight > 0.0f)
+					? ImVec2(0.0f, -statusHeight) : ImVec2(0.0f, 0.0f);
+				ImGui::BeginChild("##InProjectScroll", childSize, false);
 				RenderInstalledPackagesTab();
 				ImGui::EndChild();
 				ImGui::EndTabItem();

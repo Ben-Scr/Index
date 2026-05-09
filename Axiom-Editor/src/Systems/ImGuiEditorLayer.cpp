@@ -34,6 +34,7 @@
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Inspector/ReferencePicker.hpp"
+#include "Gui/AddComponentPopup.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/HierarchyDragData.hpp"
@@ -41,6 +42,7 @@
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
+#include "Scripting/ScriptComponentInspector.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include <algorithm>
 #include <cmath>
@@ -280,9 +282,30 @@ namespace Axiom {
 			// Core/engine logs still go to stdout but not the editor UI
 			if (entry.Source == Log::Type::Core) return;
 
-			if (std::shared_ptr<LogDispatchState> state = weakLogDispatchState.lock()) {
-				std::scoped_lock lock(state->Mutex);
+			std::shared_ptr<LogDispatchState> state = weakLogDispatchState.lock();
+			if (!state) return;
+
+			// M31: never block worker threads on the editor's log mutex.
+			// `try_lock` first; if the main thread is mid-drain, stash the
+			// entry in a per-thread buffer and drain it on the next
+			// successful lock from the same thread. This means an entry
+			// from a thread that never logs again is lost — acceptable for
+			// debug log dispatch (the engine logger still wrote it to
+			// stdout / spdlog upstream of OnLog).
+			thread_local std::vector<LogEntry> tlBuf;
+
+			if (state->Mutex.try_lock()) {
+				std::lock_guard<std::mutex> guard(state->Mutex, std::adopt_lock);
+				if (!tlBuf.empty()) {
+					state->PendingEntries.insert(state->PendingEntries.end(),
+						std::make_move_iterator(tlBuf.begin()),
+						std::make_move_iterator(tlBuf.end()));
+					tlBuf.clear();
+				}
 				state->PendingEntries.push_back({ entry.Message, entry.Level });
+			}
+			else {
+				tlBuf.push_back({ entry.Message, entry.Level });
 			}
 			});
 	}
@@ -309,6 +332,16 @@ namespace Axiom {
 		m_AssetBrowser.Shutdown();
 		m_PackageManagerPanel.Shutdown();
 		m_PackageManager.Shutdown();
+		// M29: join in-flight ExternalEditor launcher threads so they
+		// don't outlive editor shutdown. May briefly block on the
+		// Sleep(4000) cold-start VS path — see ExternalEditor.cpp.
+		ExternalEditor::JoinPendingLaunchThreads();
+		// Picker statics (TU-locals) survive Application::Reload otherwise —
+		// reset them here so the next attach re-runs the built-ins scan
+		// against whatever AssetRegistry the new project provides.
+		// H21/H22: ReferencePicker. M28: ScriptComponentInspector script picker.
+		ReferencePicker::Shutdown();
+		ScriptComponentInspector::Shutdown();
 		EditorIcons::Shutdown();
 		DestroyFBO(m_EditorViewFBO);
 		DestroyFBO(m_GameViewFBO);
@@ -331,30 +364,54 @@ namespace Axiom {
 		// recycling bumps the version, IsValid catches it), but a leftover stale
 		// selection still confuses anything that doesn't IsValid-gate. Clear here
 		// rather than peppering every consumer with checks.
-		if (m_SelectedEntity != entt::null && !scene.IsValid(m_SelectedEntity)) {
+		//
+		// CRITICAL: when in prefab-edit mode the selection lives in the
+		// detached prefab scene's registry, NOT the active scene's. Validating
+		// against the active scene would IsValid()-fail every frame and clear
+		// the selection — which is exactly what made prefab children
+		// "unselectable" (clicking selected the entity, the next frame's sweep
+		// reset it). Route through GetContextScene so the sweep matches the
+		// scene the selection is *actually* drawn from.
+		Scene* selectionContextScene = GetContextScene();
+		if (!selectionContextScene) selectionContextScene = activeScene;
+		Scene& selectionScene = *selectionContextScene;
+
+		if (m_SelectedEntity != entt::null && !selectionScene.IsValid(m_SelectedEntity)) {
 			m_SelectedEntity = entt::null;
 		}
-		if (m_PressedEntity != entt::null && !scene.IsValid(m_PressedEntity)) {
+		if (m_PressedEntity != entt::null && !selectionScene.IsValid(m_PressedEntity)) {
 			m_PressedEntity = entt::null;
 		}
 		if (!m_SelectedEntities.empty()) {
-			auto isStale = [&scene](EntityHandle h) {
-				return h == entt::null || !scene.IsValid(h);
+			auto isStale = [&selectionScene](EntityHandle h) {
+				return h == entt::null || !selectionScene.IsValid(h);
 			};
 			m_SelectedEntities.erase(
 				std::remove_if(m_SelectedEntities.begin(), m_SelectedEntities.end(), isStale),
 				m_SelectedEntities.end());
 		}
 		const bool hasShortcutFocus = HasEntityShortcutFocus();
-		const bool hasEntitySelection = !GetSelectedEntities(scene).empty();
+		// Shortcut handlers (focus / duplicate / rename / etc.) act on the
+		// scene the user is editing, which is the prefab edit scene in prefab
+		// mode. Hand them the same context-aware reference the sweep used so
+		// F-to-focus / Ctrl+D / Delete / F2 work on prefab entities, not just
+		// the (hidden) active scene.
+		Scene& shortcutScene = selectionScene;
+		const bool hasEntitySelection = !GetSelectedEntities(shortcutScene).empty();
 
 		if (input.GetKeyDown(KeyCode::F) && hasShortcutFocus && hasEntitySelection) {
-			FocusSelectedEntity(scene);
+			FocusSelectedEntity(shortcutScene);
 		}
 
-		if (Application::GetIsPlaying() || !hasShortcutFocus) {
+		if (!hasShortcutFocus) {
 			return;
 		}
+		// Hierarchy edit shortcuts (Ctrl+C/V/D, Delete, F2) stay live in
+		// play mode — RestoreEditorSceneAfterPlaymode reloads the scene
+		// from disk on stop, so any duplicate / paste / delete / rename
+		// during play is purely transient and matches the user's mental
+		// model of iteration. Save (Ctrl+S) is gated separately on the
+		// menu, so it can't accidentally persist play-mode state.
 
 		if (m_RenamingEntity != entt::null || ImGui::GetIO().WantTextInput || ImGui::IsAnyItemActive()) {
 			return;
@@ -368,22 +425,22 @@ namespace Axiom {
 		// Save shortcut wired up in ImGuiEditorLayerChrome.cpp.
 		const ImGuiIO& io = ImGui::GetIO();
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false) && hasEntitySelection) {
-			CopySelectedEntities(scene);
+			CopySelectedEntities(shortcutScene);
 		}
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) {
-			PasteEntities(scene);
+			PasteEntities(shortcutScene);
 		}
 		if (!hasEntitySelection) {
 			return;
 		}
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
-			DuplicateSelectedEntity(scene);
+			DuplicateSelectedEntity(shortcutScene);
 		}
 		if (input.GetKeyDown(KeyCode::Delete) || input.GetKeyDown(KeyCode::KpDecimal)) {
-			DeleteSelectedEntity(scene);
+			DeleteSelectedEntity(shortcutScene);
 		}
 		if (input.GetKeyDown(KeyCode::F2)) {
-			BeginRenameSelectedEntity(scene);
+			BeginRenameSelectedEntity(shortcutScene);
 		}
 	}
 
@@ -565,6 +622,9 @@ namespace Axiom {
 		m_PlayModeRecompilePending = false;
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 		Application::SetIsPlaying(true);
+		// Reset Time.TimeSinceStartup / Time.RealtimeSinceStartup so each
+		// play session starts at t=0 from a script's perspective.
+		ApplicationEditorAccess::MarkGameStart();
 		// Reset Box2D sleep timers so bodies that sat through editor
 		// idle don't immediately freeze on the first physics step.
 		if (PhysicsSystem2D::IsInitialized()) {
@@ -601,7 +661,14 @@ namespace Axiom {
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
 
 		if (!isPlaying) {
-			const bool playButtonDisabled = m_PlayModeRecompilePending;
+			// Play mode plays the active scene. Entering it while the editor
+			// is showing a detached prefab edit scene leaves the user with a
+			// disorienting view (prefab still showing, but game logic running
+			// against a scene they can't see). Refuse the action and surface
+			// the reason via tooltip — the user must commit / discard prefab
+			// edits first.
+			const bool blockedByPrefabEdit = IsInPrefabEditMode();
+			const bool playButtonDisabled = m_PlayModeRecompilePending || blockedByPrefabEdit;
 			if (playButtonDisabled) {
 				ImGui::BeginDisabled();
 			}
@@ -614,7 +681,14 @@ namespace Axiom {
 			if (playButtonDisabled) {
 				ImGui::EndDisabled();
 			}
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play (Enter playmode)");
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+				if (blockedByPrefabEdit) {
+					ImGui::SetTooltip("Exit prefab edit mode before entering play.");
+				}
+				else {
+					ImGui::SetTooltip("Play (Enter playmode)");
+				}
+			}
 		}
 		else {
 			if (isPaused) {
@@ -681,6 +755,12 @@ namespace Axiom {
 			ImGui::SameLine();
 			ImGui::TextDisabled("Waiting for script compilation...");
 		}
+
+		// (Editor View draw-mode selector lives in RenderEditorView now,
+		// alongside the viewport's per-window options — same UX as Game
+		// View's aspect / VSync row. Removing it from the toolbar gives
+		// the play / pause / step / stop controls breathing room.)
+
 		ImGui::End();
 
 		// Handle step-frame logic: pause again after stepping one frame
@@ -722,7 +802,7 @@ namespace Axiom {
 		m_SelectedEntity = entt::null;
 		m_IsSceneNodeSelected = false;
 		m_RenamingEntity = entt::null;
-		m_EntityOrder.clear();
+		m_EntityOrder.clear(); m_EntityOrderDirty = true;
 		m_PlayModeRecompilePending = false;
 
 		ApplicationEditorAccess::SetPlaymodePaused(false);
@@ -909,7 +989,7 @@ namespace Axiom {
 			m_LastEntitySelectionIndex = -1;
 			m_IsSceneNodeSelected = false;
 			scene.MarkDirty();
-			m_EntityOrder.clear();
+			m_EntityOrder.clear(); m_EntityOrderDirty = true;
 		}
 	}
 
@@ -931,7 +1011,7 @@ namespace Axiom {
 			}
 		}
 		ClearEntitySelection();
-		m_EntityOrder.clear();
+		m_EntityOrder.clear(); m_EntityOrderDirty = true;
 	}
 
 	void ImGuiEditorLayer::BeginRenameSelectedEntity(Scene& scene) {
@@ -1036,7 +1116,7 @@ namespace Axiom {
 				m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(pasteParent));
 			}
 			scene.MarkDirty();
-			m_EntityOrder.clear();
+			m_EntityOrder.clear(); m_EntityOrderDirty = true;
 		}
 	}
 
@@ -1153,6 +1233,13 @@ namespace Axiom {
 			finishCreated(created);
 		}
 
+		if (ImGui::MenuItem("Audio Source"))
+		{
+			Entity created = scene.CreateEntity("Audio Source " + std::to_string(EntityHelper::EntitiesCount()));
+			created.AddComponent<AudioSourceComponent>();
+			finishCreated(created);
+		}
+
 		if (ImGui::BeginMenu("UI"))
 		{
 			if (ImGui::MenuItem("Panel")) {
@@ -1172,6 +1259,7 @@ namespace Axiom {
 				// with it (declared via DeclareConflict in BuiltInComponent
 				// Registration). Mirrors how the other UI presets are built.
 				Entity created = EntityHelper::CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
+				created.GetComponent<TextRendererComponent>().HAlign = TextAlignment::Center;
 				if (!created.HasComponent<NameComponent>()) {
 					created.AddComponent<NameComponent>(NameComponent("Text"));
 				}
@@ -1184,6 +1272,18 @@ namespace Axiom {
 			if (ImGui::MenuItem("Slider")) {
 				finishCreated(EntityHelper::CreateUISlider(scene));
 			}
+			if (ImGui::MenuItem("Progress Bar")) {
+				finishCreated(EntityHelper::CreateUIProgressBar(scene));
+			}
+			if (ImGui::MenuItem("Circular Slider")) {
+				finishCreated(EntityHelper::CreateUICircularSlider(scene));
+			}
+			if (ImGui::MenuItem("Scrollbar")) {
+				finishCreated(EntityHelper::CreateUIScrollbar(scene));
+			}
+			if (ImGui::MenuItem("Scroll View")) {
+				finishCreated(EntityHelper::CreateUIScrollRect(scene));
+			}
 			if (ImGui::MenuItem("Input Field")) {
 				finishCreated(EntityHelper::CreateUIInputField(scene));
 			}
@@ -1192,6 +1292,16 @@ namespace Axiom {
 			}
 			if (ImGui::MenuItem("Toggle")) {
 				finishCreated(EntityHelper::CreateUIToggle(scene));
+			}
+			ImGui::Separator();
+			if (ImGui::MenuItem("Horizontal Layout")) {
+				finishCreated(EntityHelper::CreateUIHorizontalLayout(scene));
+			}
+			if (ImGui::MenuItem("Vertical Layout")) {
+				finishCreated(EntityHelper::CreateUIVerticalLayout(scene));
+			}
+			if (ImGui::MenuItem("Grid Layout")) {
+				finishCreated(EntityHelper::CreateUIGridLayout(scene));
 			}
 			ImGui::EndMenu();
 		}
@@ -1242,6 +1352,31 @@ namespace Axiom {
 		return true;
 	}
 
+	std::vector<EntityHandle> ImGuiEditorLayer::ResolveDraggedHierarchyEntities(Scene& scene, EntityHandle primary) const {
+		std::vector<EntityHandle> result;
+
+		// If the dragged handle is part of the current multi-selection, the
+		// gesture means "drag the whole selection." Otherwise (dragging an
+		// unselected entity) we keep the single-entity behavior so the
+		// existing selection isn't accidentally moved by clicking a
+		// non-selected row and dragging it elsewhere.
+		const bool draggedIsInSelection =
+			std::find(m_SelectedEntities.begin(), m_SelectedEntities.end(), primary) != m_SelectedEntities.end();
+		if (draggedIsInSelection && m_SelectedEntities.size() > 1) {
+			// FilterSelectedHierarchyRoots collapses parent/descendant pairs
+			// down to the parent — moving a parent already moves its
+			// descendants, so processing both would double-move or fail.
+			result = FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene));
+		}
+
+		if (result.empty()) {
+			if (primary != entt::null && scene.IsValid(primary)) {
+				result.push_back(primary);
+			}
+		}
+		return result;
+	}
+
 	bool ImGuiEditorLayer::MoveSiblingNextTo(Scene& scene, EntityHandle dragged, EntityHandle target, bool insertAfter)
 	{
 		if (dragged == target || !scene.IsValid(dragged) || !scene.IsValid(target)) return false;
@@ -1285,8 +1420,41 @@ namespace Axiom {
 		else {
 			// Root-level reorder: m_EntityOrder is the panel's master list and
 			// drives the order roots render in. Mutating it here is what makes
-			// the drop "stick" between frames.
+			// the drop "stick" between frames — but the engine-side renderer
+			// (UIDrawOrder::Build) and the serializer both iterate the entt
+			// registry directly, NOT m_EntityOrder, so without the sort below
+			// the new order is invisible to render and lost on save+reload.
 			repositionVec(m_EntityOrder);
+			m_EntityOrderDirty = true; // M30: force re-DFS next render.
+
+			// Mirror m_EntityOrder into entt's entity storage. entt's view
+			// iterates dense storage newest-first; UIDrawOrder + the
+			// serializer both reverse that into oldest-first. So we want
+			// m_EntityOrder.back() to be the "newest" entity in entt (last
+			// in m_EntityOrder = drawn on top = highest DrawIndex). Higher
+			// m_EntityOrder index → sorts first in entt iteration.
+			// Entities not tracked in m_EntityOrder (transient runtime
+			// entities created mid-frame, etc.) get a stable tiebreaker
+			// from their raw integral value so the comparator stays a
+			// strict weak ordering even on the rare missing case.
+			std::unordered_map<entt::entity, std::size_t> indexOf;
+			indexOf.reserve(m_EntityOrder.size());
+			for (std::size_t i = 0; i < m_EntityOrder.size(); ++i) {
+				indexOf[m_EntityOrder[i]] = i;
+			}
+			const std::size_t fallbackBase = m_EntityOrder.size();
+			auto& storage = scene.GetRegistry().storage<entt::entity>();
+			storage.sort([&](entt::entity a, entt::entity b) {
+				auto ita = indexOf.find(a);
+				auto itb = indexOf.find(b);
+				const std::size_t ai = (ita != indexOf.end())
+					? ita->second
+					: fallbackBase + static_cast<std::size_t>(entt::to_integral(a));
+				const std::size_t bi = (itb != indexOf.end())
+					? itb->second
+					: fallbackBase + static_cast<std::size_t>(entt::to_integral(b));
+				return ai > bi;
+			});
 		}
 
 		return true;
@@ -1298,9 +1466,17 @@ namespace Axiom {
 			return false;
 		}
 
-		// If a prefab is already being edited, Phase 1 just discards the
-		// in-flight edit. Phase 2 should prompt for save first.
+		// If a prefab is already being edited, auto-save any pending edits
+		// before swapping to the new one. The user explicitly asked to open
+		// a different prefab, so silent loss-of-work is the wrong default —
+		// the alternative (a modal) would require deferring this entire
+		// function until the user picks save/discard, which is invasive.
+		// Auto-save is safe: SavePrefabEditChanges is a no-op when nothing
+		// changed, and identical to clicking the Save button otherwise.
 		if (m_PrefabEditScene) {
+			if (m_PrefabEditScene->IsDirty()) {
+				SavePrefabEditChanges();
+			}
 			ClosePrefabEditing(false);
 		}
 
@@ -1324,8 +1500,18 @@ namespace Axiom {
 		// belong to the active scene's registry and would alias garbage
 		// in the detached prefab registry.
 		ClearEntitySelection();
-		m_EntityOrder.clear();
+		m_EntityOrder.clear(); m_EntityOrderDirty = true;
 		m_CollapsedHierarchyEntities.clear();
+
+		// Snapshot the editor camera so the user returns to their previous
+		// framing on Close. We then point the camera at the prefab's root
+		// transform — most prefabs are authored at (0, 0) so without this
+		// the user lands on whatever the active scene was framing and the
+		// prefab is invisible / off-screen ("changes don't show up" report).
+		m_PrefabEditSavedCameraPosition = m_EditorCamera.GetPosition();
+		m_PrefabEditSavedCameraOrthoSize = m_EditorCamera.GetOrthographicSize();
+		m_PrefabEditSavedCameraZoom = m_EditorCamera.GetZoom();
+		m_PrefabEditHasSavedCameraState = true;
 
 		auto detached = Scene::CreateDetachedScene("##PrefabEdit");
 		const EntityHandle rootEntity = SceneSerializer::DeserializeEntityFromValue(*detached, root);
@@ -1333,28 +1519,119 @@ namespace Axiom {
 		// effect; clear so our flag only flips on actual user edits.
 		detached->ClearDirty();
 
+		// World transforms aren't valid until the hierarchy system runs, but
+		// we want to read the root's world position immediately to focus the
+		// camera on it. Run a one-shot propagation against the freshly-loaded
+		// detached scene so child-of-child positions resolve correctly even
+		// though the prefab usually authors at the origin.
+		TransformHierarchySystem::Propagate(*detached);
+
 		m_PrefabEditScene = std::move(detached);
 		m_PrefabEditPath = path;
 		m_PrefabEditRootEntity = rootEntity;
 		m_PrefabEditDirty = false;
 
+		// Auto-select + auto-focus on the root. Without selection the user
+		// has to click into the hierarchy to find the (potentially deeply
+		// nested-named) root before they can edit anything; without focus
+		// the camera may be pointed at empty space (see camera-snapshot
+		// rationale above). Both fixes target the "I can't see what I'm
+		// editing" case the prefab UX was failing on.
+		if (rootEntity != entt::null && m_PrefabEditScene->IsValid(rootEntity)) {
+			SelectEntity(rootEntity);
+			Vec2 focusPos{ 0.0f, 0.0f };
+			Transform2DComponent* rootTransform = nullptr;
+			if (m_PrefabEditScene->TryGetComponent<Transform2DComponent>(rootEntity, rootTransform) && rootTransform) {
+				focusPos = rootTransform->Position;
+			}
+			m_EditorCamera.SetPosition(focusPos);
+			// Reset zoom/ortho size to a sane default so a prior heavily-
+			// zoomed-in scene-edit framing doesn't make the prefab fill the
+			// viewport (or vice-versa).
+			m_EditorCamera.SetZoom(1.0f);
+			m_EditorCamera.SetOrthographicSize(5.0f);
+		}
+
 		AIM_INFO_TAG("PrefabEdit", "Editing {}", path);
+		return true;
+	}
+
+	bool ImGuiEditorLayer::SavePrefabEditChanges() {
+		if (!m_PrefabEditScene) return false;
+		if (m_PrefabEditRootEntity == entt::null
+			|| !m_PrefabEditScene->IsValid(m_PrefabEditRootEntity)
+			|| m_PrefabEditPath.empty()) {
+			return false;
+		}
+
+		// Capture the OLD source JSON BEFORE overwriting on disk. Live
+		// instance propagation uses this as the baseline for computing each
+		// instance's per-field overrides — diffing against the post-save
+		// (new) source loses the user's per-instance overrides. Mirrors
+		// PrefabInspector::Save().
+		Json::Value previousSourceRoot;
+		bool havePreviousSource = false;
+		if (File::Exists(m_PrefabEditPath)) {
+			Json::Value previousRoot;
+			std::string parseError;
+			if (Json::TryParse(File::ReadAllText(m_PrefabEditPath), previousRoot, &parseError) && previousRoot.IsObject()) {
+				previousSourceRoot = previousRoot;
+				havePreviousSource = true;
+			}
+		}
+
+		if (!SceneSerializer::SaveEntityToFile(*m_PrefabEditScene, m_PrefabEditRootEntity, m_PrefabEditPath)) {
+			AIM_CORE_ERROR_TAG("PrefabEdit", "Failed to save {}", m_PrefabEditPath);
+			return false;
+		}
+
+		// Mark the detached scene clean so the toolbar no longer shows the
+		// "*" suffix and any auto-save downstream (none today, but mirrors
+		// the asset inspector path) doesn't loop on the same edits.
+		m_PrefabEditScene->ClearDirty();
+		m_PrefabEditDirty = false;
+
+		// Refresh live instances of this prefab in every loaded scene with
+		// override-preservation: RefreshPrefabInstance snapshots the
+		// instance's overrides relative to the OLD source, re-instantiates
+		// against the new source, and re-applies the overrides on top.
+		if (havePreviousSource) {
+			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(m_PrefabEditPath);
+			if (prefabGuid != 0) {
+				SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+					if (&s == m_PrefabEditScene.get()) return;
+					std::vector<EntityHandle> targets;
+					auto view = s.GetRegistry().view<EntityMetaDataComponent>();
+					for (entt::entity ent : view) {
+						const auto& meta = view.get<EntityMetaDataComponent>(ent).MetaData;
+						if (meta.Origin != EntityOrigin::Prefab) continue;
+						if (static_cast<uint64_t>(meta.PrefabGUID) != prefabGuid) continue;
+						targets.push_back(ent);
+					}
+					bool anyRefreshed = false;
+					for (EntityHandle t : targets) {
+						if (!s.IsValid(t)) continue;
+						if (SceneSerializer::RefreshPrefabInstance(s, t, previousSourceRoot) != entt::null) {
+							anyRefreshed = true;
+						}
+					}
+					if (anyRefreshed) s.MarkDirty();
+				});
+			}
+		}
+
 		return true;
 	}
 
 	void ImGuiEditorLayer::ClosePrefabEditing(bool save) {
 		if (!m_PrefabEditScene) return;
 
-		if (save && m_PrefabEditRootEntity != entt::null
-			&& m_PrefabEditScene->IsValid(m_PrefabEditRootEntity)
-			&& !m_PrefabEditPath.empty()) {
-			if (!SceneSerializer::SaveEntityToFile(*m_PrefabEditScene, m_PrefabEditRootEntity, m_PrefabEditPath)) {
-				AIM_CORE_ERROR_TAG("PrefabEdit", "Failed to save {}", m_PrefabEditPath);
-			}
+		if (save) {
+			SavePrefabEditChanges();
 		}
 
 		ClearEntitySelection();
-		m_EntityOrder.clear();
+		m_EntityOrder.clear(); m_EntityOrderDirty = true;
 		m_CollapsedHierarchyEntities.clear();
 		m_PrefabEditRootEntity = entt::null;
 		m_PrefabEditPath.clear();
@@ -1363,6 +1640,17 @@ namespace Axiom {
 		// gated by Scene::IsDetached() short-circuit so global physics/
 		// audio/script subsystems aren't touched.
 		m_PrefabEditScene.reset();
+
+		// Restore the editor camera. Order matters: position must come last
+		// because SetOrthographicSize / SetZoom recompute projection-only and
+		// don't touch the view matrix; setting position last ensures the view
+		// matrix is rebuilt from the restored Position field.
+		if (m_PrefabEditHasSavedCameraState) {
+			m_EditorCamera.SetOrthographicSize(m_PrefabEditSavedCameraOrthoSize);
+			m_EditorCamera.SetZoom(m_PrefabEditSavedCameraZoom);
+			m_EditorCamera.SetPosition(m_PrefabEditSavedCameraPosition);
+			m_PrefabEditHasSavedCameraState = false;
+		}
 	}
 
 	Scene* ImGuiEditorLayer::GetContextScene() const {
@@ -1388,19 +1676,43 @@ namespace Axiom {
 		// We render this BEFORE the hierarchy so the right-click /
 		// drag-drop targets below don't span the toolbar zone.
 		if (IsInPrefabEditMode()) {
+			// Authoritative dirty flag: the detached scene's IsDirty
+			// reflects every component edit, add, remove, parenting
+			// change, etc. routed through Scene::MarkDirty. Mirror it
+			// onto m_PrefabEditDirty so other code reading the local
+			// flag (e.g. the breadcrumb) stays consistent.
+			m_PrefabEditDirty = m_PrefabEditScene->IsDirty();
+
 			const std::string prefabName = std::filesystem::path(m_PrefabEditPath).filename().string();
 			const std::string breadcrumb = m_PrefabEditDirty
 				? std::string("Editing: ") + prefabName + " *"
 				: std::string("Editing: ") + prefabName;
 
 			if (ImGui::SmallButton("< Back")) {
-				// Phase 1: Back discards. Phase 2: prompt if dirty.
-				ClosePrefabEditing(false);
+				// Dirty-aware back: prompt to save / discard / cancel
+				// when the prefab has unsaved changes; close cleanly
+				// otherwise. The discard prompt is rendered at the
+				// dockspace level (ImGuiEditorLayerChrome) so the modal
+				// renders on top of the hierarchy panel rather than
+				// trapped inside it.
+				if (m_PrefabEditDirty) {
+					m_ShowPrefabEditDiscardPrompt = true;
+				}
+				else {
+					ClosePrefabEditing(false);
+				}
 			}
 			ImGui::SameLine();
+			// Save = persist to disk + propagate to live instances, BUT
+			// stay in prefab-edit mode so the user can keep iterating.
+			// Disabled when nothing has changed since the last save —
+			// avoids touching the file's mtime on a no-op save (which
+			// would otherwise confuse hot-reload watchers).
+			ImGui::BeginDisabled(!m_PrefabEditDirty);
 			if (ImGui::SmallButton("Save")) {
-				ClosePrefabEditing(true);
+				SavePrefabEditChanges();
 			}
+			ImGui::EndDisabled();
 			ImGui::SameLine();
 			ImGui::TextUnformatted(breadcrumb.c_str());
 			ImGui::Separator();
@@ -1459,18 +1771,27 @@ namespace Axiom {
 			}
 
 			// Drop a dragged entity onto the scene header to unparent it
-			// (make it a root again).
+			// (make it a root again). Multi-selection: every selected
+			// entity that has a parent is detached.
 			if (ImGui::BeginDragDropTarget()) {
 				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 					auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
-					EntityHandle draggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
-					if (scene.IsValid(draggedHandle)) {
-						Entity draggedEntity = scene.GetEntity(draggedHandle);
-						if (draggedEntity.HasParent()) {
-							if (SetEntityParentPreservingWorld(scene, draggedHandle, Entity::Null)) {
-								scene.MarkDirty();
-							}
+					EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
+					std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
+					bool didMove = false;
+					for (EntityHandle h : draggedHandles) {
+						Entity draggedEntity = scene.GetEntity(h);
+						if (!draggedEntity.HasParent()) continue;
+						if (SetEntityParentPreservingWorld(scene, h, Entity::Null)) {
+							didMove = true;
 						}
+					}
+					if (didMove) {
+						// Force a re-DFS — reparenting changes nesting but
+						// not the registry count, so the size-mismatch
+						// fallback won't trigger.
+						m_EntityOrderDirty = true;
+						scene.MarkDirty();
 					}
 				}
 				ImGui::EndDragDropTarget();
@@ -1495,90 +1816,110 @@ namespace Axiom {
 			if (sceneOpen) {
 				auto view = scene.GetRegistry().view<entt::entity>();
 
-				// Sync m_EntityOrder with the registry without ever blanket-
-				// resetting it: the user's drag-reorder lives inside this
-				// vector, so dropping it on size change (e.g. one entity
-				// deleted) would silently undo their work. Set-diff keeps
-				// the existing order intact and only mutates the deltas.
-				//
-				// New entities go to the END so freshly-created entities land
-				// at the bottom of the hierarchy. entt's `view<entt::entity>`
-				// iterates the dense storage in reverse-insertion order
-				// (newest first), so we walk it backwards — that way a scene
-				// load that creates N entities in sequence yields the same
-				// order on screen as the order they were created/serialized.
-				{
-					std::vector<entt::entity> viewEntities(view.begin(), view.end());
+				// M30: skip the sync diff + DFS subtree-emit pass when nothing
+				// has changed. We detect change by:
+				//   • m_EntityOrderDirty (flipped at every callsite that used
+				//     to clear() the order: entity create / delete / drop /
+				//     scene swap / etc.)
+				//   • registry size mismatch as a safety net for any caller
+				//     that mutates the registry without flipping the flag.
+				const auto registryCount = static_cast<std::size_t>(std::distance(view.begin(), view.end()));
+				const bool needsRebuild = m_EntityOrderDirty
+					|| m_EntityOrder.size() != registryCount;
 
-					std::unordered_set<uint32_t> viewSet;
-					viewSet.reserve(viewEntities.size());
-					for (auto e : viewEntities) viewSet.insert(static_cast<uint32_t>(e));
-					m_EntityOrder.erase(
-						std::remove_if(m_EntityOrder.begin(), m_EntityOrder.end(),
-							[&](entt::entity e) { return viewSet.find(static_cast<uint32_t>(e)) == viewSet.end(); }),
-						m_EntityOrder.end());
+				if (needsRebuild) {
+					// Sync m_EntityOrder with the registry without ever blanket-
+					// resetting it: the user's drag-reorder lives inside this
+					// vector, so dropping it on size change (e.g. one entity
+					// deleted) would silently undo their work. Set-diff keeps
+					// the existing order intact and only mutates the deltas.
+					//
+					// New entities go to the END so freshly-created entities land
+					// at the bottom of the hierarchy. entt's `view<entt::entity>`
+					// iterates the dense storage in reverse-insertion order
+					// (newest first), so we walk it backwards — that way a scene
+					// load that creates N entities in sequence yields the same
+					// order on screen as the order they were created/serialized.
+					{
+						std::vector<entt::entity> viewEntities(view.begin(), view.end());
 
-					std::unordered_set<uint32_t> orderSet;
-					orderSet.reserve(m_EntityOrder.size());
-					for (auto e : m_EntityOrder) orderSet.insert(static_cast<uint32_t>(e));
-					for (auto it = viewEntities.rbegin(); it != viewEntities.rend(); ++it) {
-						if (orderSet.find(static_cast<uint32_t>(*it)) == orderSet.end()) {
-							m_EntityOrder.push_back(*it);
+						std::unordered_set<uint32_t> viewSet;
+						viewSet.reserve(viewEntities.size());
+						for (auto e : viewEntities) viewSet.insert(static_cast<uint32_t>(e));
+						m_EntityOrder.erase(
+							std::remove_if(m_EntityOrder.begin(), m_EntityOrder.end(),
+								[&](entt::entity e) { return viewSet.find(static_cast<uint32_t>(e)) == viewSet.end(); }),
+							m_EntityOrder.end());
+
+						std::unordered_set<uint32_t> orderSet;
+						orderSet.reserve(m_EntityOrder.size());
+						for (auto e : m_EntityOrder) orderSet.insert(static_cast<uint32_t>(e));
+						for (auto it = viewEntities.rbegin(); it != viewEntities.rend(); ++it) {
+							if (orderSet.find(static_cast<uint32_t>(*it)) == orderSet.end()) {
+								m_EntityOrder.push_back(*it);
+							}
 						}
 					}
-				}
 
-				// DFS reorder so each child appears immediately after its
-				// parent in the flat list — that lets the existing single-
-				// loop renderer show parent-child nesting just by tracking
-				// depth and calling ImGui::Indent. Roots come first in
-				// the user's chosen m_EntityOrder; their subtrees follow
-				// in the order each parent's HierarchyComponent::Children
-				// lists them.
-				std::vector<int> entityDepths;
-				entityDepths.reserve(m_EntityOrder.size());
-				{
-					auto& reg = scene.GetRegistry();
-					std::vector<entt::entity> reordered;
-					reordered.reserve(m_EntityOrder.size());
-					std::unordered_set<uint32_t> emitted;
+					// DFS reorder so each child appears immediately after its
+					// parent in the flat list — that lets the existing single-
+					// loop renderer show parent-child nesting just by tracking
+					// depth and calling ImGui::Indent. Roots come first in
+					// the user's chosen m_EntityOrder; their subtrees follow
+					// in the order each parent's HierarchyComponent::Children
+					// lists them.
+					m_RenderedEntityDepths.clear();
+					m_RenderedEntityDepths.reserve(m_EntityOrder.size());
+					{
+						auto& reg = scene.GetRegistry();
+						std::vector<entt::entity> reordered;
+						reordered.reserve(m_EntityOrder.size());
+						std::unordered_set<uint32_t> emitted;
 
-					std::function<void(EntityHandle, int)> emitSubtree =
-						[&](EntityHandle e, int depth) {
-							if (!reg.valid(e)) return;
-							const uint32_t key = static_cast<uint32_t>(e);
-							if (!emitted.insert(key).second) return; // already in tree
-							reordered.push_back(e);
-							entityDepths.push_back(depth);
-							if (reg.all_of<HierarchyComponent>(e)) {
-								for (EntityHandle child : reg.get<HierarchyComponent>(e).Children) {
-									emitSubtree(child, depth + 1);
+						std::function<void(EntityHandle, int)> emitSubtree =
+							[&](EntityHandle e, int depth) {
+								if (!reg.valid(e)) return;
+								const uint32_t key = static_cast<uint32_t>(e);
+								if (!emitted.insert(key).second) return; // already in tree
+								reordered.push_back(e);
+								m_RenderedEntityDepths.push_back(depth);
+								if (reg.all_of<HierarchyComponent>(e)) {
+									for (EntityHandle child : reg.get<HierarchyComponent>(e).Children) {
+										emitSubtree(child, depth + 1);
+									}
 								}
-							}
-						};
+							};
 
-					// Pass 1: emit each root-of-subtree from the user-ordered
-					// list. Skip entities that already appeared as a child.
-					for (EntityHandle e : m_EntityOrder) {
-						if (!reg.valid(e)) continue;
-						EntityHandle parent = entt::null;
-						if (reg.all_of<HierarchyComponent>(e)) {
-							parent = reg.get<HierarchyComponent>(e).Parent;
+						// Pass 1: emit each root-of-subtree from the user-ordered
+						// list. Skip entities that already appeared as a child.
+						for (EntityHandle e : m_EntityOrder) {
+							if (!reg.valid(e)) continue;
+							EntityHandle parent = entt::null;
+							if (reg.all_of<HierarchyComponent>(e)) {
+								parent = reg.get<HierarchyComponent>(e).Parent;
+							}
+							if (parent == entt::null) {
+								emitSubtree(e, 0);
+							}
 						}
-						if (parent == entt::null) {
+						// Pass 2: anything still missing — orphaned children
+						// whose parent is not in the registry — render flat.
+						for (EntityHandle e : m_EntityOrder) {
+							if (!reg.valid(e)) continue;
+							const uint32_t key = static_cast<uint32_t>(e);
+							if (emitted.contains(key)) continue;
 							emitSubtree(e, 0);
 						}
+						m_EntityOrder = std::move(reordered);
 					}
-					// Pass 2: anything still missing — orphaned children
-					// whose parent is not in the registry — render flat.
-					for (EntityHandle e : m_EntityOrder) {
-						if (!reg.valid(e)) continue;
-						const uint32_t key = static_cast<uint32_t>(e);
-						if (emitted.contains(key)) continue;
-						emitSubtree(e, 0);
-					}
-					m_EntityOrder = std::move(reordered);
+
+					m_RenderedEntityOrder = m_EntityOrder;
+					m_EntityOrderDirty = false;
 				}
+
+				// Local alias so the existing render loop reads from the
+				// cached depth list whether we just rebuilt or not.
+				const std::vector<int>& entityDepths = m_RenderedEntityDepths;
 
 				int currentIndentDepth = 0;
 				// When set to >= 0, any subsequent entity with depth greater than
@@ -1746,11 +2087,21 @@ namespace Axiom {
 						}
 					}
 
-					// Drag-drop source: drag entity to reorder or to asset browser for prefab
+					// Drag-drop source: drag entity to reorder or to asset browser for prefab.
+					// The payload only carries the primary (clicked) entity; the
+					// hierarchy drop sites resolve the full multi-selection at
+					// drop time via ResolveDraggedHierarchyEntities so external
+					// drop targets that expect a single entity (PropertyDrawer,
+					// AssetBrowser→prefab) keep working unchanged.
 					if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
 						HierarchyDragData dragData{ entityIdx, static_cast<uint32_t>(entityHandle) };
 						ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &dragData, sizeof(dragData));
-						ImGui::Text("Move: %s", entity.GetName().c_str());
+						const bool draggingMulti = IsEntitySelected(entityHandle) && m_SelectedEntities.size() > 1;
+						if (draggingMulti) {
+							ImGui::Text("Move: %zu entities", m_SelectedEntities.size());
+						} else {
+							ImGui::Text("Move: %s", entity.GetName().c_str());
+						}
 						ImGui::EndDragDropSource();
 					}
 
@@ -1787,25 +2138,66 @@ namespace Axiom {
 
 						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 							auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
-							EntityHandle draggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
-							if (draggedHandle != entityHandle && scene.IsValid(draggedHandle)) {
-								Entity draggedEntity = scene.GetEntity(draggedHandle);
-								if (inTopZone || inBottomZone) {
-									if (MoveSiblingNextTo(scene, draggedHandle, entityHandle, /*insertAfter*/inBottomZone)) {
-										scene.MarkDirty();
+							EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
+							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
+							bool didMove = false;
+							if (inTopZone || inBottomZone) {
+								// Sibling-insert: anchor advances after each move so a
+								// multi-drop produces a contiguous block in selection
+								// order. Drop-after walks forward (each next entity
+								// becomes the next sibling of the previous one);
+								// drop-before walks the selection in reverse so the
+								// final order at the target's slot is selection order.
+								EntityHandle anchor = entityHandle;
+								if (inBottomZone) {
+									for (EntityHandle h : draggedHandles) {
+										if (h == anchor) continue;
+										if (MoveSiblingNextTo(scene, h, anchor, /*insertAfter*/true)) {
+											didMove = true;
+											anchor = h;
+										}
 									}
 								}
-								// Skip drops that SetParent would refuse anyway (cycle: target
-								// is a descendant of dragged) so we don't mark the scene dirty
+								else {
+									for (auto it = draggedHandles.rbegin(); it != draggedHandles.rend(); ++it) {
+										EntityHandle h = *it;
+										if (h == anchor) continue;
+										if (MoveSiblingNextTo(scene, h, anchor, /*insertAfter*/false)) {
+											didMove = true;
+											anchor = h;
+										}
+									}
+								}
+							}
+							else {
+								// Reparent: drop each onto `entity`. Skip drops that
+								// SetParent would refuse anyway (cycle: target is a
+								// descendant of dragged) so we don't claim a move
 								// or unfold the target on a no-op.
-								else if (!draggedEntity.IsAncestorOf(entity)) {
-									if (SetEntityParentPreservingWorld(scene, draggedHandle, entity)) {
-										// If the new parent was folded shut, unfold it so the user
-										// sees the result of their drop instead of the child vanishing.
-										m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
-										scene.MarkDirty();
+								for (EntityHandle h : draggedHandles) {
+									if (h == entityHandle) continue;
+									Entity draggedEntity = scene.GetEntity(h);
+									if (draggedEntity.IsAncestorOf(entity)) continue;
+									if (SetEntityParentPreservingWorld(scene, h, entity)) {
+										didMove = true;
 									}
 								}
+								if (didMove) {
+									// Unfold the target so the dropped children are visible
+									// (a no-op when the target was already expanded).
+									m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+									// Force a re-DFS next frame: reparenting doesn't
+									// change the registry's entity count, so the size-
+									// mismatch heuristic in the renderer won't trip.
+									// Without this flag the dragged entity stays
+									// visually in its old subtree until the user
+									// reloads the scene, even though the parent ref
+									// has actually moved.
+									m_EntityOrderDirty = true;
+								}
+							}
+							if (didMove) {
+								scene.MarkDirty();
 							}
 						}
 						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
@@ -1814,7 +2206,7 @@ namespace Axiom {
 							std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 							if (ext == ".prefab") {
 								SceneSerializer::LoadEntityFromFile(scene, droppedPath);
-								m_EntityOrder.clear();
+								m_EntityOrder.clear(); m_EntityOrderDirty = true;
 							}
 						}
 						ImGui::EndDragDropTarget();
@@ -1910,19 +2302,35 @@ namespace Axiom {
 					// bottom of the root list — matching the user's gesture.
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 						auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
-						EntityHandle draggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
+						EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
 						Scene* dropScene = GetContextScene();
-						if (dropScene && dropScene->IsValid(draggedHandle)) {
-							Entity draggedEntity = dropScene->GetEntity(draggedHandle);
-							if (draggedEntity.HasParent()) {
-								if (SetEntityParentPreservingWorld(*dropScene, draggedHandle, Entity::Null)) {
-									dropScene->MarkDirty();
+						if (dropScene) {
+							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(*dropScene, primaryDraggedHandle);
+							bool didMove = false;
+							for (EntityHandle h : draggedHandles) {
+								Entity draggedEntity = dropScene->GetEntity(h);
+								if (draggedEntity.HasParent()) {
+									if (SetEntityParentPreservingWorld(*dropScene, h, Entity::Null)) {
+										didMove = true;
+									}
+								}
+								// Push every dragged root to the bottom of m_EntityOrder
+								// in selection order — matches the user's "I dropped
+								// these at the bottom" gesture even when one was
+								// already a root.
+								auto orderIt = std::find(m_EntityOrder.begin(), m_EntityOrder.end(), h);
+								if (orderIt != m_EntityOrder.end() && std::next(orderIt) != m_EntityOrder.end()) {
+									m_EntityOrder.erase(orderIt);
+									m_EntityOrder.push_back(h);
+									m_EntityOrderDirty = true; // M30: re-DFS next render.
 								}
 							}
-							auto orderIt = std::find(m_EntityOrder.begin(), m_EntityOrder.end(), draggedHandle);
-							if (orderIt != m_EntityOrder.end() && std::next(orderIt) != m_EntityOrder.end()) {
-								m_EntityOrder.erase(orderIt);
-								m_EntityOrder.push_back(draggedHandle);
+							if (didMove) {
+								// Reparent to root happened — force a re-DFS in
+								// case the in-vector reposition above didn't run
+								// (entity was already at the bottom slot).
+								m_EntityOrderDirty = true;
+								dropScene->MarkDirty();
 							}
 						}
 					}
@@ -1941,7 +2349,7 @@ namespace Axiom {
 							Scene* dropScene = GetContextScene();
 							if (dropScene) {
 								SceneSerializer::LoadEntityFromFile(*dropScene, droppedPath);
-								m_EntityOrder.clear();
+								m_EntityOrder.clear(); m_EntityOrderDirty = true;
 							}
 						}
 						else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
@@ -1987,7 +2395,14 @@ namespace Axiom {
 		const auto& systems = scene.GetGameSystemClassNames();
 		for (size_t i = 0; i < systems.size(); ++i) {
 			ImGui::PushID(static_cast<int>(i));
-			ImGui::TextUnformatted(systems[i].c_str());
+			const std::string& className = systems[i];
+
+			// Reorder/remove buttons share the row with the collapsing header so
+			// the layout matches the prior text-only design — header on the left,
+			// trailing actions on the right via SameLine. AllowOverlap lets the
+			// SmallButton hit-test even though it's drawn over the header.
+			bool open = ImGui::CollapsingHeader((className + "##system_header").c_str(),
+				ImGuiTreeNodeFlags_AllowOverlap);
 
 			ImGui::SameLine();
 			if (ImGui::SmallButton("^") && i > 0) {
@@ -2005,6 +2420,13 @@ namespace Axiom {
 				ImGui::PopID();
 				break;
 			}
+
+			if (open) {
+				ImGui::Indent(8.0f);
+				DrawGameSystemFields(scene, className);
+				ImGui::Unindent(8.0f);
+			}
+
 			ImGui::PopID();
 		}
 
@@ -2078,6 +2500,11 @@ namespace Axiom {
 			m_SelectedEntity = entt::null;
 			if (m_IsSceneNodeSelected) {
 				RenderSceneSystemsInspector(scene);
+				// GameSystem fields can include reference pickers (Texture,
+				// Audio, Entity). The picker opens here, so it has to render
+				// here too — the entity-selection branch's RenderPopup call
+				// further down isn't reachable from this early return.
+				ReferencePicker::RenderPopup();
 			}
 			else {
 				RenderAssetInspector();
@@ -2155,7 +2582,15 @@ namespace Axiom {
 				return { first, uniform };
 			};
 
-			auto enabledSample = sampleHas([](Entity& e) { return !e.HasComponent<DisabledTag>(); });
+			// Inspector toggle reflects the AUTHORED enabled state, not
+			// the effective in-hierarchy state. A child whose parent is
+			// disabled has both DisabledTag and InheritedDisabledTag —
+			// inherited-disabled doesn't flip the user's intent, so we
+			// keep the checkbox on. The parent re-enable cascade then
+			// restores the child's runtime DisabledTag accordingly.
+			auto enabledSample = sampleHas([](Entity& e) {
+				return !e.HasComponent<DisabledTag>() || e.HasComponent<InheritedDisabledTag>();
+			});
 			bool isEnabled = enabledSample.first;
 			if (!enabledSample.second) ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
 			const bool enabledChanged = ImGui::Checkbox("Enabled", &isEnabled);
@@ -2215,7 +2650,7 @@ namespace Axiom {
 					EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, m_SelectedEntity, {});
 					if (replacement != entt::null) {
 						SelectEntity(replacement);
-						m_EntityOrder.clear();
+						m_EntityOrder.clear(); m_EntityOrderDirty = true;
 					}
 				}
 			}
@@ -2293,7 +2728,7 @@ namespace Axiom {
 				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, entity.GetHandle(), {});
 				if (replacement != entt::null) {
 					SelectEntity(replacement);
-					m_EntityOrder.clear();
+					m_EntityOrder.clear(); m_EntityOrderDirty = true;
 				}
 			}
 			ImGui::Separator();
@@ -2305,14 +2740,31 @@ namespace Axiom {
 			ImGui::Separator();
 		}
 
+		// H24: bucket override paths by component-serialized-name once per
+		// frame so the per-component check is O(1). Without this, the
+		// `componentHasOverrides` lambda below scanned every override path
+		// for every component on every frame the inspector was open
+		// (O(components * paths) per render).
+		//
+		// Override paths follow the convention "<componentSerializedName>"
+		// or "<componentSerializedName>.<field…>"; the leading token before
+		// the first '.' is the component bucket.
+		std::unordered_map<std::string, std::vector<std::string>> overridesByComponent;
+		if (prefabSourceResolvable) {
+			for (const auto& [path, _] : prefabOverrides.GetObject()) {
+				const std::size_t dot = path.find('.');
+				const std::string componentKey = (dot == std::string::npos)
+					? path
+					: path.substr(0, dot);
+				overridesByComponent[componentKey].push_back(path);
+			}
+		}
+
 		// Lambda: do any override paths fall under this component's serializedName?
 		auto componentHasOverrides = [&](const std::string& serializedName) -> bool {
 			if (!prefabSourceResolvable || serializedName.empty()) return false;
-			const std::string prefix = serializedName + ".";
-			for (const auto& [path, _] : prefabOverrides.GetObject()) {
-				if (path == serializedName || path.compare(0, prefix.size(), prefix) == 0) return true;
-			}
-			return false;
+			auto it = overridesByComponent.find(serializedName);
+			return it != overridesByComponent.end() && !it->second.empty();
 		};
 
 		// Collect components per their presence across the selection. Only
@@ -2416,9 +2868,21 @@ namespace Axiom {
 			// Component drag source on the header. References the primary
 			// entity — useful when dragging onto a script field, since that
 			// field would only be able to hold one component reference anyway.
+			//
+			// We embed the persistent UUID (not RuntimeID): if the user drops
+			// onto a script field the value is saved to disk, and RuntimeIDs
+			// are reallocated on every scene reload. The drop side parses
+			// this string and writes it directly into the field, so the value
+			// must survive save/load.
 			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-				const uint64_t entityRuntimeId = entity.GetRuntimeID();
-				std::string refStr = std::to_string(entityRuntimeId) + ":" + info.displayName;
+				uint64_t persistentId = 0;
+				if (Scene* scene = entity.GetScene()) {
+					persistentId = scene->GetEntityPersistentID(entity.GetHandle());
+				}
+				if (persistentId == 0) {
+					persistentId = entity.GetRuntimeID(); // fallback for entities with no UUIDComponent
+				}
+				std::string refStr = std::to_string(persistentId) + ":" + info.displayName;
 				ImGui::SetDragDropPayload("COMPONENT_REF", refStr.c_str(), refStr.size() + 1);
 				ImGui::Text("Ref: %s.%s", entity.GetName().c_str(), info.displayName.c_str());
 				ImGui::EndDragDropSource();
@@ -2445,7 +2909,7 @@ namespace Axiom {
 				bool anyApplied = false;
 				for (const Entity& e : selectedEntities) {
 					if (!pastedComponentInfo->has(e)) {
-						pastedComponentInfo->add(e);
+						registry.AddWithDependencies(e, pastedComponentInfo->typeId);
 					}
 					if (SceneSerializer::DeserializeComponent(scene, e.GetHandle(),
 						clipboardPayload.SerializedName, clipboardPayload.Data)) {
@@ -2472,7 +2936,7 @@ namespace Axiom {
 					scene, entity.GetHandle(), revertFieldRequested);
 				if (replacement != entt::null) {
 					SelectEntity(replacement);
-					m_EntityOrder.clear();
+					m_EntityOrder.clear(); m_EntityOrderDirty = true;
 				}
 			}
 			if (revertComponentRequested) {
@@ -2492,7 +2956,7 @@ namespace Axiom {
 					if (replacement != entt::null) current = replacement;
 				}
 				SelectEntity(current);
-				m_EntityOrder.clear();
+				m_EntityOrder.clear(); m_EntityOrderDirty = true;
 			}
 			if (applyComponentRequested) {
 				// "Apply Component" pushes the whole instance state to source
@@ -2577,219 +3041,15 @@ namespace Axiom {
 			m_ComponentSearchBuffer[0] = '\0';
 		}
 
-		// Add Component is offered as long as at least one selected entity is
-		// missing it (so the menu doesn't go empty when the selection happens
-		// to overlap on every component). Adding writes to every selected
-		// entity that doesn't already have the component.
-		auto componentMissingFromAny = [&](const ComponentInfo& info) -> bool {
-			for (const Entity& e : selectedEntities) {
-				if (!info.has(e)) return true;
-			}
-			return false;
-		};
-		auto addComponentToAll = [&](const ComponentInfo& info) {
-			for (const Entity& e : selectedEntities) {
-				if (!info.has(e)) info.add(e);
-			}
-			scene.MarkDirty();
-		};
-		// `proposed` would conflict on at least one selected entity if any of
-		// its current components has a declared conflict with `proposed` (or
-		// vice-versa). The Add Component popup hides such entries entirely so
-		// the user can't end up in an invariant-violating state. The matching
-		// existing component is reported via outConflictName for tooltips.
-		auto componentConflictsWithSelection = [&](const std::type_index& proposed,
-			std::string* outConflictName) -> bool
-		{
-			for (const Entity& e : selectedEntities) {
-				if (registry.HasConflict(e, proposed)) {
-					if (outConflictName) {
-						registry.ForEachComponentInfo([&](const std::type_index& id, const ComponentInfo& info) {
-							if (!outConflictName->empty()) return;
-							if (id == proposed || !info.has || !info.has(e)) return;
-							if (registry.TypesConflict(id, proposed)) *outConflictName = info.displayName;
-						});
-					}
-					return true;
-				}
-			}
-			return false;
-		};
-
-		if (ImGui::BeginPopup("AddComponentPopup")) {
-			ImGui::SetNextItemWidth(-1);
-			ImGui::InputTextWithHint("##CompSearch", "Search components...",
-				m_ComponentSearchBuffer, sizeof(m_ComponentSearchBuffer));
-			ImGui::Separator();
-
-			std::string filter(m_ComponentSearchBuffer);
-			std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
-
-			bool hasFilter = !filter.empty();
-			std::vector<EditorScriptDiscovery::ScriptEntry> scriptEntries;
-			EditorScriptDiscovery::CollectProjectScriptEntries(scriptEntries);
-
-			if (hasFilter) {
-				// Flat filtered list when searching
-				registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
-					if (info.category != ComponentCategory::Component) return;
-					if (info.displayName == "Scripts") return;
-					if (!componentMissingFromAny(info)) return;
-
-					std::string lowerName = info.displayName;
-					std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-					if (lowerName.find(filter) == std::string::npos) return;
-
-					std::string conflictName;
-					const bool conflicts = componentConflictsWithSelection(typeId, &conflictName);
-					const bool enabled = !conflicts;
-					if (ImGuiUtils::MenuItemEllipsis(info.displayName, info.displayName.c_str(), nullptr, false, enabled, 260.0f)) {
-						if (enabled) addComponentToAll(info);
-					}
-					if (conflicts && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-						ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
-					}
-				});
-
-				// Also search C# components and scripts by name.
-				for (const auto& scriptEntry : scriptEntries) {
-					if (scriptEntry.IsGameSystem || scriptEntry.IsGlobalSystem) {
-						continue;
-					}
-					std::string lowerClassName = EditorScriptDiscovery::ToLowerCopy(scriptEntry.ClassName);
-					std::string lowerPath = EditorScriptDiscovery::ToLowerCopy(scriptEntry.Path.string());
-					if (lowerClassName.find(filter) == std::string::npos
-						&& lowerPath.find(filter) == std::string::npos) {
-						continue;
-					}
-
-					const std::string label = BuildScriptMenuLabel(scriptEntry);
-					const std::string path = scriptEntry.Path.string();
-					if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
-						for (const Entity& e : selectedEntities) {
-							if (scriptEntry.IsManagedComponent) {
-								AttachManagedComponentToEntity(const_cast<Entity&>(e), scene, scriptEntry);
-							}
-							else {
-								AttachScriptToEntity(const_cast<Entity&>(e), scene, scriptEntry);
-							}
-						}
-					}
-				}
-			} else {
-				// Categorized tree view
-				// Collect components grouped by subcategory. Pair the
-				// ComponentInfo* with its std::type_index so the leaf render
-				// can ask the registry whether the type conflicts with
-				// anything already on the selection.
-				struct CategoryEntry { std::type_index TypeId; const ComponentInfo* Info; };
-				std::vector<std::pair<std::string, std::vector<CategoryEntry>>> categories;
-				std::unordered_map<std::string, size_t> categoryIndex;
-
-				// Define subcategory ordering
-				const std::vector<std::string> subcategoryOrder = {
-					"General", "Rendering", "Physics", "Audio"
-				};
-				for (const auto& sub : subcategoryOrder) {
-					categoryIndex[sub] = categories.size();
-					categories.emplace_back(sub, std::vector<CategoryEntry>{});
-				}
-
-				registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
-					if (info.category != ComponentCategory::Component) return;
-					if (info.displayName == "Scripts") return;
-					if (!componentMissingFromAny(info)) return;
-
-					std::string sub = info.subcategory.empty() ? "General" : info.subcategory;
-					auto it = categoryIndex.find(sub);
-					if (it == categoryIndex.end()) {
-						categoryIndex[sub] = categories.size();
-						categories.emplace_back(sub, std::vector<CategoryEntry>{});
-						it = categoryIndex.find(sub);
-					}
-					categories[it->second].second.push_back({ typeId, &info });
-				});
-
-				for (const auto& [subcategory, components] : categories) {
-					if (components.empty()) continue;
-
-					if (ImGui::TreeNode(subcategory.c_str())) {
-						for (const auto& entry : components) {
-							const ComponentInfo* info = entry.Info;
-							std::string conflictName;
-							const bool conflicts = componentConflictsWithSelection(entry.TypeId, &conflictName);
-							const bool enabled = !conflicts;
-							if (ImGuiUtils::MenuItemEllipsis(info->displayName, info->displayName.c_str(), nullptr, false, enabled, 260.0f)) {
-								if (enabled) addComponentToAll(*info);
-							}
-							if (conflicts && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-								ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
-							}
-						}
-						ImGui::TreePop();
-					}
-				}
-
-				// Managed components subcategory.
-				bool hasManagedComponents = false;
-				for (const auto& scriptEntry : scriptEntries) {
-					if (scriptEntry.IsManagedComponent && !scriptEntry.IsGameSystem && !scriptEntry.IsGlobalSystem) {
-						hasManagedComponents = true;
-						break;
-					}
-				}
-				if (hasManagedComponents) {
-					if (ImGui::TreeNode("Components (C#)")) {
-						for (const auto& scriptEntry : scriptEntries) {
-							if (!scriptEntry.IsManagedComponent || scriptEntry.IsGameSystem || scriptEntry.IsGlobalSystem) {
-								continue;
-							}
-							// Hide entries already attached to every entity in
-							// the selection — leave it visible if at least one
-							// entity is missing it.
-							bool missingFromAny = false;
-							for (const Entity& e : selectedEntities) {
-								if (!e.HasComponent<ScriptComponent>()
-									|| !e.GetComponent<ScriptComponent>().HasManagedComponent(scriptEntry.ClassName)) {
-									missingFromAny = true;
-									break;
-								}
-							}
-							if (!missingFromAny) continue;
-							const std::string label = BuildScriptMenuLabel(scriptEntry);
-							const std::string path = scriptEntry.Path.string();
-							if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
-								for (const Entity& e : selectedEntities) {
-									AttachManagedComponentToEntity(const_cast<Entity&>(e), scene, scriptEntry);
-								}
-							}
-						}
-						ImGui::TreePop();
-					}
-				}
-
-				// Scripts subcategory: managed and native script types as addable items
-				if (!scriptEntries.empty()) {
-					if (ImGui::TreeNode("Scripts")) {
-						for (const auto& scriptEntry : scriptEntries) {
-							if (scriptEntry.IsManagedComponent || scriptEntry.IsGameSystem || scriptEntry.IsGlobalSystem) {
-								continue;
-							}
-							const std::string label = BuildScriptMenuLabel(scriptEntry);
-							const std::string path = scriptEntry.Path.string();
-							if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
-								for (const Entity& e : selectedEntities) {
-									AttachScriptToEntity(const_cast<Entity&>(e), scene, scriptEntry);
-								}
-							}
-						}
-						ImGui::TreePop();
-					}
-				}
-			}
-
-			ImGui::EndPopup();
-		}
+		// Categorized + searchable Add Component popup. Shared with the
+		// asset-side prefab inspector so the UX matches whether the user
+		// is editing a regular entity or a `.prefab` directly. The helper
+		// hides components present on every selected entity, applies adds
+		// to every entity missing the component, and runs conflict checks
+		// against the selection so invariant-violating combinations are
+		// disabled with a tooltip explaining why.
+		RenderAddComponentPopup("AddComponentPopup", scene, entitySpan,
+			m_ComponentSearchBuffer, sizeof(m_ComponentSearchBuffer));
 
 		// Drag-drop target: accept script files dropped onto the Inspector panel
 		if (ImGui::BeginDragDropTarget()) {

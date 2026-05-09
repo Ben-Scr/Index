@@ -75,12 +75,14 @@ namespace Axiom {
 		static bool IsAxisAligned(float radians) {
 			constexpr float tolerance = 1e-6f;
 
+			// After fmod + negative-rewrap below, normalizedRadians is in
+			// [0, TwoPi). The 0.0f entry handles wraparound near TwoPi via
+			// tolerance, so a separate TwoPi entry would be unreachable.
 			const float angles[] = {
 				0.0f,
 				Axiom::HalfPi<float>(),
 				Axiom::Pi<float>(),
-				3 * Axiom::HalfPi<float>(),
-				Axiom::TwoPi<float>()
+				3 * Axiom::HalfPi<float>()
 			};
 
 
@@ -93,6 +95,11 @@ namespace Axiom {
 				if (std::abs(normalizedRadians - angle) < tolerance) {
 					return true;
 				}
+			}
+			// Catch the wraparound case where normalizedRadians is just under
+			// TwoPi (within tolerance of the upper bound).
+			if (std::abs(normalizedRadians - Axiom::TwoPi<float>()) < tolerance) {
+				return true;
 			}
 			return false;
 		}

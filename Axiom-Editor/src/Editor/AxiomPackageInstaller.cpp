@@ -9,32 +9,57 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <regex>
 #include <sstream>
+#include <unordered_map>
 
 namespace Axiom {
 
 	namespace {
+
+		// L13: per-fieldName regex pair, built once per (fieldName, quote-style)
+		// pair on first request and cached for the rest of the process. The
+		// previous version constructed two `std::regex` objects on every call;
+		// over hundreds of fields × packages × layers that adds up on cold
+		// package scans. Mirrors the pattern at lines below where the layer
+		// detection regexes are file-scope statics.
+		struct ExtractRegexPair {
+			std::regex DoubleQuoted;
+			std::regex SingleQuoted;
+		};
+
+		const ExtractRegexPair& GetExtractRegexes(const std::string& fieldName) {
+			static std::unordered_map<std::string, ExtractRegexPair> s_Cache;
+			static std::mutex s_CacheMutex;
+			std::scoped_lock lock(s_CacheMutex);
+			auto it = s_Cache.find(fieldName);
+			if (it == s_Cache.end()) {
+				ExtractRegexPair pair{
+					std::regex(fieldName + "\\s*=\\s*\"([^\"]*)\""),
+					std::regex(fieldName + "\\s*=\\s*'([^']*)'"),
+				};
+				it = s_Cache.emplace(fieldName, std::move(pair)).first;
+			}
+			return it->second;
+		}
 
 		std::string ExtractStringField(const std::string& content, const std::string& fieldName) {
 			// Pattern: name = "value"  (= optionally surrounded by whitespace, value in double quotes)
 			// Lua single-quote strings would also be valid; supporting both keeps things simple.
 			// fieldName is treated as a literal token (assumed alphanumeric — which is true for
 			// our schema fields: name / version / description), so no regex-escape needed.
+			const ExtractRegexPair& regexes = GetExtractRegexes(fieldName);
 
 			std::smatch match;
-			if (std::regex_search(content, match, std::regex(fieldName + "\\s*=\\s*\"([^\"]*)\""))) {
+			if (std::regex_search(content, match, regexes.DoubleQuoted)) {
 				return match[1].str();
 			}
-			if (std::regex_search(content, match, std::regex(fieldName + "\\s*=\\s*'([^']*)'"))) {
+			if (std::regex_search(content, match, regexes.SingleQuoted)) {
 				return match[1].str();
 			}
 			return {};
 		}
-
-		// Pre-built once per-process. ExtractStringField was rebuilding two regexes per
-		// call — at hundreds of fields × packages × layers, that's measurable on cold scans.
-		// Layer-detection regexes are simple enough to cache by name.
 
 		bool ReadFileToString(const std::filesystem::path& path, std::string& out) {
 			std::ifstream stream(path, std::ios::binary);

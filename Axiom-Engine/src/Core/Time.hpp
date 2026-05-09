@@ -4,6 +4,7 @@
 
 namespace Axiom {
 	class Application;
+	class ApplicationEditorAccess;
 
 	class AXIOM_API Time {
 	public:
@@ -29,6 +30,15 @@ namespace Axiom {
 		// Note: Elapsed time based on timescale
 		float GetSimulatedElapsedTime() const;
 
+		// Time since the game started (engine init excluded). Scales with TimeScale —
+		// at 2x scale the value advances twice as fast as wallclock. Reset by
+		// MarkGameStart(); zero before the first call.
+		float GetTimeSinceStartup() const { return m_GameSimulatedElapsedTime; }
+
+		// Time since the game started (engine init excluded). Wallclock — ignores
+		// TimeScale and pause. Reset by MarkGameStart(); zero before the first call.
+		float GetRealtimeSinceStartup() const;
+
 		int GetFrameCount() const { return m_FrameCount; }
 
 	private:
@@ -37,19 +47,29 @@ namespace Axiom {
 		void Update(float deltaTime);
 		void AdvanceFrameCount() { m_FrameCount++; }
 
+		// Resets the "game start" baseline used by GetTimeSinceStartup /
+		// GetRealtimeSinceStartup. Called once at the end of Application::Initialize
+		// (after RaiseApplicationStart) so the engine-init pipeline is excluded, and
+		// again on every editor play-mode entry so each play session starts at zero.
+		void MarkGameStart();
+
 		float m_DeltaTime = 0.0f;
 		float m_TargetFPS = 144.f;
 		float m_TimeScale = 1.f;
 		float m_UpdateDeltaTime = 1.0f / m_TargetFPS;
 		float m_FixedDeltaTime = 1.0f / 50.f;
 		float m_SimulatedElapsedTime = 0.0f;
+		float m_GameSimulatedElapsedTime = 0.0f;
+		bool  m_GameStarted = false;
 		int m_FrameCount = 0;
 
 		Clock::duration m_FrameDuration = std::chrono::duration_cast<Clock::duration>(
 			std::chrono::duration<float>(1.0f / m_TargetFPS)
 		);
 		Clock::time_point m_StartTime = Clock::now();
+		Clock::time_point m_GameStartTime = Clock::now();
 
 		friend class Application;
+		friend class ApplicationEditorAccess;
 	};
 }

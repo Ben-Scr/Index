@@ -3,7 +3,7 @@ using Axiom.Interop;
 
 namespace Axiom.Physics;
 
-internal static class Physics2DShared
+internal static class PhysicsShared
 {
     internal delegate int OverlapQuery(Span<ulong> buffer);
 

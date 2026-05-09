@@ -153,6 +153,7 @@ namespace Axiom {
 		if (ext == ".txt" || ext == ".cfg" || ext == ".ini" ||
 			ext == ".yaml" || ext == ".toml" || ext == ".lua")               return "file_txt";
 		if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac") return "file_audio";
+		if (ext == ".ttf" || ext == ".otf")                                  return "file_font";
 
 		return nullptr;
 	}
@@ -164,7 +165,16 @@ namespace Axiom {
 		m_NeedsRefresh = true;
 	}
 
+#ifdef AIM_PLATFORM_WINDOWS
+	// M29: defined in AssetBrowserActions.cpp. Joins any in-flight
+	// ShellExecuteW worker threads so they don't outlive editor shutdown.
+	extern void JoinAllShellLaunchThreads();
+#endif
+
 	void AssetBrowser::Shutdown() {
+#ifdef AIM_PLATFORM_WINDOWS
+		JoinAllShellLaunchThreads();
+#endif
 		m_Thumbnails.Shutdown();
 	}
 
@@ -423,12 +433,6 @@ namespace Axiom {
 
 	void AssetBrowser::Render() {
 		m_SelectionActivated = false;
-
-		// Process pending OS file drops
-		if (!m_PendingExternalDrops.empty()) {
-			OnExternalFileDrop(m_PendingExternalDrops);
-			m_PendingExternalDrops.clear();
-		}
 
 		// Load pending scene on main thread (before ImGui frame)
 		if (!m_PendingSceneLoad.empty())
@@ -997,6 +1001,39 @@ namespace Axiom {
 				if (ImGui::MenuItem("Entity Prefab")) {
 					CreateEntityPrefab(m_CurrentDirectory);
 				}
+
+
+				if (ImGui::BeginMenu("Texture")) {
+					if (ImGui::MenuItem("Square")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Square.png", "Square");
+					}
+					if (ImGui::MenuItem("Circle")) {
+						CreateDefaultTexture(m_CurrentDirectory, "circle.png", "Circle");
+					}
+					if (ImGui::MenuItem("Capsule")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Capsule.png", "Capsule");
+					}
+					if (ImGui::MenuItem("9-Sliced")) {
+						CreateDefaultTexture(m_CurrentDirectory, "9Sliced.png", "9Sliced");
+					}
+					if (ImGui::MenuItem("Hexagon (Flat-Top)")) {
+						CreateDefaultTexture(m_CurrentDirectory, "HexagonFlatTop.png", "HexagonFlatTop");
+					}
+					if (ImGui::MenuItem("Hexagon (Pointed-Top)")) {
+						CreateDefaultTexture(m_CurrentDirectory, "HexagonPointedTop.png", "HexagonPointedTop");
+					}
+					if (ImGui::MenuItem("Isometric Diamond")) {
+						CreateDefaultTexture(m_CurrentDirectory, "IsometricDiamond.png", "IsometricDiamond");
+					}
+					if (ImGui::MenuItem("Pixel")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Pixel.png", "Pixel");
+					}
+					if (ImGui::MenuItem("Invisible")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Invisible.png", "Invisible");
+					}
+					ImGui::EndMenu();
+				}
+
 				if (ImGui::BeginMenu("Scripting")) {
 					if (ImGui::MenuItem("EntityScript (C#)")) {
 						CreateScript(m_CurrentDirectory);
@@ -1021,30 +1058,14 @@ namespace Axiom {
 					// no canonical "empty"). Extensions match the icon mapping
 					// in GetFileTypeIconName so the new file picks up its icon
 					// on the next refresh.
+					if (ImGui::MenuItem("Empty File")) {
+						CreateFile(m_CurrentDirectory, "NewFile", ".txt", "");
+					}
 					if (ImGui::MenuItem("Text File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".txt", "");
 					}
 					if (ImGui::MenuItem("JSON File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".json", "{\n}\n");
-					}
-					if (ImGui::MenuItem("XML File")) {
-						CreateFile(m_CurrentDirectory, "NewFile", ".xml",
-							"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n</root>\n");
-					}
-					if (ImGui::MenuItem("YAML File")) {
-						CreateFile(m_CurrentDirectory, "NewFile", ".yaml", "");
-					}
-					if (ImGui::MenuItem("TOML File")) {
-						CreateFile(m_CurrentDirectory, "NewFile", ".toml", "");
-					}
-					if (ImGui::MenuItem("INI File")) {
-						CreateFile(m_CurrentDirectory, "NewFile", ".ini", "");
-					}
-					if (ImGui::MenuItem("Markdown File")) {
-						CreateFile(m_CurrentDirectory, "NewFile", ".md", "");
-					}
-					if (ImGui::MenuItem("Lua File")) {
-						CreateFile(m_CurrentDirectory, "NewFile", ".lua", "");
 					}
 					if (ImGui::MenuItem("Binary File")) {
 						CreateFile(m_CurrentDirectory, "NewFile", ".bin", "");

@@ -54,9 +54,27 @@ namespace Axiom::ReferencePicker {
 			ThumbnailCache Thumbnails;
 			bool ThumbnailsInitialized = false;
 			std::unordered_set<std::string> LoadedThumbnailPaths;
+
+			// Multiple panels (Inspector, ProjectSettings, PrefabInspector)
+			// each call RenderPopup defensively because OpenForFieldKey can
+			// originate from any of them. When two such panels are visible
+			// in the same frame, RenderPopup gets called twice — both calls
+			// hit ImGui::Begin with the same window title, ImGui treats that
+			// as one window with the widgets stacked, and every internal ID
+			// (search box, list child, per-row InvisibleButton) collides.
+			// This counter tracks the last ImGui frame the popup actually
+			// rendered so subsequent calls in the same frame return early.
+			int LastRenderedFrame = -1;
 		};
 
 		PickerState s_State;
+
+		// Promoted from EnsureBuiltInsRegisteredInEditor's local static so
+		// ReferencePicker::Shutdown() can reset it on reload — otherwise the
+		// guard sticks at `true` after Application::Reload, the editor never
+		// re-runs the AxiomAssets directory walk, and any built-ins that
+		// got purged during teardown remain absent from the picker.
+		bool s_BuiltInsDone = false;
 
 		void EnsureThumbnailCacheInitialized() {
 			if (!s_State.ThumbnailsInitialized) {
@@ -104,9 +122,8 @@ namespace Axiom::ReferencePicker {
 		// (move methods + statics into a .cpp, mark with AXIOM_API) so
 		// this duplicate population isn't necessary.
 		void EnsureBuiltInsRegisteredInEditor() {
-			static bool s_Done = false;
-			if (s_Done) return;
-			s_Done = true;
+			if (s_BuiltInsDone) return;
+			s_BuiltInsDone = true;
 
 			// Default font with hand-picked GUID (matches FontManager's own
 			// registration so scenes referencing k_DefaultFontAssetId resolve).
@@ -153,7 +170,24 @@ namespace Axiom::ReferencePicker {
 
 		std::vector<Entry> entries;
 		entries.push_back({ "(None)", "", "(none)", "", "__none__", false });
-		for (const AssetRegistry::Record& record : AssetRegistry::GetAssetsByKind(kind)) {
+		const auto records = AssetRegistry::GetAssetsByKind(kind);
+#ifndef NDEBUG
+		// I2: an empty result here is the load-bearing symptom of the
+		// AssetRegistry DLL-boundary issue (see EnsureBuiltInsRegisteredInEditor
+		// header comment / known-issues note in CLAUDE.md). The editor's
+		// copy of `s_BuiltInById` may not have been populated by the engine
+		// DLL's initialization path. Warn once per process so a developer
+		// notices instead of staring at an empty picker.
+		if (records.empty()) {
+			static bool s_Warned = false;
+			if (!s_Warned) {
+				AIM_CORE_WARN_TAG("ReferencePicker",
+					"GetAssetsByKind returned empty - did EnsureBuiltInsRegisteredInEditor run?");
+				s_Warned = true;
+			}
+		}
+#endif
+		for (const AssetRegistry::Record& record : records) {
 			Entry entry;
 			entry.Label = std::filesystem::path(record.Path).filename().string();
 			entry.Secondary = record.Path;
@@ -178,7 +212,12 @@ namespace Axiom::ReferencePicker {
 			auto view = scene.GetRegistry().view<entt::entity>();
 			for (EntityHandle handle : view) {
 				if (!scene.IsValid(handle)) continue;
-				const uint64_t entityId = scene.GetRuntimeID(handle);
+				// Persistent UUID, not RuntimeID — RuntimeID is reallocated on
+				// scene reload, so a reference saved with it would point at
+				// nothing after the next load. Scene::TryResolveEntityRef and
+				// the script-binding resolver both accept either form, so
+				// writing the UUID keeps refs valid across save/load.
+				const uint64_t entityId = scene.GetEntityPersistentID(handle);
 				if (entityId == 0) continue;
 
 				Entry entry;
@@ -220,7 +259,12 @@ namespace Axiom::ReferencePicker {
 			auto view = scene.GetRegistry().view<entt::entity>();
 			for (EntityHandle handle : view) {
 				if (!scene.IsValid(handle)) continue;
-				const uint64_t entityId = scene.GetRuntimeID(handle);
+				// Persistent UUID, not RuntimeID — RuntimeID is reallocated on
+				// scene reload, so a reference saved with it would point at
+				// nothing after the next load. Scene::TryResolveEntityRef and
+				// the script-binding resolver both accept either form, so
+				// writing the UUID keeps refs valid across save/load.
+				const uint64_t entityId = scene.GetEntityPersistentID(handle);
 				if (entityId == 0) continue;
 
 				Entity entity = scene.GetEntity(handle);
@@ -271,6 +315,14 @@ namespace Axiom::ReferencePicker {
 	}
 
 	void RenderPopup() {
+		// Per-frame idempotency guard — see LastRenderedFrame comment in
+		// PickerState. Without this, two visible panels both rendering the
+		// popup in the same frame stack widgets into one ImGui window and
+		// trigger "visible items with conflicting ID" warnings.
+		const int frame = ImGui::GetFrameCount();
+		if (s_State.LastRenderedFrame == frame) return;
+		s_State.LastRenderedFrame = frame;
+
 		// Mirror the SpriteRenderer texture picker's UX: a regular window
 		// (not a modal) with its own [X] close button. RequestOpen is the
 		// "appear this frame" pulse from OpenForFieldKey; IsOpen is the
@@ -567,6 +619,14 @@ namespace Axiom::ReferencePicker {
 		if (outSecondary) outSecondary->clear();
 		if (assetId == 0) return "(None)";
 
+		// The editor binary has its own copy of AssetRegistry's built-in
+		// table (engine DLL static state doesn't cross the DLL boundary),
+		// so populate it on demand. Without this, defaults that point at
+		// engine-shipped GUIDs — most visibly TextRendererComponent's
+		// k_DefaultFontAssetId — render as "(Missing Asset)" on the first
+		// inspector frame, before the user has opened any picker.
+		EnsureBuiltInsRegisteredInEditor();
+
 		const AssetKind kind = AssetRegistry::GetKind(assetId);
 		if (kind != expectedKind) {
 			outMissing = true;
@@ -608,7 +668,11 @@ namespace Axiom::ReferencePicker {
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
 			if (resolved) return;
 			EntityHandle handle = entt::null;
-			if (scene.TryResolveRuntimeID(entityId, handle)) {
+			// UUID-aware: tries RuntimeID first, then UUIDComponent. The
+			// picker now persists UUIDs (post-reload RuntimeIDs differ from
+			// what was saved), so we must resolve through both paths to
+			// avoid a "(Missing Entity)" display after every scene reload.
+			if (scene.TryResolveEntityRef(entityId, handle)) {
 				display = GetEntityName(scene, handle, entityId);
 				secondary = scene.GetName();
 				resolved = true;
@@ -635,7 +699,8 @@ namespace Axiom::ReferencePicker {
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
 			if (resolved) return;
 			EntityHandle handle = entt::null;
-			if (scene.TryResolveRuntimeID(entityId, handle)) {
+			// UUID-aware: see ResolveEntityDisplay — same reload story.
+			if (scene.TryResolveEntityRef(entityId, handle)) {
 				entityName = GetEntityName(scene, handle, entityId);
 				resolved = true;
 			}
@@ -645,6 +710,20 @@ namespace Axiom::ReferencePicker {
 			return "(Missing)." + componentTypeName;
 		}
 		return entityName + " (" + componentTypeName + ")";
+	}
+
+	void Shutdown() {
+		// Clear in-flight UI state (search field, request-open pulse,
+		// pending selection, target field key, eye-toggle, ...) and
+		// reset the built-ins one-shot guard so the next session re-runs
+		// EnsureBuiltInsRegisteredInEditor against whatever AssetRegistry
+		// the new project sets up. The thumbnail cache also needs to
+		// drop its GL handles before the OpenGL context goes away.
+		if (s_State.ThumbnailsInitialized) {
+			s_State.Thumbnails.Clear();
+		}
+		s_State = {};
+		s_BuiltInsDone = false; // H22: rerun built-in registration on next open.
 	}
 
 } // namespace Axiom::ReferencePicker

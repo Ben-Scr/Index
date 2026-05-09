@@ -125,10 +125,26 @@ namespace Axiom {
 			WriteAllocationLeakReport(*data);
 		}
 #endif
+		// Flip the gates BEFORE destroying AllocatorData so any thread that
+		// reaches Allocate/Free *after* this line sees s_IsShutdown=true /
+		// s_Data=nullptr and bails to the raw-malloc path rather than touching
+		// the about-to-be-freed AllocatorData.
+		s_IsShutdown.store(true, std::memory_order_release);
+		s_Data.store(nullptr, std::memory_order_release);
+
+		// Take the AllocatorData mutex one last time as a quiescence barrier:
+		// any thread still mid-Allocate/Free that loaded the old `data` pointer
+		// before the stores above is, by the load-acquire ordering on the
+		// mutex, either done or currently holding the lock. Acquiring it here
+		// guarantees we observe the completion of those critical sections and
+		// that no new ones can begin (because the gates are already closed).
+		{
+			std::scoped_lock<std::mutex> quiesceLock(data->m_Mutex);
+			(void)quiesceLock;
+		}
+
 		data->~AllocatorData();
 		free(data);
-		s_Data.store(nullptr, std::memory_order_release);
-		s_IsShutdown.store(true, std::memory_order_release);
 	}
 
 	void* Allocator::AllocateRaw(size_t size)
@@ -144,11 +160,24 @@ namespace Axiom {
 		if (!s_Data.load(std::memory_order_acquire))
 			Init();
 
+		// Re-check after Init: Init() short-circuits when s_IsShutdown is set,
+		// leaving s_Data null. With Shutdown's flipped store order this is the
+		// only case where data can be null here, and we must fall back to raw.
 		AllocatorData* data = s_Data.load(std::memory_order_acquire);
+		if (!data)
+			return AllocateRaw(size);
+
 		void* memory = AllocateOrThrow(size);
 
 		{
 			std::scoped_lock<std::mutex> lock(data->m_Mutex);
+			// Re-check the gate AFTER acquiring the lock: Shutdown's drain
+			// barrier flips s_IsShutdown before taking the mutex, so a caller
+			// that won the race for the lock during drain still sees the
+			// closed gate here and bails out (caller still owns `memory`,
+			// returned via the raw path).
+			if (s_IsShutdown.load(std::memory_order_acquire))
+				return memory;
 			Allocation& alloc = data->m_AllocationMap[memory];
 			alloc.Memory = memory;
 			alloc.Size = size;
@@ -177,10 +206,17 @@ namespace Axiom {
 			Init();
 
 		AllocatorData* data = s_Data.load(std::memory_order_acquire);
+		if (!data)
+			return AllocateRaw(size);
+
 		void* memory = AllocateOrThrow(size);
 
 		{
 			std::scoped_lock<std::mutex> lock(data->m_Mutex);
+			// See note in Allocate(size_t) — re-check after lock acquisition
+			// so we don't touch a draining AllocatorData.
+			if (s_IsShutdown.load(std::memory_order_acquire))
+				return memory;
 			Allocation& alloc = data->m_AllocationMap[memory];
 			alloc.Memory = memory;
 			alloc.Size = size;
@@ -211,10 +247,17 @@ namespace Axiom {
 			Init();
 
 		AllocatorData* data = s_Data.load(std::memory_order_acquire);
+		if (!data)
+			return AllocateRaw(size);
+
 		void* memory = AllocateOrThrow(size);
 
 		{
 			std::scoped_lock<std::mutex> lock(data->m_Mutex);
+			// See note in Allocate(size_t) — re-check after lock acquisition
+			// so we don't touch a draining AllocatorData.
+			if (s_IsShutdown.load(std::memory_order_acquire))
+				return memory;
 			Allocation& alloc = data->m_AllocationMap[memory];
 			alloc.Memory = memory;
 			alloc.Size = size;
@@ -251,6 +294,14 @@ namespace Axiom {
 			size_t freedSize = 0;
 			{
 				std::scoped_lock<std::mutex> lock(data->m_Mutex);
+				// Re-check after acquiring the lock — Shutdown closes the gate
+				// before taking the mutex, so a caller mid-Free that won the
+				// lock race during drain falls through to plain free() and
+				// skips the about-to-be-destructed bookkeeping maps.
+				if (s_IsShutdown.load(std::memory_order_acquire)) {
+					std::free(memory);
+					return;
+				}
 				auto allocMapIt = data->m_AllocationMap.find(memory);
 				found = allocMapIt != data->m_AllocationMap.end();
 				if (found)

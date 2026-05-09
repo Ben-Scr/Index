@@ -615,11 +615,16 @@ namespace Axiom {
 
 		uint64_t ToManagedEntityID(Scene& scene, EntityHandle entity)
 		{
+			// Mirrors ScriptEngine::CreateScriptInstance: prefer the persistent
+			// UUID so collision callbacks hand C# the same entity ID the
+			// script's own Entity carries. Without this, a comparison like
+			// `collision.OtherEntity == myCachedEntity` would silently fail
+			// any time the two were created via different paths.
 			uint64_t entityID = static_cast<uint64_t>(static_cast<uint32_t>(entity));
 			if (scene.IsValid(entity)) {
-				const uint64_t runtimeID = scene.GetRuntimeID(entity);
-				if (runtimeID != 0) {
-					entityID = runtimeID;
+				const uint64_t persistentID = scene.GetEntityPersistentID(entity);
+				if (persistentID != 0) {
+					entityID = persistentID;
 				}
 			}
 			return entityID;
@@ -886,6 +891,46 @@ namespace Axiom {
 				[handle](const ScriptInstance& instance) { return instance.GetGCHandle() == handle; });
 			return it != scripts.end() ? &(*it) : nullptr;
 		}
+
+		// Drain ScriptComponent::PendingFieldValues entries that match this
+		// instance's class prefix and feed each through ScriptEngine's
+		// SetScriptField callback. Must run AFTER the managed instance has a
+		// GCHandle but BEFORE InvokeAwake / InvokeStart so user code in
+		// OnAwake / OnStart sees the inspector-assigned values. Centralised
+		// here because the eager Awake-path and the lazy Update-path both
+		// create instances and both need to apply pending fields the same way
+		// — earlier the eager path skipped this entirely, so a build that
+		// went through Awake would land in OnStart with every reference
+		// field still null. Always logs (even applied=0) so a build symptom
+		// like "Login button not assigned" is traceable to the exact step
+		// that dropped the value.
+		void ApplyPendingFieldValues(ScriptComponent& scriptComp, ScriptInstance& instance) {
+			if (!instance.HasManagedInstance()) return;
+			auto& callbacks = ScriptEngine::GetCallbacks();
+			if (!callbacks.SetScriptField) return;
+
+			const std::string prefix = instance.GetClassName() + ".";
+			int applied = 0;
+			int matchingPending = 0;
+			for (auto it = scriptComp.PendingFieldValues.begin(); it != scriptComp.PendingFieldValues.end(); ) {
+				if (it->first.rfind(prefix, 0) == 0) {
+					++matchingPending;
+					std::string fieldName = it->first.substr(prefix.size());
+					callbacks.SetScriptField(
+						static_cast<int32_t>(instance.GetGCHandle()),
+						fieldName.c_str(), it->second.c_str());
+					it = scriptComp.PendingFieldValues.erase(it);
+					++applied;
+				} else {
+					++it;
+				}
+			}
+			if (applied > 0 || matchingPending > 0) {
+				AIM_CORE_INFO_TAG("ScriptSystem",
+					"Applied {} pending field value(s) for {} (matched={})",
+					applied, instance.GetClassName(), matchingPending);
+			}
+		}
 	}
 
 	void ScriptSystem::Awake(Scene& scene)
@@ -911,7 +956,7 @@ namespace Axiom {
 				for (EntityHandle entity : entities)
 				{
 					ForEachScriptOnEntitySafe(scene, entity,
-						[entity](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+						[entity](ScriptComponent& scriptComp, ScriptInstance& instance, size_t) -> bool {
 							if (instance.GetClassName().empty()) return true;
 							if (instance.GetType() == ScriptType::Native) return true;
 
@@ -926,6 +971,8 @@ namespace Axiom {
 								}
 							}
 							if (instance.HasManagedInstance()) {
+								// Apply BEFORE InvokeAwake so OnAwake sees fields.
+								ApplyPendingFieldValues(scriptComp, instance);
 								ScriptEngine::InvokeAwake(instance.GetGCHandle());
 							}
 							return true;
@@ -938,7 +985,13 @@ namespace Axiom {
 		auto exeDir = std::filesystem::path(Path::ExecutableDir());
 		AxiomProject* project = ProjectManager::GetCurrentProject();
 
-		if (!ScriptEngine::IsInitialized()) {
+		// Track whether THIS Awake actually initialized the script engine
+		// (vs. just doing per-scene wiring on top of an already-initialized
+		// engine after a scene reload). The "Script system initialized"
+		// log below is gated on this so reloading a scene in playmode
+		// doesn't keep claiming the engine is being re-initialized.
+		const bool engineWasFreshlyInitialized = !ScriptEngine::IsInitialized();
+		if (engineWasFreshlyInitialized) {
 			ScriptEngine::Init();
 		}
 
@@ -984,7 +1037,11 @@ namespace Axiom {
 
 		if (project)
 		{
-			auto scriptsDir = std::filesystem::path(project->ScriptsDirectory);
+			// Watch the entire Assets/ tree so .cs files outside the historical
+			// Assets/Scripts/ folder also trigger a rebuild and count toward
+			// the assembly's stale check. Matches the csproj's `Assets\**\*.cs`
+			// compile glob — discovery, watch, and compile share one root.
+			auto scriptsDir = std::filesystem::path(project->AssetsDirectory);
 			auto csproj = std::filesystem::path(project->CsprojPath);
 			if (std::filesystem::exists(csproj))
 			{
@@ -1082,7 +1139,9 @@ namespace Axiom {
 			}
 		}
 
-		AIM_INFO_TAG("ScriptSystem", "Script system initialized");
+		if (engineWasFreshlyInitialized) {
+			AIM_INFO_TAG("ScriptSystem", "Script system initialized");
+		}
 
 		// Eager OnAwake dispatch for first scene; C# side guards against double-fire on reload.
 		if (ScriptEngine::IsInitialized())
@@ -1092,7 +1151,7 @@ namespace Axiom {
 			for (EntityHandle entity : entities)
 			{
 				ForEachScriptOnEntitySafe(scene, entity,
-					[entity](ScriptComponent&, ScriptInstance& instance, size_t) -> bool {
+					[entity](ScriptComponent& scriptComp, ScriptInstance& instance, size_t) -> bool {
 						if (instance.GetClassName().empty()) return true;
 						if (instance.GetType() == ScriptType::Native) return true;
 
@@ -1107,6 +1166,15 @@ namespace Axiom {
 							}
 						}
 						if (instance.HasManagedInstance()) {
+							// Apply BEFORE InvokeAwake — without this the build's
+							// OnStart was seeing every reference field as null
+							// because Update's lazy SetScriptField loop only ran
+							// when it was the path that CREATED the instance.
+							// Awake-path created instance + dispatched OnAwake
+							// without ever touching PendingFieldValues, so by the
+							// time Update ran the entry condition was false and
+							// the loop was skipped.
+							ApplyPendingFieldValues(scriptComp, instance);
 							ScriptEngine::InvokeAwake(instance.GetGCHandle());
 						}
 						return true;
@@ -1272,6 +1340,16 @@ namespace Axiom {
 			return;
 		}
 
+		// RAII gate so a queued rebuild firing during this call sees the flag and
+		// defers itself until the teardown loop finishes. Without this, a watcher
+		// poll mid-teardown can re-enter RebuildAndReloadScripts, which calls
+		// LoadUserAssembly while live ScriptInstances still hold GCHandles into
+		// the assembly we're about to unload.
+		struct TeardownGuard {
+			TeardownGuard()  { ScriptSystem::m_TeardownInProgress.store(true,  std::memory_order_release); }
+			~TeardownGuard() { ScriptSystem::m_TeardownInProgress.store(false, std::memory_order_release); }
+		} guard;
+
 		// Snapshot the entity list BEFORE invoking any user OnDisable/OnDestroy. The
 		// rest of this engine carefully uses CollectScriptEntities + index-based
 		// re-fetch precisely because user callbacks can add/remove ScriptComponent,
@@ -1317,6 +1395,12 @@ namespace Axiom {
 
 	void ScriptSystem::TeardownNativeScripts(Scene& scene)
 	{
+		// Mirror TeardownManagedScripts — same race surface, different language.
+		struct TeardownGuard {
+			TeardownGuard()  { ScriptSystem::m_TeardownInProgress.store(true,  std::memory_order_release); }
+			~TeardownGuard() { ScriptSystem::m_TeardownInProgress.store(false, std::memory_order_release); }
+		} guard;
+
 		// Same snapshot pattern as TeardownManagedScripts above. Native OnDestroy
 		// can re-enter and destroy sibling entities; iterating an entt::view live
 		// would corrupt iteration mid-call.
@@ -1568,8 +1652,15 @@ namespace Axiom {
 			}
 
 			if (m_RebuildQueued) {
-				m_RebuildQueued = false;
-				RebuildAndReloadScripts();
+				// Don't replay the queued rebuild while a teardown is still on the
+				// stack. The queued rebuild kicks off LoadUserAssembly; if teardown
+				// is in flight, live ScriptInstances may still hold GCHandles into
+				// the assembly we'd be unloading. Leave m_RebuildQueued set so the
+				// next OnPreRender tick re-checks once teardown has unwound.
+				if (!m_TeardownInProgress.load(std::memory_order_acquire)) {
+					m_RebuildQueued = false;
+					RebuildAndReloadScripts();
+				}
 			}
 		}
 
@@ -1613,8 +1704,11 @@ namespace Axiom {
 			}
 
 			if (m_NativeRebuildQueued) {
-				m_NativeRebuildQueued = false;
-				RebuildAndReloadNativeScripts();
+				// See managed branch above — same teardown race rationale.
+				if (!m_TeardownInProgress.load(std::memory_order_acquire)) {
+					m_NativeRebuildQueued = false;
+					RebuildAndReloadNativeScripts();
+				}
 			}
 		}
 
@@ -1651,6 +1745,14 @@ namespace Axiom {
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
 
 		float dt = Application::GetInstance() ? Application::GetInstance()->GetTime().GetDeltaTime() : 0.0f;
+
+		// Drain pending coroutine continuations BEFORE user OnUpdate runs.
+		// An `await WaitForSeconds(0.1f)` whose timer expired last frame
+		// resumes here, in the same logical slot as OnUpdate, matching
+		// Unity's Update-then-Yield ordering.
+		if (managedRuntimeReady) {
+			ScriptEngine::PumpCoroutinesUpdate(dt);
+		}
 
 		// Snapshot: user Update() may add/remove ScriptComponents and entities.
 		const auto entities = CollectScriptEntities(scene);
@@ -1691,23 +1793,7 @@ namespace Axiom {
 						if (!instance.HasAnyInstance())
 							return true;
 
-						if (instance.HasManagedInstance() && !scriptComp.PendingFieldValues.empty()) {
-							std::string prefix = instance.GetClassName() + ".";
-							auto& callbacks = ScriptEngine::GetCallbacks();
-							if (callbacks.SetScriptField) {
-								for (auto it = scriptComp.PendingFieldValues.begin(); it != scriptComp.PendingFieldValues.end(); ) {
-									if (it->first.rfind(prefix, 0) == 0) {
-										std::string fieldName = it->first.substr(prefix.size());
-										callbacks.SetScriptField(
-											static_cast<int32_t>(instance.GetGCHandle()),
-											fieldName.c_str(), it->second.c_str());
-										it = scriptComp.PendingFieldValues.erase(it);
-									} else {
-										++it;
-									}
-								}
-							}
-						}
+						ApplyPendingFieldValues(scriptComp, instance);
 					}
 
 					if (instance.GetType() == ScriptType::Managed)
@@ -1779,6 +1865,11 @@ namespace Axiom {
 		AXIOM_PROFILE_SCOPE("Scripts.FixedUpdate");
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
 		const float fixedDt = Application::GetInstance() ? Application::GetInstance()->GetTime().GetFixedDeltaTime() : 0.0f;
+
+		// Drain WaitForFixedUpdate continuations before user OnFixedUpdate.
+		if (managedRuntimeReady) {
+			ScriptEngine::PumpCoroutinesFixedUpdate();
+		}
 
 		const auto entities = CollectScriptEntities(scene);
 		for (EntityHandle entity : entities)

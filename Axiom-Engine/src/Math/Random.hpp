@@ -2,7 +2,6 @@
 #include "Core/Export.hpp"
 #include <random>
 #include <cstdint>
-#include <mutex>
 
 namespace Axiom {
     struct Color;
@@ -29,11 +28,11 @@ namespace Axiom {
         static  int NextInt(int max);
         static int NextInt(int min, int max);
 
-        static void SetSeed(uint32_t seed) { std::scoped_lock lock(s_Mutex); s_Gen.seed(seed); }
-
-    private:
-        inline static std::mt19937 s_Gen{ std::random_device{}() };
-        inline static std::mutex s_Mutex;
+        // Seeds the calling thread's generator. Each thread has its own
+        // generator (lazy-seeded from std::random_device on first use), so
+        // SetSeed only affects the thread that calls it — exactly what most
+        // gameplay code wants (deterministic per-thread sequences).
+        static void SetSeed(uint32_t seed);
     };
 
 }

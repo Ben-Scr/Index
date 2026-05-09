@@ -11,6 +11,7 @@
 // All helpers run on the main thread inside the host's `AxiomPackage_OnLoad`
 // dispatch — no synchronization is needed at registration time.
 
+#include "Core/Assert.hpp"
 #include "Scene/ComponentInfo.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/SceneManager.hpp"
@@ -106,6 +107,36 @@ namespace Axiom::Package {
         info.deserialize = deserialize ? &Trampoline::DeserializeAdapter : nullptr;
 
         SceneManager::Get().RegisterComponentType<TComponent>(info);
+    }
+
+    // Install a viewport gizmo callback for an already-registered component.
+    // The editor's selection pass walks every registered component on the
+    // selected entity and invokes this callback for each one whose info has
+    // it set — see ComponentInfo::drawEditorGizmo for the calling discipline.
+    //
+    // Call AFTER RegisterComponent / RegisterSerializableComponent for the
+    // same TComponent: the helper looks up the existing ComponentInfo by
+    // type id and patches the callback in place. A second call replaces the
+    // previous one (last-call-wins) so a package can rewire its gizmo at
+    // runtime without re-registering the whole component.
+    //
+    // Asserts at registration time if TComponent isn't registered yet — this
+    // is almost always a missing/misordered RegisterComponent call, so failing
+    // loudly beats silently dropping the gizmo and confusing the package author.
+    template <typename TComponent>
+    void SetEditorGizmo(void (*drawEditorGizmo)(Entity)) {
+        const std::type_index typeId(typeid(TComponent));
+        bool patched = false;
+        SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(
+            [&](const std::type_index& id, ComponentInfo& info) {
+                if (id == typeId) {
+                    info.drawEditorGizmo = drawEditorGizmo;
+                    patched = true;
+                }
+            });
+        AIM_CORE_ASSERT(patched, AxiomErrorCode::InvalidValue,
+            "SetEditorGizmo<T>: component type is not registered yet — "
+            "call RegisterComponent / RegisterSerializableComponent first.");
     }
 
     // Declare a symmetric conflict between two already-registered components.

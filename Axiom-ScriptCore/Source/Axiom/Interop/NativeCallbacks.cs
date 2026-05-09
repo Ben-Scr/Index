@@ -21,6 +21,24 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float> Application_GetTimeScale;
     public delegate* unmanaged<float, void> Application_SetTimeScale;
     public delegate* unmanaged<int> Application_IsEditor; // 1 = host is editor, 0 = standalone runtime
+    public delegate* unmanaged<byte*, int, int> Application_GetClipboardStringBuffer;
+    public delegate* unmanaged<byte*, void> Application_SetClipboardString;
+    public delegate* unmanaged<int> Application_GetVsyncEnabled;
+    public delegate* unmanaged<int, void> Application_SetVsyncEnabled;
+
+    // ── Engine ───────────────────────────────────────────────────
+    public delegate* unmanaged<byte*, int, int> Engine_GetVersionBuffer;
+    public delegate* unmanaged<byte*, int, int> Engine_GetVersionLongBuffer;
+    public delegate* unmanaged<int> Engine_GetBuildConfiguration; // 0=Debug, 1=Development, 2=Release
+    public delegate* unmanaged<byte*, int, int> Engine_GetPlatformBuffer;
+    public delegate* unmanaged<byte*, int, int> Engine_GetGraphicsApiBuffer;
+    public delegate* unmanaged<byte*, int, int> Engine_GetGpuVendorBuffer;
+    public delegate* unmanaged<byte*, int, int> Engine_GetGpuRendererBuffer;
+
+    // ── Time ─────────────────────────────────────────────────────
+    public delegate* unmanaged<int> Time_GetFrameCount;
+    public delegate* unmanaged<float> Time_GetTimeSinceStartup;
+    public delegate* unmanaged<float> Time_GetRealtimeSinceStartup;
 
     // ── Log ──────────────────────────────────────────────────────
     public delegate* unmanaged<byte*, void> Log_Trace;
@@ -54,15 +72,14 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, byte*, int> Entity_HasComponent;
     public delegate* unmanaged<ulong, byte*, int> Entity_AddComponent;
     public delegate* unmanaged<ulong, byte*, int> Entity_RemoveComponent;
-    public delegate* unmanaged<ulong, byte*, byte*> Entity_GetManagedComponentFields;
     public delegate* unmanaged<ulong, byte*, byte*, int, int> Entity_GetManagedComponentFieldsBuffer;
     public delegate* unmanaged<ulong, int> Entity_GetIsStatic;
     public delegate* unmanaged<ulong, int, void> Entity_SetIsStatic;
     public delegate* unmanaged<ulong, int> Entity_GetIsEnabled;
+    public delegate* unmanaged<ulong, int> Entity_GetIsEnabledInHierarchy;
     public delegate* unmanaged<ulong, int, void> Entity_SetIsEnabled;
 
     // ── NameComponent ────────────────────────────────────────────
-    public delegate* unmanaged<ulong, byte*> NameComponent_GetName;
     public delegate* unmanaged<ulong, byte*, int, int> NameComponent_GetNameBuffer;
     public delegate* unmanaged<ulong, byte*, void> NameComponent_SetName;
 
@@ -97,7 +114,6 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int, void> SpriteRenderer_SetSortingLayer;
 
     // ── TextRenderer ─────────────────────────────────────────────
-    public delegate* unmanaged<ulong, byte*> TextRenderer_GetText;
     public delegate* unmanaged<ulong, byte*, int, int> TextRenderer_GetTextBuffer;
     public delegate* unmanaged<ulong, byte*, void> TextRenderer_SetText;
     public delegate* unmanaged<ulong, ulong> TextRenderer_GetFont;
@@ -110,6 +126,10 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, void> TextRenderer_SetLetterSpacing;
     public delegate* unmanaged<ulong, int> TextRenderer_GetHAlign;
     public delegate* unmanaged<ulong, int, void> TextRenderer_SetHAlign;
+    public delegate* unmanaged<ulong, int> TextRenderer_GetWrapMode;
+    public delegate* unmanaged<ulong, int, void> TextRenderer_SetWrapMode;
+    public delegate* unmanaged<ulong, float> TextRenderer_GetWrapWidth;
+    public delegate* unmanaged<ulong, float, void> TextRenderer_SetWrapWidth;
     public delegate* unmanaged<ulong, int> TextRenderer_GetSortingOrder;
     public delegate* unmanaged<ulong, int, void> TextRenderer_SetSortingOrder;
     public delegate* unmanaged<ulong, int> TextRenderer_GetSortingLayer;
@@ -195,7 +215,6 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, void> FastCircleCollider2D_SetRadius;
 
     // ── Scene Query ──────────────────────────────────────────────
-    public delegate* unmanaged<byte*> Scene_GetActiveSceneName;
     public delegate* unmanaged<byte*, int, int> Scene_GetActiveSceneNameBuffer;
     public delegate* unmanaged<int> Scene_GetEntityCount;
     public delegate* unmanaged<byte*, int> Scene_GetEntityCountByName;
@@ -208,9 +227,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<byte*, int, void> Scene_SetGlobalSystemEnabled;
     public delegate* unmanaged<byte*, int> Scene_DoesSceneExist;
     public delegate* unmanaged<int> Scene_GetLoadedCount;
-    public delegate* unmanaged<int, byte*> Scene_GetLoadedSceneNameAt;
     public delegate* unmanaged<int, byte*, int, int> Scene_GetLoadedSceneNameAtBuffer;
-    public delegate* unmanaged<ulong, byte*> Scene_GetEntityNameByUUID;
     public delegate* unmanaged<ulong, byte*, int, int> Scene_GetEntityNameByUUIDBuffer;
     public delegate* unmanaged<byte*, ulong*, int, int> Scene_QueryEntities;
     public delegate* unmanaged<byte*, byte*, byte*, int, ulong*, int, int> Scene_QueryEntitiesFiltered;
@@ -218,12 +235,9 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<byte*, byte*, byte*, byte*, int, ulong*, int, int> Scene_QueryEntitiesFilteredInScene;
     public delegate* unmanaged<ulong, int> Asset_IsValid;
     public delegate* unmanaged<byte*, ulong> Asset_GetOrCreateUUIDFromPath;
-    public delegate* unmanaged<ulong, byte*> Asset_GetPath;
     public delegate* unmanaged<ulong, byte*, int, int> Asset_GetPathBuffer;
-    public delegate* unmanaged<ulong, byte*> Asset_GetDisplayName;
     public delegate* unmanaged<ulong, byte*, int, int> Asset_GetDisplayNameBuffer;
     public delegate* unmanaged<ulong, int> Asset_GetKind;
-    public delegate* unmanaged<byte*, int, byte*> Asset_FindAll;
     public delegate* unmanaged<byte*, int, byte*, int, int> Asset_FindAllBuffer;
     public delegate* unmanaged<ulong, int> Texture_LoadAsset;
     public delegate* unmanaged<ulong, int> Texture_GetWidth;
@@ -286,6 +300,10 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, void> RectTransform_SetRotation;
     public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetScale;
     public delegate* unmanaged<ulong, float, float, void> RectTransform_SetScale;
+    public delegate* unmanaged<ulong, float> RectTransform_GetLocalRotation;
+    public delegate* unmanaged<ulong, float, void> RectTransform_SetLocalRotation;
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetLocalScale;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetLocalScale;
     public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetResolvedSize;
 
     // ── UI: Image ────────────────────────────────────────────────
@@ -293,6 +311,10 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, float, float, float, void> Image_SetColor;
     public delegate* unmanaged<ulong, ulong> Image_GetTexture;
     public delegate* unmanaged<ulong, ulong, void> Image_SetTexture;
+    public delegate* unmanaged<ulong, int> Image_GetSortingOrder;
+    public delegate* unmanaged<ulong, int, void> Image_SetSortingOrder;
+    public delegate* unmanaged<ulong, int> Image_GetSortingLayer;
+    public delegate* unmanaged<ulong, int, void> Image_SetSortingLayer;
 
     // ── UI: Interactable ─────────────────────────────────────────
     public delegate* unmanaged<ulong, int> Interactable_GetInteractable;
@@ -302,6 +324,12 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> Interactable_GetIsPressed;
     public delegate* unmanaged<ulong, int> Interactable_GetIsMouseDown;
     public delegate* unmanaged<ulong, int> Interactable_GetIsMouseUp;
+    // Optional focus / selection navigation. Order must match
+    // ScriptGlue.hpp's NativeBindings struct exactly.
+    public delegate* unmanaged<ulong, int> Interactable_GetFocusable;
+    public delegate* unmanaged<ulong, int, void> Interactable_SetFocusable;
+    public delegate* unmanaged<ulong, int> Interactable_GetIsFocused;
+    public delegate* unmanaged<ulong, int, void> Interactable_SetIsFocused;
 
     // ── UI: Button ───────────────────────────────────────────────
     public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetNormalColor;
@@ -312,6 +340,125 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetPressedColor;
     public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetDisabledColor;
     public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetDisabledColor;
+    // Per-widget FocusedColor accessors are grouped together below
+    // (still inside Button's logical block in C#) because the C++
+    // side declares them in one block right after Button_SetDisabledColor
+    // and the layout has to match.
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Button_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Button_SetFocusedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Toggle_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Toggle_SetFocusedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Slider_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Slider_SetFocusedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> InputField_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> InputField_SetFocusedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetFocusedColor;
+
+    // ── UI: TransitionMode + per-state sprite UUIDs ──────────────
+    // Order must match ScriptGlue.hpp's NativeBindings struct exactly.
+    public delegate* unmanaged<ulong, int> Button_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> Button_SetTransitionMode;
+    public delegate* unmanaged<ulong, int> Toggle_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> Toggle_SetTransitionMode;
+    public delegate* unmanaged<ulong, int> Slider_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> Slider_SetTransitionMode;
+    public delegate* unmanaged<ulong, int> InputField_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> InputField_SetTransitionMode;
+    public delegate* unmanaged<ulong, int> Dropdown_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> Dropdown_SetTransitionMode;
+
+    public delegate* unmanaged<ulong, ulong> Button_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> Button_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> Button_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> Button_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> Button_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Button_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> Button_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> Button_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> Button_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Button_SetFocusedSprite;
+
+    public delegate* unmanaged<ulong, ulong> Toggle_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> Toggle_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> Toggle_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> Toggle_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> Toggle_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Toggle_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> Toggle_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> Toggle_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> Toggle_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Toggle_SetFocusedSprite;
+
+    public delegate* unmanaged<ulong, ulong> Slider_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> Slider_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> Slider_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> Slider_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> Slider_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetFocusedSprite;
+
+    public delegate* unmanaged<ulong, ulong> InputField_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> InputField_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> InputField_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> InputField_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> InputField_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetFocusedSprite;
+
+    public delegate* unmanaged<ulong, ulong> Dropdown_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> Dropdown_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> Dropdown_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> Dropdown_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> Dropdown_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Dropdown_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> Dropdown_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> Dropdown_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> Dropdown_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Dropdown_SetFocusedSprite;
+
+    // ── UI: IsReadOnly + entity-ref + popup-option colors ────────
+    // Order must match ScriptGlue.hpp's NativeBindings struct.
+    public delegate* unmanaged<ulong, int> Toggle_GetIsReadOnly;
+    public delegate* unmanaged<ulong, int, void> Toggle_SetIsReadOnly;
+    public delegate* unmanaged<ulong, int> Slider_GetIsReadOnly;
+    public delegate* unmanaged<ulong, int, void> Slider_SetIsReadOnly;
+    public delegate* unmanaged<ulong, int> Dropdown_GetIsReadOnly;
+    public delegate* unmanaged<ulong, int, void> Dropdown_SetIsReadOnly;
+
+    public delegate* unmanaged<ulong, ulong> Button_GetTargetGraphic;
+    public delegate* unmanaged<ulong, ulong, void> Button_SetTargetGraphic;
+    public delegate* unmanaged<ulong, ulong> Slider_GetFillEntity;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetFillEntity;
+    public delegate* unmanaged<ulong, ulong> Slider_GetHandleEntity;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetHandleEntity;
+    public delegate* unmanaged<ulong, ulong> Slider_GetBackgroundEntity;
+    public delegate* unmanaged<ulong, ulong, void> Slider_SetBackgroundEntity;
+    public delegate* unmanaged<ulong, ulong> Toggle_GetCheckmarkEntity;
+    public delegate* unmanaged<ulong, ulong, void> Toggle_SetCheckmarkEntity;
+    public delegate* unmanaged<ulong, ulong> InputField_GetTextEntity;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetTextEntity;
+    public delegate* unmanaged<ulong, ulong> Dropdown_GetLabelEntity;
+    public delegate* unmanaged<ulong, ulong, void> Dropdown_SetLabelEntity;
+
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetOptionNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetOptionNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetOptionHoverColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetOptionHoverColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetOptionPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetOptionPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetOptionSelectedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetOptionSelectedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetPopupBackgroundColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetPopupBackgroundColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetOptionTextColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetOptionTextColor;
 
     // ── UI: Slider ───────────────────────────────────────────────
     public delegate* unmanaged<ulong, float> Slider_GetValue;
@@ -323,11 +470,29 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> Slider_GetWholeNumbers;
     public delegate* unmanaged<ulong, int, void> Slider_SetWholeNumbers;
     public delegate* unmanaged<ulong, int> Slider_GetValueChangedThisFrame;
+    public delegate* unmanaged<ulong, void> Slider_MarkValueObserved;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Slider_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Slider_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Slider_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Slider_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Slider_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Slider_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Slider_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Slider_SetDisabledColor;
 
     // ── UI: Toggle ───────────────────────────────────────────────
     public delegate* unmanaged<ulong, int> Toggle_GetIsOn;
     public delegate* unmanaged<ulong, int, void> Toggle_SetIsOn;
     public delegate* unmanaged<ulong, int> Toggle_GetValueChangedThisFrame;
+    public delegate* unmanaged<ulong, void> Toggle_MarkIsOnObserved;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Toggle_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Toggle_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Toggle_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Toggle_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Toggle_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Toggle_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Toggle_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Toggle_SetDisabledColor;
 
     // ── UI: InputField ───────────────────────────────────────────
     public delegate* unmanaged<ulong, byte*, int, int> InputField_GetTextBuffer;
@@ -339,6 +504,14 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> InputField_GetSubmittedThisFrame;
     public delegate* unmanaged<ulong, int> InputField_GetCharacterLimit;
     public delegate* unmanaged<ulong, int, void> InputField_SetCharacterLimit;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> InputField_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> InputField_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> InputField_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> InputField_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> InputField_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> InputField_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> InputField_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> InputField_SetDisabledColor;
 
     // ── UI: Dropdown ─────────────────────────────────────────────
     public delegate* unmanaged<ulong, int> Dropdown_GetSelectedIndex;
@@ -346,12 +519,21 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> Dropdown_GetIsOpen;
     public delegate* unmanaged<ulong, int, void> Dropdown_SetIsOpen;
     public delegate* unmanaged<ulong, int> Dropdown_GetSelectionChangedThisFrame;
+    public delegate* unmanaged<ulong, void> Dropdown_MarkSelectedIndexObserved;
     public delegate* unmanaged<ulong, int> Dropdown_GetOptionCount;
     public delegate* unmanaged<ulong, int, byte*, int, int> Dropdown_GetOptionBuffer;
     public delegate* unmanaged<ulong, int, byte*, void> Dropdown_SetOption;
     public delegate* unmanaged<ulong, byte*, void> Dropdown_AddOption;
     public delegate* unmanaged<ulong, int, void> Dropdown_RemoveOption;
     public delegate* unmanaged<ulong, void> Dropdown_ClearOptions;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Dropdown_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Dropdown_SetDisabledColor;
 }
 
 internal static unsafe class NativeCallbacks

@@ -13,12 +13,4 @@ namespace Axiom {
 		void* ud = b2Body_GetUserData(rb.GetBodyHandle());
 		return static_cast<EntityHandle>(reinterpret_cast<uintptr_t>(ud));
 	}
-	EntityHandle PhysicsUtility::GetEntityHandleFromBodyId(b2BodyId bodyId) {
-		void* ud = b2Body_GetUserData(bodyId);
-		return static_cast<EntityHandle>(reinterpret_cast<uintptr_t>(ud));
-	}
-	EntityHandle PhysicsUtility::GetEntityHandleFromShapeID(b2ShapeId shapeId) {
-		void* ud = b2Body_GetUserData(b2Shape_GetBody(shapeId));
-		return static_cast<EntityHandle>(reinterpret_cast<uintptr_t>(ud));
-	}
-} 
+}

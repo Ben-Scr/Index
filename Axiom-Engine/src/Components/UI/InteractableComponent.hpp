@@ -28,6 +28,26 @@ namespace Axiom {
 	//
 	// Set Interactable = false to opt out of input entirely (greyed-out
 	// disabled state, modal blocking, etc.) without removing the component.
+	//
+	// ── Optional focus / selection navigation ───────────────────────
+	// Focusable defaults to false, so existing scenes get NO change in
+	// behaviour — the widget stays mouse-only. Set Focusable = true to
+	// opt this widget into UIFocusSystem's keyboard / controller
+	// navigation:
+	//   - Tab / Shift+Tab cycles forward / backward through focusables.
+	//   - Arrow keys, D-pad and left-stick (any connected gamepad) do
+	//     the same. Left/Right are reinterpreted as value adjustment
+	//     when the focused widget is a Slider, and the input field
+	//     reserves Left/Right/Up/Down for caret movement when one is
+	//     focused.
+	//   - Enter / Space / Gamepad-A "activates" — UIFocusSystem stamps
+	//     IsClicked + IsMouseDown on the focused entity for one frame
+	//     so every existing widget reaction (Button click, Toggle flip,
+	//     Dropdown open, InputField submit) just works.
+	//   - Esc / Gamepad-B clears focus.
+	// IsFocused is the runtime flag the system writes each frame; it
+	// pairs with FocusedColor on each widget preset (see those structs)
+	// for the visual tint, which is itself opt-in via alpha > 0.
 	struct InteractableComponent {
 		bool Interactable = true;
 
@@ -36,6 +56,30 @@ namespace Axiom {
 		bool IsClicked = false;
 		bool IsMouseUp = false;
 		bool IsPressed = false;
+
+		// Opt-in: when true, UIFocusSystem includes this widget in
+		// keyboard / controller navigation. Default false preserves
+		// mouse-only behaviour for scenes that don't want navigation.
+		bool Focusable = false;
+
+		// Runtime flag set by UIFocusSystem when this entity is the
+		// currently focused widget. Read by widget tinting (gated on
+		// FocusedColor.a > 0) and by GuiRenderer for any focus-ring
+		// pass scripts choose to add. Writes to IsFocused from script
+		// or inspector are honoured for one frame, then UIFocusSystem
+		// reconciles it next tick.
+		bool IsFocused = false;
+
+		// Set by UIFocusSystem when an Activate input action (Enter /
+		// Space / Gamepad-A) lands on this focused widget. UIEventSystem
+		// runs immediately afterwards and synthesises the same flags
+		// it would have written for a real mouse click — IsClicked,
+		// IsMouseDown, IsPressed — so every existing widget reaction
+		// (Button click, Toggle flip, Dropdown open, InputField submit)
+		// works without each of them needing to learn about focus.
+		// Cleared by UIEventSystem after consumption so it's strictly
+		// one-frame-lived, just like the mouse edge flags above.
+		bool ActivatedThisFrame = false;
 	};
 
 }

@@ -146,6 +146,14 @@ namespace Axiom {
 			return m_EventBus.Subscribe<TEvent>(std::forward<F>(callback));
 		}
 
+		// RAII variant — the returned Subscription unsubscribes on destruction.
+		// Prefer this over SubscribeEvent + manual UnsubscribeEvent for callbacks
+		// whose lifetime is tied to a long-lived owner (panel / system / layer).
+		template<typename TEvent, typename F>
+		EventBus::Subscription SubscribeEventScoped(F&& callback) {
+			return m_EventBus.SubscribeScoped<TEvent>(std::forward<F>(callback));
+		}
+
 		bool UnsubscribeEvent(EventId id) { return m_EventBus.Unsubscribe(id); }
 
 		std::vector<std::string> TakePendingFileDrops() {
@@ -155,8 +163,7 @@ namespace Axiom {
 		}
 
 	private:
-		// Snapshot the current layer order into a *thread-local* reusable buffer.
-		// Two correctness properties matter here:
+		// Snapshot the current layer order. Two correctness properties matter:
 		//   1. PushLayer inserts at m_InsertIndex, shifting indices, so the previous
 		//      index-based iteration would skip or double-visit siblings during a
 		//      mid-dispatch insert. Snapshotting raw pointers fixes that.
@@ -164,36 +171,33 @@ namespace Axiom {
 		//      stale snapshot pointers dangling. The LayerStack now defers pops while
 		//      a dispatch is in flight (BeginDispatch/EndDispatch) — PendingPop layers
 		//      are skipped during iteration but their memory stays live.
-		// Returning a reference to a thread_local avoids per-frame heap allocations.
-		// Caller must consume the snapshot before requesting another on the same
-		// thread; nested dispatches are safe because each callback site copies the
-		// pointers it needs into its own loop.
+		// Returns by value: nested dispatches on the same thread (e.g. an OnEvent
+		// callback that triggers another dispatch) used to share a thread_local
+		// buffer that the inner call clear()ed, invalidating the outer iterator.
 		using LayerSnapshot = std::vector<Layer*>;
 
-		const LayerSnapshot& SnapshotLayerOrder() const {
-			thread_local LayerSnapshot s_Snapshot;
-			s_Snapshot.clear();
-			s_Snapshot.reserve(m_LayerStack.Size());
+		LayerSnapshot SnapshotLayerOrder() const {
+			LayerSnapshot snapshot;
+			snapshot.reserve(m_LayerStack.Size());
 			for (size_t i = 0; i < m_LayerStack.Size(); ++i) {
 				Layer* layer = const_cast<LayerStack&>(m_LayerStack).At(i);
 				if (layer && !m_LayerStack.IsPendingPop(layer)) {
-					s_Snapshot.push_back(layer);
+					snapshot.push_back(layer);
 				}
 			}
-			return s_Snapshot;
+			return snapshot;
 		}
 
-		const LayerSnapshot& SnapshotLayerOrderReversed() const {
-			thread_local LayerSnapshot s_SnapshotReversed;
-			s_SnapshotReversed.clear();
-			s_SnapshotReversed.reserve(m_LayerStack.Size());
+		LayerSnapshot SnapshotLayerOrderReversed() const {
+			LayerSnapshot snapshot;
+			snapshot.reserve(m_LayerStack.Size());
 			for (size_t i = m_LayerStack.Size(); i > 0; --i) {
 				Layer* layer = const_cast<LayerStack&>(m_LayerStack).At(i - 1);
 				if (layer && !m_LayerStack.IsPendingPop(layer)) {
-					s_SnapshotReversed.push_back(layer);
+					snapshot.push_back(layer);
 				}
 			}
-			return s_SnapshotReversed;
+			return snapshot;
 		}
 
 		// RAII helper around LayerStack::BeginDispatch/EndDispatch. Holding one of

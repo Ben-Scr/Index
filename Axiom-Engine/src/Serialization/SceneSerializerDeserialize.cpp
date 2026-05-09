@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -798,9 +799,29 @@ namespace Axiom {
 
 		if (const Value* systemsValue = GetArrayMember(root, "systems")) {
 			for (const Value& systemValue : systemsValue->GetArray()) {
-				const std::string className = systemValue.AsStringOr();
-				if (!className.empty()) {
-					scene.AddGameSystem(className);
+				// Two accepted shapes for forward / backward compatibility:
+				//   1. "MyGameSystem"                                        (legacy / no overrides)
+				//   2. {"className": "MyGameSystem", "fields": { ... }}      (with authored overrides)
+				std::string className;
+				const Value* fieldsValue = nullptr;
+
+				if (systemValue.IsString()) {
+					className = systemValue.AsStringOr();
+				}
+				else if (systemValue.IsObject()) {
+					if (const Value* nameNode = systemValue.FindMember("className")) {
+						className = nameNode->AsStringOr();
+					}
+					fieldsValue = systemValue.FindMember("fields");
+				}
+
+				if (className.empty()) continue;
+				scene.AddGameSystem(className);
+
+				if (fieldsValue && fieldsValue->IsObject()) {
+					for (const auto& [fieldName, fieldValueNode] : fieldsValue->GetObject()) {
+						scene.SetGameSystemFieldValue(className, fieldName, fieldValueNode.AsStringOr());
+					}
 				}
 			}
 		}
@@ -809,7 +830,13 @@ namespace Axiom {
 		// resolve), then wire parent-child links from each entity's
 		// `parentUuid` JSON field. Doing it inline doesn't work because a
 		// child can be serialized before its parent.
+		//
+		// `childIndex` (when present in the JSON) is captured per-handle
+		// so a third pass can re-sort each parent's Children vector by
+		// the authored order. Without that pass, child order would silently
+		// depend on the JSON traversal order — fragile.
 		std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
+		std::unordered_map<uint32_t, int> childIndexByEntity;
 		if (const Value* entitiesValue = GetArrayMember(root, "entities")) {
 			for (const Value& entityValue : entitiesValue->GetArray()) {
 				if (!entityValue.IsObject()) {
@@ -826,6 +853,11 @@ namespace Axiom {
 					} catch (...) {
 						// Malformed UUID â€” ignore; entity becomes a root.
 					}
+				}
+
+				const int childIdx = GetIntMember(entityValue, "childIndex", -1);
+				if (childIdx >= 0) {
+					childIndexByEntity[static_cast<uint32_t>(handle)] = childIdx;
 				}
 			}
 		}
@@ -845,12 +877,48 @@ namespace Axiom {
 				const uint64_t uuid = static_cast<uint64_t>(scene.GetRegistry().get<UUIDComponent>(e).Id);
 				byUuid[uuid] = e;
 			}
+			std::unordered_set<uint32_t> parentsTouched;
+			parentsTouched.reserve(pendingParents.size());
 			for (const auto& [childHandle, parentUuid] : pendingParents) {
 				auto it = byUuid.find(parentUuid);
 				if (it == byUuid.end() || !scene.IsValid(it->second) || !scene.IsValid(childHandle)) continue;
 				Entity child = scene.GetEntity(childHandle);
 				Entity parent = scene.GetEntity(it->second);
 				child.SetParent(parent);
+				parentsTouched.insert(static_cast<uint32_t>(it->second));
+			}
+
+			// Third pass: re-sort each touched parent's Children vector by
+			// the authored childIndex. Children that lack an index (older
+			// scene files predating the field) sort to the end, preserving
+			// whatever order they fell into during pass 2 — so legacy
+			// files at least don't get worse, and a single re-save fixes
+			// them up by emitting the explicit indices.
+			auto& registry = scene.GetRegistry();
+			for (uint32_t parentRaw : parentsTouched) {
+				EntityHandle parentEntity = static_cast<EntityHandle>(parentRaw);
+				if (!registry.valid(parentEntity)) continue;
+				if (!registry.all_of<HierarchyComponent>(parentEntity)) continue;
+				auto& hc = registry.get<HierarchyComponent>(parentEntity);
+				if (hc.Children.size() < 2) continue;
+
+				bool anyAuthored = false;
+				for (EntityHandle child : hc.Children) {
+					if (childIndexByEntity.find(static_cast<uint32_t>(child)) != childIndexByEntity.end()) {
+						anyAuthored = true;
+						break;
+					}
+				}
+				if (!anyAuthored) continue;
+
+				std::stable_sort(hc.Children.begin(), hc.Children.end(),
+					[&](EntityHandle a, EntityHandle b) {
+						auto ia = childIndexByEntity.find(static_cast<uint32_t>(a));
+						auto ib = childIndexByEntity.find(static_cast<uint32_t>(b));
+						const int va = (ia != childIndexByEntity.end()) ? ia->second : std::numeric_limits<int>::max();
+						const int vb = (ib != childIndexByEntity.end()) ? ib->second : std::numeric_limits<int>::max();
+						return va < vb;
+					});
 			}
 		}
 
@@ -858,6 +926,12 @@ namespace Axiom {
 			EntityHelper::CreateCamera2DEntity(scene);
 			AIM_CORE_INFO_TAG("SceneSerializer", "Added default camera (none in scene data)");
 		}
+
+		// Resolve any cross-entity references whose target hadn't been
+		// created yet when their owning component deserialised. By
+		// this point every entity is in place with its UUIDComponent,
+		// so the second-pass lookup always succeeds.
+		scene.RunPendingEntityRefFixups();
 
 		scene.ClearDirty();
 		AIM_CORE_INFO_TAG("SceneSerializer", "Loaded scene: {}", scene.GetName());
@@ -992,6 +1066,8 @@ namespace Axiom {
 			text.Color.a = GetFloatMember(*textValue, "a", text.Color.a);
 			text.LetterSpacing = GetFloatMember(*textValue, "letterSpacing", text.LetterSpacing);
 			text.HAlign = static_cast<TextAlignment>(GetIntMember(*textValue, "alignment", static_cast<int>(text.HAlign)));
+			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(*textValue, "wrapMode", static_cast<int>(text.WrapMode)));
+			text.WrapWidth = GetFloatMember(*textValue, "wrapWidth", text.WrapWidth);
 			text.SortingOrder = static_cast<int16_t>(GetIntMember(*textValue, "sortOrder", text.SortingOrder));
 			text.SortingLayer = static_cast<uint8_t>(GetIntMember(*textValue, "sortLayer", text.SortingLayer));
 			text.ResolvedFont = FontHandle{};
@@ -1223,9 +1299,14 @@ namespace Axiom {
 				GetFloatMember(*rectValue, "width", 100.0f));
 			rectTransform.SizeDelta.y        = GetFloatMember(*rectValue, "sizeY",
 				GetFloatMember(*rectValue, "height", 100.0f));
-			rectTransform.Rotation           = GetFloatMember(*rectValue, "rotation", 0.0f);
-			rectTransform.Scale.x            = GetFloatMember(*rectValue, "scaleX", 1.0f);
-			rectTransform.Scale.y            = GetFloatMember(*rectValue, "scaleY", 1.0f);
+			rectTransform.LocalRotation      = GetFloatMember(*rectValue, "rotation", 0.0f);
+			rectTransform.LocalScale.x       = GetFloatMember(*rectValue, "scaleX", 1.0f);
+			rectTransform.LocalScale.y       = GetFloatMember(*rectValue, "scaleY", 1.0f);
+			// Seed the world cache from the local values so a one-frame
+			// pre-layout read returns sensible defaults — UILayoutSystem
+			// overwrites these on the first tick (matches Transform2D).
+			rectTransform.Rotation           = rectTransform.LocalRotation;
+			rectTransform.Scale              = rectTransform.LocalScale;
 		}
 
 		if (const Value* imageValue = GetObjectMember(entityValue, "Image")) {
@@ -1234,6 +1315,8 @@ namespace Axiom {
 			image.Color.g = GetFloatMember(*imageValue, "g", 1.0f);
 			image.Color.b = GetFloatMember(*imageValue, "b", 1.0f);
 			image.Color.a = GetFloatMember(*imageValue, "a", 1.0f);
+			image.SortingOrder = static_cast<int16_t>(GetIntMember(*imageValue, "sortOrder", 0));
+			image.SortingLayer = static_cast<uint8_t>(GetIntMember(*imageValue, "sortLayer", 0));
 
 			image.TextureHandle = LoadTextureFromValue(
 				*imageValue,
@@ -1309,9 +1392,12 @@ namespace Axiom {
 		if (const Value* fieldsByClass = GetObjectMember(entityValue, "ScriptFields")) {
 			if (scriptComponent || scene.HasComponent<ScriptComponent>(entity)) {
 				auto& fieldsComponent = getOrCreateScriptComponent();
+				int populated = 0;
+				int skippedNoScript = 0;
 				for (const auto& [className, fieldsValue] : fieldsByClass->GetObject()) {
 					if ((!fieldsComponent.HasScript(className) && !fieldsComponent.HasManagedComponent(className))
 						|| !fieldsValue.IsArray()) {
+						++skippedNoScript;
 						continue;
 					}
 
@@ -1332,7 +1418,13 @@ namespace Axiom {
 
 						fieldsComponent.PendingFieldValues[className + "." + fieldName] =
 							ValueToFieldString(*valueValue);
+						++populated;
 					}
+				}
+				if (populated > 0 || skippedNoScript > 0) {
+					AIM_CORE_INFO_TAG("SceneSerializer",
+						"Entity '{}' ScriptFields: {} populated, {} class(es) skipped (script not registered yet)",
+						name, populated, skippedNoScript);
 				}
 			}
 		}
@@ -1430,6 +1522,15 @@ namespace Axiom {
 			scene.GetEntity(childHandle).SetParent(scene.GetEntity(parentIt->second));
 		}
 
+		// NOTE: deliberately NOT draining the entity-ref fixup queue
+		// here. DeserializeEntityTree runs both as the outermost
+		// caller (e.g. InstantiatePrefab) and nested inside the main
+		// scene-load loop (every prefab instance pulls in a tree).
+		// Draining mid-load would prematurely fire fixups whose
+		// targets are still later in the outer JSON; instead the
+		// outermost public entry points drain after the whole load
+		// completes. See LoadFromFile / InstantiatePrefab /
+		// DeserializeEntityFromValue.
 		return root;
 	}
 
@@ -1438,17 +1539,25 @@ namespace Axiom {
 			return entt::null;
 		}
 
+		EntityHandle root = entt::null;
 		PrefabDefinition definition;
 		if (ReadPrefabDefinitionFromRoot(entityValue, definition)
 			&& (entityValue.FindMember("Entity") || entityValue.FindMember("prefab") || entityValue.FindMember("Entities"))) {
 			const bool isClipboardEntity = GetBoolMember(entityValue, "ClipboardEntity", false)
 				|| GetBoolMember(entityValue, "Clipboard", false);
-			return DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Scene, 0, !isClipboardEntity);
+			root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Scene, 0, !isClipboardEntity);
+		}
+		else {
+			Value entityCopy = entityValue;
+			RemoveEntityIdentityMembers(entityCopy);
+			root = DeserializeFullEntity(scene, entityCopy, EntityOrigin::Scene);
 		}
 
-		Value entityCopy = entityValue;
-		RemoveEntityIdentityMembers(entityCopy);
-		return DeserializeFullEntity(scene, entityCopy, EntityOrigin::Scene);
+		// Outermost-caller drain: any cross-entity refs queued during
+		// deserialization (Button.TargetGraphic, Slider.HandleEntity,
+		// etc.) resolve now that every entity in this batch exists.
+		scene.RunPendingEntityRefFixups();
+		return root;
 	}
 
 	bool SceneSerializer::DeserializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName, const Json::Value& componentValue) {
@@ -1767,9 +1876,14 @@ namespace Axiom {
 				GetFloatMember(componentValue, "width", 100.0f));
 			rectTransform.SizeDelta.y        = GetFloatMember(componentValue, "sizeY",
 				GetFloatMember(componentValue, "height", 100.0f));
-			rectTransform.Rotation           = GetFloatMember(componentValue, "rotation", 0.0f);
-			rectTransform.Scale.x            = GetFloatMember(componentValue, "scaleX", 1.0f);
-			rectTransform.Scale.y            = GetFloatMember(componentValue, "scaleY", 1.0f);
+			rectTransform.LocalRotation      = GetFloatMember(componentValue, "rotation", 0.0f);
+			rectTransform.LocalScale.x       = GetFloatMember(componentValue, "scaleX", 1.0f);
+			rectTransform.LocalScale.y       = GetFloatMember(componentValue, "scaleY", 1.0f);
+			// Seed the world cache from the local values so a one-frame
+			// pre-layout read returns sensible defaults — UILayoutSystem
+			// overwrites these on the first tick (matches Transform2D).
+			rectTransform.Rotation           = rectTransform.LocalRotation;
+			rectTransform.Scale              = rectTransform.LocalScale;
 			return true;
 		}
 
@@ -1781,6 +1895,8 @@ namespace Axiom {
 			image.Color.g = GetFloatMember(componentValue, "g", 1.0f);
 			image.Color.b = GetFloatMember(componentValue, "b", 1.0f);
 			image.Color.a = GetFloatMember(componentValue, "a", 1.0f);
+			image.SortingOrder = static_cast<int16_t>(GetIntMember(componentValue, "sortOrder", image.SortingOrder));
+			image.SortingLayer = static_cast<uint8_t>(GetIntMember(componentValue, "sortLayer", image.SortingLayer));
 
 			image.TextureHandle = LoadTextureFromValue(
 				componentValue,
@@ -1861,7 +1977,12 @@ namespace Axiom {
 			return entt::null;
 		}
 
-		return DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+		const EntityHandle root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+		// Outermost-caller drain: this is a public API used outside
+		// of scene-load too, so the prefab tree is the full batch and
+		// its fixup queue should resolve before returning.
+		scene.RunPendingEntityRefFixups();
+		return root;
 	}
 
 	bool SceneSerializer::ApplyPrefabInstanceOverrides(Scene& scene, EntityHandle entity) {

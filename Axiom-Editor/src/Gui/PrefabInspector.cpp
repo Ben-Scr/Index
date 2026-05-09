@@ -6,6 +6,7 @@
 #include "Core/Log.hpp"
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Inspector/ReferencePicker.hpp"
+#include "Gui/AddComponentPopup.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
@@ -139,26 +140,19 @@ namespace Axiom {
 		// Render the unified reference-picker popup once per inspector frame.
 		ReferencePicker::RenderPopup();
 
-		// Add Component popup. Bare list of registered components missing from
-		// the entity. No script-discovery search in v1 — only built-in components.
+		// Add Component popup. Drives the same categorized + searchable
+		// helper used by the entity inspector so the UX is identical
+		// whether the user is editing a `.prefab` asset directly or a
+		// regular entity. The helper marks the scene dirty on add, which
+		// the auto-save logic below picks up to flush to disk.
 		ImGui::Separator();
 		const float buttonWidth = ImGui::GetContentRegionAvail().x;
 		if (ImGui::Button("Add Component", ImVec2(buttonWidth, 0))) {
 			ImGui::OpenPopup("AddPrefabComponentPopup");
+			m_AddComponentSearchBuffer[0] = '\0';
 		}
-		if (ImGui::BeginPopup("AddPrefabComponentPopup")) {
-			registry.ForEachComponentInfo([&](const std::type_index&, const ComponentInfo& info) {
-				if (info.category != ComponentCategory::Component) return;
-				if (!info.has || info.has(rootEntity)) return;
-				if (!info.add) return;
-				if (info.displayName == "Name") return;
-				if (ImGui::MenuItem(info.displayName.c_str())) {
-					info.add(rootEntity);
-					m_PrefabScene->MarkDirty();
-				}
-			});
-			ImGui::EndPopup();
-		}
+		RenderAddComponentPopup("AddPrefabComponentPopup", *m_PrefabScene, entitySpan,
+			m_AddComponentSearchBuffer, sizeof(m_AddComponentSearchBuffer));
 
 		// Dirty signal: only flag when ImGui reports a real value change on the
 		// active widget this frame (drag step, keystroke, etc.). Plain focus or

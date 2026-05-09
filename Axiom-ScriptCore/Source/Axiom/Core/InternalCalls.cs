@@ -20,6 +20,41 @@ internal static unsafe class InternalCalls
     internal static void Application_SetTimeScale(float scale) => NativeCallbacks.Bindings.Application_SetTimeScale(scale);
     internal static bool Application_IsEditor() => NativeCallbacks.Bindings.Application_IsEditor() != 0;
 
+    internal static string Application_GetClipboardString()
+        => ReadNativeString(NativeCallbacks.Bindings.Application_GetClipboardStringBuffer);
+
+    internal static void Application_SetClipboardString(string? value)
+    {
+        byte[] buf = EncodeUtf8Z(value);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Application_SetClipboardString(ptr);
+    }
+
+    internal static bool Application_GetVsyncEnabled() => NativeCallbacks.Bindings.Application_GetVsyncEnabled() != 0;
+    internal static void Application_SetVsyncEnabled(bool enabled) => NativeCallbacks.Bindings.Application_SetVsyncEnabled(enabled ? 1 : 0);
+
+    // ── Engine ──────────────────────────────────────────────────────
+
+    internal static string Engine_GetVersion()
+        => ReadNativeString(NativeCallbacks.Bindings.Engine_GetVersionBuffer);
+    internal static string Engine_GetVersionLong()
+        => ReadNativeString(NativeCallbacks.Bindings.Engine_GetVersionLongBuffer);
+    internal static int Engine_GetBuildConfiguration()
+        => NativeCallbacks.Bindings.Engine_GetBuildConfiguration();
+    internal static string Engine_GetPlatform()
+        => ReadNativeString(NativeCallbacks.Bindings.Engine_GetPlatformBuffer);
+    internal static string Engine_GetGraphicsApi()
+        => ReadNativeString(NativeCallbacks.Bindings.Engine_GetGraphicsApiBuffer);
+    internal static string Engine_GetGpuVendor()
+        => ReadNativeString(NativeCallbacks.Bindings.Engine_GetGpuVendorBuffer);
+    internal static string Engine_GetGpuRenderer()
+        => ReadNativeString(NativeCallbacks.Bindings.Engine_GetGpuRendererBuffer);
+
+    // ── Time ────────────────────────────────────────────────────────
+
+    internal static int Time_GetFrameCount() => NativeCallbacks.Bindings.Time_GetFrameCount();
+    internal static float Time_GetTimeSinceStartup() => NativeCallbacks.Bindings.Time_GetTimeSinceStartup();
+    internal static float Time_GetRealtimeSinceStartup() => NativeCallbacks.Bindings.Time_GetRealtimeSinceStartup();
+
     // ── Log ─────────────────────────────────────────────────────────
 
     private static byte[] EncodeUtf8Z(string? value)
@@ -274,6 +309,7 @@ internal static unsafe class InternalCalls
     internal static bool Entity_GetIsStatic(ulong entityID) => NativeCallbacks.Bindings.Entity_GetIsStatic(entityID) != 0;
     internal static void Entity_SetIsStatic(ulong entityID, bool isStatic) => NativeCallbacks.Bindings.Entity_SetIsStatic(entityID, isStatic ? 1 : 0);
     internal static bool Entity_GetIsEnabled(ulong entityID) => NativeCallbacks.Bindings.Entity_GetIsEnabled(entityID) != 0;
+    internal static bool Entity_GetIsEnabledInHierarchy(ulong entityID) => NativeCallbacks.Bindings.Entity_GetIsEnabledInHierarchy(entityID) != 0;
     internal static void Entity_SetIsEnabled(ulong entityID, bool isEnabled) => NativeCallbacks.Bindings.Entity_SetIsEnabled(entityID, isEnabled ? 1 : 0);
 
     internal static ulong Entity_Create(string name)
@@ -356,6 +392,10 @@ internal static unsafe class InternalCalls
     internal static void TextRenderer_SetLetterSpacing(ulong id, float spacing) => NativeCallbacks.Bindings.TextRenderer_SetLetterSpacing(id, spacing);
     internal static int TextRenderer_GetHAlign(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetHAlign(id);
     internal static void TextRenderer_SetHAlign(ulong id, int alignment) => NativeCallbacks.Bindings.TextRenderer_SetHAlign(id, alignment);
+    internal static int TextRenderer_GetWrapMode(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetWrapMode(id);
+    internal static void TextRenderer_SetWrapMode(ulong id, int mode) => NativeCallbacks.Bindings.TextRenderer_SetWrapMode(id, mode);
+    internal static float TextRenderer_GetWrapWidth(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetWrapWidth(id);
+    internal static void TextRenderer_SetWrapWidth(ulong id, float width) => NativeCallbacks.Bindings.TextRenderer_SetWrapWidth(id, width);
     internal static int TextRenderer_GetSortingOrder(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetSortingOrder(id);
     internal static void TextRenderer_SetSortingOrder(ulong id, int order) => NativeCallbacks.Bindings.TextRenderer_SetSortingOrder(id, order);
     internal static int TextRenderer_GetSortingLayer(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetSortingLayer(id);
@@ -708,6 +748,12 @@ internal static unsafe class InternalCalls
     { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetScale(id, &ox, &oy); x = ox; y = oy; }
     internal static void RectTransform_SetScale(ulong id, float x, float y)
         => NativeCallbacks.Bindings.RectTransform_SetScale(id, x, y);
+    internal static float RectTransform_GetLocalRotation(ulong id) => NativeCallbacks.Bindings.RectTransform_GetLocalRotation(id);
+    internal static void RectTransform_SetLocalRotation(ulong id, float r) => NativeCallbacks.Bindings.RectTransform_SetLocalRotation(id, r);
+    internal static void RectTransform_GetLocalScale(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetLocalScale(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetLocalScale(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetLocalScale(id, x, y);
     internal static void RectTransform_GetResolvedSize(ulong id, out float w, out float h)
     { float ow, oh; NativeCallbacks.Bindings.RectTransform_GetResolvedSize(id, &ow, &oh); w = ow; h = oh; }
 
@@ -719,6 +765,10 @@ internal static unsafe class InternalCalls
         => NativeCallbacks.Bindings.Image_SetColor(id, r, g, b, a);
     internal static ulong Image_GetTexture(ulong id) => NativeCallbacks.Bindings.Image_GetTexture(id);
     internal static void Image_SetTexture(ulong id, ulong assetId) => NativeCallbacks.Bindings.Image_SetTexture(id, assetId);
+    internal static int Image_GetSortingOrder(ulong id) => NativeCallbacks.Bindings.Image_GetSortingOrder(id);
+    internal static void Image_SetSortingOrder(ulong id, int order) => NativeCallbacks.Bindings.Image_SetSortingOrder(id, order);
+    internal static int Image_GetSortingLayer(ulong id) => NativeCallbacks.Bindings.Image_GetSortingLayer(id);
+    internal static void Image_SetSortingLayer(ulong id, int layer) => NativeCallbacks.Bindings.Image_SetSortingLayer(id, layer);
 
     // ── UI: Interactable ─────────────────────────────────────────────
 
@@ -729,6 +779,10 @@ internal static unsafe class InternalCalls
     internal static bool Interactable_GetIsPressed(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsPressed(id) != 0;
     internal static bool Interactable_GetIsMouseDown(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsMouseDown(id) != 0;
     internal static bool Interactable_GetIsMouseUp(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsMouseUp(id) != 0;
+    internal static bool Interactable_GetFocusable(ulong id) => NativeCallbacks.Bindings.Interactable_GetFocusable(id) != 0;
+    internal static void Interactable_SetFocusable(ulong id, bool v) => NativeCallbacks.Bindings.Interactable_SetFocusable(id, v ? 1 : 0);
+    internal static bool Interactable_GetIsFocused(ulong id) => NativeCallbacks.Bindings.Interactable_GetIsFocused(id) != 0;
+    internal static void Interactable_SetIsFocused(ulong id, bool v) => NativeCallbacks.Bindings.Interactable_SetIsFocused(id, v ? 1 : 0);
 
     // ── UI: Button ───────────────────────────────────────────────────
 
@@ -748,6 +802,22 @@ internal static unsafe class InternalCalls
     { float cr, cg, cb, ca; NativeCallbacks.Bindings.Button_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static void Button_SetDisabledColor(ulong id, float r, float g, float b, float a)
         => NativeCallbacks.Bindings.Button_SetDisabledColor(id, r, g, b, a);
+    internal static void Button_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Button_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Button_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Button_SetFocusedColor(id, r, g, b, a);
+    internal static int Button_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.Button_GetTransitionMode(id);
+    internal static void Button_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.Button_SetTransitionMode(id, mode);
+    internal static ulong Button_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.Button_GetNormalSprite(id);
+    internal static void Button_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Button_SetNormalSprite(id, uuid);
+    internal static ulong Button_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.Button_GetHoveredSprite(id);
+    internal static void Button_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Button_SetHoveredSprite(id, uuid);
+    internal static ulong Button_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.Button_GetPressedSprite(id);
+    internal static void Button_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Button_SetPressedSprite(id, uuid);
+    internal static ulong Button_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.Button_GetDisabledSprite(id);
+    internal static void Button_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Button_SetDisabledSprite(id, uuid);
+    internal static ulong Button_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.Button_GetFocusedSprite(id);
+    internal static void Button_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Button_SetFocusedSprite(id, uuid);
 
     // ── UI: Slider ───────────────────────────────────────────────────
 
@@ -760,12 +830,78 @@ internal static unsafe class InternalCalls
     internal static bool Slider_GetWholeNumbers(ulong id) => NativeCallbacks.Bindings.Slider_GetWholeNumbers(id) != 0;
     internal static void Slider_SetWholeNumbers(ulong id, bool v) => NativeCallbacks.Bindings.Slider_SetWholeNumbers(id, v ? 1 : 0);
     internal static bool Slider_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Slider_GetValueChangedThisFrame(id) != 0;
+    internal static void Slider_MarkValueObserved(ulong id) => NativeCallbacks.Bindings.Slider_MarkValueObserved(id);
+    internal static void Slider_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Slider_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Slider_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Slider_SetNormalColor(id, r, g, b, a);
+    internal static void Slider_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Slider_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Slider_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Slider_SetHoveredColor(id, r, g, b, a);
+    internal static void Slider_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Slider_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Slider_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Slider_SetPressedColor(id, r, g, b, a);
+    internal static void Slider_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Slider_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Slider_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Slider_SetDisabledColor(id, r, g, b, a);
+    internal static void Slider_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Slider_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Slider_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Slider_SetFocusedColor(id, r, g, b, a);
+    internal static int Slider_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.Slider_GetTransitionMode(id);
+    internal static void Slider_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.Slider_SetTransitionMode(id, mode);
+    internal static ulong Slider_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.Slider_GetNormalSprite(id);
+    internal static void Slider_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Slider_SetNormalSprite(id, uuid);
+    internal static ulong Slider_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.Slider_GetHoveredSprite(id);
+    internal static void Slider_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Slider_SetHoveredSprite(id, uuid);
+    internal static ulong Slider_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.Slider_GetPressedSprite(id);
+    internal static void Slider_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Slider_SetPressedSprite(id, uuid);
+    internal static ulong Slider_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.Slider_GetDisabledSprite(id);
+    internal static void Slider_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Slider_SetDisabledSprite(id, uuid);
+    internal static ulong Slider_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.Slider_GetFocusedSprite(id);
+    internal static void Slider_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Slider_SetFocusedSprite(id, uuid);
 
     // ── UI: Toggle ───────────────────────────────────────────────────
 
     internal static bool Toggle_GetIsOn(ulong id) => NativeCallbacks.Bindings.Toggle_GetIsOn(id) != 0;
     internal static void Toggle_SetIsOn(ulong id, bool v) => NativeCallbacks.Bindings.Toggle_SetIsOn(id, v ? 1 : 0);
     internal static bool Toggle_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Toggle_GetValueChangedThisFrame(id) != 0;
+    internal static void Toggle_MarkIsOnObserved(ulong id) => NativeCallbacks.Bindings.Toggle_MarkIsOnObserved(id);
+    internal static void Toggle_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Toggle_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Toggle_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Toggle_SetNormalColor(id, r, g, b, a);
+    internal static void Toggle_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Toggle_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Toggle_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Toggle_SetHoveredColor(id, r, g, b, a);
+    internal static void Toggle_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Toggle_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Toggle_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Toggle_SetPressedColor(id, r, g, b, a);
+    internal static void Toggle_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Toggle_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Toggle_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Toggle_SetDisabledColor(id, r, g, b, a);
+    internal static void Toggle_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Toggle_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Toggle_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Toggle_SetFocusedColor(id, r, g, b, a);
+    internal static int Toggle_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.Toggle_GetTransitionMode(id);
+    internal static void Toggle_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.Toggle_SetTransitionMode(id, mode);
+    internal static ulong Toggle_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.Toggle_GetNormalSprite(id);
+    internal static void Toggle_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Toggle_SetNormalSprite(id, uuid);
+    internal static ulong Toggle_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.Toggle_GetHoveredSprite(id);
+    internal static void Toggle_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Toggle_SetHoveredSprite(id, uuid);
+    internal static ulong Toggle_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.Toggle_GetPressedSprite(id);
+    internal static void Toggle_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Toggle_SetPressedSprite(id, uuid);
+    internal static ulong Toggle_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.Toggle_GetDisabledSprite(id);
+    internal static void Toggle_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Toggle_SetDisabledSprite(id, uuid);
+    internal static ulong Toggle_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.Toggle_GetFocusedSprite(id);
+    internal static void Toggle_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Toggle_SetFocusedSprite(id, uuid);
 
     // ── UI: InputField ───────────────────────────────────────────────
 
@@ -788,6 +924,38 @@ internal static unsafe class InternalCalls
     internal static bool InputField_GetSubmittedThisFrame(ulong id) => NativeCallbacks.Bindings.InputField_GetSubmittedThisFrame(id) != 0;
     internal static int InputField_GetCharacterLimit(ulong id) => NativeCallbacks.Bindings.InputField_GetCharacterLimit(id);
     internal static void InputField_SetCharacterLimit(ulong id, int v) => NativeCallbacks.Bindings.InputField_SetCharacterLimit(id, v);
+    internal static void InputField_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void InputField_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.InputField_SetNormalColor(id, r, g, b, a);
+    internal static void InputField_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void InputField_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.InputField_SetHoveredColor(id, r, g, b, a);
+    internal static void InputField_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void InputField_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.InputField_SetPressedColor(id, r, g, b, a);
+    internal static void InputField_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void InputField_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.InputField_SetDisabledColor(id, r, g, b, a);
+    internal static void InputField_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void InputField_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.InputField_SetFocusedColor(id, r, g, b, a);
+    internal static int InputField_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.InputField_GetTransitionMode(id);
+    internal static void InputField_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.InputField_SetTransitionMode(id, mode);
+    internal static ulong InputField_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.InputField_GetNormalSprite(id);
+    internal static void InputField_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.InputField_SetNormalSprite(id, uuid);
+    internal static ulong InputField_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.InputField_GetHoveredSprite(id);
+    internal static void InputField_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.InputField_SetHoveredSprite(id, uuid);
+    internal static ulong InputField_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.InputField_GetPressedSprite(id);
+    internal static void InputField_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.InputField_SetPressedSprite(id, uuid);
+    internal static ulong InputField_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.InputField_GetDisabledSprite(id);
+    internal static void InputField_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.InputField_SetDisabledSprite(id, uuid);
+    internal static ulong InputField_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.InputField_GetFocusedSprite(id);
+    internal static void InputField_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.InputField_SetFocusedSprite(id, uuid);
 
     // ── UI: Dropdown ─────────────────────────────────────────────────
 
@@ -796,6 +964,7 @@ internal static unsafe class InternalCalls
     internal static bool Dropdown_GetIsOpen(ulong id) => NativeCallbacks.Bindings.Dropdown_GetIsOpen(id) != 0;
     internal static void Dropdown_SetIsOpen(ulong id, bool v) => NativeCallbacks.Bindings.Dropdown_SetIsOpen(id, v ? 1 : 0);
     internal static bool Dropdown_GetSelectionChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Dropdown_GetSelectionChangedThisFrame(id) != 0;
+    internal static void Dropdown_MarkSelectedIndexObserved(ulong id) => NativeCallbacks.Bindings.Dropdown_MarkSelectedIndexObserved(id);
     internal static int Dropdown_GetOptionCount(ulong id) => NativeCallbacks.Bindings.Dropdown_GetOptionCount(id);
     internal static string Dropdown_GetOption(ulong id, int index)
         => ReadNativeStringIndexed(NativeCallbacks.Bindings.Dropdown_GetOptionBuffer, id, index);
@@ -811,4 +980,84 @@ internal static unsafe class InternalCalls
     }
     internal static void Dropdown_RemoveOption(ulong id, int index) => NativeCallbacks.Bindings.Dropdown_RemoveOption(id, index);
     internal static void Dropdown_ClearOptions(ulong id) => NativeCallbacks.Bindings.Dropdown_ClearOptions(id);
+    internal static void Dropdown_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetNormalColor(id, r, g, b, a);
+    internal static void Dropdown_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetHoveredColor(id, r, g, b, a);
+    internal static void Dropdown_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetPressedColor(id, r, g, b, a);
+    internal static void Dropdown_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetDisabledColor(id, r, g, b, a);
+    internal static void Dropdown_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetFocusedColor(id, r, g, b, a);
+    internal static int Dropdown_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.Dropdown_GetTransitionMode(id);
+    internal static void Dropdown_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.Dropdown_SetTransitionMode(id, mode);
+    internal static ulong Dropdown_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.Dropdown_GetNormalSprite(id);
+    internal static void Dropdown_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Dropdown_SetNormalSprite(id, uuid);
+    internal static ulong Dropdown_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.Dropdown_GetHoveredSprite(id);
+    internal static void Dropdown_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Dropdown_SetHoveredSprite(id, uuid);
+    internal static ulong Dropdown_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.Dropdown_GetPressedSprite(id);
+    internal static void Dropdown_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Dropdown_SetPressedSprite(id, uuid);
+    internal static ulong Dropdown_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.Dropdown_GetDisabledSprite(id);
+    internal static void Dropdown_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Dropdown_SetDisabledSprite(id, uuid);
+    internal static ulong Dropdown_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.Dropdown_GetFocusedSprite(id);
+    internal static void Dropdown_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Dropdown_SetFocusedSprite(id, uuid);
+
+    // ── UI: IsReadOnly + entity-ref + popup-option colors ───────────
+    internal static bool Toggle_GetIsReadOnly(ulong id) => NativeCallbacks.Bindings.Toggle_GetIsReadOnly(id) != 0;
+    internal static void Toggle_SetIsReadOnly(ulong id, bool v) => NativeCallbacks.Bindings.Toggle_SetIsReadOnly(id, v ? 1 : 0);
+    internal static bool Slider_GetIsReadOnly(ulong id) => NativeCallbacks.Bindings.Slider_GetIsReadOnly(id) != 0;
+    internal static void Slider_SetIsReadOnly(ulong id, bool v) => NativeCallbacks.Bindings.Slider_SetIsReadOnly(id, v ? 1 : 0);
+    internal static bool Dropdown_GetIsReadOnly(ulong id) => NativeCallbacks.Bindings.Dropdown_GetIsReadOnly(id) != 0;
+    internal static void Dropdown_SetIsReadOnly(ulong id, bool v) => NativeCallbacks.Bindings.Dropdown_SetIsReadOnly(id, v ? 1 : 0);
+
+    internal static ulong Button_GetTargetGraphic(ulong id) => NativeCallbacks.Bindings.Button_GetTargetGraphic(id);
+    internal static void Button_SetTargetGraphic(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Button_SetTargetGraphic(id, refUuid);
+    internal static ulong Slider_GetFillEntity(ulong id) => NativeCallbacks.Bindings.Slider_GetFillEntity(id);
+    internal static void Slider_SetFillEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Slider_SetFillEntity(id, refUuid);
+    internal static ulong Slider_GetHandleEntity(ulong id) => NativeCallbacks.Bindings.Slider_GetHandleEntity(id);
+    internal static void Slider_SetHandleEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Slider_SetHandleEntity(id, refUuid);
+    internal static ulong Slider_GetBackgroundEntity(ulong id) => NativeCallbacks.Bindings.Slider_GetBackgroundEntity(id);
+    internal static void Slider_SetBackgroundEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Slider_SetBackgroundEntity(id, refUuid);
+    internal static ulong Toggle_GetCheckmarkEntity(ulong id) => NativeCallbacks.Bindings.Toggle_GetCheckmarkEntity(id);
+    internal static void Toggle_SetCheckmarkEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Toggle_SetCheckmarkEntity(id, refUuid);
+    internal static ulong InputField_GetTextEntity(ulong id) => NativeCallbacks.Bindings.InputField_GetTextEntity(id);
+    internal static void InputField_SetTextEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.InputField_SetTextEntity(id, refUuid);
+    internal static ulong Dropdown_GetLabelEntity(ulong id) => NativeCallbacks.Bindings.Dropdown_GetLabelEntity(id);
+    internal static void Dropdown_SetLabelEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Dropdown_SetLabelEntity(id, refUuid);
+
+    internal static void Dropdown_GetOptionNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetOptionNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetOptionNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetOptionNormalColor(id, r, g, b, a);
+    internal static void Dropdown_GetOptionHoverColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetOptionHoverColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetOptionHoverColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetOptionHoverColor(id, r, g, b, a);
+    internal static void Dropdown_GetOptionPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetOptionPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetOptionPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetOptionPressedColor(id, r, g, b, a);
+    internal static void Dropdown_GetOptionSelectedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetOptionSelectedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetOptionSelectedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetOptionSelectedColor(id, r, g, b, a);
+    internal static void Dropdown_GetPopupBackgroundColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetPopupBackgroundColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetPopupBackgroundColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetPopupBackgroundColor(id, r, g, b, a);
+    internal static void Dropdown_GetOptionTextColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetOptionTextColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Dropdown_SetOptionTextColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Dropdown_SetOptionTextColor(id, r, g, b, a);
 }

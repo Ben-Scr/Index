@@ -9,6 +9,8 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Serialization/Directory.hpp"
+#include "Serialization/File.hpp"
+#include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SceneSerializer.hpp"
 
@@ -19,6 +21,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <thread>
 
 #ifdef AIM_PLATFORM_WINDOWS
@@ -27,6 +30,49 @@
 #endif
 
 namespace Axiom {
+
+#ifdef AIM_PLATFORM_WINDOWS
+	namespace {
+		// M29: tracker for in-flight ShellExecuteW worker threads. Each
+		// worker is short-lived (one ShellExecuteW call) but if the user
+		// closes the editor mid-launch, detaching would leave the thread
+		// running past `main()`. AssetBrowser::Shutdown calls JoinAll on
+		// teardown so every worker either finishes naturally or is waited
+		// for before global destructors run.
+		std::mutex s_ShellLaunchMutex;
+		std::vector<std::thread> s_ShellLaunchThreads;
+
+		// Sweep already-finished threads. Called on every track to keep
+		// the vector bounded — the mutex is uncontended in normal use.
+		void ReapFinishedShellThreads_Locked() {
+			s_ShellLaunchThreads.erase(
+				std::remove_if(s_ShellLaunchThreads.begin(), s_ShellLaunchThreads.end(),
+					[](std::thread& t) {
+						if (!t.joinable()) return true;
+						return false;
+					}),
+				s_ShellLaunchThreads.end());
+		}
+	}
+
+	void TrackShellLaunchThread(std::thread t) {
+		std::scoped_lock lock(s_ShellLaunchMutex);
+		ReapFinishedShellThreads_Locked();
+		s_ShellLaunchThreads.push_back(std::move(t));
+	}
+
+	void JoinAllShellLaunchThreads() {
+		std::vector<std::thread> drained;
+		{
+			std::scoped_lock lock(s_ShellLaunchMutex);
+			drained.swap(s_ShellLaunchThreads);
+		}
+		for (auto& t : drained) {
+			if (t.joinable()) t.join();
+		}
+	}
+#endif // AIM_PLATFORM_WINDOWS
+
 	namespace {
 		bool IsNativeScriptSourceExtension(std::string extension) {
 			std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
@@ -66,6 +112,64 @@ namespace Axiom {
 			}
 
 			return mirrorPath;
+		}
+
+		// .scene files embed a "name" field in their JSON which Scene::SetName
+		// reads at load time. If the file is renamed but the embedded "name"
+		// keeps the old stem, reopening "Bar.scene" still shows "Foo" in the
+		// hierarchy — the bug case from the editor session. Rewrite the field
+		// in place so the on-disk file matches its filename. We preserve the
+		// pretty-printing convention SceneSerializer::SaveToFile uses.
+		void SyncSceneEmbeddedNameToFilename(const std::string& scenePath, const std::string& newStem) {
+			const std::string content = File::ReadAllText(scenePath);
+			if (content.empty()) {
+				return;
+			}
+
+			Json::Value root;
+			std::string parseError;
+			if (!Json::TryParse(content, root, &parseError) || !root.IsObject()) {
+				AIM_WARN_TAG("AssetBrowser",
+					"Renamed scene '{}' has unreadable JSON ({}); the embedded name was not updated.",
+					scenePath, parseError);
+				return;
+			}
+
+			if (Json::Value* nameNode = root.FindMember("name")) {
+				if (nameNode->AsStringOr() == newStem) {
+					return;
+				}
+				*nameNode = Json::Value(newStem);
+			}
+			else {
+				root.AddMember("name", Json::Value(newStem));
+			}
+
+			if (!File::WriteAllText(scenePath, Json::Stringify(root, true))) {
+				AIM_WARN_TAG("AssetBrowser",
+					"Failed to write renamed scene '{}' back to disk; embedded name remains stale.",
+					scenePath);
+			}
+		}
+
+		// If the renamed scene happens to be the one currently loaded, the
+		// hierarchy panel reads its name from Scene::GetName() — bring that
+		// in sync with the new filename so the user sees the change without
+		// reloading. Also nudge the project's LastOpenedScene pointer so
+		// the next launcher run loads the renamed file by its new stem.
+		void UpdateLoadedSceneNameAfterRename(const std::string& oldStem, const std::string& newStem) {
+			Scene* active = SceneManager::Get().GetActiveScene();
+			if (!active || active->GetName() != oldStem) {
+				return;
+			}
+			active->SetName(newStem);
+
+			if (AxiomProject* project = ProjectManager::GetCurrentProject()) {
+				if (project->LastOpenedScene == oldStem) {
+					project->LastOpenedScene = newStem;
+					project->Save();
+				}
+			}
 		}
 
 		void RegisterImportedAssetPath(const std::filesystem::path& path) {
@@ -476,6 +580,16 @@ namespace Axiom {
 				}
 			}
 
+			// Scene files carry their displayed name inside the JSON. Without
+			// this sync, renaming Foo.scene -> Bar.scene leaves the embedded
+			// name as "Foo", and the hierarchy still shows "Foo" the next time
+			// the file is opened.
+			if (ext == ".scene")
+			{
+				SyncSceneEmbeddedNameToFilename(newPath, newStem);
+				UpdateLoadedSceneNameAfterRename(oldStem, newStem);
+			}
+
 			m_NeedsRefresh = true;
 		}
 	}
@@ -627,6 +741,55 @@ namespace Axiom {
 		m_SelectedPath = componentPath;
 		std::string name = std::filesystem::path(componentPath).stem().string();
 		BeginRename(componentPath, name);
+	}
+
+	void AssetBrowser::CreateDefaultTexture(const std::string& parentDir,
+		const std::string& sourceFile, const std::string& displayName)
+	{
+		const std::string sourceDir = Path::ResolveAxiomAssets("Textures/Default");
+		if (sourceDir.empty()) {
+			AIM_WARN_TAG("AssetBrowser",
+				"Default textures directory not found (AxiomAssets/Textures/Default). "
+				"Cannot create '{}'.", displayName);
+			return;
+		}
+
+		const std::filesystem::path source =
+			std::filesystem::path(sourceDir) / sourceFile;
+		if (!std::filesystem::exists(source)) {
+			AIM_WARN_TAG("AssetBrowser",
+				"Default texture '{}' not found at {}.",
+				sourceFile, source.string());
+			return;
+		}
+
+		const std::string ext = source.extension().string();
+		std::filesystem::path destPath =
+			std::filesystem::path(parentDir) / (displayName + ext);
+		std::error_code existsEc;
+		for (int n = 1; std::filesystem::exists(destPath, existsEc) && n < 10000; ++n) {
+			destPath = std::filesystem::path(parentDir) /
+				(displayName + " (" + std::to_string(n) + ")" + ext);
+			existsEc.clear();
+		}
+
+		try {
+			std::filesystem::copy_file(source, destPath,
+				std::filesystem::copy_options::overwrite_existing);
+		}
+		catch (const std::exception& e) {
+			AIM_ERROR_TAG("AssetBrowser",
+				"Failed to copy default texture '{}' to '{}': {}",
+				source.string(), destPath.string(), e.what());
+			return;
+		}
+
+		const std::string finalPath = destPath.string();
+		m_NeedsRefresh = true;
+		Refresh();
+
+		m_SelectedPath = finalPath;
+		BeginRename(finalPath, std::filesystem::path(finalPath).stem().string());
 	}
 
 	void AssetBrowser::CreateScene(const std::string& parentDir) {
@@ -791,10 +954,16 @@ namespace Axiom {
 			}
 
 #ifdef AIM_PLATFORM_WINDOWS
-			// TODO: switch to Process::Run with proper lifecycle.
-			// For now, cap the number of in-flight detached ShellExecute
-			// helper threads so a stuck shell handler can't be amplified
-			// by a user double-clicking many assets in rapid succession.
+			// M29: shell-launch threads are tracked instead of detached so
+			// AssetBrowser::Shutdown can join them on editor close.
+			// Process::Run / LaunchDetached use CreateProcessW directly and
+			// don't resolve OS file-association handlers, so for arbitrary
+			// asset types (.png, .pdf, ...) we still need ShellExecuteW —
+			// the lifecycle just gets a tracker.
+			//
+			// The cap on concurrent in-flight opens stays in place so a
+			// stuck shell handler can't be amplified by a user
+			// double-clicking many assets in rapid succession.
 			static constexpr int k_MaxConcurrentOpens = 8;
 			static std::atomic<int> s_ActiveOpens{ 0 };
 			if (s_ActiveOpens.load(std::memory_order_acquire) >= k_MaxConcurrentOpens) {
@@ -806,12 +975,13 @@ namespace Axiom {
 			s_ActiveOpens.fetch_add(1, std::memory_order_acq_rel);
 
 			std::wstring wpath = std::filesystem::absolute(entry.Path).wstring();
-			std::thread([wpath]() {
+			std::thread worker([wpath]() {
 				CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 				ShellExecuteW(nullptr, L"open", wpath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 				CoUninitialize();
 				s_ActiveOpens.fetch_sub(1, std::memory_order_acq_rel);
-			}).detach();
+			});
+			TrackShellLaunchThread(std::move(worker));
 #endif
 		}
 		catch (...) {}

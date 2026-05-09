@@ -218,6 +218,14 @@ namespace Axiom {
 		if (m_OpenTask.Worker.joinable()) {
 			m_OpenTask.Worker.join();
 		}
+		// Signal stop to all size-calc workers before clearing. Each task's jthread
+		// destructor will block until the worker observes the stop or finishes, so
+		// asking them all to stop first lets the joins overlap rather than serializing.
+		for (auto& [_, task] : m_ProjectSizeTasks) {
+			if (task) {
+				task->Worker.request_stop();
+			}
+		}
 		m_ProjectSizeTasks.clear();
 	}
 
@@ -636,16 +644,23 @@ namespace Axiom {
 		auto task = std::make_shared<ProjectSizeTaskState>();
 		m_ProjectSizeTasks.emplace(entry.Path, task);
 
-		std::thread([task, path = entry.Path]() {
+		std::weak_ptr<ProjectSizeTaskState> weakTask = task;
+		task->Worker = std::jthread([weakTask = std::move(weakTask), path = entry.Path](std::stop_token stop) {
 			std::string error;
 			const std::uintmax_t bytes = CalculateProjectDirectorySize(std::filesystem::path(path), error);
-
-			std::scoped_lock lock(task->Mutex);
-			task->Bytes = bytes;
-			task->Error = std::move(error);
-			task->Failed = !task->Error.empty();
-			task->Finished = true;
-		}).detach();
+			if (stop.stop_requested()) {
+				return;
+			}
+			auto t = weakTask.lock();
+			if (!t) {
+				return;
+			}
+			std::scoped_lock lock(t->Mutex);
+			t->Bytes = bytes;
+			t->Error = std::move(error);
+			t->Failed = !t->Error.empty();
+			t->Finished = true;
+		});
 
 		return task;
 	}

@@ -109,6 +109,15 @@ namespace Axiom {
 			const std::string& componentTypeName, bool& outMissing,
 			std::string* outSecondary);
 
+		// Reset all TU-static state. Called from ImGuiEditorLayer::OnDetach
+		// so that Application::Reload (project switch / hot reload) starts
+		// the picker from a clean slate — without this, the eye-toggle,
+		// search field, pending selection, thumbnail cache, AND the
+		// `s_BuiltInsDone` one-shot guard from EnsureBuiltInsRegisteredInEditor
+		// all survive across reloads with stale data pointing into the
+		// previous AssetRegistry.
+		void Shutdown();
+
 	} // namespace ReferencePicker
 
 } // namespace Axiom
