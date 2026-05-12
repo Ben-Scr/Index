@@ -82,7 +82,7 @@ public static class Input
         return InternalCalls.Input_GetScrollWheelDelta();
     }
 
-    public static bool GetAnyKey() => throw new System.NotImplementedException();
+    public static bool GetAnyKey() => InternalCalls.Input_GetAnyKey();
 
     /// <summary>
     /// Returns true every frame the key is held down.

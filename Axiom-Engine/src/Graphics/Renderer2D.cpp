@@ -3,7 +3,9 @@
 
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Tags.hpp"
 #include "Core/Log.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/RenderApi.hpp"
@@ -74,6 +76,8 @@ namespace Axiom {
 		std::vector<TextureHandle>  g_TexturesScratch;
 		std::vector<SpriteInstance> g_GpuInstanceScratch;
 		std::vector<size_t>         g_SortIndexScratch;
+		std::vector<std::pair<uint32_t, Renderer2D::InstanceContributor>> g_InstanceContributors;
+		uint32_t g_NextInstanceContributorToken = 1;
 
 		// Persistent GPU resources — survive across RenderSceneWithVP calls
 		// inside a frame and across frames. Reset on Shutdown.
@@ -89,6 +93,7 @@ namespace Axiom {
 
 		// ── CPU collect path ────────────────────────────────────────────────
 		size_t CollectSpriteInstances(Scene& scene,
+			const AABB& viewportAABB,
 			std::vector<Instance44>& outInstances,
 			std::vector<TextureHandle>& outTextures)
 		{
@@ -107,7 +112,47 @@ namespace Axiom {
 					s.SortingOrder,
 					s.SortingLayer,
 					static_cast<std::uint32_t>(outInstances.size()));
-				outTextures.push_back(s.TextureHandle);
+			}
+
+			auto particleView = scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>);
+			for (auto entity : particleView) {
+				const auto& particleSystem = particleView.get<ParticleSystem2DComponent>(entity);
+				const TextureHandle texture = particleSystem.GetTextureHandle();
+				for (const auto& particle : particleSystem.GetParticles()) {
+					Vec2 position = particle.Transform.Position;
+					Vec2 scale = particle.Transform.Scale;
+					float rotation = particle.Transform.Rotation;
+					if (particleSystem.EmissionSettings.EmissionSpace == ParticleSystem2DComponent::Space::Local) {
+						const auto& emitterTransform = particleSystem.GetTransform2D();
+						position = emitterTransform.TransformPoint(position);
+						scale = Vec2{
+							scale.x * emitterTransform.Scale.x,
+							scale.y * emitterTransform.Scale.y
+						};
+						rotation += emitterTransform.Rotation;
+					}
+					outInstances.emplace_back(
+						position,
+						scale,
+						rotation,
+						particle.Color,
+						texture,
+						particleSystem.RenderingSettings.SortingOrder,
+						particleSystem.RenderingSettings.SortingLayer,
+						static_cast<std::uint32_t>(outInstances.size()));
+				}
+			}
+
+			for (const auto& [token, contributor] : g_InstanceContributors) {
+				(void)token;
+				if (contributor) {
+					contributor(scene, viewportAABB, outInstances);
+				}
+			}
+
+			outTextures.reserve(outInstances.size());
+			for (const Instance44& instance : outInstances) {
+				outTextures.push_back(instance.TextureHandle);
 			}
 			return outInstances.size();
 		}
@@ -294,12 +339,12 @@ namespace Axiom {
 	}
 
 	void Renderer2D::RenderSceneWithVP(Scene& scene,
-		const glm::mat4& vp, const AABB& /*viewportAABB*/)
+		const glm::mat4& vp, const AABB& viewportAABB)
 	{
 		if (!m_IsInitialized) return;
 		if (!WebGPUSpriteResources::IsReady()) return;
 
-		const size_t n = CollectSpriteInstances(scene, g_InstancesScratch, g_TexturesScratch);
+		const size_t n = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch);
 		m_RenderedInstancesCount = n;
 		if (n == 0) return;
 
@@ -427,14 +472,19 @@ namespace Axiom {
 	{
 	}
 
-	uint32_t Renderer2D::RegisterInstanceContributor(InstanceContributor /*contributor*/) {
-		// External instance contributors (Tilemap2D etc.) plug in via the
-		// instance buffer once the sprite path is stable here. For now they
-		// are intentionally unwired so the sprite-only happy path stays
-		// the only thing Stage 4 has to keep correct.
-		return 0;
+	uint32_t Renderer2D::RegisterInstanceContributor(InstanceContributor contributor) {
+		if (!contributor) return 0;
+		const uint32_t token = g_NextInstanceContributorToken++;
+		if (g_NextInstanceContributorToken == 0) {
+			g_NextInstanceContributorToken = 1;
+		}
+		g_InstanceContributors.emplace_back(token, std::move(contributor));
+		return token;
 	}
 
-	void Renderer2D::UnregisterInstanceContributor(uint32_t /*token*/) {}
+	void Renderer2D::UnregisterInstanceContributor(uint32_t token) {
+		std::erase_if(g_InstanceContributors,
+			[token](const auto& entry) { return entry.first == token; });
+	}
 
 }  // namespace Axiom

@@ -337,6 +337,20 @@ namespace Axiom {
 			Gizmo::DrawLine(corners[2], corners[3]);
 			Gizmo::DrawLine(corners[3], corners[0]);
 
+			const AABB rectHandleCamAABB = m_EditorCamera.GetViewportAABB();
+			const float rectHandleWorldPerPx = rectHandleCamAABB.Scale().x / std::max(1.0f, static_cast<float>(m_EditorViewFBO.GetWidth()));
+			const float rectHandleHalf = 5.0f * rectHandleWorldPerPx;
+			const Vec2 rectHandleSize{ rectHandleHalf * 2.0f, rectHandleHalf * 2.0f };
+			const float rectHandleRotationDegrees = Degrees(rect.Rotation);
+			const Vec2 outerMidL{ (corners[0].x + corners[3].x) * 0.5f, (corners[0].y + corners[3].y) * 0.5f };
+			const Vec2 outerMidR{ (corners[1].x + corners[2].x) * 0.5f, (corners[1].y + corners[2].y) * 0.5f };
+			const Vec2 outerMidB{ (corners[0].x + corners[1].x) * 0.5f, (corners[0].y + corners[1].y) * 0.5f };
+			const Vec2 outerMidT{ (corners[2].x + corners[3].x) * 0.5f, (corners[2].y + corners[3].y) * 0.5f };
+			Gizmo::DrawSquare(outerMidL, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawSquare(outerMidR, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawSquare(outerMidB, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawSquare(outerMidT, rectHandleSize, rectHandleRotationDegrees);
+
 			// ── Text margin gizmo ─────────────────────────────────
 			// When the selected rect carries a TextRendererComponent,
 			// paint an inner rect indicating the wrap area + four tiny
@@ -513,6 +527,18 @@ namespace Axiom {
 					m_EditorCamera.Update(dt, m_IsEditorViewHovered, mouseDelta, scroll);
 				}
 
+				if (!Application::GetIsPlaying()
+					&& m_SelectedEntity != entt::null
+					&& renderScene->IsValid(m_SelectedEntity)
+					&& renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity))
+				{
+					auto& particleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
+					if (particleSystem.IsEmitting() || particleSystem.IsSimulating()) {
+						const float dt = app ? app->GetTime().GetDeltaTimeUnscaled() : 0.0f;
+						particleSystem.PreviewUpdate(dt);
+					}
+				}
+
 				glm::mat4 vp = m_EditorCamera.GetViewProjectionMatrix();
 				AABB viewAABB = m_EditorCamera.GetViewportAABB();
 				Gizmo::SetViewportAABBOverride(viewAABB);
@@ -536,6 +562,145 @@ namespace Axiom {
 					viewportSize);
 
 				ImVec2 imageTopLeft = ImGui::GetItemRectMin();
+
+				if (m_SelectedEntity != entt::null
+					&& renderScene->IsValid(m_SelectedEntity)
+					&& renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity))
+				{
+					auto& particleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
+					const ImGuiWindowFlags overlayFlags =
+						ImGuiWindowFlags_NoDecoration |
+						ImGuiWindowFlags_NoMove |
+						ImGuiWindowFlags_NoSavedSettings |
+						ImGuiWindowFlags_NoDocking |
+						ImGuiWindowFlags_AlwaysAutoResize;
+					ImGui::SetNextWindowPos(
+						ImVec2(imageTopLeft.x + viewportSize.x - 12.0f, imageTopLeft.y + viewportSize.y - 12.0f),
+						ImGuiCond_Always,
+						ImVec2(1.0f, 1.0f));
+					ImGui::SetNextWindowBgAlpha(0.86f);
+					if (ImGui::Begin("##ParticleSystem2DViewportControls", nullptr, overlayFlags)) {
+						if (ImGui::Button("Play")) {
+							particleSystem.Play();
+							renderScene->MarkDirty();
+						}
+						ImGui::SameLine();
+						if (ImGui::Button("Pause")) {
+							particleSystem.Pause();
+							renderScene->MarkDirty();
+						}
+						ImGui::SameLine();
+						if (ImGui::Button("Stop")) {
+							particleSystem.Stop();
+							renderScene->MarkDirty();
+						}
+					}
+					ImGui::End();
+				}
+
+				if (m_SelectedEntity != entt::null
+					&& renderScene->IsValid(m_SelectedEntity)
+					&& renderScene->HasComponent<RectTransform2DComponent>(m_SelectedEntity))
+				{
+					auto& rect = renderScene->GetComponent<RectTransform2DComponent>(m_SelectedEntity);
+
+					const float worldScale = GuiRenderer::ComputeWorldUIPixelScale();
+					const Vec2 bl = rect.GetBottomLeft();
+					const Vec2 tr = rect.GetTopRight();
+					const Vec2 pivot = rect.ResolvedValid ? rect.ResolvedPivot
+						: Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };
+
+					Vec2 handles[4] = {
+						Vec2{ bl.x * worldScale, ((bl.y + tr.y) * 0.5f) * worldScale },
+						Vec2{ tr.x * worldScale, ((bl.y + tr.y) * 0.5f) * worldScale },
+						Vec2{ ((bl.x + tr.x) * 0.5f) * worldScale, bl.y * worldScale },
+						Vec2{ ((bl.x + tr.x) * 0.5f) * worldScale, tr.y * worldScale },
+					};
+					if (rect.Rotation != 0.0f) {
+						const Vec2 worldPivot{ pivot.x * worldScale, pivot.y * worldScale };
+						for (int i = 0; i < 4; ++i) {
+							handles[i] = worldPivot + Rotated(handles[i] - worldPivot, rect.Rotation);
+						}
+					}
+
+					auto worldToScreen = [&](const Vec2& w, ImVec2& outScreen) -> bool {
+						glm::vec4 wp(w.x, w.y, 0.0f, 1.0f);
+						glm::vec4 cp = vp * wp;
+						if (cp.w == 0.0f) return false;
+						const float ndcX = cp.x / cp.w;
+						const float ndcY = cp.y / cp.w;
+						outScreen.x = (ndcX * 0.5f + 0.5f) * viewportSize.x;
+						outScreen.y = (1.0f - (ndcY * 0.5f + 0.5f)) * viewportSize.y;
+						return true;
+					};
+
+					const AABB camAABB = m_EditorCamera.GetViewportAABB();
+					const float worldPerScreenPxX = camAABB.Scale().x / std::max(1.0f, viewportSize.x);
+					const float worldPerScreenPxY = camAABB.Scale().y / std::max(1.0f, viewportSize.y);
+					const float scaleX = worldScale * std::max(0.01f, std::abs(rect.Scale.x));
+					const float scaleY = worldScale * std::max(0.01f, std::abs(rect.Scale.y));
+					constexpr const char* kButtonIds[4] = {
+						"##RectSizeL", "##RectSizeR",
+						"##RectSizeB", "##RectSizeT",
+					};
+					constexpr float kHandleSizePx = 12.0f;
+					const float kHalf = kHandleSizePx * 0.5f;
+
+					for (int i = 0; i < 4; ++i) {
+						ImVec2 screen;
+						if (!worldToScreen(handles[i], screen)) continue;
+
+						const ImVec2 btnTL(imageTopLeft.x + screen.x - kHalf,
+							imageTopLeft.y + screen.y - kHalf);
+						ImGui::SetCursorScreenPos(btnTL);
+						ImGui::InvisibleButton(kButtonIds[i], ImVec2(kHandleSizePx, kHandleSizePx));
+
+						if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+							ImGui::SetMouseCursor(
+								(i < 2) ? ImGuiMouseCursor_ResizeEW
+										: ImGuiMouseCursor_ResizeNS);
+						}
+						if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+							const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
+							const float localDx = (scaleX > 0.0f) ? (mouseDelta.x * worldPerScreenPxX) / scaleX : 0.0f;
+							const float localDy = (scaleY > 0.0f) ? (-mouseDelta.y * worldPerScreenPxY) / scaleY : 0.0f;
+
+							switch (i) {
+							case 0: {
+								float delta = localDx;
+								if (rect.SizeDelta.x - delta < 1.0f) delta = rect.SizeDelta.x - 1.0f;
+								rect.SizeDelta.x -= delta;
+								rect.AnchoredPosition.x += delta * (1.0f - rect.Pivot.x);
+								break;
+							}
+							case 1: {
+								float delta = localDx;
+								if (rect.SizeDelta.x + delta < 1.0f) delta = 1.0f - rect.SizeDelta.x;
+								rect.SizeDelta.x += delta;
+								rect.AnchoredPosition.x += delta * rect.Pivot.x;
+								break;
+							}
+							case 2: {
+								float delta = localDy;
+								if (rect.SizeDelta.y - delta < 1.0f) delta = rect.SizeDelta.y - 1.0f;
+								rect.SizeDelta.y -= delta;
+								rect.AnchoredPosition.y += delta * (1.0f - rect.Pivot.y);
+								break;
+							}
+							case 3: {
+								float delta = localDy;
+								if (rect.SizeDelta.y + delta < 1.0f) delta = 1.0f - rect.SizeDelta.y;
+								rect.SizeDelta.y += delta;
+								rect.AnchoredPosition.y += delta * rect.Pivot.y;
+								break;
+							}
+							default:
+								break;
+							}
+							renderScene->MarkDirty();
+						}
+					}
+				}
 
 				const float iconSize = 24.0f;
 				const float halfIcon = iconSize * 0.5f;

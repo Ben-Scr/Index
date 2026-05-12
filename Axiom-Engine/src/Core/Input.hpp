@@ -56,6 +56,7 @@ namespace Axiom {
         bool GetKey(KeyCode keycode) const;
         bool GetKeyDown(KeyCode keycode) const;
         bool GetKeyUp(KeyCode keycode) const;
+        bool GetAnyKey() const;
 
         // Mouse
         bool GetMouse(MouseButton keycode) const;

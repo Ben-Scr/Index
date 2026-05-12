@@ -81,6 +81,7 @@ namespace Axiom {
 		// when an FBO of a different size is bound — only
 		// `OnWindowResize` should trigger a swap-chain reset.
 		static void OnWindowResize(int width, int height);
+		static void SetVsync(bool enabled);
 		static void EnableScissorTest();
 		static void DisableScissorTest();
 

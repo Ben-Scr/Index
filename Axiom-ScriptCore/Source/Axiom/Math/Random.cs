@@ -38,7 +38,6 @@ public sealed class Random
 
     public ulong GetSeed() => state;
 
-
     public bool NextBool() => NextInt(0, 2) == 0;
 
     public byte NextByte()
@@ -147,6 +146,35 @@ public sealed class Random
         if (typeof(T) == typeof(string))
         {
             string result = NextString();
+            return (T)(object)result;
+        }
+
+        throw new NotSupportedException($"Type '{typeof(T)}' is not supported.");
+    }
+
+    public T Next<T>(T max) where T : IComparable<T>
+    {
+        if (typeof(T) == typeof(int))
+        {
+            int result = NextInt(Convert.ToInt32(max));
+            return (T)(object)result;
+        }
+
+        if (typeof(T) == typeof(float))
+        {
+            float result = NextFloat(Convert.ToSingle(max));
+            return (T)(object)result;
+        }
+
+        if (typeof(T) == typeof(double))
+        {
+            double result = NextDouble(Convert.ToDouble(max));
+            return (T)(object)result;
+        }
+
+        if (typeof(T) == typeof(byte))
+        {
+            byte result = NextByte(Convert.ToByte(max));
             return (T)(object)result;
         }
 

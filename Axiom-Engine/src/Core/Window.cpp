@@ -79,6 +79,14 @@ namespace Axiom {
 		glfwTerminate();
 	}
 
+	void Window::SetVsync(bool enabled) {
+		if (s_IsInitialized && glfwGetCurrentContext() != nullptr) {
+			glfwSwapInterval(enabled ? 1 : 0);
+		}
+		s_IsVsync = enabled;
+		RenderApi::SetVsync(enabled);
+	}
+
 	void Window::IconifyCallback(GLFWwindow* /*window*/, int iconified) {
 		// Authoritative source for the engine's "minimized" state. The framebuffer-resize-
 		// to-(0,0) path that used to set this flag doesn't fire on every platform; iconify
@@ -311,6 +319,7 @@ namespace Axiom {
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		app->m_Input.OnChar(static_cast<uint32_t>(codepoint));
+		ScriptEngine::RaiseEnterChar(static_cast<uint32_t>(codepoint));
 	}
 
 	void Window::SetMouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {

@@ -75,8 +75,8 @@ public class RectTransform : Component
     // be overwritten on the next layout pass). Mirrors Transform2D.
     public float Rotation
     {
-        get => InternalCalls.RectTransform_GetRotation(RequireComponent<RectTransform>());
-        set => InternalCalls.RectTransform_SetRotation(RequireComponent<RectTransform>(), value);
+        get => InternalCalls.RectTransform_GetRotation(RequireComponent<RectTransform>()) * Mathf.Rad2Deg;
+        set => InternalCalls.RectTransform_SetRotation(RequireComponent<RectTransform>(), value * Mathf.Deg2Rad);
     }
 
     public Vector2 Scale
@@ -95,8 +95,8 @@ public class RectTransform : Component
     // they're the offset from the parent's world rotation/scale.
     public float LocalRotation
     {
-        get => InternalCalls.RectTransform_GetLocalRotation(RequireComponent<RectTransform>());
-        set => InternalCalls.RectTransform_SetLocalRotation(RequireComponent<RectTransform>(), value);
+        get => InternalCalls.RectTransform_GetLocalRotation(RequireComponent<RectTransform>()) * Mathf.Rad2Deg;
+        set => InternalCalls.RectTransform_SetLocalRotation(RequireComponent<RectTransform>(), value * Mathf.Deg2Rad);
     }
 
     public Vector2 LocalScale

@@ -25,11 +25,11 @@ public struct NativeTransform2D : IComponent
 {
     public Vector2 Position;
     public Vector2 Scale;
-    public float   Rotation;
+    private float  m_RotationRadians;
 
     public Vector2 LocalPosition;
     public Vector2 LocalScale;
-    public float   LocalRotation;
+    private float  m_LocalRotationRadians;
 
     // C++ `bool m_Dirty` — 1 byte. Native side flips this when SetPosition /
     // SetRotation / SetScale runs; scripts can mark a transform dirty for the
@@ -38,15 +38,35 @@ public struct NativeTransform2D : IComponent
     [MarshalAs(UnmanagedType.U1)]
     public bool Dirty;
 
-    // Direction vectors derived from world Rotation (0 rad → Up = (0, 1)).
+    public float Rotation
+    {
+        readonly get => m_RotationRadians * Mathf.Rad2Deg;
+        set
+        {
+            m_RotationRadians = value * Mathf.Deg2Rad;
+            Dirty = true;
+        }
+    }
+
+    public float LocalRotation
+    {
+        readonly get => m_LocalRotationRadians * Mathf.Rad2Deg;
+        set
+        {
+            m_LocalRotationRadians = value * Mathf.Deg2Rad;
+            Dirty = true;
+        }
+    }
+
+    // Direction vectors derived from world Rotation (0 degrees -> Up = (0, 1)).
     // `readonly` so accessing them on a `ref` to a component pool entry does
     // not force the compiler to make a defensive struct copy.
-    public readonly Vector2 Up    => new(-Mathf.Sin(Rotation), Mathf.Cos(Rotation));
+    public readonly Vector2 Up    => new(-Mathf.Sin(m_RotationRadians), Mathf.Cos(m_RotationRadians));
     public readonly Vector2 Down  => -Up;
-    public readonly Vector2 Right => new(Mathf.Cos(Rotation),  Mathf.Sin(Rotation));
+    public readonly Vector2 Right => new(Mathf.Cos(m_RotationRadians),  Mathf.Sin(m_RotationRadians));
     public readonly Vector2 Left  => -Right;
 
-    public readonly float RotationDegrees => Rotation * Mathf.Rad2Deg;
+    public readonly float RotationDegrees => Rotation;
 
     // Native serialized/display name used by the binding layer to find this
     // component's pool. Kept as a single source of truth so renames don't

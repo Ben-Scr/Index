@@ -1794,6 +1794,9 @@ namespace Axiom {
 							return true;
 
 						ApplyPendingFieldValues(scriptComp, instance);
+						if (instance.GetType() == ScriptType::Managed && instance.HasManagedInstance()) {
+							ScriptEngine::InvokeAwake(instance.GetGCHandle());
+						}
 					}
 
 					if (instance.GetType() == ScriptType::Managed)

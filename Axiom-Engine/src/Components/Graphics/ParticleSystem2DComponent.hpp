@@ -85,6 +85,7 @@ namespace Axiom {
 		bool IsPlaying() const { return m_IsEmitting; }
 		Transform2DComponent& GetTransform2D();
 		const Transform2DComponent& GetTransform2D() const;
+		void PreviewUpdate(float deltaTime) { Update(deltaTime); }
 
 		// Info: Enables both emitting and simulating
 		void Play() { m_IsEmitting = true; m_IsSimulating = true; }

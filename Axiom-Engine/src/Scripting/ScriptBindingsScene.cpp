@@ -387,6 +387,12 @@ namespace Axiom {
 		return CanReadScriptInput() ? (app->GetInput().GetKeyUp(static_cast<KeyCode>(keyCode)) ? 1 : 0) : 0;
 	}
 
+	static int Axiom_Input_GetAnyKey()
+	{
+		auto* app = Application::GetInstance();
+		return CanReadScriptInput() ? (app->GetInput().GetAnyKey() ? 1 : 0) : 0;
+	}
+
 	static int Axiom_Input_GetMouseButton(int button)
 	{
 		auto* app = Application::GetInstance();
@@ -518,6 +524,7 @@ namespace Axiom {
 		b.Input_GetKey = &Axiom_Input_GetKey;
 		b.Input_GetKeyDown = &Axiom_Input_GetKeyDown;
 		b.Input_GetKeyUp = &Axiom_Input_GetKeyUp;
+		b.Input_GetAnyKey = &Axiom_Input_GetAnyKey;
 		b.Input_GetMouseButton = &Axiom_Input_GetMouseButton;
 		b.Input_GetMouseButtonDown = &Axiom_Input_GetMouseButtonDown;
 		b.Input_GetMouseButtonUp = &Axiom_Input_GetMouseButtonUp;

@@ -19,6 +19,11 @@ namespace Axiom {
         return (i >= 0 && i < k_KeyCount) && !m_CurrentKeyStates[i] && m_PreviousKeyStates[i];
     }
 
+    bool Input::GetAnyKey() const {
+        return std::any_of(m_CurrentKeyStates.begin(), m_CurrentKeyStates.end(), [](bool pressed) { return pressed; })
+            || std::any_of(m_CurrentMouseButtons.begin(), m_CurrentMouseButtons.end(), [](bool pressed) { return pressed; });
+    }
+
     bool Input::GetMouse(MouseButton keycode) const {
         const int btn = static_cast<int>(keycode);
         return (btn >= 0 && btn < k_MouseCount) ? m_CurrentMouseButtons[btn] : false;

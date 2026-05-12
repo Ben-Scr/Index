@@ -77,6 +77,7 @@ namespace Axiom {
 		int    (*Input_GetKey)(int keyCode);
 		int    (*Input_GetKeyDown)(int keyCode);
 		int    (*Input_GetKeyUp)(int keyCode);
+		int    (*Input_GetAnyKey)();
 		int    (*Input_GetMouseButton)(int button);
 		int    (*Input_GetMouseButtonDown)(int button);
 		int    (*Input_GetMouseButtonUp)(int button);
@@ -720,6 +721,7 @@ namespace Axiom {
 		// `Axiom.Window.OnResize` subscribers run on the same frame the
 		// GLFW callback delivered the new framebuffer size.
 		void        (*RaiseWindowResize)();
+		void        (*RaiseEnterChar)(uint32_t codepoint);
 	};
 
 } // namespace Axiom

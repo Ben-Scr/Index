@@ -29,14 +29,14 @@ public class Transform2D : Component
 
     public float Rotation
     {
-        get => InternalCalls.Transform2D_GetRotation(RequireComponent<Transform2D>());
-        set => InternalCalls.Transform2D_SetRotation(RequireComponent<Transform2D>(), value);
+        get => InternalCalls.Transform2D_GetRotation(RequireComponent<Transform2D>()) * Mathf.Rad2Deg;
+        set => InternalCalls.Transform2D_SetRotation(RequireComponent<Transform2D>(), value * Mathf.Deg2Rad);
     }
 
     public float RotationDegrees
     {
-        get => Rotation * Mathf.Rad2Deg;
-        set => Rotation = value * Mathf.Deg2Rad;
+        get => Rotation;
+        set => Rotation = value;
     }
 
     public Vector2 Scale
@@ -62,8 +62,8 @@ public class Transform2D : Component
     }
     public float LocalRotation
     {
-        get => InternalCalls.Transform2D_GetLocalRotation(RequireComponent<Transform2D>());
-        set => InternalCalls.Transform2D_SetLocalRotation(RequireComponent<Transform2D>(), value);
+        get => InternalCalls.Transform2D_GetLocalRotation(RequireComponent<Transform2D>()) * Mathf.Rad2Deg;
+        set => InternalCalls.Transform2D_SetLocalRotation(RequireComponent<Transform2D>(), value * Mathf.Deg2Rad);
     }
     public Vector2 LocalScale
     {
@@ -132,7 +132,11 @@ public class Transform2D : Component
 
     public Vector2 Up
     {
-        get => new Vector2(-Mathf.Sin(Rotation), Mathf.Cos(Rotation));
+        get
+        {
+            float radians = Rotation * Mathf.Deg2Rad;
+            return new Vector2(-Mathf.Sin(radians), Mathf.Cos(radians));
+        }
     }
 
     public Vector2 Down
@@ -146,7 +150,11 @@ public class Transform2D : Component
     }
     public Vector2 Right
     {
-        get => new Vector2(Mathf.Cos(Rotation), Mathf.Sin(Rotation));
+        get
+        {
+            float radians = Rotation * Mathf.Deg2Rad;
+            return new Vector2(Mathf.Cos(radians), Mathf.Sin(radians));
+        }
     }
 }
 
@@ -311,18 +319,8 @@ public class Camera2D : Component
 
     public Vector2 ScreenToWorld(Vector2 screenPos)
     {
-        GetViewportSize(out float viewportWidth, out float viewportHeight);
-        if (viewportWidth <= 0.0f || viewportHeight <= 0.0f)
-            return Vector2.Zero;
-
-        GetCameraBasis(viewportWidth, viewportHeight, out Vector2 position, out float cos, out float sin, out float halfWidth, out float halfHeight);
-
-        float localX = ((2.0f * screenPos.X / viewportWidth) - 1.0f) * halfWidth;
-        float localY = (1.0f - (2.0f * screenPos.Y / viewportHeight)) * halfHeight;
-
-        return new Vector2(
-            position.X + (cos * localX) - (sin * localY),
-            position.Y + (sin * localX) + (cos * localY));
+        InternalCalls.Camera2D_ScreenToWorld(RequireComponent<Camera2D>(), screenPos.X, screenPos.Y, out float x, out float y);
+        return new Vector2(x, y);
     }
 
     public Vector2 WorldToScreen(Vector2 worldPos)
@@ -362,7 +360,7 @@ public class Camera2D : Component
         Transform2D transform = Entity.Transform;
         position = transform.Position;
 
-        float rotation = transform.Rotation;
+        float rotation = transform.Rotation * Mathf.Deg2Rad;
         cos = Mathf.Cos(rotation);
         sin = Mathf.Sin(rotation);
 

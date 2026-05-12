@@ -53,41 +53,6 @@ public abstract class EntityScript
         }
     }
 
-    /// <summary>Resume on the engine's next Update tick.</summary>
-    protected WaitForNextFrame WaitForNextFrame()
-        => new WaitForNextFrame(DestroyToken);
-
-    /// <summary>Resume after <paramref name="frameCount"/> Update ticks.</summary>
-    protected WaitForFrames WaitForFrames(int frameCount)
-        => new WaitForFrames(frameCount, DestroyToken);
-
-    /// <summary>
-    /// Resume after the given number of seconds (scaled by Time.TimeScale,
-    /// matching Time.DeltaTime). Use a separate helper if you need
-    /// realtime — not yet provided.
-    /// </summary>
-    protected WaitForSeconds WaitForSeconds(float seconds)
-        => new WaitForSeconds(seconds, DestroyToken);
-
-    protected WaitForSeconds WaitForMilliseconds(float ms)
-    => throw new NotImplementedException();
-
-    /// <summary>Resume on the engine's next FixedUpdate tick.</summary>
-    protected WaitForFixedUpdate WaitForFixedUpdate()
-        => new WaitForFixedUpdate(DestroyToken);
-
-    /// <summary>Resume the first frame the predicate returns true.</summary>
-    protected WaitUntil WaitUntil(Func<bool> predicate)
-        => new WaitUntil(predicate, DestroyToken);
-
-
-    protected WaitForSeconds WaitForSecondsRealtime(float seconds)
-     => throw new NotImplementedException();
-
-    protected WaitForSeconds WaitForMillisecondsRealtime(float ms)
-     => throw new NotImplementedException();
-
-
     /// <summary>
     /// Recommended fire-and-forget entry point for `async Task` coroutines.
     /// Wraps the task so OperationCanceledException is silently swallowed
@@ -98,14 +63,24 @@ public abstract class EntityScript
     /// <code>
     /// public override void OnStart() => RunCoroutine(BombSequence);
     /// async Task BombSequence() {
-    ///     await WaitForSeconds(3.0f);
+    ///     await new WaitForSeconds(3.0f);
     ///     Entity.Destroy();
     /// }
     /// </code>
     /// </example>
     protected void RunCoroutine(Func<Task> coroutine)
     {
-        _ = ObserveCoroutine(coroutine());
+        CancellationToken token = DestroyToken;
+        CancellationToken previous = CoroutineContext.CurrentToken.Value;
+        CoroutineContext.CurrentToken.Value = token;
+        try
+        {
+            _ = ObserveCoroutine(coroutine());
+        }
+        finally
+        {
+            CoroutineContext.CurrentToken.Value = previous;
+        }
     }
 
     private static async Task ObserveCoroutine(Task task)

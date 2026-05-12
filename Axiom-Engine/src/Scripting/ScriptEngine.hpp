@@ -55,6 +55,7 @@ namespace Axiom {
 		static void RaiseFocusChanged(bool focused);
 		static void RaiseKeyDown(int key);
 		static void RaiseKeyUp(int key);
+		static void RaiseEnterChar(uint32_t codepoint);
 		static void RaiseMouseDown(int button);
 		static void RaiseMouseUp(int button);
 		static void RaiseMouseScroll(float delta);

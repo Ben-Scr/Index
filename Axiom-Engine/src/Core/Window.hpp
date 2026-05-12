@@ -26,7 +26,7 @@ namespace Axiom {
 		static void Shutdown();
 		static bool IsInitialized() { return s_IsInitialized; }
 
-		static void SetVsync(bool enabled) { glfwSwapInterval(enabled); s_IsVsync = enabled; };
+		static void SetVsync(bool enabled);
 
 		void Destroy();
 

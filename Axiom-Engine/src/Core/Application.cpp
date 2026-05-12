@@ -4,6 +4,7 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Core/Window.hpp"
+#include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -870,6 +871,7 @@ namespace Axiom {
 		if (m_GuiRenderer) m_GuiRenderer->Shutdown();
 		if (m_GizmoRenderer2D) m_GizmoRenderer2D->Shutdown();
 		if (m_Renderer2D) m_Renderer2D->Shutdown();
+		if (RenderApi::IsInitialized()) RenderApi::Shutdown();
 
 		if (AudioManager::IsInitialized())
 			AudioManager::Shutdown();

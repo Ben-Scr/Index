@@ -1,4 +1,3 @@
-using System;
 using Axiom.Interop;
 
 namespace Axiom;

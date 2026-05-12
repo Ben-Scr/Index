@@ -94,6 +94,7 @@ internal unsafe struct ManagedCallbacksStruct
     // ── Window events (appended for binary compat) ──
     // Routed from Application::DispatchEvent on WindowResizeEvent.
     public delegate* unmanaged<void> RaiseWindowResize;
+    public delegate* unmanaged<uint, void> RaiseEnterChar;
 }
 
 /// <summary>
@@ -130,6 +131,17 @@ internal static class ScriptHostBridge
             managedCallbacks->RaiseApplicationStart = &ScriptInstanceManager.RaiseApplicationStart;
             managedCallbacks->RaiseApplicationPaused = &ScriptInstanceManager.RaiseApplicationPaused;
             managedCallbacks->RaiseApplicationQuit = &ScriptInstanceManager.RaiseApplicationQuit;
+            managedCallbacks->RaiseFocusChanged = &ScriptInstanceManager.RaiseFocusChanged;
+            managedCallbacks->RaiseKeyDown = &ScriptInstanceManager.RaiseKeyDown;
+            managedCallbacks->RaiseKeyUp = &ScriptInstanceManager.RaiseKeyUp;
+            managedCallbacks->RaiseMouseDown = &ScriptInstanceManager.RaiseMouseDown;
+            managedCallbacks->RaiseMouseUp = &ScriptInstanceManager.RaiseMouseUp;
+            managedCallbacks->RaiseMouseScroll = &ScriptInstanceManager.RaiseMouseScroll;
+            managedCallbacks->RaiseMouseMove = &ScriptInstanceManager.RaiseMouseMove;
+            managedCallbacks->RaiseBeforeSceneLoaded = &ScriptInstanceManager.RaiseBeforeSceneLoaded;
+            managedCallbacks->RaiseSceneLoaded = &ScriptInstanceManager.RaiseSceneLoaded;
+            managedCallbacks->RaiseBeforeSceneUnloaded = &ScriptInstanceManager.RaiseBeforeSceneUnloaded;
+            managedCallbacks->RaiseSceneUnloaded = &ScriptInstanceManager.RaiseSceneUnloaded;
             managedCallbacks->CreateGameSystemInstance = &ScriptInstanceManager.CreateGameSystemInstance;
             managedCallbacks->DestroyGameSystemInstance = &ScriptInstanceManager.DestroyGameSystemInstance;
             managedCallbacks->InvokeGameSystemStart = &ScriptInstanceManager.InvokeGameSystemStart;
@@ -170,6 +182,7 @@ internal static class ScriptHostBridge
 
             // ── Window events (appended for binary compat) ──
             managedCallbacks->RaiseWindowResize = &ScriptInstanceManager.RaiseWindowResize;
+            managedCallbacks->RaiseEnterChar = &ScriptInstanceManager.RaiseEnterChar;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

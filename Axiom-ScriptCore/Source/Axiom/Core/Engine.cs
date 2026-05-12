@@ -1,4 +1,8 @@
 using Axiom.Interop;
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
+using System.Text;
 
 namespace Axiom;
 
@@ -18,23 +22,25 @@ public enum BuildConfiguration
 
 public enum Platform
 {
+    Unknown = 0,
     Windows,
     Linux,
     MacOS,
     Android,
     iOS,
-    WebGL,
-    Unknown
+    WebGL
 }
 
 public enum GraphicsApi
 {
+    Unknown = 0,
     Direct3D11,
     Direct3D12,
     Vulkan,
     Metal,
     OpenGL,
-    Unknown
+    OpenGLES,
+    WebGPU
 }
 
 /// <summary>
@@ -49,7 +55,7 @@ public static class Engine
     /// <summary>Full engine version string, e.g. "Axiom 2026.1.0 (Windows x64 Release)".
     /// Mirrors the AIM_VERSION_LONG macro on the C++ side.</summary>
     public static string VersionLong => InternalCalls.Engine_GetVersionLong();
-    public static string ConfigurationName => throw new NotImplementedException("Engine.ConfigurationName is not implemented yet.");
+    public static string ConfigurationName => BuildConfiguration.ToString();
 
     /// <summary>
     /// Active build configuration (Debug / Development / Release). Mirrors
@@ -59,20 +65,63 @@ public static class Engine
     public static BuildConfiguration BuildConfiguration
         => (BuildConfiguration)InternalCalls.Engine_GetBuildConfiguration();
 
-    /// <summary>OS name, e.g. "Windows" or "Linux".</summary>
-    public static string Platform => InternalCalls.Engine_GetPlatform();
+    /// <summary>Current operating system.</summary>
+    public static Axiom.Platform Platform => ParsePlatform(PlatformName);
+    public static string PlatformName => InternalCalls.Engine_GetPlatform();
 
     /// <summary>
-    /// Graphics backend label, e.g. "WebGPU Vulkan" or "WebGPU Direct3D12".
-    /// Empty string before the renderer is initialized.
+    /// Active graphics backend enum. Use GraphicsApiName for the raw backend label.
     /// </summary>
-    public static string GraphicsApi => InternalCalls.Engine_GetGraphicsApi();
+    public static Axiom.GraphicsApi GraphicsApi => ParseGraphicsApi(GraphicsApiName);
+    public static string GraphicsApiName => InternalCalls.Engine_GetGraphicsApi();
 
     /// <summary>GPU vendor name, e.g. "NVIDIA", "AMD", "Intel".</summary>
     public static string GpuVendor => InternalCalls.Engine_GetGpuVendor();
-    public static string CpuVendor => throw new NotImplementedException();
+    public static string CpuVendor => QueryCpuVendor();
 
     /// <summary>Active renderer backend name, e.g. "Vulkan", "Direct3D12", "Metal".</summary>
     public static string GpuRenderer => InternalCalls.Engine_GetGpuRenderer();
 
+    private static Axiom.Platform ParsePlatform(string value)
+        => value switch
+        {
+            "Windows" => Axiom.Platform.Windows,
+            "Linux" => Axiom.Platform.Linux,
+            "MacOS" or "macOS" or "OSX" => Axiom.Platform.MacOS,
+            "Android" => Axiom.Platform.Android,
+            "iOS" => Axiom.Platform.iOS,
+            "WebGL" => Axiom.Platform.WebGL,
+            _ => Axiom.Platform.Unknown
+        };
+
+    private static Axiom.GraphicsApi ParseGraphicsApi(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return Axiom.GraphicsApi.Unknown;
+        if (value.Contains("D3D11", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("Direct3D11", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.Direct3D11;
+        if (value.Contains("D3D12", StringComparison.OrdinalIgnoreCase)
+            || value.Contains("Direct3D12", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.Direct3D12;
+        if (value.Contains("Vulkan", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.Vulkan;
+        if (value.Contains("Metal", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.Metal;
+        if (value.Contains("OpenGLES", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.OpenGLES;
+        if (value.Contains("OpenGL", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.OpenGL;
+        if (value.Contains("WebGPU", StringComparison.OrdinalIgnoreCase)) return Axiom.GraphicsApi.WebGPU;
+        return Axiom.GraphicsApi.Unknown;
+    }
+
+    private static string QueryCpuVendor()
+    {
+        if (X86Base.IsSupported)
+        {
+            (int _, int ebx, int ecx, int edx) = X86Base.CpuId(0, 0);
+            Span<byte> bytes = stackalloc byte[12];
+            BitConverter.TryWriteBytes(bytes[0..4], ebx);
+            BitConverter.TryWriteBytes(bytes[4..8], edx);
+            BitConverter.TryWriteBytes(bytes[8..12], ecx);
+            string vendor = Encoding.ASCII.GetString(bytes).TrimEnd('\0', ' ');
+            if (!string.IsNullOrWhiteSpace(vendor)) return vendor;
+        }
+
+        return RuntimeInformation.ProcessArchitecture.ToString();
+    }
 }

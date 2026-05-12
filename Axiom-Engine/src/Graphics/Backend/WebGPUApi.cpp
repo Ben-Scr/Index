@@ -88,6 +88,7 @@ namespace Axiom {
 		Color    g_ClearColor{ 0.0f, 0.0f, 0.0f, 1.0f };
 		uint32_t g_BackbufferWidth = 0;
 		uint32_t g_BackbufferHeight = 0;
+		bool     g_VsyncEnabled = true;
 
 		// ── WebGPU objects ──────────────────────────────────────────────────
 		wgpu::Instance      g_Instance;
@@ -163,6 +164,30 @@ namespace Axiom {
 				case wgpu::BackendType::Null:    return "Null";
 				default:                         return "Unknown";
 			}
+		}
+
+		bool SupportsPresentMode(const wgpu::SurfaceCapabilities& caps, wgpu::PresentMode mode) {
+			for (size_t i = 0; i < caps.presentModeCount; ++i) {
+				if (caps.presentModes[i] == mode) return true;
+			}
+			return false;
+		}
+
+		wgpu::PresentMode ChoosePresentMode(const wgpu::SurfaceCapabilities& caps) {
+			if (g_VsyncEnabled) {
+				if (SupportsPresentMode(caps, wgpu::PresentMode::Fifo)) {
+					return wgpu::PresentMode::Fifo;
+				}
+				return caps.presentModeCount > 0 ? caps.presentModes[0] : wgpu::PresentMode::Fifo;
+			}
+
+			if (SupportsPresentMode(caps, wgpu::PresentMode::Immediate)) {
+				return wgpu::PresentMode::Immediate;
+			}
+			if (SupportsPresentMode(caps, wgpu::PresentMode::Mailbox)) {
+				return wgpu::PresentMode::Mailbox;
+			}
+			return caps.presentModeCount > 0 ? caps.presentModes[0] : wgpu::PresentMode::Fifo;
 		}
 
 		// Convert wgpu::StringView (Dawn's non-null-terminated string view)
@@ -375,7 +400,7 @@ namespace Axiom {
 			config.usage       = wgpu::TextureUsage::RenderAttachment;
 			config.width       = width;
 			config.height      = height;
-			config.presentMode = wgpu::PresentMode::Fifo;       // V-sync
+			config.presentMode = ChoosePresentMode(caps);
 			config.alphaMode   = wgpu::CompositeAlphaMode::Opaque;
 			config.viewFormatCount = 0;
 
@@ -656,6 +681,7 @@ namespace Axiom {
 #endif
 
 		g_ClearColor = spec.ClearColor;
+		g_VsyncEnabled = Window::IsVsync();
 
 		Window* win = Application::GetWindow();
 		if (win) {
@@ -853,6 +879,15 @@ namespace Axiom {
 		g_Frame = FrameState{};
 
 		ConfigureSurface(uw, uh);
+	}
+
+	void RenderApi::SetVsync(bool enabled) {
+		g_VsyncEnabled = enabled;
+		if (!g_Initialized || !g_Surface) return;
+		if (g_BackbufferWidth == 0 || g_BackbufferHeight == 0) return;
+
+		g_Frame = FrameState{};
+		ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
 	}
 
 	void RenderApi::SetScissor(int x, int y, int width, int height) {

@@ -283,6 +283,55 @@ internal static class ScriptInstanceManager
     }
 
     [UnmanagedCallersOnly]
+    public static void RaiseFocusChanged(int focused)
+    {
+        bool isFocused = focused != 0;
+        Window.RaiseFocusChanged(isFocused);
+        DispatchToScripts(script => script.OnFocusChanged(isFocused), nameof(EntityScript.OnFocusChanged));
+        DispatchToGameSystems(system => system.OnFocusChanged(isFocused), nameof(GameSystem.OnFocusChanged));
+        DispatchToGlobalSystems(system => system.OnFocusChanged(isFocused), nameof(GlobalSystem.OnFocusChanged));
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseKeyDown(int key) => Input.RaiseKeyDown((KeyCode)key);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseKeyUp(int key) => Input.RaiseKeyUp((KeyCode)key);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseEnterChar(uint codepoint)
+    {
+        if (codepoint > char.MaxValue) return;
+        char c = (char)codepoint;
+        if (char.IsControl(c)) return;
+        Input.RaiseEnterChar(c);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseDown(int button) => Input.RaiseMouseDown((MouseButton)button);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseUp(int button) => Input.RaiseMouseUp((MouseButton)button);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseScroll(float delta) => Input.RaiseMouseScroll(delta);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseMove(float x, float y) => Input.RaiseMouseMove(new Vector2(x, y));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseBeforeSceneLoaded(byte* sceneName) => SceneManager.RaiseBeforeSceneLoaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseSceneLoaded(byte* sceneName) => SceneManager.RaiseSceneLoaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName) => SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseSceneUnloaded(byte* sceneName) => SceneManager.RaiseSceneUnloaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
     public static void RaiseWindowResize()
     {
         Window.InvokeResize();

@@ -40,6 +40,30 @@ public static class Mathf
     public static float Max(float a, float b) => a > b ? a : b;
     public static int Min(int a, int b) => a < b ? a : b;
     public static int Max(int a, int b) => a > b ? a : b;
+    public static int Min(int a, params int[] b)
+    {
+        int min = a;
+
+        foreach (int value in b)
+        {
+            if (value < min)
+                min = value;
+        }
+
+        return min;
+    }
+    public static int Max(int a, params int[] b)
+    {
+        int max = a;
+
+        foreach (int value in b)
+        {
+            if (value > max)
+                max = value;
+        }
+
+        return max;
+    }
 
     public static float Clamp(float value, float min, float max)
     {

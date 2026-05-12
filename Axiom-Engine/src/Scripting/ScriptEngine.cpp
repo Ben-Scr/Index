@@ -333,6 +333,11 @@ namespace Axiom {
 		if (s_Initialized && s_Callbacks.RaiseKeyUp) s_Callbacks.RaiseKeyUp(key);
 	}
 
+	void ScriptEngine::RaiseEnterChar(uint32_t codepoint)
+	{
+		if (s_Initialized && s_Callbacks.RaiseEnterChar) s_Callbacks.RaiseEnterChar(codepoint);
+	}
+
 	void ScriptEngine::RaiseMouseDown(int button)
 	{
 		if (s_Initialized && s_Callbacks.RaiseMouseDown) s_Callbacks.RaiseMouseDown(button);

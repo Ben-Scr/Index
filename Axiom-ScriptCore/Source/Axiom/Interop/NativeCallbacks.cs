@@ -66,6 +66,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<int, int> Input_GetKey;
     public delegate* unmanaged<int, int> Input_GetKeyDown;
     public delegate* unmanaged<int, int> Input_GetKeyUp;
+    public delegate* unmanaged<int> Input_GetAnyKey;
     public delegate* unmanaged<int, int> Input_GetMouseButton;
     public delegate* unmanaged<int, int> Input_GetMouseButtonDown;
     public delegate* unmanaged<int, int> Input_GetMouseButtonUp;
