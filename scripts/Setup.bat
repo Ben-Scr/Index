@@ -1,7 +1,7 @@
 @echo off
 pushd %~dp0
 echo ============================================
-echo   Axiom Engine Setup
+echo   Index Engine Setup
 echo ============================================
 echo.
 set "PYTHON_VERSION="
@@ -29,7 +29,7 @@ if not defined PYTHON (
 for /f "delims=" %%i in ('%PYTHON% --version 2^>^&1') do set "PYTHON_VERSION=%%i"
 %PYTHON% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Axiom setup requires Python 3.10 or newer.
+    echo [ERROR] Index setup requires Python 3.10 or newer.
     if defined PYTHON_VERSION echo         Found %PYTHON_VERSION%.
     echo         Download a newer version from https://www.python.org/downloads/
     PAUSE

@@ -14,26 +14,26 @@ if [[ ! -d "$bin_dir" ]]; then
     exit 1
 fi
 
-runtime_binary="$(find "$bin_dir" -path '*/Axiom-Runtime/Axiom-Runtime' -type f | head -n 1)"
+runtime_binary="$(find "$bin_dir" -path '*/Index-Runtime/Index-Runtime' -type f | head -n 1)"
 
 if [[ -z "${runtime_binary}" ]]; then
-    echo "Axiom-Runtime binary was not found under $bin_dir" >&2
+    echo "Index-Runtime binary was not found under $bin_dir" >&2
     find "$bin_dir" -maxdepth 5 -type f | sort >&2
     exit 1
 fi
 
 runtime_dir="$(dirname "$runtime_binary")"
-axiom_assets_dir="$runtime_dir/AxiomAssets"
+index_assets_dir="$runtime_dir/IndexAssets"
 
-if [[ ! -d "$axiom_assets_dir" ]]; then
-    echo "Expected AxiomAssets next to the runtime binary at $axiom_assets_dir" >&2
+if [[ ! -d "$index_assets_dir" ]]; then
+    echo "Expected IndexAssets next to the runtime binary at $index_assets_dir" >&2
     exit 1
 fi
 
-rm -rf "$runtime_dir/Assets" "$runtime_dir/axiom-project.json"
+rm -rf "$runtime_dir/Assets" "$runtime_dir/index-project.json"
 mkdir -p "$runtime_dir/Assets/Scenes"
 
-cat >"$runtime_dir/axiom-project.json" <<'EOF'
+cat >"$runtime_dir/index-project.json" <<'EOF'
 {
   "name": "SmokeProject",
   "engineVersion": "ci",
@@ -102,7 +102,7 @@ print_log() {
 set +e
 (
     cd "$runtime_dir"
-    timeout 10s xvfb-run -a ./Axiom-Runtime >"$log_file" 2>&1
+    timeout 10s xvfb-run -a ./Index-Runtime >"$log_file" 2>&1
 )
 status=$?
 set -e
@@ -131,8 +131,8 @@ if grep -q "Failed to load default texture" "$log_file"; then
     exit 1
 fi
 
-if grep -q "AxiomAssets/Textures not found" "$log_file"; then
-    echo "Runtime could not resolve AxiomAssets/Textures." >&2
+if grep -q "IndexAssets/Textures not found" "$log_file"; then
+    echo "Runtime could not resolve IndexAssets/Textures." >&2
     print_log
     exit 1
 fi

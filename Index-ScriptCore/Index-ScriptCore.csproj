@@ -1,0 +1,155 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <TargetFramework>net9.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Configurations>Debug;Release;Dist</Configurations>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>false</Optimize>
+    <OutputPath>..\bin\Debug-windows-x86_64\Index-ScriptCore\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\Debug-windows-x86_64\Index-ScriptCore\</IntermediateOutputPath>
+    <DefineConstants>IDX_DEBUG</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <DebugSymbols>true</DebugSymbols>
+    <Optimize>true</Optimize>
+    <OutputPath>..\bin\Release-windows-x86_64\Index-ScriptCore\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\Release-windows-x86_64\Index-ScriptCore\</IntermediateOutputPath>
+    <DefineConstants>IDX_RELEASE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
+    <PlatformTarget>x64</PlatformTarget>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Optimize>true</Optimize>
+    <OutputPath>..\bin\Dist-windows-x86_64\Index-ScriptCore\</OutputPath>
+    <IntermediateOutputPath>..\bin-int\Dist-windows-x86_64\Index-ScriptCore\</IntermediateOutputPath>
+    <DefineConstants>IDX_DIST</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
+  </ItemGroup>
+  <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+  </ItemGroup>
+  <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Source\GlobalUsings.cs" />
+    <Compile Include="Source\Index\Attributes\ClampValueAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\EditorIgnoreAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\EditorReadOnlyAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\EnabledIfAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\HeaderAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\HideFromEditorAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\ShowInEditorAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\SpaceAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\ToolTipAttribute.cs" />
+    <Compile Include="Source\Index\Audio\Audio.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeArray.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeBitArray.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeBool.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeBuffer.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeCollectionUtility.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeDeque.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeDictionary.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeHashset.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeList.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeMemoryPool.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativePriorityQueue.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeQueue.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeStack.cs" />
+    <Compile Include="Source\Index\Collections\Native\NativeString.cs" />
+    <Compile Include="Source\Index\Collections\Range.cs" />
+    <Compile Include="Source\Index\Collections\Timer.cs" />
+    <Compile Include="Source\Index\Components\ComponentTypes.cs" />
+    <Compile Include="Source\Index\Components\IComponent.cs" />
+    <Compile Include="Source\Index\Components\NativeSpriteRenderer.cs" />
+    <Compile Include="Source\Index\Components\NativeTransform2D.cs" />
+    <Compile Include="Source\Index\Components\Ref.cs" />
+    <Compile Include="Source\Index\Components\TextureHandle.cs" />
+    <Compile Include="Source\Index\Core\Application.cs" />
+    <Compile Include="Source\Index\Core\AssetManager.cs" />
+    <Compile Include="Source\Index\Core\Cursor.cs" />
+    <Compile Include="Source\Index\Core\Engine.cs" />
+    <Compile Include="Source\Index\Core\GlobalUsings.cs" />
+    <Compile Include="Source\Index\Core\Input.cs" />
+    <Compile Include="Source\Index\Core\InternalCalls.cs" />
+    <Compile Include="Source\Index\Core\KeyCodes.cs" />
+    <Compile Include="Source\Index\Core\Log.cs" />
+    <Compile Include="Source\Index\Core\Time.cs" />
+    <Compile Include="Source\Index\Core\Window.cs" />
+    <Compile Include="Source\Index\Coroutines\Awaiters.cs" />
+    <Compile Include="Source\Index\Coroutines\CoroutineScheduler.cs" />
+    <Compile Include="Source\Index\Coroutines\IndexSynchronizationContext.cs" />
+    <Compile Include="Source\Index\Graphics\Font.cs" />
+    <Compile Include="Source\Index\Graphics\Gizmo.cs" />
+    <Compile Include="Source\Index\Graphics\Renderer2D.cs" />
+    <Compile Include="Source\Index\Graphics\Texture.cs" />
+    <Compile Include="Source\Index\Interop\NativeCallbacks.cs" />
+    <Compile Include="Source\Index\Interop\NativeInterop.cs" />
+    <Compile Include="Source\Index\Interop\PackageNativeResolver.cs" />
+    <Compile Include="Source\Index\Interop\ScriptHostBridge.cs" />
+    <Compile Include="Source\Index\Interop\ScriptInstanceManager.cs" />
+    <Compile Include="Source\Index\Math\Color.cs" />
+    <Compile Include="Source\Index\Math\Mathf.cs" />
+    <Compile Include="Source\Index\Math\Quaternion.cs" />
+    <Compile Include="Source\Index\Math\Random.cs" />
+    <Compile Include="Source\Index\Math\RandomHandler.cs" />
+    <Compile Include="Source\Index\Math\Vector2.cs" />
+    <Compile Include="Source\Index\Math\Vector2Int.cs" />
+    <Compile Include="Source\Index\Math\Vector3.cs" />
+    <Compile Include="Source\Index\Math\Vector3Int.cs" />
+    <Compile Include="Source\Index\Math\Vector4.cs" />
+    <Compile Include="Source\Index\Math\Vector4Int.cs" />
+    <Compile Include="Source\Index\Physics\Collision2D.cs" />
+    <Compile Include="Source\Index\Physics\FastPhysics2D.cs" />
+    <Compile Include="Source\Index\Physics\Physics2D.cs" />
+    <Compile Include="Source\Index\Physics\PhysicsShared.cs" />
+    <Compile Include="Source\Index\Scene\AssetRef.cs" />
+    <Compile Include="Source\Index\Scene\Component.cs" />
+    <Compile Include="Source\Index\Scene\Components.cs" />
+    <Compile Include="Source\Index\Scene\Entity.cs" />
+    <Compile Include="Source\Index\Scene\EntityScript.cs" />
+    <Compile Include="Source\Index\Scene\GameSystem.cs" />
+    <Compile Include="Source\Index\Scene\GlobalSystem.cs" />
+    <Compile Include="Source\Index\Scene\QueryRef.cs" />
+    <Compile Include="Source\Index\Scene\SceneManager.cs" />
+    <Compile Include="Source\Index\Scene\SceneQuery.cs" />
+    <Compile Include="Source\Index\UI\UIComponents.cs" />
+    <Compile Include="Source\Index\UI\UIEventDispatcher.cs" />
+    <Compile Include="Source\Index\UI\UITransitionMode.cs" />
+    <Compile Include="Source\Index\Utility\CameraUtility.cs" />
+    <Compile Include="Source\Index\Utility\TextUtility.cs" />
+    <Compile Include="Source\Index\Utility\TransformUtility.cs" />
+  </ItemGroup>
+</Project>

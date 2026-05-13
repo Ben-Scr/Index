@@ -1,0 +1,93 @@
+#pragma once
+#include "Scene/Entity.hpp"
+#include "Scene/ISystem.hpp"
+#include "Scripting/NativeScriptHost.hpp"
+#include "Serialization/FileWatcher.hpp"
+#include "Core/Export.hpp"
+#include "Utils/Process.hpp"
+#include <atomic>
+#include <string>
+#include <memory>
+#include <cstddef>
+#include <chrono>
+
+namespace Index {
+	struct ScriptSystemProcessTaskState;
+	struct Collision2D;
+
+	class INDEX_API ScriptSystem : public ISystem {
+	public:
+		void Awake(Scene& scene) override;
+		void Update(Scene& scene) override;
+		// H7: dispatches OnFixedUpdate to managed and native scripts on every
+		// fixed-rate physics tick. Companion to Update; runs after the physics
+		// step + transform sync (PhysicsSystem2D::FixedUpdate ordering applies).
+		void FixedUpdate(Scene& scene) override;
+		void OnPreRender(Scene& scene) override;
+		void OnDestroy(Scene& scene) override;
+		static bool RemoveScript(Entity entity, size_t index);
+		static void RemoveAllScripts(Entity entity);
+		static void SetScriptsEnabled(Entity entity, bool enabled);
+		static void DispatchCollisionEnter2D(Scene& scene, const Collision2D& collision);
+		static void DispatchCollisionStay2D(Scene& scene, const Collision2D& collision);
+		static void DispatchCollisionExit2D(Scene& scene, const Collision2D& collision);
+
+		void SetCoreAssemblyPath(const std::string& path) { m_CoreAssemblyPath = path; }
+		void SetUserAssemblyPath(const std::string& path) { m_UserAssemblyPath = path; }
+
+		/// Suppress file watcher polling (e.g. while a script is being created/renamed)
+		void SetRecompileSuppressed(bool suppressed) { m_SuppressRecompile = suppressed; }
+		bool IsRecompileSuppressed() const { return m_SuppressRecompile; }
+
+		bool RequestRebuildAndReloadAll();
+		bool IsRebuilding() const;
+		bool DidLastRebuildSucceed() const { return !m_LastRebuildFailed; }
+
+		// Editor overlay introspection — exposed so editor UI can render a
+		// "compiling..." overlay without the engine pulling in ImGui itself.
+		bool IsScriptRebuildRunning() const;
+		bool IsNativeRebuildRunning() const;
+		float GetActiveRebuildElapsedSeconds() const;
+
+	private:
+		void RebuildAndReloadScripts();
+		void RebuildAndReloadNativeScripts();
+		void TeardownManagedScripts(Scene& scene);
+		void TeardownNativeScripts(Scene& scene);
+
+		static inline bool m_SuppressRecompile = false;
+
+		static inline std::string m_CoreAssemblyPath;
+		static inline std::string m_UserAssemblyPath;
+		static inline std::string m_SandboxProjectPath;
+		static inline std::string m_NativeProjectDirectory;
+		static inline Scene* m_LastScene = nullptr;
+		static inline ScriptSystem* m_PollingOwner = nullptr;
+		static inline std::size_t m_ActiveSystemCount = 0;
+
+		// C# hot-reload
+		static inline FileWatcher m_ScriptWatcher;
+		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_RebuildTask;
+		static inline bool m_RebuildQueued = false;
+		static inline bool m_LastRebuildFailed = false;
+
+		// C++ native scripts
+		static inline NativeScriptHost m_NativeHost;
+		static inline FileWatcher m_NativeWatcher;
+		static inline std::string m_NativeSourceDirectory;
+		static inline std::string m_NativeDLLPath;
+		static inline std::string m_NativeTargetName;
+		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_NativeRebuildTask;
+		static inline bool m_NativeRebuildQueued = false;
+
+		// True while teardown of managed/native scripts is in progress. The queued-
+		// rebuild dispatch path (OnPreRender) must not replay a queued rebuild while
+		// teardown is mid-flight — a queued rebuild kicked off mid-teardown would
+		// race with the in-progress LoadUserAssembly / NativeHost::LoadDLL and could
+		// reload an assembly that the teardown loop hasn't finished destroying
+		// instances from yet. Atomic in case future profiler/watcher threads peek
+		// at it; today the field is touched only on the main thread.
+		static inline std::atomic<bool> m_TeardownInProgress{false};
+	};
+
+} // namespace Index

@@ -1,5 +1,5 @@
-# Axiom
-Axiom is a lightweight C++20 2D game engine focused on performance.
+# Index
+Index is a lightweight C++20 2D game engine focused on performance.
 
 ## Preview
 
@@ -44,8 +44,8 @@ The repository currently has no Git LFS patterns in `.gitattributes`. Setup skip
 Clone with submodules, or initialize them immediately after cloning:
 
 ```bash
-git clone --recurse-submodules <repo-url> Axiom
-cd Axiom
+git clone --recurse-submodules <repo-url> Index
+cd Index
 ```
 
 If the checkout already exists:
@@ -96,7 +96,7 @@ For a lightweight library build without the runtime application/editor stack:
 
 ```bash
 python3 scripts/Setup.py --generator gmake2 --module-profile core --skip-lfs
-make config=debug -j"$(nproc)" Axiom-Engine
+make config=debug -j"$(nproc)" Index-Engine
 ```
 
 On Windows:
@@ -105,7 +105,7 @@ On Windows:
 py -3 scripts\Setup.py --generator vs2022 --module-profile core --skip-lfs
 ```
 
-Core consumers should include `Axiom/Core.hpp` or the legacy lean `Axiom.hpp`. A minimal consumer source is available at `Docs/Samples/CoreConsumer/main.cpp`. `Axiom/App.hpp`, `Core/Application.hpp`, and `EntryPoint.hpp` are full-runtime APIs and require the application module profile. Setup forwards Premake module flags such as `--module-profile custom --with-render --with-audio` for advanced builds, but the current editor/application surface expects the full runtime stack.
+Core consumers should include `Index/Core.hpp` or the legacy lean `Index.hpp`. A minimal consumer source is available at `Docs/Samples/CoreConsumer/main.cpp`. `Index/App.hpp`, `Core/Application.hpp`, and `EntryPoint.hpp` are full-runtime APIs and require the application module profile. Setup forwards Premake module flags such as `--module-profile custom --with-render --with-audio` for advanced builds, but the current editor/application surface expects the full runtime stack.
 
 ### Scaffolding a new package
 
@@ -113,24 +113,24 @@ Core consumers should include `Axiom/Core.hpp` or the legacy lean `Axiom.hpp`. A
 python scripts/NewPackage.py <PackageName>
 ```
 
-Creates `packages/<PackageName>/` with a starter `axiom-package.lua` manifest. Re-run premake afterward to pick it up.
+Creates `packages/<PackageName>/` with a starter `index-package.lua` manifest. Re-run premake afterward to pick it up.
 
 ## Build
 
 ### Windows
 
-Open `Axiom.sln` in Visual Studio 2022 and build the desired configuration/platform, or build from a Developer PowerShell:
+Open `Index.sln` in Visual Studio 2022 and build the desired configuration/platform, or build from a Developer PowerShell:
 
 ```powershell
-msbuild Axiom.sln /m /p:Configuration=Release /p:Platform=x64
+msbuild Index.sln /m /p:Configuration=Release /p:Platform=x64
 ```
 
 ### Linux
 
 ```bash
-make config=debug -j"$(nproc)" Axiom-Engine
-make config=debug -j"$(nproc)" Axiom-Runtime
-make config=debug -j"$(nproc)" Axiom-Editor
+make config=debug -j"$(nproc)" Index-Engine
+make config=debug -j"$(nproc)" Index-Runtime
+make config=debug -j"$(nproc)" Index-Editor
 ```
 
 ## Validation Commands
@@ -140,7 +140,7 @@ After setup on a clean checkout:
 git status --short
 git submodule status --recursive
 python3 scripts/Setup.py --generator gmake2 --skip-lfs
-make config=release -j"$(nproc)" Axiom-Engine Axiom-Runtime Axiom-Editor
+make config=release -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
 python3 scripts/ci/runtime_smoke_test.py
 ```
 
@@ -150,16 +150,16 @@ On Windows, use:
 git status --short
 git submodule status --recursive
 py -3 scripts\Setup.py --generator vs2022 --skip-lfs
-dotnet restore Axiom.sln
+dotnet restore Index.sln
 ```
 
 ## Generated File Hygiene
-- Generated solution/project files, build folders, and local editor state are ignored. Source folders such as `Axiom-Engine/src/Debugging` and `Axiom-Engine/src/Packages` are intentionally trackable.
+- Generated solution/project files, build folders, and local editor state are ignored. Source folders such as `Index-Engine/src/Debugging` and `Index-Engine/src/Packages` are intentionally trackable.
 - To audit ignored generated files without deleting anything, run `git clean -ndX -- . ':!External/'` from the repository root. Keep submodule cleanup separate from generated-file cleanup.
 - If a submodule looks dirty, inspect it first with `git submodule status --recursive` and `git -C External/<name> status --short`; do not remove submodule contents just to refresh generated files.
 
 ## Notes
-- Runtime assets are copied to the runtime output directory after build (`{targetdir}/AxiomAssets`).
+- Runtime assets are copied to the runtime output directory after build (`{targetdir}/IndexAssets`).
 - Linux builds use GLFW's X11 backend via vendored GLFW sources.
 
 ![Views](https://komarev.com/ghpvc/?username=ben-scr-repo-name&label=Repo%20views&color=218a45&style=flat)

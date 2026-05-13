@@ -1,7 +1,7 @@
 -- Tracy profiler client library.
 --
 -- Built only when the profiler is enabled (root premake5.lua sets
--- AxiomProfiler.Enabled = true unless --no-profiler was passed). Compiled
+-- IndexProfiler.Enabled = true unless --no-profiler was passed). Compiled
 -- as a SharedLib so the engine.dll, editor.exe, and runtime.exe all share
 -- one Tracy client (Tracy is meant to have exactly one client per process,
 -- and our three-binary split would otherwise risk duplicate registration).

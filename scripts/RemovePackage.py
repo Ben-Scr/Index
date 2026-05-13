@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Axiom package remover — inverse of `scripts/NewPackage.py`.
+Index package remover — inverse of `scripts/NewPackage.py`.
 
-Deletes a package directory, removes it from a project's `axiom-project.json`
+Deletes a package directory, removes it from a project's `index-project.json`
 allow-list (when `--project` is given), and re-runs premake so the project
 disappears from the IDE solution on next reload.
 
 Usage examples
 --------------
     # Engine package:
-    python scripts/RemovePackage.py Axiom.Foo
+    python scripts/RemovePackage.py Index.Foo
 
-    # Project-local package (also removes from axiom-project.json):
+    # Project-local package (also removes from index-project.json):
     python scripts/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject"
 
     # Skip premake regen (CI / batch removal):
-    python scripts/RemovePackage.py Axiom.Foo --no-premake
+    python scripts/RemovePackage.py Index.Foo --no-premake
 
     # Skip the directory delete (only remove from allow-list):
     python scripts/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject" --keep-files
@@ -41,12 +41,12 @@ PACKAGE_NAME_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$")
 
 
 def remove_from_project_allow_list(project_root: Path, name: str) -> bool:
-    """Remove `name` from <project>/axiom-project.json's `packages` array.
+    """Remove `name` from <project>/index-project.json's `packages` array.
 
     Returns True if the file was modified, False if the entry wasn't present
     or the file couldn't be parsed.
     """
-    project_file = project_root / "axiom-project.json"
+    project_file = project_root / "index-project.json"
     if not project_file.is_file():
         print(
             f"[RemovePackage] WARNING: --project given but {project_file} not found. "
@@ -112,7 +112,7 @@ def run_premake(project_path: Path | None) -> None:
         return
     cmd = [str(PREMAKE_EXE), "vs2022"]
     if project_path is not None:
-        cmd.append(f"--axiom-project={project_path}")
+        cmd.append(f"--index-project={project_path}")
     print(f"[RemovePackage] regenerating projects: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(REPO_ROOT))
     if result.returncode != 0:
@@ -121,15 +121,15 @@ def run_premake(project_path: Path | None) -> None:
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Remove an Axiom package (inverse of scripts/NewPackage.py).",
+        description="Remove an Index package (inverse of scripts/NewPackage.py).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("name", help="Package name in PascalCase.PascalCase form.")
     parser.add_argument(
         "--project",
         default=None,
-        help="Absolute path to an Axiom project. If set, the package is looked up under "
-        "<project>/Packages/<Name>/ AND removed from <project>/axiom-project.json. "
+        help="Absolute path to an Index project. If set, the package is looked up under "
+        "<project>/Packages/<Name>/ AND removed from <project>/index-project.json. "
         "Otherwise, looked up under <repo>/packages/<Name>/.",
     )
     parser.add_argument(
@@ -153,7 +153,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     name: str = args.name.strip()
     if not PACKAGE_NAME_PATTERN.match(name):
         raise SystemExit(
-            f"[RemovePackage] '{name}' is not a valid Axiom package name. "
+            f"[RemovePackage] '{name}' is not a valid Index package name. "
             "Expected PascalCase.PascalCase[.PascalCase…]."
         )
 
@@ -185,7 +185,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         run_premake(project_root)
 
     print()
-    print("[RemovePackage] done. Restart Visual Studio so the removed project disappears from Axiom.sln.")
+    print("[RemovePackage] done. Restart Visual Studio so the removed project disappears from Index.sln.")
     return 0
 
 

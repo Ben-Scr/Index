@@ -1,6 +1,6 @@
 -- Dawn (Google's WebGPU implementation) wiring.
 --
--- Stage 1 of the WebGPU port (see Axiom-Engine/src/Graphics/Backend/WebGPUApi.cpp
+-- Stage 1 of the WebGPU port (see Index-Engine/src/Graphics/Backend/WebGPUApi.cpp
 -- for context). Dawn is built out-of-band by scripts/SetupDawn.bat or
 -- scripts/SetupDawn.sh as a monolithic static library — premake does NOT compile
 -- Dawn here. Dawn has hundreds of source files with CMake-driven codegen
@@ -12,7 +12,7 @@
 -- This file is included from premake5.lua when --rhi=webgpu is in effect.
 -- It is intentionally NOT a premake `project` — there's nothing here for
 -- premake to build. We instead export a small `DawnLayout` table the rest
--- of the build script (Dependencies.lua / Axiom-Engine/premake5.lua) reads
+-- of the build script (Dependencies.lua / Index-Engine/premake5.lua) reads
 -- to inject Dawn's include + lib paths into the engine project.
 --
 -- If SetupDawn hasn't been run yet, the engine link step will fail with

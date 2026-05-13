@@ -1,4 +1,4 @@
-# Axiom Engine
+# Index Engine
 
 2D game engine in C++20 with C# scripting. OpenGL rendering, EnTT ECS, ImGui editor, Box2D physics, miniaudio audio.
 
@@ -7,38 +7,38 @@
 - **Build system:** Premake5 generates VS2022 solutions (Windows) or gmake2 (Linux).
 - **Setup:** `Setup.bat` or `python scripts/Setup.py` — inits submodules, runs premake.
 - **Premake:** `./vendor/bin/premake5.exe vs2022`
-- **Build (CLI):** `"C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe" Axiom.sln -p:Configuration=Debug -p:Platform=x64 -verbosity:minimal`
-- **Startup project:** Axiom-Launcher
+- **Build (CLI):** `"C:/Program Files/Microsoft Visual Studio/2022/Community/MSBuild/Current/Bin/MSBuild.exe" Index.sln -p:Configuration=Debug -p:Platform=x64 -verbosity:minimal`
+- **Startup project:** Index-Launcher
 - **Configs:** Debug, Release, Dist. All x64.
 - **Output:** `bin/{config}-windows-x64/{project}/`
 - **C++ Standard:** C++20 (Box2D and Axiom-Physics use C++23)
-- **New package:** `python scripts/NewPackage.py <PackageName>` scaffolds a package under `packages/<PackageName>/` with a starter `axiom-package.lua`.
+- **New package:** `python scripts/NewPackage.py <PackageName>` scaffolds a package under `packages/<PackageName>/` with a starter `index-package.lua`.
 
 ## Projects
 
 | Project | Type | Purpose |
 |---------|------|---------|
-| Axiom-Engine | StaticLib | Core engine — everything else links this |
-| Axiom-Editor | ConsoleApp | Scene editor (single .cpp, uses ImGuiEditorSystem) |
-| Axiom-Runtime | ConsoleApp | Runs built games (single .cpp) |
-| Axiom-Launcher | ConsoleApp | Project launcher UI (single .cpp) |
-| Axiom-ScriptCore | C# SharedLib | Managed scripting API (.NET 9.0) |
-| Axiom-Sandbox | C# SharedLib | Example game project |
+| Index-Engine | StaticLib | Core engine — everything else links this |
+| Index-Editor | ConsoleApp | Scene editor (single .cpp, uses ImGuiEditorSystem) |
+| Index-Runtime | ConsoleApp | Runs built games (single .cpp) |
+| Index-Launcher | ConsoleApp | Project launcher UI (single .cpp) |
+| Index-ScriptCore | C# SharedLib | Managed scripting API (.NET 9.0) |
+| Index-Sandbox | C# SharedLib | Example game project |
 
 ## Code conventions
 
-- **Namespace:** `Axiom` for everything. Sub-namespaces rare.
+- **Namespace:** `Index` for everything. Sub-namespaces rare.
 - **Member variables:** `m_PascalCase` (private), `s_PascalCase` (static), `k_PascalCase` (constants). Public fields are `PascalCase` without prefix.
 - **Methods:** PascalCase. Getters: `Get*`, `Is*`, `Has*`. Setters: `Set*`.
 - **Templates:** `T`, `TComponent`, `TTag`, `TSystem`.
 - **Headers:** `#pragma once`. Include order: pch, local engine, third-party, std.
-- **Logging:** Use `AIM_CORE_*_TAG(tag, fmt, args...)` for engine internals, `AIM_*_TAG(tag, fmt, args...)` for client-facing. Uses spdlog fmt syntax, NOT string concatenation.
-- **Assertions:** `AIM_ASSERT(cond, AxiomErrorCode::X, "message")`, `AIM_CORE_ASSERT(...)`.
+- **Logging:** Use `IDX_CORE_*_TAG(tag, fmt, args...)` for engine internals, `IDX_*_TAG(tag, fmt, args...)` for client-facing. Uses spdlog fmt syntax, NOT string concatenation.
+- **Assertions:** `IDX_ASSERT(cond, IndexErrorCode::X, "message")`, `IDX_CORE_ASSERT(...)`.
 - **Components:** Value-type structs, no inheritance. Register in `BuiltInComponentRegistration.cpp`.
 - **Tags:** Empty structs (e.g. `DisabledTag`), use `requires std::is_empty_v<TTag>`.
 - **Systems:** Inherit `ISystem`, implement lifecycle: `Awake`, `Start`, `Update`, `FixedUpdate`, `OnGui`, `OnDestroy`.
 - **PCH:** `pch.hpp`. Files that conflict with PCH opt out via premake filter (e.g. glad.c, scripting files).
-- **Export:** `AXIOM_API` macro for DLL-visible symbols.
+- **Export:** `INDEX_API` macro for DLL-visible symbols.
 
 ## Key patterns
 
@@ -47,12 +47,12 @@
 - Component access: `scene.GetComponent<T>(entity)`, `entity.GetComponent<T>()`.
 - Events: `EventDispatcher(event).Dispatch<EventType>(handler)` and `Event<Args...>` pub/sub.
 - Serialization: Hand-written JSON (no library). `SceneSerializer::SaveToFile/LoadFromFile`.
-- Project config: `axiom-project.json` with hand-rolled JSON parsing.
+- Project config: `index-project.json` with hand-rolled JSON parsing.
 
 ## Known issues / tech debt
 
 - `Debugging/Logger.hpp/.cpp` is dead code (superseded by `Core/Log`). Can be deleted.
-- `AxiomProject.cpp` has hand-rolled JSON parsing — fragile for nested structures.
+- `IndexProject.cpp` has hand-rolled JSON parsing — fragile for nested structures.
 - `SoundRequest::GetHandle` is a data member named like an accessor.
 - `Scene::CreateDetachedScene` / `Scene::IsDetached` (renamed from `CreateDetachedEditorScene` / `IsEditorPreview`) are still in the core surface — kept engine-neutral so the editor *uses* them but the engine doesn't *know* about the editor.
 - `Application::SetPlaymodePaused` / `IsPlaymodePaused` / `IsGameInputEnabled` leak editor concepts into the core API surface (Application.hpp:106-109).
@@ -62,7 +62,7 @@
 ## File structure (engine)
 
 ```
-Axiom-Engine/src/
+Index-Engine/src/
   Core/         Application, Window, Input, Time, Log, Memory, Assert, UUID
   Graphics/     Renderer2D, Texture2D, TextureManager, Shader, GizmoRenderer, OpenGL
   Scene/        Scene, SceneManager, SceneDefinition, Entity, ComponentRegistry, ISystem
@@ -71,10 +71,10 @@ Axiom-Engine/src/
   Audio/        AudioManager, Audio, AudioHandle
   Scripting/    DotNetHost, ScriptEngine, ScriptBindings, ScriptSystem (C# only — native code lives in packages)
   Serialization/ SceneSerializer, File, Path, Directory, FileWatcher
-  Project/      AxiomProject, ProjectManager, LauncherRegistry
-  Gui/          GuiRenderer (editor panels live in Axiom-Editor/, not here)
+  Project/      IndexProject, ProjectManager, LauncherRegistry
+  Gui/          GuiRenderer (editor panels live in Index-Editor/, not here)
   Systems/      AudioUpdateSystem, GizmosDebugSystem, ParticleUpdateSystem
-  Events/       AxiomEvent, KeyEvents, MouseEvents, WindowEvents, SceneEvents
+  Events/       IndexEvent, KeyEvents, MouseEvents, WindowEvents, SceneEvents
   Math/         VectorMath, Trigonometry, Common, Random
   Collections/  Vec2, Vec4, Color, AABB, Viewport, Ids
   Utils/        Event, Timer, StringHelper, CommandBuffer

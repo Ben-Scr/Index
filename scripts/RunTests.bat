@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================================
-REM   Axiom test runner
+REM   Index test runner
 REM
 REM   Builds (incremental) and runs every Tests/<Name> binary in Debug x64.
 REM   Run from the repo root; pass --release for Release configuration.
@@ -15,11 +15,11 @@ if /I "%~1"=="--dist" set "CONFIG=Dist"
 
 pushd "%~dp0\.."
 
-REM Prefer MSBUILD_PATH from scripts\axiom-build-env.bat (written by Setup.py
+REM Prefer MSBUILD_PATH from scripts\index-build-env.bat (written by Setup.py
 REM via vswhere). Fall back to the historical Community-edition default so
 REM running RunTests.bat without first running Setup.py still works.
-set "AXIOM_BUILD_ENV=%~dp0axiom-build-env.bat"
-if exist "%AXIOM_BUILD_ENV%" call "%AXIOM_BUILD_ENV%"
+set "INDEX_BUILD_ENV=%~dp0index-build-env.bat"
+if exist "%INDEX_BUILD_ENV%" call "%INDEX_BUILD_ENV%"
 
 set "MSBUILD=%MSBUILD_PATH%"
 if not defined MSBUILD set "MSBUILD=C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
@@ -32,7 +32,7 @@ if not exist "%MSBUILD%" (
     exit /b 1
 )
 
-if not exist "Axiom.sln" (
+if not exist "Index.sln" (
     echo [INFO] No solution found, regenerating with premake5...
     call vendor\bin\premake5.exe vs2022 || (
         echo [ERROR] premake5 failed.
@@ -41,15 +41,15 @@ if not exist "Axiom.sln" (
     )
 )
 
-echo [INFO] Building Axiom-Engine-Tests (%CONFIG% x64)...
-"%MSBUILD%" "Tests\Axiom-Engine-Tests\Axiom-Engine-Tests.vcxproj" -p:Configuration=%CONFIG% -p:Platform=x64 -verbosity:minimal -nologo
+echo [INFO] Building Index-Engine-Tests (%CONFIG% x64)...
+"%MSBUILD%" "Tests\Index-Engine-Tests\Index-Engine-Tests.vcxproj" -p:Configuration=%CONFIG% -p:Platform=x64 -verbosity:minimal -nologo
 if errorlevel 1 (
     echo [ERROR] Build failed.
     popd
     exit /b 1
 )
 
-set "TEST_EXE=bin\%CONFIG%-windows-x86_64\Axiom-Engine-Tests\Axiom-Engine-Tests.exe"
+set "TEST_EXE=bin\%CONFIG%-windows-x86_64\Index-Engine-Tests\Index-Engine-Tests.exe"
 if not exist "%TEST_EXE%" (
     echo [ERROR] Test binary not produced: %TEST_EXE%
     popd

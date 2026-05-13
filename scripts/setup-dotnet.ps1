@@ -1,7 +1,7 @@
 param(
     [string]$DotNetVersion,
     [string]$DotNetRoot = $env:DOTNET_ROOT,
-    [string]$DotNetArch = $env:AXIOM_DOTNET_ARCH
+    [string]$DotNetArch = $env:INDEX_DOTNET_ARCH
 )
 
 function Resolve-HostArchitecture([string]$Architecture) {

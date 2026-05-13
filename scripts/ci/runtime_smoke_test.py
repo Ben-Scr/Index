@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BIN_DIR = REPO_ROOT / "bin"
-RUNTIME_NAME = "Axiom-Runtime.exe" if os.name == "nt" else "Axiom-Runtime"
+RUNTIME_NAME = "Index-Runtime.exe" if os.name == "nt" else "Index-Runtime"
 
 
 def fail(message: str, log: str | None = None) -> int:
@@ -26,11 +26,11 @@ def fail(message: str, log: str | None = None) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Axiom runtime smoke test.")
+    parser = argparse.ArgumentParser(description="Run the Index runtime smoke test.")
     parser.add_argument(
         "--binary",
         type=Path,
-        help="Exact Axiom-Runtime binary to test. Falls back to bin/ auto-discovery when omitted.",
+        help="Exact Index-Runtime binary to test. Falls back to bin/ auto-discovery when omitted.",
     )
     return parser.parse_args()
 
@@ -41,7 +41,7 @@ def find_runtime_binary() -> Path:
 
     candidates = [
         path for path in BIN_DIR.rglob(RUNTIME_NAME)
-        if path.is_file() and path.parent.name == "Axiom-Runtime"
+        if path.is_file() and path.parent.name == "Index-Runtime"
     ]
     if not candidates:
         raise FileNotFoundError(f"{RUNTIME_NAME} was not found under {BIN_DIR}")
@@ -51,7 +51,7 @@ def find_runtime_binary() -> Path:
         build_name = runtime_dir.parent.name.lower()
 
         score = 0
-        if (runtime_dir / "AxiomAssets").is_dir():
+        if (runtime_dir / "IndexAssets").is_dir():
             score += 100
         if build_name.startswith("release-"):
             score += 50
@@ -67,14 +67,14 @@ def find_runtime_binary() -> Path:
 
 def stage_smoke_project(runtime_dir: Path) -> None:
     shutil.rmtree(runtime_dir / "Assets", ignore_errors=True)
-    project_file = runtime_dir / "axiom-project.json"
+    project_file = runtime_dir / "index-project.json"
     if project_file.exists():
         project_file.unlink()
 
     scenes_dir = runtime_dir / "Assets" / "Scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
 
-    (runtime_dir / "axiom-project.json").write_text(
+    (runtime_dir / "index-project.json").write_text(
         json.dumps(
             {
                 "name": "SmokeProject",
@@ -215,9 +215,9 @@ def main() -> int:
             return fail(str(error))
 
     runtime_dir = runtime_binary.parent
-    axiom_assets_dir = runtime_dir / "AxiomAssets"
-    if not axiom_assets_dir.is_dir():
-        return fail(f"Expected AxiomAssets next to the runtime binary at {axiom_assets_dir}")
+    index_assets_dir = runtime_dir / "IndexAssets"
+    if not index_assets_dir.is_dir():
+        return fail(f"Expected IndexAssets next to the runtime binary at {index_assets_dir}")
 
     stage_smoke_project(runtime_dir)
     exit_code, log_output = run_runtime(runtime_binary)
@@ -235,7 +235,7 @@ def main() -> int:
 
     forbidden_markers = (
         "Failed to load default texture",
-        "AxiomAssets/Textures not found",
+        "IndexAssets/Textures not found",
         "Texture 'Default/",
         "Failed to start scene 'SampleScene'",
         "Scene destroy failed for 'SampleScene'",

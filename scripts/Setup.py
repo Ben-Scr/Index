@@ -17,14 +17,14 @@ def ensure_supported_python() -> None:
         required = ".".join(str(part) for part in MINIMUM_PYTHON)
         found = ".".join(str(part) for part in sys.version_info[:3])
         raise SystemExit(
-            f"[Axiom Setup] Python {required}+ is required. "
+            f"[Index Setup] Python {required}+ is required. "
             f"Found Python {found}. Please install a newer Python version and try again."
         )
 
 
 def run_step(cmd: list[str], cwd: Path, label: str, allow_failure: bool = False) -> bool:
-    print(f"[Axiom Setup] {label}...")
-    print(f"[Axiom Setup] > {' '.join(cmd)}")
+    print(f"[Index Setup] {label}...")
+    print(f"[Index Setup] > {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=cwd)
     if result.returncode != 0 and not allow_failure:
         raise RuntimeError(f"Step failed ({label}) with exit code {result.returncode}.")
@@ -136,7 +136,7 @@ def detect_dotnet_version(dotnet_root: Path, host_arch: str) -> str | None:
 
 def detect_msbuild(script_dir: Path) -> str | None:
     """Locate MSBuild.exe via vswhere on Windows. Writes the resolved path to
-    scripts/axiom-build-env.bat for downstream tools (e.g. RunTests.bat).
+    scripts/index-build-env.bat for downstream tools (e.g. RunTests.bat).
 
     Returns the resolved MSBuild path, or None if vswhere/MSBuild was not
     located. Non-fatal: failures are logged and the function returns None.
@@ -178,7 +178,7 @@ def detect_msbuild(script_dir: Path) -> str | None:
     msbuild_path = candidates[0]
     print(f"  [OK] MSBuild detected: {msbuild_path}")
 
-    env_file = script_dir / "axiom-build-env.bat"
+    env_file = script_dir / "index-build-env.bat"
     try:
         env_file.write_text(
             "@echo off\r\n"
@@ -194,15 +194,15 @@ def detect_msbuild(script_dir: Path) -> str | None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Set up Axiom dependencies and generate project files.")
+    parser = argparse.ArgumentParser(description="Set up Index dependencies and generate project files.")
     parser.add_argument(
         "--generator",
-        default=os.environ.get("AXIOM_PREMAKE_ACTION"),
+        default=os.environ.get("INDEX_PREMAKE_ACTION"),
         help="Premake action to generate (defaults to vs2022 on Windows, gmake2 elsewhere).",
     )
     parser.add_argument(
         "--dotnet-arch",
-        default=os.environ.get("AXIOM_DOTNET_ARCH"),
+        default=os.environ.get("INDEX_DOTNET_ARCH"),
         help="Windows .NET host-pack architecture to copy (for example: x64 or arm64).",
     )
     parser.add_argument(
@@ -218,7 +218,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--module-profile",
         choices=("full", "core", "custom"),
-        help="Premake Axiom module profile to generate.",
+        help="Premake Index module profile to generate.",
     )
     parser.add_argument(
         "--with-render",
@@ -296,13 +296,13 @@ def main() -> int:
     repo_root = script_dir.parent
 
     os.chdir(repo_root)
-    print(f"[Axiom Setup] Repository root: {repo_root}")
-    print(f"[Axiom Setup] Platform: {platform.system()}")
+    print(f"[Index Setup] Repository root: {repo_root}")
+    print(f"[Index Setup] Platform: {platform.system()}")
     print()
 
-    os.environ["AXIOM_DIR"] = str(repo_root)
+    os.environ["INDEX_DIR"] = str(repo_root)
 
-    print("[Axiom Setup] Checking prerequisites...")
+    print("[Index Setup] Checking prerequisites...")
     # "required" prereqs hard-fail by default (override with --ignore-prereqs).
     # "soft" prereqs only warn -- they cover downstream resources that have
     # their own fallback paths (e.g. setup-dotnet.ps1 copies the host pack).
@@ -351,7 +351,7 @@ def main() -> int:
                 soft_missing.append("dotnet-host-pack")
         else:
             print(f"  [OK] Using .NET host architecture: {dotnet_arch}")
-            os.environ["AXIOM_DOTNET_ARCH"] = dotnet_arch
+            os.environ["INDEX_DOTNET_ARCH"] = dotnet_arch
             detected_ver = detect_dotnet_version(dotnet_root, dotnet_arch)
         if detected_ver:
             print(f"  [OK] .NET host pack found: {detected_ver}")
@@ -360,7 +360,7 @@ def main() -> int:
             if not dotnet_files_present(repo_root):
                 soft_missing.append("dotnet-host-pack")
     else:
-        # Non-Windows: dotnet is still required for scripting/Axiom-ScriptCore.
+        # Non-Windows: dotnet is still required for scripting/Index-ScriptCore.
         if dotnet_exe:
             print(f"  [OK] dotnet found: {dotnet_exe}")
         else:
@@ -369,7 +369,7 @@ def main() -> int:
                 required_missing.append("dotnet")
 
     # E12: detect MSBuild via vswhere on Windows (non-fatal). Writes
-    # scripts/axiom-build-env.bat with MSBUILD_PATH for downstream tools.
+    # scripts/index-build-env.bat with MSBUILD_PATH for downstream tools.
     if is_windows:
         detect_msbuild(script_dir)
 
@@ -378,19 +378,19 @@ def main() -> int:
         # Deduplicate while preserving order.
         seen: set[str] = set()
         unique_soft = [m for m in soft_missing if not (m in seen or seen.add(m))]
-        print(f"[Axiom Setup] WARNING: Optional resources missing: {', '.join(unique_soft)}")
-        print("[Axiom Setup] Some downstream steps may fall back or fail; continuing.")
+        print(f"[Index Setup] WARNING: Optional resources missing: {', '.join(unique_soft)}")
+        print("[Index Setup] Some downstream steps may fall back or fail; continuing.")
         print()
 
     if required_missing:
         if args.ignore_prereqs:
-            print(f"[Axiom Setup] WARNING: Missing prerequisites: {', '.join(required_missing)}")
-            print("[Axiom Setup] --ignore-prereqs supplied; continuing anyway. Some steps may fail.")
+            print(f"[Index Setup] WARNING: Missing prerequisites: {', '.join(required_missing)}")
+            print("[Index Setup] --ignore-prereqs supplied; continuing anyway. Some steps may fail.")
             print()
         else:
-            print(f"[Axiom Setup] ERROR: Missing required prerequisites: {', '.join(required_missing)}")
-            print("[Axiom Setup] Install the listed tools, or re-run with --ignore-prereqs to")
-            print("[Axiom Setup] continue anyway (steps depending on the missing tool will fail).")
+            print(f"[Index Setup] ERROR: Missing required prerequisites: {', '.join(required_missing)}")
+            print("[Index Setup] Install the listed tools, or re-run with --ignore-prereqs to")
+            print("[Index Setup] continue anyway (steps depending on the missing tool will fail).")
             return 1
 
     run_step(
@@ -405,10 +405,10 @@ def main() -> int:
             "Updating git submodules",
         )
     else:
-        print("[Axiom Setup] Submodules already match the recorded revisions.")
+        print("[Index Setup] Submodules already match the recorded revisions.")
 
     if args.skip_lfs:
-        print("[Axiom Setup] Git LFS skipped by --skip-lfs.")
+        print("[Index Setup] Git LFS skipped by --skip-lfs.")
     elif has_lfs_patterns(repo_root):
         lfs_ok = run_step(
             ["git", "lfs", "pull"],
@@ -417,18 +417,18 @@ def main() -> int:
             allow_failure=not args.require_lfs,
         )
         if not lfs_ok:
-            print("[Axiom Setup] Warning: git lfs pull failed or Git LFS is unavailable. Continuing...")
+            print("[Index Setup] Warning: git lfs pull failed or Git LFS is unavailable. Continuing...")
     else:
-        print("[Axiom Setup] No Git LFS attributes found - skipping git lfs pull.")
+        print("[Index Setup] No Git LFS attributes found - skipping git lfs pull.")
 
     if is_windows:
         if dotnet_files_present(repo_root):
-            print("[Axiom Setup] .NET hosting files already present - skipping.")
+            print("[Index Setup] .NET hosting files already present - skipping.")
         else:
-            print("[Axiom Setup] Setting up .NET hosting files...")
+            print("[Index Setup] Setting up .NET hosting files...")
             ps_script = script_dir / "setup-dotnet.ps1"
             if not ps_script.is_file():
-                print("[Axiom Setup] WARNING: setup-dotnet.ps1 not found, skipping .NET setup.")
+                print("[Index Setup] WARNING: setup-dotnet.ps1 not found, skipping .NET setup.")
             else:
                 ps_args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(ps_script)]
                 if detected_ver:
@@ -447,21 +447,21 @@ def main() -> int:
     # E13: when scripting is on the table and dotnet is reachable, restore the
     # generated solution so the .NET projects are ready to build immediately.
     if scripting_wanted and dotnet_exe:
-        sln = repo_root / "Axiom.sln"
+        sln = repo_root / "Index.sln"
         if sln.is_file():
             run_step(
                 [dotnet_exe, "restore", str(sln)],
                 repo_root,
-                "Restoring .NET dependencies (dotnet restore Axiom.sln)",
+                "Restoring .NET dependencies (dotnet restore Index.sln)",
                 allow_failure=True,
             )
         else:
-            print("[Axiom Setup] Axiom.sln not produced by Premake; skipping dotnet restore.")
+            print("[Index Setup] Index.sln not produced by Premake; skipping dotnet restore.")
     elif scripting_wanted and not dotnet_exe:
-        print("[Axiom Setup] Skipping dotnet restore - dotnet not on PATH.")
+        print("[Index Setup] Skipping dotnet restore - dotnet not on PATH.")
 
     print()
-    print("[Axiom Setup] Setup complete.")
+    print("[Index Setup] Setup complete.")
     return 0
 
 
@@ -469,5 +469,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"[Axiom Setup] ERROR: {exc}")
+        print(f"[Index Setup] ERROR: {exc}")
         raise SystemExit(1)

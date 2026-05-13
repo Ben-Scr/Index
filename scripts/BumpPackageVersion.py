@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-Bump the `version` field in an Axiom package's `axiom-package.lua` manifest.
+Bump the `version` field in an Index package's `index-package.lua` manifest.
 
 Usage examples
 --------------
     # Bump patch (0.1.0 -> 0.1.1):
-    python scripts/BumpPackageVersion.py Axiom.Tilemap2D --patch
+    python scripts/BumpPackageVersion.py Index.Tilemap2D --patch
 
     # Bump minor (0.1.0 -> 0.2.0; resets patch to 0):
-    python scripts/BumpPackageVersion.py Axiom.Tilemap2D --minor
+    python scripts/BumpPackageVersion.py Index.Tilemap2D --minor
 
     # Bump major (0.1.0 -> 1.0.0; resets minor and patch to 0):
-    python scripts/BumpPackageVersion.py Axiom.Tilemap2D --major
+    python scripts/BumpPackageVersion.py Index.Tilemap2D --major
 
     # Set an explicit version (any semver-shaped string is accepted):
-    python scripts/BumpPackageVersion.py Axiom.Tilemap2D --set 2.1.3
+    python scripts/BumpPackageVersion.py Index.Tilemap2D --set 2.1.3
 
     # Project-local package (looked up under <project>/Packages/<Name>/):
     python scripts/BumpPackageVersion.py MyGame.Loot --patch \\
         --project "C:/path/to/MyProject"
 
     # Dry-run — show what the change would be without writing:
-    python scripts/BumpPackageVersion.py Axiom.Tilemap2D --patch --dry-run
+    python scripts/BumpPackageVersion.py Index.Tilemap2D --patch --dry-run
 
 The script does a regex-based rewrite — it doesn't parse the full Lua
 manifest. The `version` field MUST be on its own line in the form
@@ -72,13 +72,13 @@ def bump(version: str, kind: str) -> str:
 
 def resolve_manifest_path(name: str, project_path: Path | None) -> Path:
     if project_path is not None:
-        return project_path / "Packages" / name / "axiom-package.lua"
-    return REPO_ROOT / "packages" / name / "axiom-package.lua"
+        return project_path / "Packages" / name / "index-package.lua"
+    return REPO_ROOT / "packages" / name / "index-package.lua"
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Bump or set the version of an Axiom package's axiom-package.lua manifest.",
+        description="Bump or set the version of an Index package's index-package.lua manifest.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("name", help="Package name in PascalCase.PascalCase form.")
@@ -91,7 +91,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument(
         "--project",
         default=None,
-        help="Absolute path to an Axiom project. Looks up the package under "
+        help="Absolute path to an Index project. Looks up the package under "
         "<project>/Packages/<Name>/. Otherwise looks under <repo>/packages/<Name>/.",
     )
     parser.add_argument(
@@ -104,7 +104,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     name = args.name.strip()
     if not PACKAGE_NAME_PATTERN.match(name):
         raise SystemExit(
-            f"[BumpPackageVersion] '{name}' is not a valid Axiom package name."
+            f"[BumpPackageVersion] '{name}' is not a valid Index package name."
         )
 
     project_root: Path | None = None

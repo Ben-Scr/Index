@@ -1,17 +1,17 @@
-# Axiom project .gitignore template
+# Index project .gitignore template
 #
-# Copy this file to the root of a Axiom user project.
+# Copy this file to the root of a Index user project.
 #
 # Keep these project files in source control:
 # - Assets/, Assets/Scenes/, Assets/Scripts/
-# - AxiomAssets/ when the project owns custom engine/runtime assets
+# - IndexAssets/ when the project owns custom engine/runtime assets
 # - NativeScripts/Source/
 # - *.scene, *.prefab, *.meta, *.json, *.cs, *.cpp, *.hpp, *.h
 # - *.sln, *.csproj, CMakeLists.txt, premake5.lua, shared .vscode config
 
 
 # ---------------------------------------------------------------------------
-# Axiom generated output and local editor state
+# Index generated output and local editor state
 # ---------------------------------------------------------------------------
 /bin/
 /bin-int/
@@ -27,11 +27,11 @@
 /Library/
 /Cache/
 
-# Axiom packages and generated local data that can be restored.
+# Index packages and generated local data that can be restored.
 /Packages/
-/.axiom/cache/
-/.axiom/temp/
-/.axiom/logs/
+/.index/cache/
+/.index/temp/
+/.index/logs/
 
 # ImGui/editor window layout is local machine state.
 imgui.ini

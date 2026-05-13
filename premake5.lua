@@ -1,6 +1,6 @@
-workspace "Axiom"
+workspace "Index"
     architecture "x64"
-    startproject "Axiom-Launcher"
+    startproject "Index-Launcher"
 
     configurations
     {
@@ -27,32 +27,32 @@ newoption
 {
     trigger = "module-profile",
     value = "PROFILE",
-    description = "Axiom module profile: full (default compatibility), core, or custom. Supplying any --with-* option without this flag selects custom.",
+    description = "Index module profile: full (default compatibility), core, or custom. Supplying any --with-* option without this flag selects custom.",
     allowed =
     {
-        { "full", "Compatibility profile: render, audio, physics, scripting, editor, and AXIOM_ALL_MODULES." },
+        { "full", "Compatibility profile: render, audio, physics, scripting, editor, and INDEX_ALL_MODULES." },
         { "core", "Core-only profile: no optional module defines or third-party module dependencies." },
         { "custom", "Enable only the optional modules requested with --with-render/--with-audio/--with-physics/--with-scripting/--with-editor." }
     }
 }
 
-newoption { trigger = "with-render", description = "Enable the Axiom render module dependencies and AXIOM_WITH_RENDER." }
-newoption { trigger = "with-audio", description = "Enable the Axiom audio module dependencies and AXIOM_WITH_AUDIO." }
-newoption { trigger = "with-physics", description = "Enable the Axiom physics module dependencies and AXIOM_WITH_PHYSICS." }
-newoption { trigger = "with-scripting", description = "Enable the Axiom scripting module dependencies and AXIOM_WITH_SCRIPTING." }
-newoption { trigger = "with-editor", description = "Enable the Axiom editor module dependencies and AXIOM_WITH_EDITOR. This also enables render dependencies." }
+newoption { trigger = "with-render", description = "Enable the Index render module dependencies and INDEX_WITH_RENDER." }
+newoption { trigger = "with-audio", description = "Enable the Index audio module dependencies and INDEX_WITH_AUDIO." }
+newoption { trigger = "with-physics", description = "Enable the Index physics module dependencies and INDEX_WITH_PHYSICS." }
+newoption { trigger = "with-scripting", description = "Enable the Index scripting module dependencies and INDEX_WITH_SCRIPTING." }
+newoption { trigger = "with-editor", description = "Enable the Index editor module dependencies and INDEX_WITH_EDITOR. This also enables render dependencies." }
 
 newoption
 {
-    trigger = "axiom-project",
+    trigger = "index-project",
     value = "PATH",
-    description = "Absolute path to an Axiom project. Adds <PATH>/Packages/<Name>/axiom-package.lua manifests to the package loader so project-local packages get built into the same solution."
+    description = "Absolute path to an Index project. Adds <PATH>/Packages/<Name>/index-package.lua manifests to the package loader so project-local packages get built into the same solution."
 }
 
 newoption
 {
     trigger = "no-profiler",
-    description = "Strip the Axiom profiler entirely from the build. Without this flag, Tracy is compiled into the engine, AXIOM_PROFILER_ENABLED is defined for engine/editor/runtime, and the in-engine ImGui Profiler panel is available. Pass --no-profiler for shipped runtime builds with strict size budgets."
+    description = "Strip the Index profiler entirely from the build. Without this flag, Tracy is compiled into the engine, INDEX_PROFILER_ENABLED is defined for engine/editor/runtime, and the in-engine ImGui Profiler panel is available. Pass --no-profiler for shipped runtime builds with strict size budgets."
 }
 
 -- The engine has exactly one graphics backend (WebGPU via Dawn); the
@@ -61,12 +61,12 @@ newoption
 
 -- Resolved early so subsequent dep-set wiring can branch on it. Default ON;
 -- explicit --no-profiler turns it off. The single boolean drives:
---   - whether AXIOM_PROFILER_ENABLED is defined
+--   - whether INDEX_PROFILER_ENABLED is defined
 --   - whether the Tracy project is included in the build
 --   - whether the engine compiles src/Profiling/**
 --   - whether the editor compiles src/Gui/ProfilerPanel.*
-AxiomProfiler = {}
-AxiomProfiler.Enabled = not _OPTIONS["no-profiler"]
+IndexProfiler = {}
+IndexProfiler.Enabled = not _OPTIONS["no-profiler"]
 
 require("premake/fix_csharp_platforms")
 
@@ -87,7 +87,7 @@ local function HasExplicitModuleOption()
         or _OPTIONS["with-editor"]
 end
 
-local function ResolveAxiomModules()
+local function ResolveIndexModules()
     local profile = _OPTIONS["module-profile"]
     if not profile then
         profile = HasExplicitModuleOption() and "custom" or "full"
@@ -128,7 +128,7 @@ local function ResolveAxiomModules()
     return modules
 end
 
-AxiomModules = ResolveAxiomModules()
+IndexModules = ResolveIndexModules()
 
 -- The engine itself no longer depends on ImGui (the editor application owns its own
 -- ImGui context as a Layer). EngineCoreEditor is therefore consumed only by the
@@ -143,61 +143,61 @@ AxiomModules = ResolveAxiomModules()
 -- already use).
 Dependency.EngineSelectedModules = MergeDependencySets(
     Dependency.EngineCore,
-    AxiomModules.Render and Dependency.EngineCoreRender or nil,
-    AxiomModules.Audio and Dependency.EngineCoreAudio or nil,
-    AxiomModules.Physics and Dependency.EngineCorePhysics or nil,
-    AxiomModules.Scripting and Dependency.EngineCoreScripting or nil,
-    AxiomProfiler.Enabled and Dependency.Profiler or nil,
+    IndexModules.Render and Dependency.EngineCoreRender or nil,
+    IndexModules.Audio and Dependency.EngineCoreAudio or nil,
+    IndexModules.Physics and Dependency.EngineCorePhysics or nil,
+    IndexModules.Scripting and Dependency.EngineCoreScripting or nil,
+    IndexProfiler.Enabled and Dependency.Profiler or nil,
     Dependency.EngineCoreEditor  -- engine.dll always hosts the ImGui backend
 )
 
 Dependency.EditorRuntimeCommon = MergeDependencySets(
     {
-        DependsOn = { "Axiom-Engine" },
-        Links = { "Axiom-Engine" }
+        DependsOn = { "Index-Engine" },
+        Links = { "Index-Engine" }
     },
     Dependency.EngineSelectedModules,
-    AxiomModules.Editor and Dependency.EngineCoreEditor or nil
+    IndexModules.Editor and Dependency.EngineCoreEditor or nil
 )
 
-function GetAxiomModuleDefines()
-    local hasApplication = AxiomModules.Render
-        and AxiomModules.Audio
-        and AxiomModules.Physics
-        and AxiomModules.Scripting
-        and AxiomModules.Editor
+function GetIndexModuleDefines()
+    local hasApplication = IndexModules.Render
+        and IndexModules.Audio
+        and IndexModules.Physics
+        and IndexModules.Scripting
+        and IndexModules.Editor
 
     local defines =
     {
-        "AXIOM_WITH_RENDER=" .. (AxiomModules.Render and "1" or "0"),
-        "AXIOM_WITH_AUDIO=" .. (AxiomModules.Audio and "1" or "0"),
-        "AXIOM_WITH_PHYSICS=" .. (AxiomModules.Physics and "1" or "0"),
-        "AXIOM_WITH_SCRIPTING=" .. (AxiomModules.Scripting and "1" or "0"),
-        "AXIOM_WITH_EDITOR=" .. (AxiomModules.Editor and "1" or "0"),
-        "AXIOM_WITH_APPLICATION=" .. (hasApplication and "1" or "0")
+        "INDEX_WITH_RENDER=" .. (IndexModules.Render and "1" or "0"),
+        "INDEX_WITH_AUDIO=" .. (IndexModules.Audio and "1" or "0"),
+        "INDEX_WITH_PHYSICS=" .. (IndexModules.Physics and "1" or "0"),
+        "INDEX_WITH_SCRIPTING=" .. (IndexModules.Scripting and "1" or "0"),
+        "INDEX_WITH_EDITOR=" .. (IndexModules.Editor and "1" or "0"),
+        "INDEX_WITH_APPLICATION=" .. (hasApplication and "1" or "0")
     }
 
-    if AxiomModules.FullCompatibility then
-        table.insert(defines, "AXIOM_ALL_MODULES=1")
+    if IndexModules.FullCompatibility then
+        table.insert(defines, "INDEX_ALL_MODULES=1")
     end
 
     return defines
 end
 
-function UseAxiomEngineModuleDependencies()
+function UseIndexEngineModuleDependencies()
     UseDependencySet(Dependency.EngineSelectedModules)
 end
 
--- Shared postbuild command: copy AxiomAssets into each target output
--- directory. The single source tree is `Axiom-Runtime/AxiomAssets/`,
+-- Shared postbuild command: copy IndexAssets into each target output
+-- directory. The single source tree is `Index-Runtime/IndexAssets/`,
 -- staged via one {COPYDIR} next to the consumer exe.
-CopyAxiomAssets = '{COPYDIR} "' .. path.join(ROOT_DIR, "Axiom-Runtime/AxiomAssets") .. '" "%{cfg.targetdir}/AxiomAssets"'
+CopyIndexAssets = '{COPYDIR} "' .. path.join(ROOT_DIR, "Index-Runtime/IndexAssets") .. '" "%{cfg.targetdir}/IndexAssets"'
 
 -- Shared postbuild command: copy the engine SharedLib next to each consumer executable
 -- so it resolves at runtime without depending on PATH.
-CopyAxiomEngineDll = '{COPYFILE} "' ..
-    path.join(ROOT_DIR, "bin/" .. outputdir, "Axiom-Engine", "Axiom-Engine.dll") ..
-    '" "%{cfg.targetdir}/Axiom-Engine.dll"'
+CopyIndexEngineDll = '{COPYFILE} "' ..
+    path.join(ROOT_DIR, "bin/" .. outputdir, "Index-Engine", "Index-Engine.dll") ..
+    '" "%{cfg.targetdir}/Index-Engine.dll"'
 
 -- GLFW and Glad are SharedLibs so all consumers (engine.dll + consumer .exes) share
 -- one copy of their global state. Each consumer ships the DLLs alongside its binary.
@@ -214,7 +214,7 @@ CopyGladDll = ""
 -- Tracy is a SharedLib too (one client per process). Consumers ship the DLL.
 -- When --no-profiler is set this expands to a no-op string the postbuild
 -- list can still reference safely.
-if AxiomProfiler and AxiomProfiler.Enabled then
+if IndexProfiler and IndexProfiler.Enabled then
     CopyTracyDll = '{COPYFILE} "' ..
         path.join(ROOT_DIR, "bin/" .. outputdir, "Tracy", "Tracy.dll") ..
         '" "%{cfg.targetdir}/Tracy.dll"'
@@ -246,8 +246,8 @@ end
 --
 -- `rootRelPrefix` is the path prefix to prepend so the (repo-root-
 -- relative) Dawn build directory resolves correctly from the consumer's
--- own premake working directory. Top-level project folders (Axiom-Engine/,
--- Axiom-Editor/, etc.) need "../"; deeper folders (Tests/Axiom-Engine-
+-- own premake working directory. Top-level project folders (Index-Engine/,
+-- Index-Editor/, etc.) need "../"; deeper folders (Tests/Index-Engine-
 -- Tests/) need "../../" — caller picks.
 --
 -- Why per-config: webgpu_dawn.lib lives in both `Debug/` and `Release/`
@@ -288,7 +288,7 @@ function UseDependencySet(dep)
 end
 
 group "Dependencies"
-if AxiomModules.Editor then
+if IndexModules.Editor then
     project "ImGui"
         location (path.join(ROOT_DIR, "premake/generated/ImGui"))
         kind "StaticLib"
@@ -392,7 +392,7 @@ if AxiomModules.Editor then
         filter {}
 end
 
-if AxiomModules.Render then
+if IndexModules.Render then
     include "premake/dependencies/glfw.lua"
     -- Dawn (WebGPU) is the engine's sole GPU backend. The pre-built
     -- webgpu_dawn.lib comes from scripts/SetupDawn.bat — premake just
@@ -401,29 +401,29 @@ if AxiomModules.Render then
     -- to mirror into premake.)
 end
 
-if AxiomModules.Physics then
+if IndexModules.Physics then
     include "premake/dependencies/box2d.lua"
-    include "premake/dependencies/axiom_physics.lua"
+    include "premake/dependencies/index_physics.lua"
 end
 
-if AxiomProfiler.Enabled then
+if IndexProfiler.Enabled then
     include "premake/dependencies/tracy.lua"
 end
 
-include "Axiom-Engine"
+include "Index-Engine"
 
-if AxiomModules.Scripting then
-    include "Axiom-ScriptCore"
-    include "Axiom-Sandbox"
+if IndexModules.Scripting then
+    include "Index-ScriptCore"
+    include "Index-Sandbox"
 end
 
-if AxiomModules.Editor then
-    include "Axiom-Editor"
+if IndexModules.Editor then
+    include "Index-Editor"
 end
 
-if AxiomModules.FullCompatibility then
-    include "Axiom-Launcher"
-    include "Axiom-Runtime"
+if IndexModules.FullCompatibility then
+    include "Index-Launcher"
+    include "Index-Runtime"
 end
 
 group ""
@@ -431,9 +431,9 @@ group ""
 -- Tests live in their own group so they're easy to spot in the IDE solution
 -- explorer and trivial to disable by commenting out this block.
 group "Tests"
-    include "Tests/Axiom-Engine-Tests"
+    include "Tests/Index-Engine-Tests"
 group ""
 
--- Load any axiom-package.lua manifests under packages/ and register their projects.
-local AxiomPackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
-AxiomPackageLoader.LoadAll()
+-- Load any index-package.lua manifests under packages/ and register their projects.
+local IndexPackageLoader = dofile(path.join(ROOT_DIR, "premake/package-loader.lua"))
+IndexPackageLoader.LoadAll()

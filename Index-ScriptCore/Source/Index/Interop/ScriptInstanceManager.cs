@@ -1,0 +1,2006 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Loader;
+using Index;
+using Index.Coroutines;
+
+namespace Index.Interop;
+/// <summary>
+/// Resolves Index-ScriptCore from the default context to prevent duplicate type loading.
+/// </summary>
+internal class ScriptAssemblyLoadContext : AssemblyLoadContext
+{
+    private readonly Assembly _coreAssembly;
+    private readonly AssemblyDependencyResolver? _resolver;
+    private readonly string? _userAssemblyDir;
+
+    public ScriptAssemblyLoadContext(Assembly coreAssembly, string? userAssemblyPath = null)
+        : base("IndexUserScripts", isCollectible: true)
+    {
+        _coreAssembly = coreAssembly;
+        if (userAssemblyPath != null)
+        {
+            _userAssemblyDir = System.IO.Path.GetDirectoryName(
+                System.IO.Path.GetFullPath(userAssemblyPath));
+
+            try { _resolver = new AssemblyDependencyResolver(userAssemblyPath); }
+            catch (Exception ex)
+            {
+                Log.Warn($"[ScriptLoader] AssemblyDependencyResolver failed: {ex.Message}");
+                _resolver = null;
+            }
+        }
+
+        // Register Resolving event as a last-resort fallback.
+        // This fires when Load() returns null AND the Default context also fails.
+        this.Resolving += OnResolving;
+    }
+
+    protected override Assembly? Load(AssemblyName name)
+    {
+        if (name.Name == _coreAssembly.GetName().Name)
+            return _coreAssembly;
+
+        // Try .deps.json resolver (resolves NuGet packages from cache or local copy)
+        if (_resolver != null)
+        {
+            string? resolvedPath = _resolver.ResolveAssemblyToPath(name);
+            if (resolvedPath != null)
+                return LoadFromAssemblyPath(resolvedPath);
+        }
+
+        // Probe the user assembly's output directory
+        Assembly? probed = ProbeDirectory(_userAssemblyDir, name.Name);
+        if (probed != null) return probed;
+
+        return null;
+    }
+
+    private Assembly? OnResolving(AssemblyLoadContext context, AssemblyName name)
+    {
+        // Last-resort: re-probe directory and NuGet cache
+        Log.Warn($"[ScriptLoader] Resolving fallback for: {name.Name}");
+
+        Assembly? probed = ProbeDirectory(_userAssemblyDir, name.Name);
+        if (probed != null) return probed;
+
+        // Check NuGet global packages cache
+        if (name.Name != null && name.Version != null)
+        {
+            string? nugetDir = System.Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+            if (string.IsNullOrEmpty(nugetDir))
+                nugetDir = System.IO.Path.Combine(
+                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile),
+                    ".nuget", "packages");
+
+            string packageDir = System.IO.Path.Combine(
+                nugetDir, name.Name.ToLowerInvariant(), name.Version.ToString());
+
+            if (System.IO.Directory.Exists(packageDir))
+            {
+                string[] tfms = { "net9.0", "net8.0", "net7.0", "net6.0", "netstandard2.1", "netstandard2.0" };
+                foreach (string tfm in tfms)
+                {
+                    string dllPath = System.IO.Path.Combine(packageDir, "lib", tfm, name.Name + ".dll");
+                    if (System.IO.File.Exists(dllPath))
+                        return LoadFromAssemblyPath(dllPath);
+                }
+            }
+        }
+
+        Log.Error($"[ScriptLoader] Failed to resolve: {name.FullName}");
+        return null;
+    }
+
+    private Assembly? ProbeDirectory(string? dir, string? assemblyName)
+    {
+        if (dir == null || assemblyName == null) return null;
+        string candidate = System.IO.Path.Combine(dir, assemblyName + ".dll");
+        if (System.IO.File.Exists(candidate))
+            return LoadFromAssemblyPath(candidate);
+        return null;
+    }
+}
+
+/// <summary>
+/// Manages script instances on the managed side. All public methods are
+/// [UnmanagedCallersOnly] and called from C++ via function pointers.
+/// </summary>
+internal static class ScriptInstanceManager
+{
+    private static readonly Dictionary<int, ScriptInstanceData> s_Instances = new();
+    private static readonly Dictionary<int, GameSystem> s_GameSystems = new();
+    private static readonly Dictionary<int, GlobalSystem> s_GlobalSystems = new();
+    private static int s_NextHandle = 1;
+
+    private static Assembly? s_CoreAssembly;
+    private static Assembly? s_UserAssembly;
+    private static AssemblyLoadContext? s_UserLoadContext;
+    private static readonly Dictionary<string, ScriptClassInfo?> s_ClassCache = new();
+
+    private struct ScriptInstanceData
+    {
+        public EntityScript Instance;
+        public MethodInfo? StartMethod;
+        public MethodInfo? UpdateMethod;
+        public bool HasStarted;
+        public bool HasAwoken;
+    }
+
+    private static readonly HashSet<int> s_GameSystemAwoken = new();
+
+    private class ScriptClassInfo
+    {
+        public Type Type = null!;
+        public bool IsScript;
+        public bool IsComponent;
+        public bool IsGameSystem;
+        public bool IsGlobalSystem;
+        public MethodInfo? StartMethod;
+        public MethodInfo? UpdateMethod;
+
+        // Lazily populated by EnsureInvokableMethods. Holds every public
+        // instance method on this class that an inspector "On Click ()" /
+        // "On Value Changed ()" list can target — returns void, takes
+        // 0 or 1 supported parameter (bool / int / float / double /
+        // string / Vector2 / Color / Entity), declared on the user's
+        // subclass (not on EntityScript / Component / object). Keyed by
+        // name so InvokeScriptMethodByName is an O(1) lookup. The
+        // parallel `InvokableMethodArgKinds` list tags each enumerated
+        // method with the wire-level arg-kind byte (matches the C++
+        // `InspectorEventArgKind` enum) so the inspector can render the
+        // appropriate value editor.
+        public Dictionary<string, MethodInfo>? InvokableMethodsByName;
+        public List<string>? InvokableMethodNames;
+        public List<byte>? InvokableMethodArgKinds;
+    }
+
+    // Mirrors InspectorEventArgKind in C++. Stays as constants rather than
+    // a real enum to keep the wire byte values explicit — adding kinds
+    // here without renumbering would silently break already-saved scenes.
+    private const byte k_ArgKindVoid      = 0;
+    private const byte k_ArgKindBool      = 1;
+    private const byte k_ArgKindInt       = 2;
+    private const byte k_ArgKindFloat     = 3;
+    private const byte k_ArgKindDouble    = 4;
+    private const byte k_ArgKindString    = 5;
+    private const byte k_ArgKindVec2      = 6;
+    private const byte k_ArgKindColor     = 7;
+    private const byte k_ArgKindEntityRef = 8;
+
+    private static byte ResolveArgKind(Type t)
+    {
+        if (t == typeof(bool))    return k_ArgKindBool;
+        if (t == typeof(int)
+         || t == typeof(short)
+         || t == typeof(byte)
+         || t == typeof(sbyte)
+         || t == typeof(uint)
+         || t == typeof(long)
+         || t == typeof(ushort)) return k_ArgKindInt;
+        if (t == typeof(float))   return k_ArgKindFloat;
+        if (t == typeof(double))  return k_ArgKindDouble;
+        if (t == typeof(string))  return k_ArgKindString;
+        if (t == typeof(Vector2)) return k_ArgKindVec2;
+        if (t == typeof(Color))   return k_ArgKindColor;
+        if (t == typeof(Entity))  return k_ArgKindEntityRef;
+        return 0xFF; // unsupported — caller filters out
+    }
+
+    internal static void SetCoreAssembly(Assembly assembly)
+    {
+        s_CoreAssembly = assembly;
+    }
+
+    private static List<ScriptInstanceData> SnapshotInstances()
+    {
+        return new List<ScriptInstanceData>(s_Instances.Values);
+    }
+
+    internal static EntityScript? GetScriptInstance(ulong entityID, string className)
+    {
+        if (entityID == 0 || string.IsNullOrWhiteSpace(className))
+            return null;
+
+        foreach (var data in SnapshotInstances())
+        {
+            EntityScript instance = data.Instance;
+            if (instance.Entity == null || instance.Entity.ID != entityID)
+                continue;
+
+            Type type = instance.GetType();
+            if (string.Equals(type.Name, className, StringComparison.Ordinal)
+                || string.Equals(type.FullName, className, StringComparison.Ordinal))
+            {
+                return instance;
+            }
+        }
+
+        return null;
+    }
+
+    private static void DispatchToScripts(Action<EntityScript> invoke, string eventName)
+    {
+        foreach (var data in SnapshotInstances())
+        {
+            try { invoke(data.Instance); }
+            catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
+        }
+    }
+
+    private static void DispatchToGameSystems(Action<GameSystem> invoke, string eventName)
+    {
+        foreach (var system in new List<GameSystem>(s_GameSystems.Values))
+        {
+            try { invoke(system); }
+            catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
+        }
+    }
+
+    private static void DispatchToGlobalSystems(Action<GlobalSystem> invoke, string eventName)
+    {
+        foreach (var system in new List<GlobalSystem>(s_GlobalSystems.Values))
+        {
+            try { invoke(system); }
+            catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
+        }
+    }
+
+
+    private static Scene SceneFromName(string name) => new Scene { Name = name };
+
+    private static unsafe string PtrToString(byte* value)
+    {
+        return Marshal.PtrToStringUTF8((IntPtr)value) ?? "";
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseApplicationStart()
+    {
+        Application.RaiseApplicationStart();
+        DispatchToScripts(script => script.OnApplicationStart(), nameof(EntityScript.OnApplicationStart));
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseApplicationPaused()
+    {
+        Application.RaiseApplicationPaused();
+        DispatchToScripts(script => script.OnApplicationPaused(), nameof(EntityScript.OnApplicationPaused));
+        DispatchToGameSystems(system => system.OnApplicationPaused(), nameof(GameSystem.OnApplicationPaused));
+        DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseApplicationQuit()
+    {
+        Application.RaiseApplicationQuit();
+        DispatchToScripts(script => script.OnApplicationQuit(), nameof(EntityScript.OnApplicationQuit));
+        DispatchToGameSystems(system => system.OnApplicationQuit(), nameof(GameSystem.OnApplicationQuit));
+        DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseFocusChanged(int focused)
+    {
+        bool isFocused = focused != 0;
+        Window.RaiseFocusChanged(isFocused);
+        DispatchToScripts(script => script.OnFocusChanged(isFocused), nameof(EntityScript.OnFocusChanged));
+        DispatchToGameSystems(system => system.OnFocusChanged(isFocused), nameof(GameSystem.OnFocusChanged));
+        DispatchToGlobalSystems(system => system.OnFocusChanged(isFocused), nameof(GlobalSystem.OnFocusChanged));
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseKeyDown(int key) => Input.RaiseKeyDown((KeyCode)key);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseKeyUp(int key) => Input.RaiseKeyUp((KeyCode)key);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseEnterChar(uint codepoint)
+    {
+        if (codepoint > char.MaxValue) return;
+        char c = (char)codepoint;
+        if (char.IsControl(c)) return;
+        Input.RaiseEnterChar(c);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseDown(int button) => Input.RaiseMouseDown((MouseButton)button);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseUp(int button) => Input.RaiseMouseUp((MouseButton)button);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseScroll(float delta) => Input.RaiseMouseScroll(delta);
+
+    [UnmanagedCallersOnly]
+    public static void RaiseMouseMove(float x, float y) => Input.RaiseMouseMove(new Vector2(x, y));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseBeforeSceneLoaded(byte* sceneName) => SceneManager.RaiseBeforeSceneLoaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseSceneLoaded(byte* sceneName) => SceneManager.RaiseSceneLoaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName) => SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static unsafe void RaiseSceneUnloaded(byte* sceneName) => SceneManager.RaiseSceneUnloaded(PtrToString(sceneName));
+
+    [UnmanagedCallersOnly]
+    public static void RaiseWindowResize()
+    {
+        Window.InvokeResize();
+    }
+
+    [UnmanagedCallersOnly]
+    public static void RaiseUiEventDispatch()
+    {
+        Index.UI.UIEventDispatcher.Tick();
+    }
+
+    private static void UnloadCurrentUserAssemblyContext()
+    {
+        if (s_UserLoadContext == null)
+            return;
+
+        // Drop cached managed Component instances *before* unloading: each entry in
+        // Entity.s_ManagedComponentStore references a user-defined type, which roots
+        // the AssemblyLoadContext and would prevent it from unloading on hot reload.
+        Entity.ClearManagedComponentStore();
+
+        var weakContext = new WeakReference(s_UserLoadContext, trackResurrection: false);
+        s_UserLoadContext.Unload();
+        s_UserLoadContext = null;
+        s_UserAssembly = null;
+        ReleaseFieldJsonBuffer();
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        if (weakContext.IsAlive)
+            Log.Warn("[ScriptLoader] User assembly load context is still alive after unload; lingering references may delay full cleanup.");
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int CreateScriptInstance(byte* classNamePtr, ulong entityID)
+    {
+        try
+        {
+            string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr)!;
+            var classInfo = GetOrCacheClass(className);
+            if (classInfo == null || !classInfo.IsScript) return 0;
+
+            var instance = (EntityScript)Activator.CreateInstance(classInfo.Type)!;
+            instance._SetEntityID(entityID);
+
+            int handle = s_NextHandle++;
+            s_Instances[handle] = new ScriptInstanceData
+            {
+                Instance = instance,
+                StartMethod = classInfo.StartMethod,
+                UpdateMethod = classInfo.UpdateMethod,
+                HasStarted = false,
+                HasAwoken = false
+            };
+
+            return handle;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"CreateScriptInstance failed: {ex}");
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void DestroyScriptInstance(int handle) => s_Instances.Remove(handle);
+
+    [UnmanagedCallersOnly]
+    public static void InvokeStart(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data) || data.HasStarted) return;
+
+        try
+        {
+            data.Instance.OnStart();
+            data.StartMethod?.Invoke(data.Instance, null);
+            data.HasStarted = true;
+            s_Instances[handle] = data;
+        }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in OnStart(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in OnStart(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeAwake(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data) || data.HasAwoken) return;
+
+        try
+        {
+            data.Instance.OnAwake();
+            data.HasAwoken = true;
+            s_Instances[handle] = data;
+        }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in OnAwake(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in OnAwake(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeUpdate(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+        try
+        {
+            data.Instance.OnUpdate();
+            data.UpdateMethod?.Invoke(data.Instance, null);
+        }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in OnUpdate(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in OnUpdate(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeFixedUpdate(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+        try
+        {
+            data.Instance.OnFixedUpdate();
+        }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in OnFixedUpdate(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in OnFixedUpdate(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeOnDestroy(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+        // Cancel coroutines BEFORE user OnDestroy so any pending awaits unwind
+        // with OCE rather than racing against the script's teardown logic.
+        try { data.Instance._CancelPendingCoroutines(); }
+        catch (Exception ex) { Log.Error($"Exception cancelling coroutines: {ex}"); }
+        try { data.Instance.OnDestroy(); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in OnDestroy(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in OnDestroy(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeOnEnable(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+        try { data.Instance.OnEnable(); }
+        catch (Exception ex) { Log.Error($"Exception in OnEnable(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeOnDisable(int handle)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+        try { data.Instance.OnDisable(); }
+        catch (Exception ex) { Log.Error($"Exception in OnDisable(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeCollisionEnter2D(int handle, ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, float contactPointX, float contactPointY)
+    {
+        InvokeCollision2D(handle, selfEntityId, otherEntityId, entityAId, entityBId, new Vector2(contactPointX, contactPointY), CollisionPhase.Enter);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeCollisionStay2D(int handle, ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, float contactPointX, float contactPointY)
+    {
+        InvokeCollision2D(handle, selfEntityId, otherEntityId, entityAId, entityBId, new Vector2(contactPointX, contactPointY), CollisionPhase.Stay);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeCollisionExit2D(int handle, ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, float contactPointX, float contactPointY)
+    {
+        InvokeCollision2D(handle, selfEntityId, otherEntityId, entityAId, entityBId, new Vector2(contactPointX, contactPointY), CollisionPhase.Exit);
+    }
+
+    private enum CollisionPhase { Enter, Stay, Exit }
+
+    private static void InvokeCollision2D(int handle, ulong selfEntityId, ulong otherEntityId, ulong entityAId, ulong entityBId, Vector2 contactPoint, CollisionPhase phase)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return;
+
+        try
+        {
+            var collision = new Collision2D(selfEntityId, otherEntityId, entityAId, entityBId, contactPoint);
+            if (phase == CollisionPhase.Enter)
+                data.Instance.OnCollisionEnter2D(collision);
+            else if (phase == CollisionPhase.Stay)
+                data.Instance.OnCollisionStay2D(collision);
+            else
+                data.Instance.OnCollisionExit2D(collision);
+        }
+        catch (Exception ex)
+        {
+            string callbackName = phase switch
+            {
+                CollisionPhase.Enter => nameof(EntityScript.OnCollisionEnter2D),
+                CollisionPhase.Stay => nameof(EntityScript.OnCollisionStay2D),
+                _ => nameof(EntityScript.OnCollisionExit2D)
+            };
+            Log.Error($"Exception in {callbackName}: {ex}");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int ClassExists(byte* classNamePtr)
+    {
+        string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr)!;
+        return GetOrCacheClass(className)?.IsScript == true ? 1 : 0;
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int CreateGameSystemInstance(byte* classNamePtr, byte* sceneNamePtr)
+    {
+        try
+        {
+            string className = PtrToString(classNamePtr);
+            string sceneName = PtrToString(sceneNamePtr);
+            var classInfo = GetOrCacheClass(className);
+            if (classInfo == null || !classInfo.IsGameSystem) return 0;
+
+            var instance = (GameSystem)Activator.CreateInstance(classInfo.Type)!;
+            instance._SetSceneName(sceneName);
+
+            int handle = s_NextHandle++;
+            s_GameSystems[handle] = instance;
+            return handle;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"CreateGameSystemInstance failed: {ex}");
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void DestroyGameSystemInstance(int handle)
+    {
+        s_GameSystems.Remove(handle);
+        s_GameSystemAwoken.Remove(handle);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemStart(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnStart(); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnStart(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemAwake(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        if (!s_GameSystemAwoken.Add(handle)) return;
+        try { system.OnAwake(); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in GameSystem.OnAwake(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnAwake(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemUpdate(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnUpdate(); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnUpdate(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemFixedUpdate(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnFixedUpdate(); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in GameSystem.OnFixedUpdate(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnFixedUpdate(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemEnable(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnEnable(); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnEnable(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemDisable(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnDisable(); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnDisable(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGameSystemDestroy(int handle)
+    {
+        if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnDestroy(); }
+        catch (Exception ex) { Log.Error($"Exception in GameSystem.OnDestroy(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int GameSystemClassExists(byte* classNamePtr)
+    {
+        string className = PtrToString(classNamePtr);
+        return GetOrCacheClass(className)?.IsGameSystem == true ? 1 : 0;
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int CreateGlobalSystemInstance(byte* classNamePtr)
+    {
+        try
+        {
+            string className = PtrToString(classNamePtr);
+            var classInfo = GetOrCacheClass(className);
+            if (classInfo == null || !classInfo.IsGlobalSystem) return 0;
+
+            var instance = (GlobalSystem)Activator.CreateInstance(classInfo.Type)!;
+            int handle = s_NextHandle++;
+            s_GlobalSystems[handle] = instance;
+            return handle;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"CreateGlobalSystemInstance failed: {ex}");
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void DestroyGlobalSystemInstance(int handle) => s_GlobalSystems.Remove(handle);
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGlobalSystemInitialize(int handle)
+    {
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnInitialize(); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnInitialize(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGlobalSystemUpdate(int handle)
+    {
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnUpdate(); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnUpdate(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGlobalSystemFixedUpdate(int handle)
+    {
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnFixedUpdate(); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in GlobalSystem.OnFixedUpdate(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnFixedUpdate(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGlobalSystemEnable(int handle)
+    {
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnEnable(); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnEnable(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void InvokeGlobalSystemDisable(int handle)
+    {
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
+        try { system.OnDisable(); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnDisable(): {ex}"); }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int GlobalSystemClassExists(byte* classNamePtr)
+    {
+        string className = PtrToString(classNamePtr);
+        return GetOrCacheClass(className)?.IsGlobalSystem == true ? 1 : 0;
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int LoadUserAssembly(byte* pathPtr)
+    {
+        try
+        {
+            string path = Marshal.PtrToStringUTF8((IntPtr)pathPtr)!;
+
+            if (s_UserLoadContext != null)
+            {
+                CancelAllInstanceCoroutines();
+                s_Instances.Clear();
+                s_GameSystems.Clear();
+                s_GameSystemAwoken.Clear();
+                s_GlobalSystems.Clear();
+                s_ClassCache.Clear();
+                UnloadCurrentUserAssemblyContext();
+            }
+
+            s_ClassCache.Clear();
+
+            // Load from bytes to avoid file-locking the DLL on disk
+            string fullPath = System.IO.Path.GetFullPath(path);
+            s_UserLoadContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
+            byte[] assemblyBytes = System.IO.File.ReadAllBytes(fullPath);
+            s_UserAssembly = s_UserLoadContext.LoadFromStream(
+                new System.IO.MemoryStream(assemblyBytes));
+
+            Log.Info($"User assembly loaded: {path}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to load user assembly: {ex.Message}");
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void UnloadUserAssembly()
+    {
+        CancelAllInstanceCoroutines();
+        s_Instances.Clear();
+        s_GameSystems.Clear();
+        s_GameSystemAwoken.Clear();
+        s_GlobalSystems.Clear();
+        s_ClassCache.Clear();
+        ReleaseFieldJsonBuffer();
+
+        UnloadCurrentUserAssemblyContext();
+    }
+
+    [UnmanagedCallersOnly]
+    public static void PumpCoroutinesUpdate(float deltaTime)
+    {
+        CoroutineScheduler.PumpUpdate(deltaTime);
+    }
+
+    [UnmanagedCallersOnly]
+    public static void PumpCoroutinesFixedUpdate()
+    {
+        CoroutineScheduler.PumpFixedUpdate();
+    }
+
+    // Cancel every live script's destroy CTS, then drop every pending
+    // scheduler entry. Called both from per-script teardown's bulk path
+    // (LoadUserAssembly when re-loading, UnloadUserAssembly during hot
+    // reload) so any captured user-ALC types are released for the GC
+    // dance in UnloadCurrentUserAssemblyContext.
+    private static void CancelAllInstanceCoroutines()
+    {
+        foreach (var data in s_Instances.Values)
+        {
+            try { data.Instance._CancelPendingCoroutines(); }
+            catch (Exception ex) { Log.Error($"Exception cancelling coroutines during reload: {ex}"); }
+        }
+        CoroutineScheduler.Reset();
+    }
+
+    // ── Field reflection for [ShowInEditor] ──────────────────────
+
+    private static readonly object s_FieldJsonBufferLock = new();
+    private static byte[] s_FieldJsonBuffer = Array.Empty<byte>();
+    private static GCHandle s_FieldJsonBufferHandle;
+
+    [UnmanagedCallersOnly]
+    public static unsafe byte* GetScriptFields(int handle)
+    {
+        try
+        {
+            if (!s_Instances.TryGetValue(handle, out var data))
+                return NullTerminated("[]");
+
+            var instance = data.Instance;
+            var type = instance.GetType();
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append('[');
+            bool first = true;
+
+            foreach (var member in CollectEditorMembers(type))
+            {
+                if (member.DeclaringType == typeof(EntityScript)) continue;
+                if (!IsMemberEditorVisible(member)) continue;
+
+                string fieldType = MapFieldType(member.ValueType);
+                if (fieldType == "unsupported") continue;
+
+                object? val = TryGetMemberValue(member, instance);
+                if (!first) sb.Append(',');
+                first = false;
+                AppendMemberJson(sb, member, val);
+            }
+
+            sb.Append(']');
+            return NullTerminated(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetScriptFields failed: {ex.Message}");
+            return NullTerminated("[]");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void SetScriptField(int handle, byte* fieldNamePtr, byte* valuePtr)
+    {
+        try
+        {
+            if (!s_Instances.TryGetValue(handle, out var data)) return;
+            ApplyFieldEdit(data.Instance, fieldNamePtr, valuePtr);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"SetScriptField failed: {ex.Message}");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe byte* GetGameSystemFields(int handle)
+    {
+        try
+        {
+            if (!s_GameSystems.TryGetValue(handle, out var system))
+                return NullTerminated("[]");
+
+            return SerializeInstanceFields(system, typeof(GameSystem));
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetGameSystemFields failed: {ex.Message}");
+            return NullTerminated("[]");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void SetGameSystemField(int handle, byte* fieldNamePtr, byte* valuePtr)
+    {
+        try
+        {
+            if (!s_GameSystems.TryGetValue(handle, out var system)) return;
+            ApplyFieldEdit(system, fieldNamePtr, valuePtr);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"SetGameSystemField failed: {ex.Message}");
+        }
+    }
+
+    // Shared write path for both EntityScript and GameSystem instances:
+    // resolves the named member by reflection, parses the string-encoded
+    // value, and pushes it through. Looks up FIELDS first (faster path
+    // and the only thing the editor used to write to), then falls back
+    // to PROPERTIES so users can expose validated/computed setters in
+    // the inspector. Silently skips on miss / parse failure — matches
+    // the existing SetScriptField tolerance, since the editor may post
+    // stale member names after a script edit.
+    //
+    // Property setters can throw (validation, ArgumentOutOfRange, etc.).
+    // We catch and log so a bad inspector edit doesn't take down the
+    // whole script-host call.
+    private static unsafe void ApplyFieldEdit(object instance, byte* fieldNamePtr, byte* valuePtr)
+    {
+        string fieldName = Marshal.PtrToStringUTF8((IntPtr)fieldNamePtr) ?? "";
+        string valueStr = Marshal.PtrToStringUTF8((IntPtr)valuePtr) ?? "";
+
+        const BindingFlags k_Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        Type type = instance.GetType();
+
+        var field = type.GetField(fieldName, k_Flags);
+        if (field != null)
+        {
+            object? parsed = ParseFieldValue(field.FieldType, valueStr);
+            if (parsed != null) field.SetValue(instance, parsed);
+            return;
+        }
+
+        var property = type.GetProperty(fieldName, k_Flags);
+        if (property == null) return;
+
+        // Refuse the write if no public setter — the inspector should
+        // already have flagged the row read-only via AppendMemberJson,
+        // but defend against a stale write anyway. (CanWrite alone
+        // returns true for `init`-only and private setters.)
+        if (!property.CanWrite || property.SetMethod == null || !property.SetMethod.IsPublic)
+            return;
+
+        object? parsedProp = ParseFieldValue(property.PropertyType, valueStr);
+        if (parsedProp == null) return;
+
+        try
+        {
+            property.SetValue(instance, parsedProp);
+        }
+        catch (TargetInvocationException tie) when (tie.InnerException != null)
+        {
+            // Surface the underlying validation error from the user's
+            // setter (e.g. ArgumentOutOfRangeException) without the
+            // reflection wrapper.
+            Log.Error($"Inspector write to property '{type.Name}.{fieldName}' threw: {tie.InnerException.Message}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Inspector write to property '{type.Name}.{fieldName}' failed: {ex.Message}");
+        }
+    }
+
+    // Walks every instance field + property, drops members declared on
+    // the supplied base type (so EntityScript / GameSystem boilerplate
+    // stays out of the inspector), and emits the same JSON shape the
+    // editor already parses for [ShowInEditor]. Centralising it keeps
+    // GetScriptFields and GetGameSystemFields in lock-step so the C++
+    // inspector sees identical payloads regardless of which kind of
+    // script the member lives on.
+    private static unsafe byte* SerializeInstanceFields(object instance, Type ignoreBaseType)
+    {
+        var type = instance.GetType();
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append('[');
+        bool first = true;
+
+        foreach (var member in CollectEditorMembers(type))
+        {
+            if (member.DeclaringType == ignoreBaseType) continue;
+            if (!IsMemberEditorVisible(member)) continue;
+
+            string fieldType = MapFieldType(member.ValueType);
+            if (fieldType == "unsupported") continue;
+
+            object? val = TryGetMemberValue(member, instance);
+            if (!first) sb.Append(',');
+            first = false;
+            AppendMemberJson(sb, member, val);
+        }
+
+        sb.Append(']');
+        return NullTerminated(sb.ToString());
+    }
+
+    private static string MapFieldType(Type t)
+    {
+        // Primitve types
+        if (t == typeof(float)) return "float";
+        if (t == typeof(double)) return "double";
+        if (t == typeof(int)) return "int";
+        if (t == typeof(short)) return "short";
+        if (t == typeof(byte)) return "byte";
+        if (t == typeof(long)) return "long";
+        if (t == typeof(uint)) return "uint";
+        if (t == typeof(ushort)) return "ushort";
+        if (t == typeof(sbyte)) return "sbyte";
+        if (t == typeof(ulong)) return "ulong";
+        if (t == typeof(bool)) return "bool";
+        if (t == typeof(string)) return "string";
+
+        // Index-specific types
+        if (t == typeof(Color)) return "color";
+        if (t == typeof(Entity)) return "entity";
+        if (t == typeof(Scene)) return "scene";
+        if (t == typeof(Texture)) return "texture";
+        if (t == typeof(Audio)) return "audio";
+        if (t == typeof(TextureRef)) return "texture";
+        if (t == typeof(AudioRef)) return "audio";
+        if(t == typeof(Vector2)) return "vector2";
+        if (t == typeof(Vector2Int)) return "vector2Int";
+        if (t == typeof(Vector3)) return "vector3";
+        if (t == typeof(Vector3Int)) return "vector3Int";
+        if (t == typeof(Vector4)) return "vector4";
+        if (t == typeof(Vector4Int)) return "vector4Int";
+
+        if (t.IsEnum)
+        {
+            // [Flags] enums get their own dispatch type so the editor renders
+            // a per-bit checkbox combo instead of a single-selection dropdown.
+            return t.GetCustomAttribute<FlagsAttribute>() != null ? "flagenum" : "enum";
+        }
+
+        if (t.IsSubclassOf(typeof(Component)))
+        {
+            return Entity.TryGetNativeComponentName(t, out string? nativeName)
+                ? "component:" + nativeName
+                : "unsupported";
+        }
+        if (t.IsValueType && typeof(Index.Components.IComponent).IsAssignableFrom(t))
+        {
+            return Entity.TryGetNativeComponentName(t, out string? nativeName)
+                ? "component:" + nativeName
+                : "unsupported";
+        }
+        return "unsupported";
+    }
+
+    private static string FormatFieldValue(Type t, object? val)
+    {
+        if (val == null) return "";
+
+        //INFO(Ben-Scr): This may causes bugs when sharing projects across different locales
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+
+        // Primitve types
+        if (t == typeof(float)) return ((float)val).ToString(ic);
+        if (t == typeof(double)) return ((double)val).ToString(ic);
+        if (t == typeof(int)) return ((int)val).ToString(ic);
+        if (t == typeof(short)) return ((short)val).ToString(ic);
+        if (t == typeof(byte)) return ((byte)val).ToString(ic);
+        if (t == typeof(long)) return ((long)val).ToString(ic);
+        if (t == typeof(uint)) return ((uint)val).ToString(ic);
+        if (t == typeof(ushort)) return ((ushort)val).ToString(ic);
+        if (t == typeof(sbyte)) return ((sbyte)val).ToString(ic);
+        if (t == typeof(ulong)) return ((ulong)val).ToString(ic);
+        if (t == typeof(bool)) return (bool)val ? "true" : "false";
+        if (t == typeof(string)) return (string)val;
+
+
+        if (t == typeof(Color))
+        {
+            var c = (Color)val;
+            return $"{c.R.ToString(ic)},{c.G.ToString(ic)},{c.B.ToString(ic)},{c.A.ToString(ic)}";
+        }
+        if (t == typeof(Entity))
+        {
+            var entity = (Entity)val;
+            if (entity == null || entity == Entity.Invalid) return "0";
+
+            return entity.IsPrefabAsset
+                ? "prefab:" + entity.PrefabGUID.ToString(ic)
+                : entity.ID.ToString(ic);
+        }
+        if (t == typeof(Scene))
+        {
+            var scene = (Scene)val;
+            return scene.AssetUUID != 0 ? scene.AssetUUID.ToString(ic) : "";
+        }
+        if (t == typeof(Texture))
+        {
+            Texture texture = (Texture)val;
+            return texture.UUID != 0 ? texture.UUID.ToString(ic) : "";
+        }
+        if (t == typeof(Audio))
+        {
+            Audio audio = (Audio)val;
+            return audio.UUID != 0 ? audio.UUID.ToString(ic) : "";
+        }
+        if (t == typeof(TextureRef))
+        {
+            TextureRef assetRef = (TextureRef)val;
+            return assetRef.UUID != 0 ? assetRef.UUID.ToString(ic) : "";
+        }
+        if (t == typeof(AudioRef))
+        {
+            AudioRef assetRef = (AudioRef)val;
+            return assetRef.UUID != 0 ? assetRef.UUID.ToString(ic) : "";
+        }
+        if(t == typeof(Vector2))
+        {
+            var v = (Vector2)val;
+            return $"{v.X.ToString(ic)},{v.Y.ToString(ic)}";
+        }
+        if (t == typeof(Vector2Int))
+        {
+            var v = (Vector2Int)val;
+            return $"{v.X.ToString(ic)},{v.Y.ToString(ic)}";
+        }
+        if (t == typeof(Vector3))
+        {
+            var v = (Vector3)val;
+            return $"{v.X.ToString(ic)},{v.Y.ToString(ic)},{v.Z.ToString(ic)}";
+        }
+        if (t == typeof(Vector3Int))
+        {
+            var v = (Vector3Int)val;
+            return $"{v.X.ToString(ic)},{v.Y.ToString(ic)},{v.Z.ToString(ic)}";
+        }
+        if (t == typeof(Vector4))
+        {
+            var v = (Vector4)val;
+            return $"{v.X.ToString(ic)},{v.Y.ToString(ic)},{v.Z.ToString(ic)},{v.W.ToString(ic)}";
+        }
+        if (t == typeof(Vector4Int))
+        {
+            var v = (Vector4Int)val;
+            return $"{v.X.ToString(ic)},{v.Y.ToString(ic)},{v.Z.ToString(ic)},{v.W.ToString(ic)}";
+        }
+
+        if (t.IsSubclassOf(typeof(Component)))
+        {
+            var comp = (Component)val;
+            if (comp?.Entity == null || comp.Entity == Entity.Invalid) return "";
+            string typeName = Entity.TryGetNativeComponentName(t, out string? nativeName)
+                ? nativeName!
+                : t.Name;
+            return comp.Entity.ID.ToString(ic) + ":" + typeName;
+        }
+
+        if (t.IsEnum)
+        {
+            // Enums round-trip as the underlying integer's invariant decimal
+            // form. Flag enums are bitwise OR-able integers so the same path
+            // works for both single-value and [Flags] enums.
+            return Convert.ToInt64(val, ic).ToString(ic);
+        }
+        return val.ToString() ?? "";
+    }
+
+    private static ulong ParseAssetUUID(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return 0;
+
+        if (ulong.TryParse(value, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out ulong assetId))
+        {
+            return assetId;
+        }
+
+        return InternalCalls.Asset_GetOrCreateUUIDFromPath(value);
+    }
+
+    private static bool MatchesComponentReferenceType(Type componentType, string serializedTypeName)
+    {
+        if (Entity.TryGetNativeComponentName(componentType, out string? nativeName)
+            && string.Equals(nativeName, serializedTypeName, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return string.Equals(componentType.Name, serializedTypeName, StringComparison.Ordinal);
+    }
+
+    private static object? ParseFieldValue(Type t, string s)
+    {
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        try
+        {
+            if (t == typeof(float)) return float.Parse(s, ic);
+            if (t == typeof(double)) return double.Parse(s, ic);
+            if (t == typeof(int)) return int.Parse(s, ic);
+            if (t == typeof(short)) return short.Parse(s, ic);
+            if (t == typeof(byte)) return byte.Parse(s, ic);
+            if (t == typeof(long)) return long.Parse(s, ic);
+            if (t == typeof(uint)) return uint.Parse(s, ic);
+            if (t == typeof(ushort)) return ushort.Parse(s, ic);
+            if (t == typeof(sbyte)) return sbyte.Parse(s, ic);
+            if (t == typeof(ulong)) return ulong.Parse(s, ic);
+            if (t == typeof(bool)) return s == "true" || s == "True" || s == "1";
+            if (t == typeof(string)) return s;
+            if (t == typeof(Color))
+            {
+                var parts = s.Split(',');
+                if (parts.Length >= 4)
+                    return new Color(
+                        float.Parse(parts[0], ic), float.Parse(parts[1], ic),
+                        float.Parse(parts[2], ic), float.Parse(parts[3], ic));
+                return new Color(1, 1, 1, 1);
+            }
+            if (t == typeof(Vector2))
+            {
+                var parts = s.Split(',', StringSplitOptions.TrimEntries);
+                if (parts.Length >= 2)
+                    return new Vector2(
+                        float.Parse(parts[0], ic),
+                        float.Parse(parts[1], ic));
+                return null;
+            }
+            if (t == typeof(Vector2Int))
+            {
+                var parts = s.Split(',', StringSplitOptions.TrimEntries);
+                if (parts.Length >= 2)
+                    return new Vector2Int(
+                        int.Parse(parts[0], ic),
+                        int.Parse(parts[1], ic));
+                return null;
+            }
+            if (t == typeof(Vector3))
+            {
+                var parts = s.Split(',', StringSplitOptions.TrimEntries);
+                if (parts.Length >= 3)
+                    return new Vector3(
+                        float.Parse(parts[0], ic),
+                        float.Parse(parts[1], ic),
+                        float.Parse(parts[2], ic));
+                return null;
+            }
+            if (t == typeof(Vector3Int))
+            {
+                var parts = s.Split(',', StringSplitOptions.TrimEntries);
+                if (parts.Length >= 3)
+                    return new Vector3Int(
+                        int.Parse(parts[0], ic),
+                        int.Parse(parts[1], ic),
+                        int.Parse(parts[2], ic));
+                return null;
+            }
+            if (t == typeof(Vector4))
+            {
+                var parts = s.Split(',', StringSplitOptions.TrimEntries);
+                if (parts.Length >= 4)
+                    return new Vector4(
+                        float.Parse(parts[0], ic),
+                        float.Parse(parts[1], ic),
+                        float.Parse(parts[2], ic),
+                        float.Parse(parts[3], ic));
+                return null;
+            }
+            if (t == typeof(Vector4Int))
+            {
+                var parts = s.Split(',', StringSplitOptions.TrimEntries);
+                if (parts.Length >= 4)
+                    return new Vector4Int(
+                        int.Parse(parts[0], ic),
+                        int.Parse(parts[1], ic),
+                        int.Parse(parts[2], ic),
+                        int.Parse(parts[3], ic));
+                return null;
+            }
+            if (t == typeof(Entity))
+            {
+                return Entity.ParseEntityReference(s);
+            }
+            if (t == typeof(Scene))
+            {
+                return Scene.FromAssetUUID(ParseAssetUUID(s));
+            }
+            if (t == typeof(Texture)) return Texture.FromAssetUUID(ParseAssetUUID(s));
+            if (t == typeof(Audio)) return Audio.FromAssetUUID(ParseAssetUUID(s));
+            if (t == typeof(TextureRef)) return new TextureRef(ParseAssetUUID(s));
+            if (t == typeof(AudioRef)) return new AudioRef(ParseAssetUUID(s));
+            if (t.IsSubclassOf(typeof(Component)))
+            {
+                // Format: "EntityID:ComponentName".
+                // Routes through Entity.GetComponentByType so the script's
+                // inspector-assigned field shares the same Component
+                // instance as entity.GetComponent<T>(). Without that
+                // sharing, UI event subscriptions (Button.OnClicked etc.)
+                // attach to a different Component than UIEventDispatcher
+                // invokes, and handlers silently never fire.
+                var sep = s.IndexOf(':');
+                if (sep > 0)
+                {
+                    ulong entityId = ulong.Parse(s.Substring(0, sep), ic);
+                    string componentTypeName = s.Substring(sep + 1);
+                    if (!MatchesComponentReferenceType(t, componentTypeName))
+                        return null;
+
+                    if (entityId != 0)
+                    {
+                        return new Entity(entityId).GetComponentByType(t);
+                    }
+                }
+                return null;
+            }
+
+            if (t.IsEnum)
+            {
+                // Stored as the underlying integer's decimal form. ToObject
+                // accepts any integer convertible to the enum's underlying
+                // type, so this works for both regular enums and [Flags] OR
+                // combinations.
+                long parsed = string.IsNullOrWhiteSpace(s) ? 0 : long.Parse(s, ic);
+                return Enum.ToObject(t, parsed);
+            }
+        }
+        catch (Exception ex) when (ex is FormatException || ex is OverflowException || ex is ArgumentException)
+        {
+            Log.Warn($"Failed to parse script field value '{s}' as {t.Name}: {ex.Message}");
+        }
+        return null;
+    }
+
+    private static string EscapeJson(string s)
+    {
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+    }
+
+    // Inspector visibility rules:
+    //   public field (no [EditorIgnore]/[HideFromEditor])  -> visible
+    //   private/protected field with [ShowInEditor]        -> visible
+    //   anything with [EditorIgnore] or [HideFromEditor]   -> hidden
+    private static bool IsFieldEditorVisible(FieldInfo field)
+    {
+        if (field.GetCustomAttribute<EditorIgnoreAttribute>() != null) return false;
+        if (field.GetCustomAttribute<HideFromEditorAttribute>() != null) return false;
+        if (field.IsPublic) return true;
+        return field.GetCustomAttribute<ShowInEditorAttribute>() != null;
+    }
+
+    // Unified adapter over `FieldInfo` / `PropertyInfo` so the inspector
+    // pipeline can reflect on both without duplicating every traversal.
+    // Properties surface with the same visibility rules as fields:
+    //   public property (public getter)                    -> visible
+    //   private getter / protected with [ShowInEditor]     -> visible
+    //   indexer / write-only / [EditorIgnore]              -> hidden
+    // Read-only properties (no public setter) display but the editor
+    // marks the row read-only so the user can't drive an edit through a
+    // setter the script doesn't expose.
+    private readonly struct EditorMember
+    {
+        public readonly MemberInfo Member;
+        public readonly Type ValueType;
+        public readonly bool IsProperty;
+        public readonly bool CanWrite;
+        public readonly bool IsPublic;
+        public readonly string Name;
+        public readonly Type? DeclaringType;
+
+        private EditorMember(MemberInfo m, Type t, bool isProperty, bool canWrite, bool isPublic, string name, Type? declType)
+        {
+            Member = m;
+            ValueType = t;
+            IsProperty = isProperty;
+            CanWrite = canWrite;
+            IsPublic = isPublic;
+            Name = name;
+            DeclaringType = declType;
+        }
+
+        public static EditorMember FromField(FieldInfo f) => new(
+            f, f.FieldType, isProperty: false,
+            canWrite: !f.IsInitOnly && !f.IsLiteral,
+            isPublic: f.IsPublic,
+            name: f.Name, declType: f.DeclaringType);
+
+        public static EditorMember FromProperty(PropertyInfo p)
+        {
+            // "Writable from the inspector" means there's a setter the
+            // editor can legally invoke. We require a non-null setter
+            // (excludes get-only properties) AND a public setter
+            // (excludes init-only and private setters which would throw
+            // a MethodAccessException when SetValue dispatches).
+            bool canWrite = p.CanWrite
+                && p.SetMethod != null
+                && p.SetMethod.IsPublic;
+            // "Public" for visibility purposes is whether the GETTER is
+            // public — a property without a public reader can't be
+            // displayed regardless of [ShowInEditor].
+            bool isPublic = p.GetMethod != null && p.GetMethod.IsPublic;
+            return new EditorMember(p, p.PropertyType, isProperty: true,
+                canWrite, isPublic, p.Name, p.DeclaringType);
+        }
+
+        public T? GetCustomAttribute<T>() where T : Attribute => Member.GetCustomAttribute<T>();
+
+        public object? GetValue(object instance) =>
+            IsProperty ? ((PropertyInfo)Member).GetValue(instance)
+                       : ((FieldInfo)Member).GetValue(instance);
+
+        public void SetValue(object instance, object? value)
+        {
+            if (IsProperty) ((PropertyInfo)Member).SetValue(instance, value);
+            else ((FieldInfo)Member).SetValue(instance, value);
+        }
+    }
+
+    // Walks every instance field + property on `type`, filters them
+    // through the same visibility rules `IsFieldEditorVisible` applies
+    // to fields, and skips compiler-generated backing storage so an
+    // auto-property `public T Foo { get; set; }` shows up exactly once
+    // (as `Foo`) rather than twice (as `<Foo>k__BackingField` and `Foo`).
+    private static IEnumerable<EditorMember> CollectEditorMembers(Type type)
+    {
+        const BindingFlags k_Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        foreach (var field in type.GetFields(k_Flags))
+        {
+            // Auto-property backing fields (`<Prop>k__BackingField`) are
+            // tagged with [CompilerGenerated] — surface only the property
+            // wrapper so the user sees the name they wrote.
+            if (field.IsDefined(typeof(CompilerGeneratedAttribute), false)) continue;
+            yield return EditorMember.FromField(field);
+        }
+        foreach (var property in type.GetProperties(k_Flags))
+        {
+            if (property.GetIndexParameters().Length > 0) continue;  // indexers (`this[int]`)
+            if (property.GetMethod == null) continue;                 // write-only — nothing to display
+            yield return EditorMember.FromProperty(property);
+        }
+    }
+
+    private static bool IsMemberEditorVisible(in EditorMember member)
+    {
+        if (member.GetCustomAttribute<EditorIgnoreAttribute>() != null) return false;
+        if (member.GetCustomAttribute<HideFromEditorAttribute>() != null) return false;
+        if (member.IsPublic) return true;
+        return member.GetCustomAttribute<ShowInEditorAttribute>() != null;
+    }
+
+    // Build a single field's JSON object for the editor metadata payload.
+    // Centralised here so GetScriptFields and GetClassFieldDefs emit the same
+    // shape — the C++ inspector parses the result into PropertyDescriptor.
+    //
+    // Enum / FlagEnum fields gain `enumIsFlags` and `enumOptions` arrays so
+    // the editor can render the correct combo / multi-checkbox UI without a
+    // second reflection round-trip.
+    //
+    // The same path serves both fields and properties; for properties
+    // without a public setter the row is force-marked read-only so the
+    // editor can't post a write back through `SetScriptField`.
+    private static void AppendMemberJson(System.Text.StringBuilder sb, in EditorMember member, object? value)
+    {
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        // showAttr is optional now: public members are visible by default
+        // and only need ShowInEditor when overriding the display name.
+        var showAttr = member.GetCustomAttribute<ShowInEditorAttribute>();
+
+        string fieldType = MapFieldType(member.ValueType);
+        string valueStr = FormatFieldValue(member.ValueType, value);
+        string displayName = (showAttr != null && !string.IsNullOrEmpty(showAttr.DisplayName))
+            ? showAttr.DisplayName
+            : member.Name;
+        bool readOnly = (showAttr?.ReadOnly ?? false)
+            || member.GetCustomAttribute<EditorReadOnlyAttribute>() != null
+            || !member.CanWrite;
+
+        float clampMin = 0, clampMax = 0;
+        bool hasClamp = false;
+        var clampAttr = member.GetCustomAttribute<ClampValueAttribute>();
+        if (clampAttr != null)
+        {
+            clampMin = clampAttr.Min;
+            clampMax = clampAttr.Max;
+            hasClamp = true;
+        }
+
+        string tooltip = "";
+        var tooltipAttr = member.GetCustomAttribute<ToolTipAttribute>();
+        if (tooltipAttr != null) tooltip = tooltipAttr.Text;
+
+        string headerContent = "";
+        int headerSize = 0;
+        var headerAttr = member.GetCustomAttribute<HeaderAttribute>();
+        if (headerAttr != null)
+        {
+            headerContent = headerAttr.Content;
+            headerSize = headerAttr.Size;
+        }
+
+        float spaceHeight = 0.0f;
+        bool hasSpace = false;
+        var spaceAttr = member.GetCustomAttribute<SpaceAttribute>();
+        if (spaceAttr != null)
+        {
+            spaceHeight = spaceAttr.Height;
+            hasSpace = true;
+        }
+
+        // EnabledIf — gate this row on another field's value. Mirrors the
+        // native PropertyMetadata::EnabledIfFn path. The C++ inspector
+        // resolves the gate at draw time using the per-entity field-value
+        // snapshot it already builds for multi-edit, so no extra round-trip
+        // is needed.
+        string enabledIfField = "";
+        string enabledIfValue = "";
+        bool hasEnabledIf = false;
+        bool enabledIfAny = false;  // true == "enable when any truthy value" (no expected value supplied)
+        var enabledIfAttr = member.GetCustomAttribute<EnabledIfAttribute>();
+        if (enabledIfAttr != null)
+        {
+            enabledIfField = enabledIfAttr.FieldName;
+            hasEnabledIf = true;
+            if (enabledIfAttr.ExpectedValue == null)
+            {
+                enabledIfAny = true;
+            }
+            else
+            {
+                // Format using the same wire shape FormatFieldValue uses for
+                // that type so the C++ side can string-compare directly
+                // against the snapshot it already has.
+                enabledIfValue = FormatFieldValue(enabledIfAttr.ExpectedValue.GetType(), enabledIfAttr.ExpectedValue);
+            }
+        }
+
+        sb.Append("{\"name\":\"").Append(EscapeJson(member.Name))
+          .Append("\",\"displayName\":\"").Append(EscapeJson(displayName))
+          .Append("\",\"type\":\"").Append(fieldType)
+          .Append("\",\"value\":\"").Append(EscapeJson(valueStr))
+          .Append("\",\"readOnly\":").Append(readOnly ? "true" : "false")
+          .Append(",\"hasClamp\":").Append(hasClamp ? "true" : "false")
+          .Append(",\"clampMin\":").Append(clampMin.ToString(ic))
+          .Append(",\"clampMax\":").Append(clampMax.ToString(ic))
+          .Append(",\"tooltip\":\"").Append(EscapeJson(tooltip))
+          .Append("\",\"headerContent\":\"").Append(EscapeJson(headerContent))
+          .Append("\",\"headerSize\":").Append(headerSize.ToString(ic))
+          .Append(",\"hasSpace\":").Append(hasSpace ? "true" : "false")
+          .Append(",\"spaceHeight\":").Append(spaceHeight.ToString(ic))
+          .Append(",\"hasEnabledIf\":").Append(hasEnabledIf ? "true" : "false")
+          .Append(",\"enabledIfField\":\"").Append(EscapeJson(enabledIfField))
+          .Append("\",\"enabledIfValue\":\"").Append(EscapeJson(enabledIfValue))
+          .Append("\",\"enabledIfAny\":").Append(enabledIfAny ? "true" : "false");
+
+        if (member.ValueType.IsEnum)
+        {
+            bool isFlags = member.ValueType.GetCustomAttribute<FlagsAttribute>() != null;
+            sb.Append(",\"enumIsFlags\":").Append(isFlags ? "true" : "false");
+            sb.Append(",\"enumOptions\":[");
+            bool firstOpt = true;
+            foreach (var name in Enum.GetNames(member.ValueType))
+            {
+                object enumValue = Enum.Parse(member.ValueType, name);
+                long underlying = Convert.ToInt64(enumValue, ic);
+                if (!firstOpt) sb.Append(',');
+                firstOpt = false;
+                sb.Append("{\"name\":\"").Append(EscapeJson(name))
+                  .Append("\",\"value\":").Append(underlying.ToString(ic))
+                  .Append('}');
+            }
+            sb.Append(']');
+        }
+
+        sb.Append("}");
+    }
+
+    // Read a member's value defensively. Property getters can throw
+    // arbitrary exceptions (e.g. validation that depends on another
+    // field that the inspector hasn't pushed yet). Swallow those so a
+    // single throwing getter doesn't blank the entire inspector — the
+    // row falls back to `default` so the UI shows something coherent.
+    private static object? TryGetMemberValue(in EditorMember member, object instance)
+    {
+        try { return member.GetValue(instance); }
+        catch (Exception ex)
+        {
+            Log.Warn($"Reading {(member.IsProperty ? "property" : "field")} '{instance.GetType().Name}.{member.Name}' threw: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static void ReleaseFieldJsonBuffer()
+    {
+        lock (s_FieldJsonBufferLock)
+        {
+            if (s_FieldJsonBufferHandle.IsAllocated)
+                s_FieldJsonBufferHandle.Free();
+
+            s_FieldJsonBuffer = Array.Empty<byte>();
+        }
+    }
+
+    private static unsafe byte* NullTerminated(string s)
+    {
+        lock (s_FieldJsonBufferLock)
+        {
+            int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
+            if (s_FieldJsonBuffer.Length < byteCount + 1)
+            {
+                if (s_FieldJsonBufferHandle.IsAllocated)
+                    s_FieldJsonBufferHandle.Free();
+
+                s_FieldJsonBuffer = new byte[byteCount + 1];
+                s_FieldJsonBufferHandle = GCHandle.Alloc(s_FieldJsonBuffer, GCHandleType.Pinned);
+            }
+            else if (!s_FieldJsonBufferHandle.IsAllocated)
+            {
+                s_FieldJsonBufferHandle = GCHandle.Alloc(s_FieldJsonBuffer, GCHandleType.Pinned);
+            }
+
+            System.Text.Encoding.UTF8.GetBytes(s, s_FieldJsonBuffer);
+            s_FieldJsonBuffer[byteCount] = 0;
+            return (byte*)s_FieldJsonBufferHandle.AddrOfPinnedObject();
+        }
+    }
+
+    /// <summary>
+    /// Returns field definitions for a class WITHOUT needing a live instance.
+    /// Creates a temporary instance to read default values, then discards it.
+    /// Used by the editor in Edit Mode to show [ShowInEditor] fields.
+    /// </summary>
+    [UnmanagedCallersOnly]
+    public static unsafe byte* GetClassFieldDefs(byte* classNamePtr)
+    {
+        try
+        {
+            string className = Marshal.PtrToStringUTF8((IntPtr)classNamePtr) ?? "";
+            var classInfo = GetOrCacheClass(className);
+            if (classInfo == null) return NullTerminated("[]");
+
+            // Create a temporary instance just to read default values.
+            object? tempInstance = null;
+            try { tempInstance = Activator.CreateInstance(classInfo.Type)!; }
+            catch { return NullTerminated("[]"); }
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append('[');
+            bool first = true;
+
+            foreach (var member in CollectEditorMembers(classInfo.Type))
+            {
+                if (member.DeclaringType == typeof(EntityScript)) continue;
+                if (member.DeclaringType == typeof(Component)) continue;
+                if (member.DeclaringType == typeof(GameSystem)) continue;
+                if (member.DeclaringType == typeof(GlobalSystem)) continue;
+                if (!IsMemberEditorVisible(member)) continue;
+
+                string fieldType = MapFieldType(member.ValueType);
+                if (fieldType == "unsupported") continue;
+
+                object? val = TryGetMemberValue(member, tempInstance);
+                if (!first) sb.Append(',');
+                first = false;
+                AppendMemberJson(sb, member, val);
+            }
+
+            sb.Append(']');
+            return NullTerminated(sb.ToString());
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetClassFieldDefs failed: {ex.Message}");
+            return NullTerminated("[]");
+        }
+    }
+
+    // ── Inspector event bindings ────────────────────────────────
+    // Backs the native InspectorEventList (Button.OnClick, etc.). The C++
+    // side stores (entityUUID, className, methodName) per row and calls
+    // InvokeScriptMethodByName when the trigger fires. We reflect every
+    // parameterless `void` method declared on the user's subclass and cache
+    // the MethodInfo in ScriptClassInfo. Cache lifetime rides on
+    // s_ClassCache, which LoadUserAssembly clears on hot reload.
+
+    private static readonly Type[] s_InvokableExcludedDeclaringTypes =
+    {
+        typeof(object),
+        typeof(EntityScript),
+        typeof(Component),
+        typeof(GameSystem),
+        typeof(GlobalSystem),
+    };
+
+    private static void EnsureInvokableMethods(ScriptClassInfo info)
+    {
+        if (info.InvokableMethodsByName != null) return;
+
+        var byName = new Dictionary<string, MethodInfo>(StringComparer.Ordinal);
+        var nameKinds = new List<(string Name, byte Kind)>();
+
+        var methods = info.Type.GetMethods(BindingFlags.Public | BindingFlags.Instance);
+        foreach (var method in methods)
+        {
+            if (method.ReturnType != typeof(void)) continue;
+            if (method.IsGenericMethod) continue;
+            if (method.IsSpecialName) continue;  // property accessors, op_*, etc.
+
+            var parameters = method.GetParameters();
+            if (parameters.Length > 1) continue;
+
+            byte argKind;
+            if (parameters.Length == 0)
+            {
+                argKind = k_ArgKindVoid;
+            }
+            else
+            {
+                if (parameters[0].IsOut || parameters[0].ParameterType.IsByRef) continue;
+                argKind = ResolveArgKind(parameters[0].ParameterType);
+                if (argKind == 0xFF) continue; // unsupported argument type
+            }
+
+            // Skip lifecycle methods and anything inherited from the framework
+            // bases. Users want to wire up their own gameplay methods, not
+            // OnUpdate / ToString.
+            bool excluded = false;
+            for (int i = 0; i < s_InvokableExcludedDeclaringTypes.Length; ++i)
+            {
+                if (method.DeclaringType == s_InvokableExcludedDeclaringTypes[i])
+                {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (excluded) continue;
+
+            // Overloads: pick the first one we see for a given name. The
+            // dispatcher resolves by name only, so two methods with the
+            // same name and different parameter types would otherwise
+            // race for the slot. Picking deterministically (first hit)
+            // mirrors Unity's "name uniqueness wins" — if a class wants
+            // both signatures, rename one.
+            if (byName.TryAdd(method.Name, method))
+            {
+                nameKinds.Add((method.Name, argKind));
+            }
+        }
+
+        nameKinds.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+
+        var names = new List<string>(nameKinds.Count);
+        var kinds = new List<byte>(nameKinds.Count);
+        foreach (var nk in nameKinds)
+        {
+            names.Add(nk.Name);
+            kinds.Add(nk.Kind);
+        }
+
+        info.InvokableMethodsByName = byName;
+        info.InvokableMethodNames = names;
+        info.InvokableMethodArgKinds = kinds;
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int GetInvokableMethodsBuffer(byte* classNamePtr, byte* outBuffer, int capacity)
+    {
+        try
+        {
+            string className = PtrToString(classNamePtr);
+            var classInfo = GetOrCacheClass(className);
+            if (classInfo == null) return WriteUtf8("[]", outBuffer, capacity);
+
+            EnsureInvokableMethods(classInfo);
+
+            // Wire format: array of "<methodName>:<argKind>" strings. The
+            // C++ inspector splits on ':' to get the bare name (for the
+            // dropdown) and the argKind byte (for the value editor).
+            // Void methods land as "<name>:0" — same colon separator
+            // for every kind keeps the parser simple.
+            var sb = new System.Text.StringBuilder();
+            sb.Append('[');
+            bool first = true;
+            for (int i = 0; i < classInfo.InvokableMethodNames!.Count; ++i)
+            {
+                string name = classInfo.InvokableMethodNames[i];
+                byte kind = classInfo.InvokableMethodArgKinds![i];
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append('"')
+                  .Append(EscapeJson(name))
+                  .Append(':')
+                  .Append(kind)
+                  .Append('"');
+            }
+            sb.Append(']');
+            return WriteUtf8(sb.ToString(), outBuffer, capacity);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetInvokableMethodsBuffer failed: {ex.Message}");
+            return WriteUtf8("[]", outBuffer, capacity);
+        }
+    }
+
+    // Parse an "x,y" / "r,g,b,a" / etc. comma-separated float string into a
+    // fixed-size span. Returns false on any parse failure or a count that
+    // doesn't match `expected`. Caller decides what to do on failure
+    // (typically: log and skip the invoke).
+    private static bool TryParseFloatList(string s, int expected, Span<float> outValues)
+    {
+        if (string.IsNullOrEmpty(s) || expected <= 0 || outValues.Length < expected) return false;
+        int filled = 0;
+        int start = 0;
+        for (int i = 0; i <= s.Length; ++i)
+        {
+            if (i == s.Length || s[i] == ',')
+            {
+                if (filled >= expected) return false;
+                var slice = s.AsSpan(start, i - start).Trim();
+                if (slice.IsEmpty) return false;
+                if (!float.TryParse(slice,
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out outValues[filled])) return false;
+                ++filled;
+                start = i + 1;
+            }
+        }
+        return filled == expected;
+    }
+
+    private static unsafe object?[]? BuildInvokeArguments(MethodInfo method, byte argKind, byte* argValuePtr)
+    {
+        var parameters = method.GetParameters();
+        if (parameters.Length == 0)
+        {
+            // Method takes no arg — the editor's `argKind != 0` is just
+            // stale data from when the user picked a different overload.
+            // Drop the arg silently rather than failing the dispatch.
+            return null;
+        }
+        if (parameters.Length != 1) return null;
+
+        // No value provided — fall through to default(T) so a binding
+        // saved before the user filled in a value still fires the method
+        // (rather than throwing on a null Span<byte>).
+        string raw = argValuePtr == null ? string.Empty : PtrToString(argValuePtr);
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+
+        switch (argKind)
+        {
+            case k_ArgKindBool:
+                return new object?[] { raw == "1" || string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase) };
+            case k_ArgKindInt:
+            {
+                long v = 0;
+                long.TryParse(raw, System.Globalization.NumberStyles.Integer, ic, out v);
+                Type pt = parameters[0].ParameterType;
+                if (pt == typeof(int))    return new object?[] { (int)v };
+                if (pt == typeof(short))  return new object?[] { (short)v };
+                if (pt == typeof(byte))   return new object?[] { (byte)v };
+                if (pt == typeof(sbyte))  return new object?[] { (sbyte)v };
+                if (pt == typeof(uint))   return new object?[] { (uint)v };
+                if (pt == typeof(long))   return new object?[] { v };
+                if (pt == typeof(ushort)) return new object?[] { (ushort)v };
+                return new object?[] { (int)v };
+            }
+            case k_ArgKindFloat:
+            {
+                float f = 0f;
+                float.TryParse(raw, System.Globalization.NumberStyles.Float, ic, out f);
+                return new object?[] { f };
+            }
+            case k_ArgKindDouble:
+            {
+                double d = 0.0;
+                double.TryParse(raw, System.Globalization.NumberStyles.Float, ic, out d);
+                return new object?[] { d };
+            }
+            case k_ArgKindString:
+                return new object?[] { raw };
+            case k_ArgKindVec2:
+            {
+                Span<float> v = stackalloc float[2];
+                v[0] = 0f; v[1] = 0f;
+                TryParseFloatList(raw, 2, v);
+                return new object?[] { new Vector2(v[0], v[1]) };
+            }
+            case k_ArgKindColor:
+            {
+                Span<float> v = stackalloc float[4];
+                v[0] = 1f; v[1] = 1f; v[2] = 1f; v[3] = 1f;
+                TryParseFloatList(raw, 4, v);
+                return new object?[] { new Color(v[0], v[1], v[2], v[3]) };
+            }
+            case k_ArgKindEntityRef:
+            {
+                ulong uuid = 0;
+                ulong.TryParse(raw, System.Globalization.NumberStyles.Integer, ic, out uuid);
+                // The C# Entity wrapper accepts the persistent UUID as
+                // its `ID` field directly — every `InternalCalls.Entity_*`
+                // call routes through the native resolver, so a UUID-keyed
+                // wrapper looks up correctly even when the underlying
+                // entt handle was reallocated. Empty / unparseable
+                // payloads collapse to Entity.Invalid (id=0).
+                return new object?[] { uuid == 0 ? Entity.Invalid : new Entity(uuid) };
+            }
+            default:
+                return null;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int InvokeScriptMethodByName(int handle, byte* methodNamePtr,
+        byte argKind, byte* argValuePtr)
+    {
+        if (!s_Instances.TryGetValue(handle, out var data)) return 0;
+
+        EntityScript instance = data.Instance;
+        string methodName = PtrToString(methodNamePtr);
+
+        var info = GetOrCacheClass(instance.GetType().Name);
+        if (info == null) return 0;
+
+        EnsureInvokableMethods(info);
+
+        if (!info.InvokableMethodsByName!.TryGetValue(methodName, out var method))
+        {
+            return 0;
+        }
+
+        object?[]? args = null;
+        if (argKind != k_ArgKindVoid)
+        {
+            args = BuildInvokeArguments(method, argKind, argValuePtr);
+            if (args == null && method.GetParameters().Length > 0)
+            {
+                // Method needs an arg but the binding's encoded value was
+                // unparseable for its declared kind — log once and skip
+                // rather than crash inside method.Invoke with a TypeMismatch.
+                Log.Warn($"Inspector binding {info.Type.Name}.{methodName}: argument value could not be parsed for kind {argKind}");
+                return 1; // method located; just couldn't dispatch this fire
+            }
+        }
+
+        try
+        {
+            method.Invoke(instance, args);
+            return 1;
+        }
+        catch (TargetInvocationException ex)
+        {
+            Log.Error($"Exception in {info.Type.Name}.{methodName}(): {ex.InnerException}");
+            return 1;  // method exists; the user's body threw — don't log "missing".
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Exception invoking {info.Type.Name}.{methodName}(): {ex}");
+            return 1;
+        }
+    }
+
+    // Standalone two-call buffer writer for the new event-binding helpers.
+    // We don't reuse NullTerminated() here because it's a singleton pinned
+    // buffer — concurrent reflection calls from the same frame (drawer
+    // sampling several classes) would clobber each other's output. The
+    // event-binding callers always pass their own destination buffer.
+    private static unsafe int WriteUtf8(string s, byte* outBuffer, int capacity)
+    {
+        int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
+        if (outBuffer == null || capacity <= 0) return byteCount + 1;
+        if (capacity < byteCount + 1)
+        {
+            // Caller's buffer too small — write null terminator and return
+            // the required capacity so they can resize and retry.
+            outBuffer[0] = 0;
+            return byteCount + 1;
+        }
+
+        var span = new Span<byte>(outBuffer, capacity);
+        int written = System.Text.Encoding.UTF8.GetBytes(s, span);
+        span[written] = 0;
+        return written + 1;
+    }
+
+    // ── Class cache ─────────────────────────────────────────────
+
+    private static ScriptClassInfo? GetOrCacheClass(string className)
+    {
+        if (s_ClassCache.TryGetValue(className, out var cached))
+            return cached;
+
+        Type? type = FindType(className);
+        bool isScript = type != null && type.IsSubclassOf(typeof(EntityScript));
+        bool isComponent = type != null
+            && ((type.IsSubclassOf(typeof(Component)) && !Entity.TryGetNativeComponentName(type, out _))
+                || (type.IsValueType && typeof(Index.Components.IComponent).IsAssignableFrom(type)));
+        bool isGameSystem = type != null && type.IsSubclassOf(typeof(GameSystem));
+        bool isGlobalSystem = type != null && type.IsSubclassOf(typeof(GlobalSystem));
+        if (type == null || (!isScript && !isComponent && !isGameSystem && !isGlobalSystem))
+        {
+            s_ClassCache[className] = null;
+            return null;
+        }
+
+        var info = new ScriptClassInfo
+        {
+            Type = type,
+            IsScript = isScript,
+            IsComponent = isComponent,
+            IsGameSystem = isGameSystem,
+            IsGlobalSystem = isGlobalSystem,
+            StartMethod = isScript ? type.GetMethod("Start", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
+            UpdateMethod = isScript ? type.GetMethod("Update", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
+        };
+
+        s_ClassCache[className] = info;
+        return info;
+    }
+
+    private static Type? FindType(string className)
+    {
+        if (s_UserAssembly != null)
+        {
+            var type = s_UserAssembly.GetType($"Index.{className}")
+                    ?? s_UserAssembly.GetType($"Index.Components.{className}")
+                    ?? s_UserAssembly.GetType(className);
+            if (type != null) return type;
+        }
+
+        if (s_CoreAssembly != null)
+        {
+            var type = s_CoreAssembly.GetType($"Index.{className}")
+                    ?? s_CoreAssembly.GetType($"Index.Components.{className}")
+                    ?? s_CoreAssembly.GetType(className);
+            if (type != null) return type;
+        }
+
+        return null;
+    }
+}

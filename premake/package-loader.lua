@@ -1,6 +1,6 @@
--- Axiom package system — Phase A loader.
+-- Index package system — Phase A loader.
 --
--- Discovers `axiom-package.lua` manifests under `packages/<Name>/`, validates them,
+-- Discovers `index-package.lua` manifests under `packages/<Name>/`, validates them,
 -- topologically sorts by dependency, and registers Premake projects:
 --
 --   - native  / native_standalone  →  Pkg.<Name>.Native  (C++ SharedLib)
@@ -21,7 +21,7 @@
 -- so existing project-local packages don't break — but new manifests should
 -- use the canonical names.
 --
--- Manifest schema (returned by axiom-package.lua via `return { ... }`):
+-- Manifest schema (returned by index-package.lua via `return { ... }`):
 --
 --   name          string   required, unique
 --   version       string   required
@@ -39,7 +39,7 @@
 local PackageSystem = {}
 
 local function PackageError(msg)
-    error("[Axiom Packages] " .. msg, 0)
+    error("[Index Packages] " .. msg, 0)
 end
 
 -- Canonical layer names. Old names (engine_core, standalone_cpp) are accepted
@@ -64,9 +64,9 @@ local function NormaliseLayerNames(manifest)
                     "' declares both '" .. oldName .. "' (deprecated alias) and '" ..
                     newName .. "' (canonical). Pick one.")
             end
-            print("[Axiom Packages] Package '" .. tostring(manifest.name) ..
+            print("[Index Packages] Package '" .. tostring(manifest.name) ..
                 "' uses deprecated layer name '" .. oldName .. "'. Rename to '" ..
-                newName .. "' in axiom-package.lua. (Old name still works for now.)")
+                newName .. "' in index-package.lua. (Old name still works for now.)")
             manifest.layers[newName] = spec
             manifest.layers[oldName] = nil
         end
@@ -104,7 +104,7 @@ local function ValidateManifest(manifest, manifestPath)
     if not IsValidPackageName(manifest.name) then
         PackageError("Manifest at '" .. manifestPath ..
             "' has invalid 'name' = '" .. tostring(manifest.name) ..
-            "'. Expected PascalCase.PascalCase[.PascalCase…] with only [A-Za-z0-9.] (e.g. 'Axiom.Foo', 'MyGame.Loot').")
+            "'. Expected PascalCase.PascalCase[.PascalCase…] with only [A-Za-z0-9.] (e.g. 'Index.Foo', 'MyGame.Loot').")
     end
     if type(manifest.version) ~= "string" then
         PackageError("Package '" .. manifest.name .. "' is missing required string field 'version'.")
@@ -164,7 +164,7 @@ local function LoadManifestsFromRoot(searchRoot, manifests, byName)
 
     local entries = os.matchdirs(path.join(searchRoot, "*"))
     for _, entry in ipairs(entries) do
-        local manifestPath = path.join(entry, "axiom-package.lua")
+        local manifestPath = path.join(entry, "index-package.lua")
         if os.isfile(manifestPath) then
             local manifest = dofile(manifestPath)
             -- Rewrite deprecated layer names to canonical form before any
@@ -282,8 +282,8 @@ local function RegisterNativeProject(manifest)
             -- include set transitively. `native_standalone` skips this — it's
             -- the explicit "no engine link" path.
             UseDependencySet(Dependency.EditorRuntimeCommon)
-            -- Engine is a SharedLib; consumers must declare the import side of AXIOM_API.
-            defines { "AIM_IMPORT_DLL" }
+            -- Engine is a SharedLib; consumers must declare the import side of INDEX_API.
+            defines { "IDX_IMPORT_DLL" }
             -- EditorRuntimeCommon pulls in EngineCoreRender, which links
             -- webgpu_dawn.lib. The lib lives under per-config Debug/Release
             -- folders so libdirs MUST be set per-config (LNK2038 otherwise).
@@ -314,28 +314,28 @@ local function RegisterNativeProject(manifest)
         filter "system:windows"
             systemversion "latest"
             buildoptions { "/utf-8", "/FS" }
-            defines { "AIM_PLATFORM_WINDOWS" }
+            defines { "IDX_PLATFORM_WINDOWS" }
 
         filter "system:linux"
             pic "On"
-            defines { "AIM_PLATFORM_LINUX" }
+            defines { "IDX_PLATFORM_LINUX" }
 
         filter "configurations:Debug"
             runtime "Debug"
             symbols "On"
-            defines { "AIM_DEBUG", "_DEBUG" }
+            defines { "IDX_DEBUG", "_DEBUG" }
 
         filter "configurations:Release"
             runtime "Release"
             optimize "On"
             symbols "On"
-            defines { "AIM_RELEASE", "NDEBUG" }
+            defines { "IDX_RELEASE", "NDEBUG" }
 
         filter "configurations:Dist"
             runtime "Release"
             optimize "Full"
             symbols "Off"
-            defines { "AIM_DIST", "NDEBUG" }
+            defines { "IDX_DIST", "NDEBUG" }
 
         filter {}
 end
@@ -361,7 +361,7 @@ local function RegisterCSharpProject(manifest)
         targetdir(path.join(ROOT_DIR, "bin/" .. outputdir .. "/%{prj.name}"))
         objdir(path.join(ROOT_DIR, "bin-int/" .. outputdir .. "/%{prj.name}"))
 
-        -- Sensible defaults for Axiom packages: nullable annotations enabled, dynamic
+        -- Sensible defaults for Index packages: nullable annotations enabled, dynamic
         -- loading allowed (so the runtime can Assembly.LoadFrom them), output sits
         -- directly under bin/<config>/<Pkg.Name>/ without a net9.0/ sub-folder.
         vsprops {
@@ -373,15 +373,15 @@ local function RegisterCSharpProject(manifest)
 
         files(ResolvePaths(manifest.PackageDir, layer.sources))
 
-        -- Axiom-ScriptCore is the default reference for every csharp
+        -- Index-ScriptCore is the default reference for every csharp
         -- package: it provides the managed `Component`, `Entity`, `Texture`,
         -- `Vector2Int`, math types, etc. that any package wanting to bind
         -- to live scene state must subclass / construct. Pure-managed
-        -- packages that don't touch scene state (e.g. Pkg.Axiom.Serialization)
+        -- packages that don't touch scene state (e.g. Pkg.Index.Serialization)
         -- pay nothing for the unused reference. Keeping this implicit means
         -- package authors don't have to plumb the dependency themselves.
-        links { "Axiom-ScriptCore" }
-        dependson { "Axiom-ScriptCore" }
+        links { "Index-ScriptCore" }
+        dependson { "Index-ScriptCore" }
 
         if manifest.dependencies then
             for _, depName in ipairs(manifest.dependencies) do
@@ -394,19 +394,19 @@ local function RegisterCSharpProject(manifest)
         filter "configurations:Debug"
             symbols "On"
             optimize "Off"
-            defines { "AIM_DEBUG" }
+            defines { "IDX_DEBUG" }
         filter "configurations:Release"
             optimize "On"
             symbols "On"
-            defines { "AIM_RELEASE" }
+            defines { "IDX_RELEASE" }
         filter "configurations:Dist"
             optimize "Full"
             symbols "Off"
-            defines { "AIM_DIST" }
+            defines { "IDX_DIST" }
         filter {}
 end
 
--- Reads <project>/axiom-project.json and extracts the top-level "packages" array.
+-- Reads <project>/index-project.json and extracts the top-level "packages" array.
 -- Returns:
 --   nil               — no project given (engine-developer mode, legacy scan-all)
 --   {}                — project loaded, no packages installed (fresh/empty project)
@@ -419,9 +419,9 @@ local function ReadProjectPackagesAllowList(projectRootDir)
         return nil
     end
 
-    local manifestPath = path.join(projectRootDir, "axiom-project.json")
+    local manifestPath = path.join(projectRootDir, "index-project.json")
     if not os.isfile(manifestPath) then
-        -- A project path was specified but axiom-project.json is missing — fail closed
+        -- A project path was specified but index-project.json is missing — fail closed
         -- (treat as no packages installed) rather than scanning everything.
         return {}
     end
@@ -443,7 +443,7 @@ local function ReadProjectPackagesAllowList(projectRootDir)
     -- Locate "packages" : [ ... ]. The string up to the first matching ] is the array.
     local arrayBody = jsonText:match('"packages"%s*:%s*%[(.-)%]')
     if not arrayBody then
-        -- Field absent in axiom-project.json = no packages installed.
+        -- Field absent in index-project.json = no packages installed.
         return {}
     end
 
@@ -502,13 +502,13 @@ local function FilterManifestsByAllowList(manifests, byName, allowList)
     -- Detect missing dependencies — the user listed a package that isn't on disk anywhere.
     for _, name in ipairs(allowList) do
         if not filteredByName[name] then
-            print("[Axiom Packages] WARNING: project lists package '" .. name ..
+            print("[Index Packages] WARNING: project lists package '" .. name ..
                 "' but no manifest with that name was found under packages/ or <project>/Packages/.")
         end
     end
 
     if #skipped > 0 then
-        print("[Axiom Packages] Skipped " .. tostring(#skipped) ..
+        print("[Index Packages] Skipped " .. tostring(#skipped) ..
             " package(s) not in the project's allow-list: " .. table.concat(skipped, ", "))
     end
 
@@ -523,27 +523,27 @@ function PackageSystem.LoadAll()
     LoadManifestsFromRoot(path.join(ROOT_DIR, "packages"), manifests, byName)
 
     -- Project-local packages live in <project>/Packages/. The user opts in by passing
-    -- --axiom-project=<absolute-path> to premake. Re-run premake when switching projects.
-    local projectPath = _OPTIONS["axiom-project"]
+    -- --index-project=<absolute-path> to premake. Re-run premake when switching projects.
+    local projectPath = _OPTIONS["index-project"]
     if projectPath and projectPath ~= "" then
         local projectPackagesRoot = path.join(projectPath, "Packages")
         if os.isdir(projectPackagesRoot) then
-            print("[Axiom Packages] Including project-local packages from: " .. projectPackagesRoot)
+            print("[Index Packages] Including project-local packages from: " .. projectPackagesRoot)
             LoadManifestsFromRoot(projectPackagesRoot, manifests, byName)
         else
-            print("[Axiom Packages] --axiom-project set but no Packages/ folder at: " .. projectPackagesRoot)
+            print("[Index Packages] --index-project set but no Packages/ folder at: " .. projectPackagesRoot)
         end
     end
 
     -- If a project is loaded, the project's `packages` allow-list is the source of
     -- truth: only packages explicitly listed there are registered for build. Empty
     -- list / missing field means "no packages installed" (fresh project state).
-    -- Without --axiom-project, we fall back to scan-everything for engine-developer
+    -- Without --index-project, we fall back to scan-everything for engine-developer
     -- workflows where there's no project context.
     if projectPath and projectPath ~= "" then
         local allowList = ReadProjectPackagesAllowList(projectPath)
         if allowList then
-            print("[Axiom Packages] Project-declared package allow-list (" ..
+            print("[Index Packages] Project-declared package allow-list (" ..
                 tostring(#allowList) .. " entries): " ..
                 (#allowList > 0 and table.concat(allowList, ", ") or "<empty>"))
             manifests, byName = FilterManifestsByAllowList(manifests, byName, allowList)
@@ -567,7 +567,7 @@ function PackageSystem.LoadAll()
     for _, m in ipairs(sorted) do
         table.insert(names, m.name)
     end
-    print("[Axiom Packages] Registered " .. tostring(#sorted) .. " package(s): " .. table.concat(names, ", "))
+    print("[Index Packages] Registered " .. tostring(#sorted) .. " package(s): " .. table.concat(names, ", "))
 end
 
 return PackageSystem

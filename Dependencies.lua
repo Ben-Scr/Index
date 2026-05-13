@@ -3,7 +3,7 @@ IncludeDir["ExternalRoot"] = "External"
 IncludeDir["ImGui"] = "External/imgui"
 IncludeDir["Spdlog"] = "External/spdlog/include"
 IncludeDir["GLFW"] = "External/glfw/include"
-IncludeDir["AxiomPhysics"] = "External/Axiom-Physics/include"
+IncludeDir["IndexPhysics"] = "External/Axiom-Physics/include"
 IncludeDir["Box2D"] = "External/box2d/include"
 IncludeDir["GLM"] = "External/glm"
 IncludeDir["EnTT"] = "External/entt/src"
@@ -13,8 +13,8 @@ IncludeDir["MiniAudio"] = "External/miniaudio"
 IncludeDir["Cereal"] = "External/cereal/include"
 IncludeDir["Glad"] = "External/glad/include"
 IncludeDir["DotNet"] = "External/dotnet"
-IncludeDir["AxiomEngine"] = "Axiom-Engine/src"
-IncludeDir["AxiomEngineLegacy"] = "Axiom-Engine/src"
+IncludeDir["IndexEngine"] = "Index-Engine/src"
+IncludeDir["IndexEngineLegacy"] = "Index-Engine/src"
 IncludeDir["Tracy"] = "External/tracy/public"
 
 local isWindowsTarget = os.target() == "windows"
@@ -132,21 +132,21 @@ Dependency["ExternalIncludes"] =
         "%{IncludeDir.MagicEnum}",
         "%{IncludeDir.MiniAudio}",
         "%{IncludeDir.Cereal}",
-        "%{IncludeDir.AxiomPhysics}"
+        "%{IncludeDir.IndexPhysics}"
     }
 }
 
 -- Minimal public core contract:
--- - Axiom-Engine/src headers
+-- - Index-Engine/src headers
 -- - Core/Export.hpp feature metadata
--- - Axiom.hpp lean umbrella
+-- - Index.hpp lean umbrella
 -- - header-only/public dependencies required by that core surface
 Dependency["EngineCore"] =
 {
     IncludeDirs =
     {
-        "%{IncludeDir.AxiomEngine}",
-        "%{IncludeDir.AxiomEngineLegacy}",
+        "%{IncludeDir.IndexEngine}",
+        "%{IncludeDir.IndexEngineLegacy}",
         "%{IncludeDir.Spdlog}",
         "%{IncludeDir.GLM}",
         "%{IncludeDir.EnTT}",
@@ -186,13 +186,13 @@ Dependency["EngineCoreRender"] =
     -- mixing runtime libraries (/MDd Debug vs /MD Release) trips MSVC's
     -- "_ITERATOR_DEBUG_LEVEL" + "RuntimeLibrary" mismatch (LNK2038). So
     -- LibDirs MUST be set per-config, not as a single default. The
-    -- per-config wiring lives in Axiom-Engine/premake5.lua via explicit
+    -- per-config wiring lives in Index-Engine/premake5.lua via explicit
     -- `filter "configurations:Debug" / Release / Dist` blocks that
     -- libdirs() each into the matching Dawn output folder.
     LibDirs = {},
 
     Defines = MergeListsForDep(
-        { "GLFW_DLL", "AIM_RHI_WEBGPU" },
+        { "GLFW_DLL", "IDX_RHI_WEBGPU" },
         DawnLayout and DawnLayout.Defines or {}
     ),
 
@@ -223,7 +223,7 @@ Dependency["EngineCorePhysics"] =
     IncludeDirs =
     {
         "%{IncludeDir.Box2D}",
-        "%{IncludeDir.AxiomPhysics}"
+        "%{IncludeDir.IndexPhysics}"
     },
 
     LibDirs = {},
@@ -279,12 +279,12 @@ Dependency["EngineCoreEditor"] =
     }
 }
 
--- Tracy client — populated only when AxiomProfiler.Enabled. Engine.dll +
+-- Tracy client — populated only when IndexProfiler.Enabled. Engine.dll +
 -- editor.exe + runtime.exe all attach the same Tracy client SharedLib so
 -- there's exactly one client instance per process. Header `Tracy.hpp`
 -- sees TRACY_IMPORTS on consumer side -> dllimport, matching the
 -- TRACY_EXPORTS in the Tracy project itself.
-if AxiomProfiler and AxiomProfiler.Enabled then
+if IndexProfiler and IndexProfiler.Enabled then
     Dependency["Profiler"] =
     {
         IncludeDirs = { "%{IncludeDir.Tracy}" },
@@ -293,7 +293,7 @@ if AxiomProfiler and AxiomProfiler.Enabled then
         -- TRACY_ON_DEMAND must match the Tracy lib build (premake/dependencies/tracy.lua).
         -- Mismatched on/off across consumer + lib produces ABI drift in the SourceLocationData
         -- struct, which is hashed by Tracy at runtime — wrong size = corrupted zones.
-        Defines     = { "AXIOM_PROFILER_ENABLED", "TRACY_ENABLE", "TRACY_IMPORTS", "TRACY_ON_DEMAND" }
+        Defines     = { "INDEX_PROFILER_ENABLED", "TRACY_ENABLE", "TRACY_IMPORTS", "TRACY_ON_DEMAND" }
     }
 else
     Dependency["Profiler"] = { IncludeDirs = {}, DependsOn = {}, Links = {}, Defines = {} }
@@ -309,13 +309,13 @@ Dependency["EngineCoreAllModules"] = MergeDependencies(
     Dependency["Profiler"]
 )
 
--- Explicit legacy/full-module compatibility path for consumers that opt into AXIOM_ALL_MODULES.
+-- Explicit legacy/full-module compatibility path for consumers that opt into INDEX_ALL_MODULES.
 Dependency["EngineCoreLegacy"] = Dependency["EngineCoreAllModules"]
 
 Dependency["EditorRuntimeCommon"] = MergeDependencies(
     {
-        DependsOn = { "Axiom-Engine" },
-        Links = { "Axiom-Engine" }
+        DependsOn = { "Index-Engine" },
+        Links = { "Index-Engine" }
     },
     Dependency["EngineCoreAllModules"]
 )

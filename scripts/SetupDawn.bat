@@ -2,7 +2,7 @@
 REM ============================================================================
 REM SetupDawn.bat - Fetch and build the Dawn WebGPU implementation as a
 REM                monolithic static library at External\dawn\, then
-REM                regenerate Axiom.sln so the engine is build-ready.
+REM                regenerate Index.sln so the engine is build-ready.
 REM
 REM Run once after cloning the engine. Subsequent engine builds link against
 REM the pre-built webgpu_dawn.lib.
@@ -93,8 +93,8 @@ if errorlevel 1 (
     goto :error
 )
 
-REM --- Regenerate Axiom.sln ---------------------------------------------------
-echo [4/4] Regenerating Axiom.sln via Premake...
+REM --- Regenerate Index.sln ---------------------------------------------------
+echo [4/4] Regenerating Index.sln via Premake...
 if not exist "vendor\bin\premake5.exe" goto :no_premake
 "vendor\bin\premake5.exe" vs2022
 if errorlevel 1 echo [WARN] Premake regen returned non-zero. Run manually: vendor\bin\premake5.exe vs2022
@@ -112,7 +112,7 @@ echo Headers : %DAWN_BUILD_DIR%\gen\include
 echo Lib(D)  : %DAWN_BUILD_DIR%\src\dawn\native\Debug\webgpu_dawn.lib
 echo Lib(R)  : %DAWN_BUILD_DIR%\src\dawn\native\Release\webgpu_dawn.lib
 echo.
-echo Open Axiom.sln in Visual Studio 2022 and build.
+echo Open Index.sln in Visual Studio 2022 and build.
 echo.
 
 popd
