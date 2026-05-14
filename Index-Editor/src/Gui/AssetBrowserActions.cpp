@@ -368,8 +368,9 @@ namespace Index {
 						"    public float Value = 0.0f;\n"
 						"\n"
 						"    public " + className + "()\n"
-						"{\n"
-						"}\n"
+						"    {\n"
+						"     \n"
+						"    }\n"
 						"\n"
 						"}\n";
 				}

@@ -1124,8 +1124,24 @@ namespace Index {
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
-		if (!ResolveEntityReference(entityID, scene, handle) || !scene->HasComponent<NameComponent>(handle)) return;
-		scene->GetComponent<NameComponent>(handle).Name = name;
+		if (!ResolveEntityReference(entityID, scene, handle)) return;
+
+		const std::string nextName = name ? name : "";
+		if (nextName.empty()) {
+			if (scene->HasComponent<NameComponent>(handle)) {
+				scene->RemoveComponent<NameComponent>(handle);
+				scene->MarkDirty();
+			}
+			return;
+		}
+
+		if (scene->HasComponent<NameComponent>(handle)) {
+			scene->GetComponent<NameComponent>(handle).Name = nextName;
+		}
+		else {
+			scene->AddComponent<NameComponent>(handle, nextName);
+		}
+		scene->MarkDirty();
 	}
 
 	// ── Transform2D ─────────────────────────────────────────────────────

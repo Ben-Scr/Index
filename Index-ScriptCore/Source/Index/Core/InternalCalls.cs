@@ -420,7 +420,7 @@ internal static unsafe class InternalCalls
     internal static bool Entity_GetIsEnabledInHierarchy(ulong entityID) => NativeCallbacks.Bindings.Entity_GetIsEnabledInHierarchy(entityID) != 0;
     internal static void Entity_SetIsEnabled(ulong entityID, bool isEnabled) => NativeCallbacks.Bindings.Entity_SetIsEnabled(entityID, isEnabled ? 1 : 0);
 
-    internal static ulong Entity_Create(string name)
+    internal static ulong Entity_Create(string? name)
     {
         byte[] buf = EncodeUtf8Z(name);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_Create(ptr);
@@ -433,7 +433,7 @@ internal static unsafe class InternalCalls
         return ReadNativeString(NativeCallbacks.Bindings.NameComponent_GetNameBuffer, entityID);
     }
 
-    internal static void NameComponent_SetName(ulong entityID, string name)
+    internal static void NameComponent_SetName(ulong entityID, string? name)
     {
         byte[] buf = EncodeUtf8Z(name);
         fixed (byte* ptr = buf) NativeCallbacks.Bindings.NameComponent_SetName(entityID, ptr);

@@ -141,6 +141,8 @@ namespace Index {
 		uint32_t g_ViewportX = 0, g_ViewportY = 0, g_ViewportW = 0, g_ViewportH = 0;
 		uint32_t g_ScissorX  = 0, g_ScissorY  = 0, g_ScissorW  = 0, g_ScissorH  = 0;
 		bool     g_ScissorActive = false;
+		PolygonMode g_PolygonMode = PolygonMode::Filled;
+		bool g_ColorLogicOpClear = false;
 
 		// ── Helpers ─────────────────────────────────────────────────────────
 
@@ -352,6 +354,9 @@ namespace Index {
 			desc.SetDeviceLostCallback(
 				wgpu::CallbackMode::AllowSpontaneous,
 				[](const wgpu::Device&, wgpu::DeviceLostReason reason, wgpu::StringView msg) {
+					if (reason == wgpu::DeviceLostReason::Destroyed) {
+						return;
+					}
 					IDX_CORE_ERROR_TAG("WebGPUApi", "Device lost ({}): {}",
 						static_cast<int>(reason), FromStringView(msg));
 				});
@@ -918,7 +923,8 @@ namespace Index {
 	void RenderApi::SetCullMode(CullMode /*mode*/)               { /* per-pipeline via PrimitiveState::cullMode; Stage 2 */ }
 	void RenderApi::SetBlendMode(BlendMode /*mode*/)             { /* per-pipeline via BlendState; Stage 2 */ }
 	void RenderApi::SetBlendingEnabled(bool /*enabled*/)         { /* per-pipeline via ColorTargetState::blend; Stage 2 */ }
-	void RenderApi::SetPolygonMode(PolygonMode /*mode*/)         { /* per-pipeline via PrimitiveState::topology; line topology covers wireframe; Stage 2 */ }
+	void RenderApi::SetPolygonMode(PolygonMode mode)             { g_PolygonMode = mode; }
+	PolygonMode RenderApi::GetPolygonMode()                     { return g_PolygonMode; }
 	void RenderApi::SetLineWidth(float /*width*/)                { /* WebGPU has no wide-lines feature — gpu-side wide lines or fat-line geometry shader in Stage 2 */ }
 	void RenderApi::SetColorMask(bool /*r*/, bool /*g*/, bool /*b*/, bool /*a*/) {
 		// Per-pipeline via ColorTargetState::writeMask; Stage 2.
@@ -928,8 +934,9 @@ namespace Index {
 	// logic-op blend state at all; the equivalent in Stage 3+ is a custom
 	// shader pass that writes solid black for wireframe-overlaid pixels.
 	// Stage 1 gracefully degrades to a normal pass.
-	void RenderApi::BeginColorLogicOpClear() { /* see EndColorLogicOpClear */ }
-	void RenderApi::EndColorLogicOpClear()   { /* see Stage 3 fat-line / overlay-shader plan */ }
+	void RenderApi::BeginColorLogicOpClear() { g_ColorLogicOpClear = true; }
+	void RenderApi::EndColorLogicOpClear()   { g_ColorLogicOpClear = false; }
+	bool RenderApi::IsColorLogicOpClearEnabled() { return g_ColorLogicOpClear; }
 
 	// ── Framebuffer binding ────────────────────────────────────────────────
 	// Resolves the FBO's opaque backend ID into the wgpu::TextureView pair

@@ -4,12 +4,12 @@
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Core/Window.hpp"
+#include "Graphics/GLInitSpecifications.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Core/PackageHost.hpp"
-#include "Graphics/OpenGL.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Math/Math.hpp"
 #include "Core/SingleInstance.hpp"
@@ -313,8 +313,8 @@ namespace Index {
 		IDX_INFO_TAG("Window", "Initialization took " + StringHelper::ToString(timer));
 
 		timer.Reset();
-		OpenGL::Initialize(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
-		IDX_INFO_TAG("OpenGL", "Initialization took " + StringHelper::ToString(timer));
+		RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
+		IDX_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
 
 		// TextureManager must come before Renderer2D: Renderer2D::Initialize
 		// hard-asserts that the default Square texture is registered (it's
@@ -891,6 +891,10 @@ namespace Index {
 		m_Renderer2D.reset();
 		m_PhysicsSystem2D.reset();
 		m_Window.reset();
+
+		if (JobSystem::IsInitialized()) {
+			JobSystem::Shutdown();
+		}
 
 #ifdef INDEX_PROFILER_ENABLED
 		// Profiler last so subsystems above can still emit profile marks during teardown.

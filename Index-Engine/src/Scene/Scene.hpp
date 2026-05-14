@@ -14,10 +14,17 @@
 namespace Index {
 	class SceneDefinition;
 	class Camera2DComponent;
+	class Renderer2D;
+	class Transform2DComponent;
+	class TransformHierarchySystem;
 	class INDEX_API Scene {
 		friend class SceneManager;
 		friend class SceneDefinition;
 		friend class Application;
+		friend class Renderer2D;
+		friend class Entity;
+		friend class Transform2DComponent;
+		friend class TransformHierarchySystem;
 
 	public:
 		Scene(const Scene&) = delete;
@@ -248,6 +255,12 @@ namespace Index {
 		void MarkUIDirty() { m_UIDirty = true; }
 		void ClearUIDirty() { m_UIDirty = false; }
 
+		void MarkTransformDirty(EntityHandle entity);
+		std::vector<EntityHandle> ConsumeDirtyTransformEntities();
+		bool HasDirtyTransforms() const { return m_TransformHierarchyDirty; }
+		void MarkStaticRenderDataDirty();
+		uint64_t GetStaticRenderDataVersion() const { return m_StaticRenderDataVersion; }
+
 		const std::vector<std::string>& GetGameSystemClassNames() const { return m_GameSystemClassNames; }
 		bool HasGameSystem(const std::string& className) const;
 		bool AddGameSystem(const std::string& className);
@@ -325,6 +338,9 @@ namespace Index {
 		Scene(const std::string& name, const SceneDefinition* definition, bool IsPersistent);
 
 		void OnTransform2DComponentConstruct(entt::registry& registry, EntityHandle entity);
+		void OnTransform2DComponentDestroy(entt::registry& registry, EntityHandle entity);
+		void OnSpriteRendererComponentConstruct(entt::registry& registry, EntityHandle entity);
+		void OnSpriteRendererComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity);
 		void OnRigidBody2DComponentDestroy(entt::registry& registry, EntityHandle entity);
 		void OnBoxCollider2DComponentConstruct(entt::registry& registry, EntityHandle entity);
@@ -340,6 +356,7 @@ namespace Index {
 		void OnCamera2DComponentDestruct(entt::registry& registry, EntityHandle entity);
 		void OnDisabledTagConstruct(entt::registry& registry, EntityHandle entity);
 		void OnDisabledTagDestroy(entt::registry& registry, EntityHandle entity);
+		void OnStaticTagConstruct(entt::registry& registry, EntityHandle entity);
 		void OnStaticTagDestroy(entt::registry& registry, EntityHandle entity);
 
 		void OnParticleSystem2DComponentConstruct(entt::registry& registry, EntityHandle entity);
@@ -426,6 +443,10 @@ namespace Index {
 		// and can pick a doomed entity (or repeatedly null/refresh). Hooks
 		// observe this flag and skip work that's about to be invalidated.
 		bool m_TearingDown = false;
+		bool m_TransformHierarchyDirty = true;
+		std::vector<EntityHandle> m_DirtyTransformEntities;
+		std::unordered_set<uint32_t> m_DirtyTransformEntitySet;
+		uint64_t m_StaticRenderDataVersion = 1;
 
 		// Closures pushed by DeferEntityRefFixup, drained by
 		// RunPendingEntityRefFixups. Lives on the scene so that the

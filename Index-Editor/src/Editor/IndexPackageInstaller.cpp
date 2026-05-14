@@ -156,16 +156,62 @@ namespace Index {
 	std::vector<IndexPackageManifest> IndexPackageInstaller::EnumerateAll(const std::string& projectRootDir) {
 		std::vector<IndexPackageManifest> all;
 
-		const std::string engineRoot = IndexProject::GetEngineRootDir();
-		if (!engineRoot.empty()) {
-			auto enginePackages = EnumeratePackages((std::filesystem::path(engineRoot) / "packages").generic_string(), true);
-			all.insert(all.end(), std::make_move_iterator(enginePackages.begin()), std::make_move_iterator(enginePackages.end()));
+		std::vector<std::filesystem::path> engineRootCandidates;
+		auto appendRootCandidate = [&](std::filesystem::path root) {
+			if (root.empty()) {
+				return;
+			}
+			std::error_code ec;
+			root = std::filesystem::weakly_canonical(root, ec);
+			if (ec) {
+				root = root.lexically_normal();
+			}
+			const auto it = std::find(engineRootCandidates.begin(), engineRootCandidates.end(), root);
+			if (it == engineRootCandidates.end()) {
+				engineRootCandidates.push_back(std::move(root));
+			}
+		};
+
+		appendRootCandidate(IndexProject::GetEngineRootDir());
+		appendRootCandidate(std::filesystem::current_path());
+		appendRootCandidate(std::filesystem::path(Path::ExecutableDir()) / ".." / ".." / "..");
+
+		std::vector<std::filesystem::path> scannedPackageRoots;
+		auto appendPackagesFromRoot = [&](const std::filesystem::path& root, bool isEngine) {
+			for (const char* packagesDirName : { "packages", "Packages" }) {
+				std::filesystem::path packagesRoot = root / packagesDirName;
+				std::error_code ec;
+				std::filesystem::path key = std::filesystem::weakly_canonical(packagesRoot, ec);
+				if (ec) {
+					key = packagesRoot.lexically_normal();
+				}
+				if (std::find(scannedPackageRoots.begin(), scannedPackageRoots.end(), key) != scannedPackageRoots.end()) {
+					continue;
+				}
+				scannedPackageRoots.push_back(key);
+
+				auto manifests = EnumeratePackages(packagesRoot.generic_string(), isEngine);
+				all.insert(all.end(), std::make_move_iterator(manifests.begin()), std::make_move_iterator(manifests.end()));
+			}
+		};
+
+		for (const std::filesystem::path& engineRoot : engineRootCandidates) {
+			appendPackagesFromRoot(engineRoot, true);
 		}
 
 		if (!projectRootDir.empty()) {
-			auto projectPackages = EnumeratePackages((std::filesystem::path(projectRootDir) / "Packages").generic_string(), false);
-			all.insert(all.end(), std::make_move_iterator(projectPackages.begin()), std::make_move_iterator(projectPackages.end()));
+			appendPackagesFromRoot(std::filesystem::path(projectRootDir), false);
 		}
+
+		std::sort(all.begin(), all.end(), [](const IndexPackageManifest& a, const IndexPackageManifest& b) {
+			if (a.IsEngine != b.IsEngine) {
+				return a.IsEngine > b.IsEngine;
+			}
+			return a.Name < b.Name;
+		});
+		all.erase(std::unique(all.begin(), all.end(), [](const IndexPackageManifest& a, const IndexPackageManifest& b) {
+			return a.Name == b.Name && a.IsEngine == b.IsEngine;
+		}), all.end());
 
 		return all;
 	}

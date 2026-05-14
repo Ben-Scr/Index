@@ -3,8 +3,12 @@
 #include "Scene/Scene.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/HierarchyComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/CircleCollider2DComponent.hpp"
+#include "Components/Physics/PolygonCollider2DComponent.hpp"
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/FastBody2DComponent.hpp"
+#include "Components/Tags.hpp"
 
 namespace Index {
 	namespace {
@@ -49,10 +53,63 @@ namespace Index {
 					ProcessSubtree(registry, child, tr, depth + 1);
 				}
 			}
+
+			if (!ownedByPhysics
+				&& !registry.any_of<BoxCollider2DComponent, CircleCollider2DComponent, PolygonCollider2DComponent>(entity)) {
+				tr->ClearDirty();
+			}
+		}
+
+		void ProcessRootTransform(entt::registry& registry, EntityHandle entity) {
+			if (!registry.valid(entity)) return;
+			auto* tr = registry.try_get<Transform2DComponent>(entity);
+			if (!tr) return;
+
+			const bool ownedByPhysics = registry.any_of<Rigidbody2DComponent, FastBody2DComponent>(entity);
+			if (!ownedByPhysics) {
+				tr->Position = tr->LocalPosition;
+				tr->Rotation = tr->LocalRotation;
+				tr->Scale = tr->LocalScale;
+			}
+
+			if (!ownedByPhysics
+				&& !registry.any_of<BoxCollider2DComponent, CircleCollider2DComponent, PolygonCollider2DComponent>(entity)) {
+				tr->ClearDirty();
+			}
+		}
+
+		bool HasBodyDrivenHierarchy(entt::registry& registry) {
+			auto rigidbodyView = registry.view<Rigidbody2DComponent, HierarchyComponent>(entt::exclude<DisabledTag>);
+			for (auto entity : rigidbodyView) {
+				if (!registry.get<HierarchyComponent>(entity).Children.empty()) return true;
+			}
+
+			auto fastBodyView = registry.view<FastBody2DComponent, HierarchyComponent>(entt::exclude<DisabledTag>);
+			for (auto entity : fastBodyView) {
+				if (!registry.get<HierarchyComponent>(entity).Children.empty()) return true;
+			}
+
+			return false;
 		}
 
 		void RunPropagation(Scene& scene) {
 			auto& registry = scene.GetRegistry();
+
+			const bool hasHierarchy = registry.view<HierarchyComponent>().size() > 0;
+			const bool forceBodyHierarchy = hasHierarchy && HasBodyDrivenHierarchy(registry);
+			if (!scene.HasDirtyTransforms() && !forceBodyHierarchy) {
+				return;
+			}
+
+			std::vector<EntityHandle> dirtyTransforms = scene.ConsumeDirtyTransformEntities();
+
+			if (!hasHierarchy) {
+				for (EntityHandle entity : dirtyTransforms) {
+					ProcessRootTransform(registry, entity);
+				}
+				return;
+			}
+
 			auto view = registry.view<Transform2DComponent>();
 			for (auto entity : view) {
 				bool isRoot = true;

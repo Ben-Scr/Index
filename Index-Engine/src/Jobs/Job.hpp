@@ -3,6 +3,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <utility>
 
 namespace Index {
 
@@ -16,12 +17,12 @@ namespace Index {
 	// Trivially copyable / movable. A default-constructed handle is invalid
 	// and IsComplete() returns true for it (so "no job" is treated as
 	// "already done", which keeps caller-side null checks short).
-	class INDEX_API JobHandle {
+	class JobHandle {
 	public:
 		JobHandle() = default;
 
-		bool IsValid()    const;
-		bool IsComplete() const;
+		INDEX_API bool IsValid()    const;
+		INDEX_API bool IsComplete() const;
 
 		// Internal — used by Job::Schedule / ParallelFor implementation.
 		// Public to avoid friend-template gymnastics; not part of the
@@ -72,6 +73,20 @@ namespace Index {
 		// Decrement the pending counter on a control block; if it reaches
 		// zero, mark the block complete and notify any waiters.
 		INDEX_API void NotifyOne(const std::shared_ptr<JobControlBlock>& block);
+
+		template <typename F>
+		void ExecuteAndNotify(const std::shared_ptr<JobControlBlock>& block, F&& work) {
+			struct CompletionGuard {
+				const std::shared_ptr<JobControlBlock>& Block;
+
+				~CompletionGuard() {
+					NotifyOne(Block);
+				}
+			};
+
+			CompletionGuard guard{ block };
+			std::forward<F>(work)();
+		}
 
 	}
 

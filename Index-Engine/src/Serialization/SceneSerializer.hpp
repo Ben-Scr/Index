@@ -2,11 +2,17 @@
 #include "Components/General/EntityMetaDataComponent.hpp"
 #include "Core/Export.hpp"
 #include "Scene/EntityHandle.hpp"
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace Index {
+
+	enum class SceneSerializationFormat : std::uint8_t {
+		Json = 0,
+		Binary = 1
+	};
 
 	class Scene;
 
@@ -22,6 +28,7 @@ namespace Index {
 		static bool DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source = {});
 
 		static bool SaveToFile(Scene& scene, const std::string& path);
+		static bool SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format);
 		static bool LoadFromFile(Scene& scene, const std::string& path);
 
 		// Prefab support: save/load single entities
@@ -32,7 +39,10 @@ namespace Index {
 		static bool DeserializeComponent(Scene& scene, EntityHandle entity, std::string_view componentName, const Json::Value& componentValue);
 		static bool ResetComponent(Scene& scene, EntityHandle entity, std::string_view componentName);
 		static bool SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path);
+		static bool SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path, SceneSerializationFormat format);
 		static EntityHandle LoadEntityFromFile(Scene& scene, const std::string& path);
+		static bool ConvertFileFormat(const std::string& path, SceneSerializationFormat format);
+		static bool IsBinarySerializedFile(const std::string& path);
 		static EntityHandle InstantiatePrefab(Scene& scene, uint64_t prefabGuid);
 		static bool ApplyPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
 		static EntityHandle RevertPrefabInstanceOverride(Scene& scene, EntityHandle entity, const std::string& overridePath);

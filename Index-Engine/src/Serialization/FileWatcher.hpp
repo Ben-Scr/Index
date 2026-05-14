@@ -1,4 +1,5 @@
 #pragma once
+#include "Core/Export.hpp"
 #include <atomic>
 #include <condition_variable>
 #include <filesystem>
@@ -12,7 +13,7 @@
 
 namespace Index {
 
-	class FileWatcher {
+	class INDEX_API FileWatcher {
 	public:
 		using Callback = std::function<void()>;
 

@@ -67,12 +67,16 @@ namespace Index {
 		const size_t numChunks = (rangeLength + grainSize - 1) / grainSize;
 
 		// Degenerate cases (single chunk, or no pool available): run
-		// synchronously on the calling thread. Still return a completed
-		// handle so callers don't need to special-case the return value.
+		// through the normal job path. If the pool is unavailable,
+		// JobSystem::Enqueue runs inline and still completes the handle.
 		if (numChunks <= 1 || workers <= 0) {
-			Detail::InvokeParallelChunk(fn, begin, end);
+			auto fnPtr = std::make_shared<std::decay_t<F>>(std::forward<F>(fn));
 			auto block = JobInternal::CreateBlock(1);
-			JobInternal::NotifyOne(block);
+			JobSystem::Enqueue([block, fnPtr, begin, end]() {
+				JobInternal::ExecuteAndNotify(block, [&]() {
+					Detail::InvokeParallelChunk(*fnPtr, begin, end);
+				});
+			});
 			return JobHandle(std::move(block));
 		}
 
@@ -84,8 +88,9 @@ namespace Index {
 			const size_t hi = (lo + grainSize < end) ? (lo + grainSize) : end;
 
 			JobSystem::Enqueue([block, fnPtr, lo, hi]() {
-				Detail::InvokeParallelChunk(*fnPtr, lo, hi);
-				JobInternal::NotifyOne(block);
+				JobInternal::ExecuteAndNotify(block, [&]() {
+					Detail::InvokeParallelChunk(*fnPtr, lo, hi);
+				});
 			});
 		}
 

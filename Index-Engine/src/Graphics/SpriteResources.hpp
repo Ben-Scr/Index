@@ -32,6 +32,11 @@
 
 namespace Index::WebGPUSpriteResources {
 
+	enum class SpritePipelineMode : std::uint8_t {
+		Filled = 0,
+		Wireframe = 1
+	};
+
 	// Per-instance layout written into the instance VBO.
 	struct INDEX_API SpriteInstance {
 		float Pos[2];        // matches i_data0.xy in vs_main
@@ -55,7 +60,8 @@ namespace Index::WebGPUSpriteResources {
 	// Quad geometry — 4 vertices at [-0.5, 0.5]² (Z=0), 6 indices forming
 	// two CCW triangles. Vertex stride = 12 bytes (3 floats).
 	INDEX_API wgpu::Buffer GetQuadVertexBuffer();
-	INDEX_API wgpu::Buffer GetQuadIndexBuffer();
+	INDEX_API wgpu::Buffer GetQuadIndexBuffer(SpritePipelineMode mode = SpritePipelineMode::Filled);
+	INDEX_API std::uint32_t GetQuadIndexCount(SpritePipelineMode mode = SpritePipelineMode::Filled);
 
 	// Bind group / pipeline layout.
 	//   group 0:
@@ -73,7 +79,8 @@ namespace Index::WebGPUSpriteResources {
 	// D24S8-depth variant (every editor FBO).
 	INDEX_API wgpu::RenderPipeline GetSpritePipeline(
 		wgpu::TextureFormat colorFormat,
-		bool                hasDepth);
+		bool                hasDepth,
+		SpritePipelineMode  mode = SpritePipelineMode::Filled);
 
 	// CPU-side encode helper. Out-parameter so callers can write directly
 	// into a transient instance buffer's mapped range with a single

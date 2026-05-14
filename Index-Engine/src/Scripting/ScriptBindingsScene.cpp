@@ -522,7 +522,7 @@ namespace Index {
 	{
 		Scene* scene = GetScene();
 		if (!scene) return 0;
-		Entity entity = scene->CreateRuntimeEntity(name ? name : "Entity");
+		Entity entity = scene->CreateRuntimeEntity(name ? name : "");
 		return GetEntityScriptId(*scene, entity.GetHandle());
 	}
 

@@ -27,10 +27,15 @@ public struct NativeTransform2D : IComponent
     private Vector2 m_LocalScale;
     private float  m_LocalRotationRadians;
 
-    // C++ `bool m_Dirty` is 1 byte. Trailing padding is 3 bytes with the
-    // native struct's 4-byte natural alignment.
+    // C++ `bool m_Dirty` is 1 byte. The native struct then pads up to the
+    // following 8-byte Scene* field.
     [MarshalAs(UnmanagedType.U1)]
     private bool m_Dirty;
+    // Native owner metadata: Scene* + EntityHandle. These fields are intentionally
+    // private to scripting, but they must exist so the managed layout stays byte-
+    // identical to the C++ Transform2DComponent.
+    private nint m_OwnerScene;
+    private uint m_OwnerEntity;
 
     public Vector2 Position
     {

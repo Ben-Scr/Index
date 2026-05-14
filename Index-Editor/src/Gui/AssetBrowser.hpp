@@ -84,6 +84,7 @@ namespace Index {
 		void CopySelectedAssets(bool cut);
 		void PasteAssets();
 		void DuplicateSelectedAssets();
+		void DeleteSelectedAssets();
 
 		void DeleteEntry(const std::string& path);
 		void RenameEntry(const std::string& path, const std::string& newName);

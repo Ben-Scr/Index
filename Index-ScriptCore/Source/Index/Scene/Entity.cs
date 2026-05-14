@@ -127,9 +127,15 @@ public class Entity : IEquatable<Entity>
             if (IsPrefabAsset)
                 return;
 
+            if (string.IsNullOrEmpty(value))
+            {
+                RemoveComponent<NameComponent>();
+                return;
+            }
+
             NameComponent? nameComp = GetComponent<NameComponent>() ?? AddComponent<NameComponent>();
             if (nameComp != null)
-                nameComp.Name = value ?? "";
+                nameComp.Name = value;
         }
     }
 
@@ -582,7 +588,7 @@ public class Entity : IEquatable<Entity>
         return id != 0 ? new Entity(id) : null;
     }
 
-    public static Entity Create(string name)
+    public static Entity Create(string? name = null)
     {
         ulong id = InternalCalls.Entity_Create(name);
         return id != 0 ? new Entity(id) : Invalid;

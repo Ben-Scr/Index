@@ -15,6 +15,7 @@
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -39,11 +40,10 @@ namespace Index {
 			return;
 		}
 
-		const std::string json = File::ReadAllText(prefabPath);
 		Json::Value root;
-		std::string parseError;
-		if (!Json::TryParse(json, root, &parseError) || !root.IsObject()) {
-			IDX_CORE_ERROR_TAG("PrefabInspector", "Failed to parse {}: {}", prefabPath, parseError);
+		std::string readError;
+		if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
+			IDX_CORE_ERROR_TAG("PrefabInspector", "Failed to parse {}: {}", prefabPath, readError);
 			return;
 		}
 
@@ -191,8 +191,8 @@ namespace Index {
 		bool havePreviousSource = false;
 		if (File::Exists(m_PrefabPath)) {
 			Json::Value previousRoot;
-			std::string parseError;
-			if (Json::TryParse(File::ReadAllText(m_PrefabPath), previousRoot, &parseError) && previousRoot.IsObject()) {
+			std::string readError;
+			if (SceneSerializerStorage::ReadRootFromFile(m_PrefabPath, previousRoot, &readError) && previousRoot.IsObject()) {
 				previousSourceRoot = previousRoot;
 				havePreviousSource = true;
 			}

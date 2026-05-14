@@ -120,6 +120,7 @@
     <Compile Include="Source\Index\Interop\PackageNativeResolver.cs" />
     <Compile Include="Source\Index\Interop\ScriptHostBridge.cs" />
     <Compile Include="Source\Index\Interop\ScriptInstanceManager.cs" />
+    <Compile Include="Source\Index\Jobs\Job.cs" />
     <Compile Include="Source\Index\Math\Color.cs" />
     <Compile Include="Source\Index\Math\Mathf.cs" />
     <Compile Include="Source\Index\Math\Quaternion.cs" />

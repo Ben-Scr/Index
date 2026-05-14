@@ -38,6 +38,9 @@ namespace Index {
             [[deprecated("Sampler-agnostic lookup is ambiguous when the same path is loaded with multiple Filter/Wrap combinations. Pass filter+wrap explicitly.")]]
             static TextureHandle GetTextureHandle(const std::string& name);
             static Texture2D* GetTexture(TextureHandle handle);
+            static bool ReloadTexture(TextureHandle handle);
+            static size_t ReloadTexturePath(const std::string& path);
+            static size_t ReloadTexturesFromDisk();
             static std::vector<TextureHandle> GetLoadedHandles();
             static void UnloadAll(bool defaultTextures = false);
             static uint64_t GetTextureAssetUUID(TextureHandle handle);

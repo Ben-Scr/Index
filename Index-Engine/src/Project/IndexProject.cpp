@@ -5,6 +5,8 @@
 #include "Serialization/Directory.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
+#include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 #include "Utils/Process.hpp"
 #include "Core/Log.hpp"
 #include "Core/Version.hpp"
@@ -635,6 +637,8 @@ endforeach()
 		if (project.RecompileScriptsOnPlay) {
 			root.AddMember("recompileScriptsOnPlay", true);
 		}
+		root.AddMember("assetSerializationFormat",
+			std::string(IndexProject::ProjectAssetSerializationFormatToString(project.AssetSerializationFormat)));
 
 		if (project.ShowFileExtensions) {
 			root.AddMember("showFileExtensions", true);
@@ -805,6 +809,24 @@ endforeach()
 		if (value == "Metal"      || value == "metal")                        return RenderBackend::Metal;
 		if (value == "OpenGLES"   || value == "opengles" || value == "GLES")  return RenderBackend::OpenGLES;
 		return RenderBackend::Auto;
+	}
+
+	const char* IndexProject::ProjectAssetSerializationFormatToString(ProjectAssetSerializationFormat format) {
+		switch (format) {
+			case ProjectAssetSerializationFormat::Binary: return "Binary";
+			case ProjectAssetSerializationFormat::Json:   return "Json";
+		}
+		return "Binary";
+	}
+
+	IndexProject::ProjectAssetSerializationFormat IndexProject::ProjectAssetSerializationFormatFromString(std::string_view value) {
+		if (value == "Binary" || value == "binary" || value == "bin") {
+			return ProjectAssetSerializationFormat::Binary;
+		}
+		if (value == "Json" || value == "json") {
+			return ProjectAssetSerializationFormat::Json;
+		}
+		return ProjectAssetSerializationFormat::Binary;
 	}
 
 	const char* IndexProject::EditorEntityNameSuffixStyleToString(EditorEntityNameSuffixStyle style) {
@@ -1256,6 +1278,9 @@ endforeach()
 					project.AutoRecompileScripts = v->AsBoolOr(true);
 				if (const Json::Value* v = root.FindMember("recompileScriptsOnPlay"))
 					project.RecompileScriptsOnPlay = v->AsBoolOr(false);
+				if (const Json::Value* v = root.FindMember("assetSerializationFormat"))
+					project.AssetSerializationFormat = IndexProject::ProjectAssetSerializationFormatFromString(
+						v->AsStringOr("Binary"));
 				if (const Json::Value* v = root.FindMember("showFileExtensions"))
 					project.ShowFileExtensions = v->AsBoolOr(false);
 				if (const Json::Value* v = root.FindMember("editorEnsureUniqueEntityNames"))
@@ -1415,7 +1440,14 @@ endforeach()
 			sceneRoot.AddMember("name", project.StartupScene);
 			sceneRoot.AddMember("systems", Json::Value::MakeArray());
 			sceneRoot.AddMember("entities", Json::Value::MakeArray());
-			(void)File::WriteAllText(project.GetSceneFilePath(project.StartupScene), Json::Stringify(sceneRoot, true));
+			const SceneSerializationFormat starterFormat =
+				project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
+					? SceneSerializationFormat::Binary
+					: SceneSerializationFormat::Json;
+			(void)SceneSerializerStorage::WriteRootToFile(
+				project.GetSceneFilePath(project.StartupScene),
+				sceneRoot,
+				starterFormat);
 		}
 
 		// Preserve existing NuGet PackageReference entries if .csproj already exists

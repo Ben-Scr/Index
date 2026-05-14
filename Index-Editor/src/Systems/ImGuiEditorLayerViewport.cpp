@@ -57,6 +57,30 @@ namespace Index {
 		auto* renderer = app->GetRenderer2D();
 		if (!renderer) return;
 
+		struct RenderStateGuard {
+			PolygonMode PreviousPolygonMode = PolygonMode::Filled;
+			bool PreviousLogicOpClear = false;
+
+			~RenderStateGuard() {
+				RenderApi::SetPolygonMode(PreviousPolygonMode);
+				if (PreviousLogicOpClear) {
+					RenderApi::BeginColorLogicOpClear();
+				}
+				else {
+					RenderApi::EndColorLogicOpClear();
+				}
+				RenderApi::SetColorMask(true, true, true, true);
+			}
+		};
+
+		RenderStateGuard stateGuard{
+			RenderApi::GetPolygonMode(),
+			RenderApi::IsColorLogicOpClearEnabled()
+		};
+		RenderApi::SetPolygonMode(PolygonMode::Filled);
+		RenderApi::EndColorLogicOpClear();
+		RenderApi::SetColorMask(true, true, true, true);
+
 		const int w = fbo.GetWidth();
 		const int h = fbo.GetHeight();
 
@@ -146,17 +170,24 @@ namespace Index {
 			RenderApi::SetPolygonMode(PolygonMode::Filled);
 		};
 
+		auto runFilledPass = [&]() {
+			RenderApi::SetPolygonMode(PolygonMode::Filled);
+			RenderApi::EndColorLogicOpClear();
+			RenderApi::SetColorMask(true, true, true, true);
+			runSceneRender();
+		};
+
 		switch (drawMode) {
 		case EditorViewDrawMode::Triangle:
 			runWireframePass();
 			break;
 		case EditorViewDrawMode::Mixed:
-			runSceneRender();
+			runFilledPass();
 			runWireframePass();
 			break;
 		case EditorViewDrawMode::Default:
 		default:
-			runSceneRender();
+			runFilledPass();
 			break;
 		}
 
@@ -566,19 +597,30 @@ namespace Index {
 						ImVec2(1.0f, 1.0f));
 					ImGui::SetNextWindowBgAlpha(0.86f);
 					if (ImGui::Begin("##ParticleSystem2DViewportControls", nullptr, overlayFlags)) {
-						if (ImGui::Button("Play")) {
-							particleSystem.Play();
-							renderScene->MarkDirty();
+						const bool isEmitting = particleSystem.IsEmitting();
+						const bool isSimulating = particleSystem.IsSimulating();
+						bool drewButton = false;
+						if (!isEmitting && !isSimulating) {
+							if (ImGui::Button("Play")) {
+								particleSystem.Play();
+								renderScene->MarkDirty();
+							}
+							drewButton = true;
 						}
-						ImGui::SameLine();
-						if (ImGui::Button("Pause")) {
-							particleSystem.Pause();
-							renderScene->MarkDirty();
+						if (isEmitting || isSimulating) {
+							if (drewButton) ImGui::SameLine();
+							if (ImGui::Button("Pause")) {
+								particleSystem.Pause();
+								renderScene->MarkDirty();
+							}
+							drewButton = true;
 						}
-						ImGui::SameLine();
-						if (ImGui::Button("Stop")) {
-							particleSystem.Stop();
-							renderScene->MarkDirty();
+						if (isEmitting) {
+							if (drewButton) ImGui::SameLine();
+							if (ImGui::Button("Stop")) {
+								particleSystem.Stop();
+								renderScene->MarkDirty();
+							}
 						}
 					}
 					ImGui::End();

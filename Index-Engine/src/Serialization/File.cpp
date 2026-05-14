@@ -75,6 +75,62 @@ namespace Index {
 		return true;
 	}
 
+	bool File::WriteAllBytes(const std::string& path, const std::vector<std::uint8_t>& bytes) {
+		const std::filesystem::path target(path);
+		std::filesystem::path tmp = target;
+		tmp += ".tmp";
+
+		{
+			std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+			if (!file.is_open()) {
+				IDX_CORE_ERROR("File couldn't be opened for writing: {}", tmp.string());
+				return false;
+			}
+
+			if (!bytes.empty()) {
+				file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+			}
+			if (!file.good()) {
+				IDX_CORE_ERROR("Write failed (disk full / IO error): {}", tmp.string());
+				file.close();
+				std::error_code ec;
+				std::filesystem::remove(tmp, ec);
+				return false;
+			}
+			file.close();
+			if (file.fail()) {
+				IDX_CORE_ERROR("Close failed for: {}", tmp.string());
+				std::error_code ec;
+				std::filesystem::remove(tmp, ec);
+				return false;
+			}
+		}
+
+#ifdef IDX_PLATFORM_WINDOWS
+		const std::wstring tmpW = tmp.wstring();
+		const std::wstring targetW = target.wstring();
+		if (!MoveFileExW(tmpW.c_str(), targetW.c_str(),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+			const DWORD err = GetLastError();
+			IDX_CORE_ERROR("MoveFileEx failed: {} -> {} (Win32 error {})", tmp.string(), target.string(), static_cast<unsigned long>(err));
+			std::error_code cleanup;
+			std::filesystem::remove(tmp, cleanup);
+			return false;
+		}
+#else
+		std::error_code ec;
+		std::filesystem::rename(tmp, target, ec);
+		if (ec) {
+			IDX_CORE_ERROR("Rename failed: {} -> {} ({})", tmp.string(), target.string(), ec.message());
+			std::error_code cleanup;
+			std::filesystem::remove(tmp, cleanup);
+			return false;
+		}
+#endif
+
+		return true;
+	}
+
 	std::string File::ReadAllText(const std::string& path) {
 		std::ifstream file(path, std::ios::binary);
 		if (!file.is_open()) {

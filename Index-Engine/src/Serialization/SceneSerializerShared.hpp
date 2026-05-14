@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/Export.hpp"
 #include "Assets/AssetRegistry.hpp"
 #include "Audio/AudioManager.hpp"
 #include "Core/Log.hpp"
@@ -10,12 +11,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Index {
 	class Scene;
+	enum class SceneSerializationFormat : std::uint8_t;
 	struct ScriptComponent;
 }
 
@@ -25,6 +29,12 @@ namespace Index::SceneSerializerInternal {
 	// SceneSerializerDeserialize.cpp, where they could silently drift.
 	inline constexpr int k_SceneFormatVersion = 1;
 	inline constexpr float k_MinScaleAxis = 0.0001f;
+}
+
+namespace Index::SceneSerializerStorage {
+	INDEX_API bool ReadRootFromFile(const std::string& path, Json::Value& outRoot, std::string* outError = nullptr);
+	INDEX_API bool WriteRootToFile(const std::string& path, const Json::Value& root, SceneSerializationFormat format);
+	INDEX_API bool IsBinaryData(const std::vector<std::uint8_t>& bytes);
 }
 
 namespace Index::Detail {

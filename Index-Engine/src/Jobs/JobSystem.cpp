@@ -184,14 +184,19 @@ namespace Index {
 		// run inline on the calling thread. Keeps callers safe across
 		// init/shutdown boundaries — the worst case is a synchronous
 		// fan-in, not a crash.
-		if (!s_Initialized.load(std::memory_order_acquire)) {
-			ExecuteJob(std::move(work));
-			return;
-		}
-
+		bool runInline = false;
 		{
 			std::scoped_lock lock(s_QueueMutex);
-			s_Queue.emplace_back(std::move(work));
+			runInline = !s_Initialized.load(std::memory_order_acquire)
+				|| !s_Running.load(std::memory_order_acquire);
+			if (!runInline) {
+				s_Queue.emplace_back(std::move(work));
+			}
+		}
+
+		if (runInline) {
+			ExecuteJob(std::move(work));
+			return;
 		}
 		s_QueueCv.notify_one();
 	}

@@ -385,6 +385,12 @@ namespace Index {
 			CreateFolder(m_CurrentDirectory);
 			return;
 		}
+		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
+			&& (ImGui::IsKeyPressed(ImGuiKey_Delete, false)
+				|| ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false))) {
+			DeleteSelectedAssets();
+			return;
+		}
 		if (!io.KeyCtrl) {
 			return;
 		}
@@ -483,6 +489,13 @@ namespace Index {
 			m_SelectedPath = duplicatedPaths.back();
 			m_LastSelectionIndex = -1;
 			m_NeedsRefresh = true;
+		}
+	}
+
+	void AssetBrowser::DeleteSelectedAssets() {
+		const std::vector<std::string> paths = GetSelectedPaths();
+		for (const std::string& path : paths) {
+			DeleteEntry(path);
 		}
 	}
 
@@ -1198,10 +1211,7 @@ namespace Index {
 			ImGui::Separator();
 
 			if (ImGui::MenuItem("Delete", "Del")) {
-				const std::vector<std::string> paths = GetSelectedPaths();
-				for (const std::string& path : paths) {
-					DeleteEntry(path);
-				}
+				DeleteSelectedAssets();
 				ImGui::EndPopup();
 				return;
 			}

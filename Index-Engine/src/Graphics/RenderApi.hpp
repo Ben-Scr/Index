@@ -98,6 +98,7 @@ namespace Index {
 		static void SetBlendingEnabled(bool enabled);
 
 		static void SetPolygonMode(PolygonMode mode);
+		static PolygonMode GetPolygonMode();
 		static void SetLineWidth(float width);
 
 		static void SetColorMask(bool r, bool g, bool b, bool a);
@@ -109,6 +110,7 @@ namespace Index {
 		// the begin/end so callers don't have to know the recipe.
 		static void BeginColorLogicOpClear();
 		static void EndColorLogicOpClear();
+		static bool IsColorLogicOpClearEnabled();
 
 		// ── Framebuffer binding ──────────────────────────────────────
 		// Bind one of the engine's Framebuffer wrappers as the current

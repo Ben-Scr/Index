@@ -28,6 +28,7 @@
 #include "Serialization/Path.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/File.hpp"
 #include "Utils/Process.hpp"
@@ -383,6 +384,8 @@ namespace Index {
 			Log::OnLog.Remove(m_LogSubscriptionId);
 			m_LogSubscriptionId = EventId{};
 		}
+		m_AssetWatcher.Stop();
+		m_AssetWatcherRoot.clear();
 		m_LogDispatchState.reset();
 		// Reset the game-view log overlay BEFORE the rest of teardown so its destructor
 		// (which unsubscribes from Log::OnLog) runs while the editor layer is still in
@@ -425,6 +428,30 @@ namespace Index {
 	void ImGuiEditorLayer::OnUpdate(Application& app, float dt) {
 		DrainPendingLogEntries();
 		RunAutoSaveTick(app, dt);
+
+		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+			if (!project->AssetsDirectory.empty() && project->AssetsDirectory != m_AssetWatcherRoot) {
+				m_AssetWatcherRoot = project->AssetsDirectory;
+				m_AssetWatcher.Watch(
+					std::vector<std::string>{ m_AssetWatcherRoot },
+					std::vector<std::string>{ ".png", ".jpg", ".jpeg", ".bmp", ".tga" },
+					[this]() {
+						const size_t reloaded = TextureManager::ReloadTexturesFromDisk();
+						AssetRegistry::MarkDirty();
+						AssetRegistry::Sync();
+						m_AssetBrowser.RequestRefresh();
+						ClearPreviewTextureCache();
+						if (reloaded > 0) {
+							IDX_INFO_TAG("Editor", "Hot-reloaded {} texture(s)", reloaded);
+						}
+					});
+			}
+			m_AssetWatcher.Poll(0.25f);
+		}
+		else if (!m_AssetWatcherRoot.empty()) {
+			m_AssetWatcher.Stop();
+			m_AssetWatcherRoot.clear();
+		}
 
 		// Drain a script-driven Application.Quit() that fired this frame.
 		// In editor it's wired to set m_EditorStopPlayRequested instead
@@ -562,6 +589,10 @@ namespace Index {
 		// Save shortcut wired up in ImGuiEditorLayerChrome.cpp.
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false) && hasEntitySelection) {
 			CopySelectedEntities(shortcutScene);
+		}
+		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X, false) && hasEntitySelection) {
+			CutSelectedEntities(shortcutScene);
+			return;
 		}
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) {
 			PasteEntities(shortcutScene);
@@ -1580,6 +1611,19 @@ namespace Index {
 		m_EntityClipboardJson = Json::Stringify(root, false);
 	}
 
+	void ImGuiEditorLayer::CutSelectedEntities(Scene& scene) {
+		const std::vector<EntityHandle> selectedEntities = GetSelectedEntities(scene);
+		if (selectedEntities.empty()) {
+			return;
+		}
+
+		m_EntityClipboardJson.clear();
+		CopySelectedEntities(scene);
+		if (!m_EntityClipboardJson.empty()) {
+			DeleteSelectedEntity(scene);
+		}
+	}
+
 	void ImGuiEditorLayer::PasteEntities(Scene& scene) {
 		if (m_EntityClipboardJson.empty()) {
 			return;
@@ -2248,8 +2292,8 @@ namespace Index {
 		bool havePreviousSource = false;
 		if (File::Exists(m_PrefabEditPath)) {
 			Json::Value previousRoot;
-			std::string parseError;
-			if (Json::TryParse(File::ReadAllText(m_PrefabEditPath), previousRoot, &parseError) && previousRoot.IsObject()) {
+			std::string readError;
+			if (SceneSerializerStorage::ReadRootFromFile(m_PrefabEditPath, previousRoot, &readError) && previousRoot.IsObject()) {
 				previousSourceRoot = previousRoot;
 				havePreviousSource = true;
 			}
@@ -2425,7 +2469,7 @@ namespace Index {
 			}
 		}
 		std::string sceneToRemove;
-		m_VisibleEntityOrder.clear();
+		std::vector<EntityHandle> nextVisibleEntityOrder;
 
 		for (Scene* scenePtrRaw : scenesToShow) {
 			if (!scenePtrRaw) continue;
@@ -2627,8 +2671,8 @@ namespace Index {
 						hideUnderDepth = -1;
 					}
 
-					const int visibleIndex = static_cast<int>(m_VisibleEntityOrder.size());
-					m_VisibleEntityOrder.push_back(entityHandle);
+					const int visibleIndex = static_cast<int>(nextVisibleEntityOrder.size());
+					nextVisibleEntityOrder.push_back(entityHandle);
 
 					// Step indent up/down to match this entity's depth.
 					while (currentIndentDepth < targetDepth) {
@@ -2708,8 +2752,18 @@ namespace Index {
 
 						if (committed) {
 							std::string newName(m_EntityRenameBuffer);
-							if (!newName.empty() && entity.HasComponent<NameComponent>()) {
+							if (newName.empty()) {
+								if (entity.HasComponent<NameComponent>()) {
+									entity.RemoveComponent<NameComponent>();
+									scene.MarkDirty();
+								}
+							}
+							else if (entity.HasComponent<NameComponent>()) {
 								entity.GetComponent<NameComponent>().Name = newName;
+								scene.MarkDirty();
+							}
+							else {
+								scene.AddComponent<NameComponent>(entity.GetHandle(), newName);
 								scene.MarkDirty();
 							}
 							m_RenamingEntity = entt::null;
@@ -2721,8 +2775,18 @@ namespace Index {
 						}
 						else if (m_EntityRenameFrameCounter > 2 && !ImGui::IsItemActive()) {
 							std::string newName(m_EntityRenameBuffer);
-							if (!newName.empty() && entity.HasComponent<NameComponent>()) {
+							if (newName.empty()) {
+								if (entity.HasComponent<NameComponent>()) {
+									entity.RemoveComponent<NameComponent>();
+									scene.MarkDirty();
+								}
+							}
+							else if (entity.HasComponent<NameComponent>()) {
 								entity.GetComponent<NameComponent>().Name = newName;
+								scene.MarkDirty();
+							}
+							else {
+								scene.AddComponent<NameComponent>(entity.GetHandle(), newName);
 								scene.MarkDirty();
 							}
 							m_RenamingEntity = entt::null;
@@ -2896,21 +2960,31 @@ namespace Index {
 
 					if (ImGui::BeginPopupContextItem())
 					{
+						RenderCreateEntityMenu(scene, entity);
+
+
+						ImGui::Separator();
+
 						if (!IsEntitySelected(entityHandle)) {
 							SetSingleEntitySelection(entityHandle, visibleIndex);
 						}
 
-						if (ImGui::MenuItem("Delete Entity"))
+						if (ImGui::MenuItem("Delete", "Del"))
 						{
 							DeleteSelectedEntity(scene);
 						}
 
-						if (ImGui::MenuItem("Duplicate"))
+						if (ImGui::MenuItem("Cut", "Ctrl + X"))
+						{
+							CutSelectedEntities(scene);
+						}
+
+						if (ImGui::MenuItem("Duplicate", "Ctrl + D"))
 						{
 							DuplicateSelectedEntity(scene);
 						}
 
-						if (ImGui::MenuItem("Rename"))
+						if (ImGui::MenuItem("Rename", "F2"))
 						{
 							BeginRenameSelectedEntity(scene);
 						}
@@ -2927,13 +3001,10 @@ namespace Index {
 						}
 						if (anySelectedIsPrefabInstance) {
 							ImGui::Separator();
-							if (ImGui::MenuItem("Unpack Prefab")) {
+							if (ImGui::MenuItem("Unpack Prefab", "Shift + U")) {
 								UnpackSelectedPrefabs(scene);
 							}
 						}
-
-						ImGui::Separator();
-						RenderCreateEntityMenu(scene, entity);
 
 						ImGui::EndPopup();
 					}
@@ -2965,6 +3036,8 @@ namespace Index {
 
 			ImGui::PopID();
 		}
+
+		m_VisibleEntityOrder = std::move(nextVisibleEntityOrder);
 
 		// Deferred scene removal (after iteration)
 		if (!sceneToRemove.empty()) {
@@ -3249,7 +3322,7 @@ namespace Index {
 
 		// Editable Name. With multi-select, mixed names display "—" via the
 		// hint and edits propagate to all entities (creating NameComponent
-		// when missing).
+		// when missing; removing NameComponent for an empty name).
 		bool nameUniform = true;
 		std::string firstName = entity.HasComponent<NameComponent>()
 			? entity.GetComponent<NameComponent>().Name : std::string("Entity");
@@ -3269,7 +3342,12 @@ namespace Index {
 		if (nameSubmitted) {
 			std::string newName(nameBuf);
 			for (Entity& e : selectedEntities) {
-				if (e.HasComponent<NameComponent>()) {
+				if (newName.empty()) {
+					if (e.HasComponent<NameComponent>()) {
+						e.RemoveComponent<NameComponent>();
+					}
+				}
+				else if (e.HasComponent<NameComponent>()) {
 					e.GetComponent<NameComponent>().Name = newName;
 				}
 				else {
@@ -3409,8 +3487,8 @@ namespace Index {
 				bool havePrev = false;
 				if (!prefabPath.empty() && File::Exists(prefabPath)) {
 					Json::Value previousRoot;
-					std::string parseError;
-					if (Json::TryParse(File::ReadAllText(prefabPath), previousRoot, &parseError) && previousRoot.IsObject()) {
+					std::string readError;
+					if (SceneSerializerStorage::ReadRootFromFile(prefabPath, previousRoot, &readError) && previousRoot.IsObject()) {
 						if (const Json::Value* eb = previousRoot.FindMember("Entity")) { previousSourceEntity = *eb; havePrev = true; }
 						else if (const Json::Value* lb = previousRoot.FindMember("prefab")) { previousSourceEntity = *lb; havePrev = true; }
 					}
@@ -3683,8 +3761,8 @@ namespace Index {
 				bool havePrev = false;
 				if (!prefabPath.empty() && File::Exists(prefabPath)) {
 					Json::Value previousRoot;
-					std::string parseError;
-					if (Json::TryParse(File::ReadAllText(prefabPath), previousRoot, &parseError) && previousRoot.IsObject()) {
+					std::string readError;
+					if (SceneSerializerStorage::ReadRootFromFile(prefabPath, previousRoot, &readError) && previousRoot.IsObject()) {
 						if (const Json::Value* eb = previousRoot.FindMember("Entity")) { previousSourceEntity = *eb; havePrev = true; }
 						else if (const Json::Value* lb = previousRoot.FindMember("prefab")) { previousSourceEntity = *lb; havePrev = true; }
 					}

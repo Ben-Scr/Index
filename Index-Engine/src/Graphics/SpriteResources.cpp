@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -31,12 +32,15 @@ namespace Index::WebGPUSpriteResources {
 			{ -0.5f,  0.5f, 0.0f },
 		};
 		constexpr uint16_t k_QuadIndices[] = { 0, 1, 2, 0, 2, 3 };
+		constexpr uint16_t k_QuadWireIndices[] = { 0, 1, 1, 2, 2, 0, 0, 2, 2, 3, 3, 0 };
 
 		// Pipeline cache key: pack (colorFormat << 1) | hasDepth into a
 		// single 32-bit value. Format enums are uint32_t in webgpu_cpp.h;
 		// the shift keeps headroom and the LSB carries the hasDepth bit.
-		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth) {
-			return (static_cast<uint32_t>(fmt) << 1) | (hasDepth ? 1u : 0u);
+		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth, SpritePipelineMode mode) {
+			return (static_cast<uint32_t>(fmt) << 2)
+				| (hasDepth ? 1u : 0u)
+				| (mode == SpritePipelineMode::Wireframe ? 2u : 0u);
 		}
 
 		struct Resources {
@@ -44,6 +48,7 @@ namespace Index::WebGPUSpriteResources {
 			wgpu::ShaderModule      SpriteModule;       // cached fast-path; same handle Shader holds
 			wgpu::Buffer            QuadVertexBuffer;
 			wgpu::Buffer            QuadIndexBuffer;
+			wgpu::Buffer            QuadWireIndexBuffer;
 			wgpu::BindGroupLayout   BindGroupLayout;
 			wgpu::PipelineLayout    PipelineLayout;
 			std::unordered_map<uint32_t, wgpu::RenderPipeline> PipelineCache;
@@ -118,7 +123,7 @@ namespace Index::WebGPUSpriteResources {
 
 		wgpu::RenderPipeline CreateSpritePipeline(wgpu::Device device,
 			wgpu::ShaderModule module, wgpu::PipelineLayout layout,
-			wgpu::TextureFormat colorFormat, bool hasDepth)
+			wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode)
 		{
 			// Two vertex buffers:
 			//   Buffer 0 (per-vertex):   position vec3<f32>, stride 12
@@ -171,7 +176,9 @@ namespace Index::WebGPUSpriteResources {
 			fragState.targets       = &colorTarget;
 
 			wgpu::PrimitiveState prim{};
-			prim.topology         = wgpu::PrimitiveTopology::TriangleList;
+			prim.topology         = mode == SpritePipelineMode::Wireframe
+				? wgpu::PrimitiveTopology::LineList
+				: wgpu::PrimitiveTopology::TriangleList;
 			prim.stripIndexFormat = wgpu::IndexFormat::Undefined;
 			prim.frontFace        = wgpu::FrontFace::CCW;
 			prim.cullMode         = wgpu::CullMode::None;  // 2D quads, no culling
@@ -185,7 +192,7 @@ namespace Index::WebGPUSpriteResources {
 			}
 
 			wgpu::RenderPipelineDescriptor desc{};
-			desc.label  = "sprite-pipeline";
+			desc.label  = mode == SpritePipelineMode::Wireframe ? "sprite-wire-pipeline" : "sprite-pipeline";
 			desc.layout = layout;
 
 			desc.vertex.module      = module;
@@ -247,6 +254,14 @@ namespace Index::WebGPUSpriteResources {
 				return false;
 			}
 
+			g_Res.QuadWireIndexBuffer = CreateInitialisedBuffer(
+				device, wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst,
+				k_QuadWireIndices, sizeof(k_QuadWireIndices), "sprite-quad-wire-ibo");
+			if (!g_Res.QuadWireIndexBuffer) {
+				IDX_CORE_ERROR_TAG("WebGPUSpriteResources", "Failed to create quad wire IBO");
+				return false;
+			}
+
 			g_Res.BindGroupLayout = CreateSpriteBindGroupLayout(device);
 			if (!g_Res.BindGroupLayout) {
 				IDX_CORE_ERROR_TAG("WebGPUSpriteResources", "Failed to create bind group layout");
@@ -265,6 +280,7 @@ namespace Index::WebGPUSpriteResources {
 			g_Res.PipelineCache.clear();
 			g_Res.PipelineLayout    = nullptr;
 			g_Res.BindGroupLayout   = nullptr;
+			g_Res.QuadWireIndexBuffer = nullptr;
 			g_Res.QuadIndexBuffer   = nullptr;
 			g_Res.QuadVertexBuffer  = nullptr;
 			g_Res.SpriteModule      = nullptr;
@@ -297,14 +313,21 @@ namespace Index::WebGPUSpriteResources {
 
 	wgpu::ShaderModule    GetSpriteModule()    { return g_Res.SpriteModule; }
 	wgpu::Buffer          GetQuadVertexBuffer(){ return g_Res.QuadVertexBuffer; }
-	wgpu::Buffer          GetQuadIndexBuffer() { return g_Res.QuadIndexBuffer; }
+	wgpu::Buffer          GetQuadIndexBuffer(SpritePipelineMode mode) {
+		return mode == SpritePipelineMode::Wireframe ? g_Res.QuadWireIndexBuffer : g_Res.QuadIndexBuffer;
+	}
+	std::uint32_t GetQuadIndexCount(SpritePipelineMode mode) {
+		return mode == SpritePipelineMode::Wireframe
+			? static_cast<std::uint32_t>(std::size(k_QuadWireIndices))
+			: static_cast<std::uint32_t>(std::size(k_QuadIndices));
+	}
 	wgpu::BindGroupLayout GetBindGroupLayout() { return g_Res.BindGroupLayout; }
 	wgpu::PipelineLayout  GetPipelineLayout()  { return g_Res.PipelineLayout; }
 
-	wgpu::RenderPipeline GetSpritePipeline(wgpu::TextureFormat colorFormat, bool hasDepth) {
+	wgpu::RenderPipeline GetSpritePipeline(wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode) {
 		if (!g_Ready) return nullptr;
 
-		const uint32_t key = MakePipelineKey(colorFormat, hasDepth);
+		const uint32_t key = MakePipelineKey(colorFormat, hasDepth, mode);
 		auto it = g_Res.PipelineCache.find(key);
 		if (it != g_Res.PipelineCache.end()) return it->second;
 
@@ -312,7 +335,7 @@ namespace Index::WebGPUSpriteResources {
 		if (!device) return nullptr;
 
 		wgpu::RenderPipeline pipeline = CreateSpritePipeline(
-			device, g_Res.SpriteModule, g_Res.PipelineLayout, colorFormat, hasDepth);
+			device, g_Res.SpriteModule, g_Res.PipelineLayout, colorFormat, hasDepth, mode);
 		if (!pipeline) {
 			IDX_CORE_ERROR_TAG("WebGPUSpriteResources",
 				"Failed to create pipeline for color format {} (hasDepth={})",

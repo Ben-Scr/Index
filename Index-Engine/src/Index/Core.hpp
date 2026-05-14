@@ -19,3 +19,9 @@
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Core/Version.hpp"
+
+// Jobs
+#include "Jobs/Job.hpp"
+#include "Jobs/JobSystem.hpp"
+#include "Jobs/JobSystemSpec.hpp"
+#include "Jobs/ParallelFor.hpp"

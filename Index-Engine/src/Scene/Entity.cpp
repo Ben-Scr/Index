@@ -207,6 +207,9 @@ namespace Index {
 		if (parentHandle == entt::null) {
 			myHc.Parent = entt::null;
 			ClearInheritedDisabled(*m_Registry, m_EntityHandle);
+			if (m_Scene) {
+				m_Scene->MarkTransformDirty(m_EntityHandle);
+			}
 			return;
 		}
 
@@ -224,6 +227,10 @@ namespace Index {
 		}
 		else if (HasComponent<InheritedDisabledTag>()) {
 			ClearInheritedDisabled(*m_Registry, m_EntityHandle);
+		}
+
+		if (m_Scene) {
+			m_Scene->MarkTransformDirty(m_EntityHandle);
 		}
 	}
 

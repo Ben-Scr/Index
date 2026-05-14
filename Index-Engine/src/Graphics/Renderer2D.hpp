@@ -33,6 +33,7 @@ namespace Index {
 		void BeginFrame();
 		void EndFrame();
 		void Shutdown();
+		static void ClearSceneCache(const Scene* scene);
 		void SetEnabled(bool enabled) { m_IsEnabled = enabled; }
 		bool IsEnabled() const { return m_IsEnabled; }
 		bool IsInitialized() const { return m_IsInitialized; }

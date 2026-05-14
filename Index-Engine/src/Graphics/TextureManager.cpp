@@ -7,6 +7,7 @@
 #include "Serialization/Path.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <utility>
 
@@ -45,6 +46,30 @@ namespace Index {
 		// inside) s_DefaultTextures because s_DefaultTextures stores
 		// the on-disk paths for diagnostics — we want both.
 		std::array<TextureHandle, 9> g_DefaultHandles{};
+
+		std::string ToLower(std::string value) {
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return value;
+		}
+
+		bool IsReloadableImagePath(const std::filesystem::path& path) {
+			const std::string ext = ToLower(path.extension().string());
+			return ext == ".png" || ext == ".jpg" || ext == ".jpeg"
+				|| ext == ".bmp" || ext == ".tga";
+		}
+
+		std::string CanonicalPathKey(const std::string& path) {
+			std::error_code ec;
+			std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+			if (ec) {
+				canonical = std::filesystem::absolute(path, ec);
+				if (ec) {
+					canonical = path;
+				}
+			}
+			return canonical.lexically_normal().make_preferred().string();
+		}
 	}
 
 	void TextureManager::Initialize() {
@@ -159,6 +184,59 @@ namespace Index {
 	Texture2D* TextureManager::GetTexture(TextureHandle handle) {
 		if (!IsValid(handle)) return nullptr;
 		return &s_Textures[handle.index].Texture;
+	}
+
+	bool TextureManager::ReloadTexture(TextureHandle handle) {
+		if (!IsValid(handle)) return false;
+
+		TextureEntry& slot = s_Textures[handle.index];
+		if (slot.Name.empty() || !std::filesystem::exists(slot.Name) || !IsReloadableImagePath(slot.Name)) {
+			return false;
+		}
+
+		Texture2D reloaded;
+		if (!reloaded.Load(slot.Name.c_str(), /*generateMipmaps=*/true,
+			/*srgb=*/false, /*flipVertical=*/false))
+		{
+			IDX_CORE_WARN_TAG("TextureManager", "Hot reload failed for texture: {}", slot.Name);
+			return false;
+		}
+
+		reloaded.SetSampler(slot.SamplerFilter, slot.WrapU, slot.WrapV);
+		slot.Texture = std::move(reloaded);
+		IDX_CORE_INFO_TAG("TextureManager", "Reloaded texture: {}", slot.Name);
+		return true;
+	}
+
+	size_t TextureManager::ReloadTexturePath(const std::string& path) {
+		if (!s_IsInitialized || path.empty()) return 0;
+		const std::string targetKey = CanonicalPathKey(path);
+		size_t count = 0;
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			const TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid || slot.Name.empty()) continue;
+			if (CanonicalPathKey(slot.Name) == targetKey) {
+				if (ReloadTexture(TextureHandle{ static_cast<uint16_t>(i), slot.Generation })) {
+					++count;
+				}
+			}
+		}
+		return count;
+	}
+
+	size_t TextureManager::ReloadTexturesFromDisk() {
+		if (!s_IsInitialized) return 0;
+		size_t count = 0;
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			const TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid || slot.Name.empty() || !IsReloadableImagePath(slot.Name)) {
+				continue;
+			}
+			if (ReloadTexture(TextureHandle{ static_cast<uint16_t>(i), slot.Generation })) {
+				++count;
+			}
+		}
+		return count;
 	}
 
 	std::vector<TextureHandle> TextureManager::GetLoadedHandles() {

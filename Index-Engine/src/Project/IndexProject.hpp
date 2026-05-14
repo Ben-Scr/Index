@@ -122,6 +122,12 @@ namespace Index {
 		bool AutoRecompileScripts = true;
 		bool RecompileScriptsOnPlay = false;
 
+		enum class ProjectAssetSerializationFormat : uint8_t {
+			Json = 0,
+			Binary = 1,
+		};
+		ProjectAssetSerializationFormat AssetSerializationFormat = ProjectAssetSerializationFormat::Binary;
+
 		enum class EditorEntityNameSuffixStyle : uint8_t {
 			SpaceNumber = 0,       // Entity 1
 			ParenthesizedNumber,   // Entity (1)
@@ -250,6 +256,8 @@ namespace Index {
 		// "VK", etc.) so manually-edited project files are forgiving.
 		static const char* RenderBackendToString(RenderBackend backend);
 		static RenderBackend RenderBackendFromString(std::string_view value);
+		static const char* ProjectAssetSerializationFormatToString(ProjectAssetSerializationFormat format);
+		static ProjectAssetSerializationFormat ProjectAssetSerializationFormatFromString(std::string_view value);
 		static const char* EditorEntityNameSuffixStyleToString(EditorEntityNameSuffixStyle style);
 		static EditorEntityNameSuffixStyle EditorEntityNameSuffixStyleFromString(std::string_view value);
 

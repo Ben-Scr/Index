@@ -18,6 +18,7 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureHandle.hpp"
+#include "Serialization/FileWatcher.hpp"
 
 
 #include <atomic>
@@ -138,6 +139,7 @@ namespace Index {
 		// prefab GUID via SetEntityMetaData).
 		void UnpackSelectedPrefabs(Scene& scene);
 		void CopySelectedEntities(Scene& scene);
+		void CutSelectedEntities(Scene& scene);
 		void PasteEntities(Scene& scene);
 		EntityHandle FinishCreatedEditorEntity(Scene& scene, Entity parent, Entity created);
 		EntityHandle RenderCreateEntityMenu(Scene& scene, Entity parent);
@@ -334,6 +336,8 @@ namespace Index {
 
 		AssetBrowser m_AssetBrowser;
 		bool m_AssetBrowserInitialized = false;
+		FileWatcher m_AssetWatcher;
+		std::string m_AssetWatcherRoot;
 
 		// Editor-side inspector for `.prefab` assets. Owns a detached preview
 		// scene (Scene::CreateDetachedScene) where the prefab is unpacked

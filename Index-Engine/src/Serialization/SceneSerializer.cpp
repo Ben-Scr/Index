@@ -36,12 +36,17 @@
 #include "Physics/PhysicsTypes.hpp"
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
+#include "Project/IndexProject.hpp"
+#include "Project/ProjectManager.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <functional>
+#include <iterator>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,9 +57,331 @@ namespace Index {
 	using Json::Value;
 	using namespace SceneSerializerShared;
 
+	namespace SceneSerializerStorage {
+		namespace {
+			constexpr std::uint8_t k_BinaryMagic[] = {
+				'I', 'D', 'X', 'S', 'C', 'N', 'B', 0x1A
+			};
+			constexpr std::uint32_t k_BinaryStorageVersion = 1;
+
+			enum class BinaryValueTag : std::uint8_t {
+				Null = 0,
+				Bool,
+				Double,
+				Int64,
+				UInt64,
+				String,
+				Object,
+				Array
+			};
+
+			void WriteU8(std::vector<std::uint8_t>& out, std::uint8_t value) {
+				out.push_back(value);
+			}
+
+			void WriteU32(std::vector<std::uint8_t>& out, std::uint32_t value) {
+				for (int i = 0; i < 4; ++i) {
+					out.push_back(static_cast<std::uint8_t>((value >> (i * 8)) & 0xFFu));
+				}
+			}
+
+			void WriteU64(std::vector<std::uint8_t>& out, std::uint64_t value) {
+				for (int i = 0; i < 8; ++i) {
+					out.push_back(static_cast<std::uint8_t>((value >> (i * 8)) & 0xFFu));
+				}
+			}
+
+			bool WriteString(std::vector<std::uint8_t>& out, const std::string& value) {
+				if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
+					return false;
+				}
+				WriteU32(out, static_cast<std::uint32_t>(value.size()));
+				out.insert(out.end(), value.begin(), value.end());
+				return true;
+			}
+
+			bool WriteValue(std::vector<std::uint8_t>& out, const Value& value) {
+				switch (value.GetType()) {
+				case Value::Type::Null:
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Null));
+					return true;
+				case Value::Type::Bool:
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Bool));
+					WriteU8(out, value.AsBoolOr(false) ? 1u : 0u);
+					return true;
+				case Value::Type::Number:
+					switch (value.GetNumberKind()) {
+					case Value::NumberKind::Double: {
+						WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Double));
+						std::uint64_t bits = 0;
+						const double number = value.AsDoubleOr(0.0);
+						std::memcpy(&bits, &number, sizeof(bits));
+						WriteU64(out, bits);
+						return true;
+					}
+					case Value::NumberKind::Int64:
+						WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Int64));
+						WriteU64(out, static_cast<std::uint64_t>(value.AsInt64Or(0)));
+						return true;
+					case Value::NumberKind::UInt64:
+						WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::UInt64));
+						WriteU64(out, value.AsUInt64Or(0));
+						return true;
+					}
+					return false;
+				case Value::Type::String:
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::String));
+					return WriteString(out, value.AsStringOr());
+				case Value::Type::Object: {
+					const auto& object = value.GetObject();
+					if (object.size() > std::numeric_limits<std::uint32_t>::max()) {
+						return false;
+					}
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Object));
+					WriteU32(out, static_cast<std::uint32_t>(object.size()));
+					for (const auto& [key, memberValue] : object) {
+						if (!WriteString(out, key) || !WriteValue(out, memberValue)) {
+							return false;
+						}
+					}
+					return true;
+				}
+				case Value::Type::Array: {
+					const auto& array = value.GetArray();
+					if (array.size() > std::numeric_limits<std::uint32_t>::max()) {
+						return false;
+					}
+					WriteU8(out, static_cast<std::uint8_t>(BinaryValueTag::Array));
+					WriteU32(out, static_cast<std::uint32_t>(array.size()));
+					for (const Value& item : array) {
+						if (!WriteValue(out, item)) {
+							return false;
+						}
+					}
+					return true;
+				}
+				}
+				return false;
+			}
+
+			class BinaryReader {
+			public:
+				explicit BinaryReader(const std::vector<std::uint8_t>& bytes)
+					: m_Bytes(bytes) {}
+
+				bool ReadU8(std::uint8_t& out) {
+					if (Remaining() < 1) return false;
+					out = m_Bytes[m_Offset++];
+					return true;
+				}
+
+				bool ReadU32(std::uint32_t& out) {
+					if (Remaining() < 4) return false;
+					out = 0;
+					for (int i = 0; i < 4; ++i) {
+						out |= static_cast<std::uint32_t>(m_Bytes[m_Offset++]) << (i * 8);
+					}
+					return true;
+				}
+
+				bool ReadU64(std::uint64_t& out) {
+					if (Remaining() < 8) return false;
+					out = 0;
+					for (int i = 0; i < 8; ++i) {
+						out |= static_cast<std::uint64_t>(m_Bytes[m_Offset++]) << (i * 8);
+					}
+					return true;
+				}
+
+				bool ReadString(std::string& out) {
+					std::uint32_t size = 0;
+					if (!ReadU32(size) || Remaining() < size) return false;
+					out.assign(reinterpret_cast<const char*>(m_Bytes.data() + m_Offset), size);
+					m_Offset += size;
+					return true;
+				}
+
+				bool ReadValue(Value& out, int depth = 0) {
+					constexpr int k_MaxDepth = 256;
+					if (depth > k_MaxDepth) {
+						return false;
+					}
+
+					std::uint8_t rawTag = 0;
+					if (!ReadU8(rawTag)) {
+						return false;
+					}
+
+					const auto tag = static_cast<BinaryValueTag>(rawTag);
+					switch (tag) {
+					case BinaryValueTag::Null:
+						out = Value();
+						return true;
+					case BinaryValueTag::Bool: {
+						std::uint8_t value = 0;
+						if (!ReadU8(value)) return false;
+						out = Value(value != 0);
+						return true;
+					}
+					case BinaryValueTag::Double: {
+						std::uint64_t bits = 0;
+						if (!ReadU64(bits)) return false;
+						double number = 0.0;
+						std::memcpy(&number, &bits, sizeof(number));
+						out = Value(number);
+						return true;
+					}
+					case BinaryValueTag::Int64: {
+						std::uint64_t bits = 0;
+						if (!ReadU64(bits)) return false;
+						out = Value(static_cast<std::int64_t>(bits));
+						return true;
+					}
+					case BinaryValueTag::UInt64: {
+						std::uint64_t value = 0;
+						if (!ReadU64(value)) return false;
+						out = Value(value);
+						return true;
+					}
+					case BinaryValueTag::String: {
+						std::string value;
+						if (!ReadString(value)) return false;
+						out = Value(std::move(value));
+						return true;
+					}
+					case BinaryValueTag::Object: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						out = Value::MakeObject();
+						for (std::uint32_t i = 0; i < count; ++i) {
+							std::string key;
+							Value memberValue;
+							if (!ReadString(key) || !ReadValue(memberValue, depth + 1)) {
+								return false;
+							}
+							out.AddMember(std::move(key), std::move(memberValue));
+						}
+						return true;
+					}
+					case BinaryValueTag::Array: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						out = Value::MakeArray();
+						for (std::uint32_t i = 0; i < count; ++i) {
+							Value item;
+							if (!ReadValue(item, depth + 1)) {
+								return false;
+							}
+							out.Append(std::move(item));
+						}
+						return true;
+					}
+					}
+					return false;
+				}
+
+				bool AtEnd() const { return m_Offset == m_Bytes.size(); }
+
+			private:
+				std::size_t Remaining() const { return m_Bytes.size() - m_Offset; }
+
+				const std::vector<std::uint8_t>& m_Bytes;
+				std::size_t m_Offset = 0;
+			};
+
+			std::vector<std::uint8_t> EncodeBinaryRoot(const Value& root) {
+				std::vector<std::uint8_t> bytes;
+				bytes.reserve(256);
+				bytes.insert(bytes.end(), std::begin(k_BinaryMagic), std::end(k_BinaryMagic));
+				WriteU32(bytes, k_BinaryStorageVersion);
+				if (!WriteValue(bytes, root)) {
+					return {};
+				}
+				return bytes;
+			}
+
+			bool DecodeBinaryRoot(const std::vector<std::uint8_t>& bytes, Value& outRoot, std::string* outError) {
+				if (!IsBinaryData(bytes)) {
+					if (outError) *outError = "Missing Index binary scene magic";
+					return false;
+				}
+
+				BinaryReader reader(bytes);
+				for (std::size_t i = 0; i < sizeof(k_BinaryMagic); ++i) {
+					std::uint8_t ignored = 0;
+					if (!reader.ReadU8(ignored)) {
+						if (outError) *outError = "Truncated binary scene header";
+						return false;
+					}
+				}
+
+				std::uint32_t version = 0;
+				if (!reader.ReadU32(version)) {
+					if (outError) *outError = "Truncated binary scene version";
+					return false;
+				}
+				if (version > k_BinaryStorageVersion) {
+					if (outError) *outError = "Binary scene version is newer than this engine";
+					return false;
+				}
+				if (!reader.ReadValue(outRoot)) {
+					if (outError) *outError = "Failed to decode binary scene payload";
+					return false;
+				}
+				if (!reader.AtEnd()) {
+					if (outError) *outError = "Binary scene has trailing bytes";
+					return false;
+				}
+				return true;
+			}
+		}
+
+		INDEX_API bool IsBinaryData(const std::vector<std::uint8_t>& bytes) {
+			return bytes.size() >= sizeof(k_BinaryMagic)
+				&& std::equal(std::begin(k_BinaryMagic), std::end(k_BinaryMagic), bytes.begin());
+		}
+
+		INDEX_API bool ReadRootFromFile(const std::string& path, Value& outRoot, std::string* outError) {
+			const std::vector<std::uint8_t> bytes = File::ReadAllBytes(path);
+			if (bytes.empty()) {
+				if (outError) *outError = "File is empty";
+				return false;
+			}
+
+			if (IsBinaryData(bytes)) {
+				return DecodeBinaryRoot(bytes, outRoot, outError);
+			}
+
+			const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+			if (!Json::TryParse(text, outRoot, outError)) {
+				return false;
+			}
+			return true;
+		}
+
+		INDEX_API bool WriteRootToFile(const std::string& path, const Value& root, SceneSerializationFormat format) {
+			if (format == SceneSerializationFormat::Binary) {
+				const std::vector<std::uint8_t> bytes = EncodeBinaryRoot(root);
+				return !bytes.empty() && File::WriteAllBytes(path, bytes);
+			}
+			return File::WriteAllText(path, Json::Stringify(root, true));
+		}
+	}
+
 	namespace {
 		static constexpr int SCENE_FORMAT_VERSION = 1;
 		static constexpr float k_MinScaleAxis = 0.0001f;
+
+		SceneSerializationFormat GetProjectSerializationFormat() {
+			IndexProject* project = ProjectManager::GetCurrentProject();
+			if (!project) {
+				return SceneSerializationFormat::Json;
+			}
+
+			return project->AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
+				? SceneSerializationFormat::Binary
+				: SceneSerializationFormat::Json;
+		}
 
 		const char* EntityOriginToString(EntityOrigin origin) {
 			switch (origin) {
@@ -176,9 +503,9 @@ namespace Index {
 			}
 
 			Value root;
-			std::string parseError;
-			if (!Json::TryParse(File::ReadAllText(prefabPath), root, &parseError) || !root.IsObject()) {
-				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, parseError);
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
+				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, readError);
 				return false;
 			}
 
@@ -1119,13 +1446,17 @@ namespace Index {
 	}
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path) {
+		return SaveToFile(scene, path, GetProjectSerializationFormat());
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format) {
 		try {
 			const std::filesystem::path parentDir = std::filesystem::path(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
 				std::filesystem::create_directories(parentDir);
 			}
 
-			if (!File::WriteAllText(path, Json::Stringify(SerializeScene(scene), true))) {
+			if (!SceneSerializerStorage::WriteRootToFile(path, SerializeScene(scene), format)) {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Save failed (write error): {}", path);
 				return false;
 			}
@@ -1183,6 +1514,10 @@ namespace Index {
 	}
 
 	bool SceneSerializer::SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path) {
+		return SaveEntityToFile(scene, entity, path, GetProjectSerializationFormat());
+	}
+
+	bool SceneSerializer::SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path, SceneSerializationFormat format) {
 		try {
 			const std::filesystem::path parentDir = std::filesystem::path(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
@@ -1211,7 +1546,7 @@ namespace Index {
 			root.AddMember("Entity", prefabEntity);
 			root.AddMember("prefab", prefabEntity);
 			root.AddMember("Entities", std::move(prefabEntities));
-			if (!File::WriteAllText(path, Json::Stringify(root, true))) {
+			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (write error): {}", path);
 				return false;
 			}
@@ -1228,6 +1563,38 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("SceneSerializer", "SaveEntityToFile failed: {}", exception.what());
 			return false;
 		}
+	}
+
+	bool SceneSerializer::ConvertFileFormat(const std::string& path, SceneSerializationFormat format) {
+		try {
+			if (!File::Exists(path)) {
+				return false;
+			}
+
+			Value root;
+			std::string error;
+			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &error) || !root.IsObject()) {
+				IDX_CORE_WARN_TAG("SceneSerializer", "Cannot convert serialized asset {}: {}", path, error);
+				return false;
+			}
+
+			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
+				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to rewrite serialized asset: {}", path);
+				return false;
+			}
+			return true;
+		}
+		catch (const std::exception& exception) {
+			IDX_CORE_WARN_TAG("SceneSerializer", "ConvertFileFormat failed for {}: {}", path, exception.what());
+			return false;
+		}
+	}
+
+	bool SceneSerializer::IsBinarySerializedFile(const std::string& path) {
+		if (!File::Exists(path)) {
+			return false;
+		}
+		return SceneSerializerStorage::IsBinaryData(File::ReadAllBytes(path));
 	}
 
 } // namespace Index

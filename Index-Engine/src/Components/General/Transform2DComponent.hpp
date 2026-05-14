@@ -2,10 +2,13 @@
 #include "Core/Export.hpp"
 #include "Collections/Vec2.hpp"
 #include "Math/Trigonometry.hpp"
+#include "Scene/EntityHandle.hpp"
 #include <box2d/types.h>
 #include <glm/glm.hpp>
 
 namespace Index {
+	class Scene;
+
     static inline Vec2 Hadamard(const Vec2& a, const Vec2& b) {
         return { a.x * b.x, a.y * b.y };
     }
@@ -51,8 +54,12 @@ namespace Index {
         static Transform2DComponent FromScale(const Vec2& scale);
 
         bool IsDirty() const { return m_Dirty; }
-        void MarkDirty() { m_Dirty = true; }
+        void MarkDirty();
         void ClearDirty() { m_Dirty = false; }
+        void BindOwner(Scene* scene, EntityHandle entity) {
+            m_OwnerScene = scene;
+            m_OwnerEntity = entity;
+        }
         // Setters write only the authored Local value. World (Position/Scale
         // /Rotation) is recomputed by TransformHierarchySystem; in particular
         // the editor calls TransformHierarchySystem::Propagate immediately
@@ -95,6 +102,8 @@ namespace Index {
         // No arithmetic operators — composing whole transforms has no well-defined semantics.
     private:
         bool m_Dirty = true;
+        Scene* m_OwnerScene = nullptr;
+        EntityHandle m_OwnerEntity = entt::null;
 	};
 
     static inline float LookAt2D(const Transform2DComponent& from, const Vec2& to) {

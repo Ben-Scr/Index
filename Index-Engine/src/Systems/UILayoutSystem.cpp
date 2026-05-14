@@ -639,6 +639,11 @@ namespace Index {
 	} // namespace
 
 	void ComputeUILayout(Scene& scene) {
+		entt::registry& registry = scene.GetRegistry();
+		if (registry.view<RectTransform2DComponent>().size() == 0) {
+			return;
+		}
+
 		// Resolve against the window viewport, NOT the camera viewport —
 		// the UI is screen-space and must not move when the camera moves.
 		// We always use the window's framebuffer-pixel size so DPI scaling
@@ -702,8 +707,6 @@ namespace Index {
 		const float halfH = static_cast<float>(vpH) * 0.5f;
 		const Vec2 windowMin{ -halfW, -halfH };
 		const Vec2 windowMax{ +halfW, +halfH };
-
-		entt::registry& registry = scene.GetRegistry();
 
 		// Reset every rect's ResolvedValid first — entities whose subtree
 		// hasn't been visited (orphan entities, refs from dangling parent

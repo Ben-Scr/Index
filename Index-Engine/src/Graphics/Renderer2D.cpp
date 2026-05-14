@@ -25,8 +25,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -81,6 +83,25 @@ namespace Index {
 		std::vector<size_t>         g_SortIndexScratch;
 		std::vector<std::pair<uint32_t, Renderer2D::InstanceContributor>> g_InstanceContributors;
 		uint32_t g_NextInstanceContributorToken = 1;
+
+		struct StaticSpriteEntry {
+			EntityHandle Entity = entt::null;
+			AABB Bounds{};
+			uint32_t DrawIndex = 0;
+		};
+
+		struct StaticSpriteGrid {
+			uint64_t Version = 0;
+			float CellSize = 512.0f;
+			std::vector<StaticSpriteEntry> Entries;
+			std::unordered_map<uint32_t, uint32_t> DrawIndices;
+			std::unordered_map<uint64_t, std::vector<uint32_t>> Cells;
+			std::vector<uint32_t> OverflowEntries;
+			std::vector<uint32_t> QueryMarks;
+			uint32_t QueryStamp = 1;
+		};
+
+		std::unordered_map<const Scene*, StaticSpriteGrid> g_StaticSpriteGrids;
 
 		// Persistent GPU resources — survive across RenderSceneWithVP calls
 		// inside a frame and across frames. Reset on Shutdown.
@@ -142,6 +163,191 @@ namespace Index {
 			return CreateQuadAABB(transform.Position, transform.Scale, transform.Rotation);
 		}
 
+		bool IsFinite(const AABB& bounds) {
+			return std::isfinite(bounds.Min.x)
+				&& std::isfinite(bounds.Min.y)
+				&& std::isfinite(bounds.Max.x)
+				&& std::isfinite(bounds.Max.y);
+		}
+
+		int32_t CellCoord(float value, float cellSize) {
+			const float scaled = value / cellSize;
+			if (scaled <= static_cast<float>(std::numeric_limits<int32_t>::min())) {
+				return std::numeric_limits<int32_t>::min();
+			}
+			if (scaled >= static_cast<float>(std::numeric_limits<int32_t>::max())) {
+				return std::numeric_limits<int32_t>::max();
+			}
+			return static_cast<int32_t>(std::floor(scaled));
+		}
+
+		uint64_t CellKey(int32_t x, int32_t y) {
+			return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32)
+				| static_cast<uint32_t>(y);
+		}
+
+		void AddStaticEntryToGrid(StaticSpriteGrid& grid, uint32_t entryIndex) {
+			const AABB& bounds = grid.Entries[entryIndex].Bounds;
+			if (!IsFinite(bounds)) {
+				grid.OverflowEntries.push_back(entryIndex);
+				return;
+			}
+
+			const int32_t minX = CellCoord(bounds.Min.x, grid.CellSize);
+			const int32_t maxX = CellCoord(bounds.Max.x, grid.CellSize);
+			const int32_t minY = CellCoord(bounds.Min.y, grid.CellSize);
+			const int32_t maxY = CellCoord(bounds.Max.y, grid.CellSize);
+			if (maxX < minX || maxY < minY) {
+				grid.OverflowEntries.push_back(entryIndex);
+				return;
+			}
+
+			const int64_t cellsX = static_cast<int64_t>(maxX) - static_cast<int64_t>(minX) + 1;
+			const int64_t cellsY = static_cast<int64_t>(maxY) - static_cast<int64_t>(minY) + 1;
+			constexpr int64_t k_MaxCellsPerSprite = 256;
+			if (cellsX <= 0 || cellsY <= 0 || cellsX * cellsY > k_MaxCellsPerSprite) {
+				grid.OverflowEntries.push_back(entryIndex);
+				return;
+			}
+
+			for (int32_t y = minY; y <= maxY; ++y) {
+				for (int32_t x = minX; x <= maxX; ++x) {
+					grid.Cells[CellKey(x, y)].push_back(entryIndex);
+				}
+			}
+		}
+
+		void RebuildStaticSpriteGrid(Scene& scene, StaticSpriteGrid& grid) {
+			grid.Version = scene.GetStaticRenderDataVersion();
+			grid.Entries.clear();
+			grid.DrawIndices.clear();
+			grid.Cells.clear();
+			grid.OverflowEntries.clear();
+			grid.QueryMarks.clear();
+			grid.QueryStamp = 1;
+
+			auto& registry = scene.GetRegistry();
+			auto view = registry.view<Transform2DComponent, SpriteRendererComponent>(entt::exclude<DisabledTag>);
+			grid.Entries.reserve(registry.view<StaticTag>().size());
+			grid.DrawIndices.reserve(registry.view<SpriteRendererComponent>().size());
+
+			uint32_t drawIndex = 0;
+			for (auto entity : view) {
+				const uint32_t currentDrawIndex = drawIndex++;
+				grid.DrawIndices[static_cast<uint32_t>(entity)] = currentDrawIndex;
+				if (!registry.all_of<StaticTag>(entity)) {
+					continue;
+				}
+
+				const auto& transform = view.get<Transform2DComponent>(entity);
+				const uint32_t entryIndex = static_cast<uint32_t>(grid.Entries.size());
+				grid.Entries.push_back(StaticSpriteEntry{
+					entity,
+					GetStaticSpriteAABB(registry, entity, transform),
+					currentDrawIndex
+				});
+				AddStaticEntryToGrid(grid, entryIndex);
+			}
+
+			grid.QueryMarks.assign(grid.Entries.size(), 0);
+		}
+
+		StaticSpriteGrid& ResolveStaticSpriteGrid(Scene& scene) {
+			StaticSpriteGrid& grid = g_StaticSpriteGrids[&scene];
+			if (grid.Version != scene.GetStaticRenderDataVersion()) {
+				RebuildStaticSpriteGrid(scene, grid);
+			}
+			return grid;
+		}
+
+		void AppendStaticSpriteInstance(Scene& scene,
+			StaticSpriteGrid& grid,
+			uint32_t entryIndex,
+			const AABB& viewportAABB,
+			std::vector<Instance44>& outInstances)
+		{
+			if (entryIndex >= grid.Entries.size()) return;
+			if (grid.QueryMarks[entryIndex] == grid.QueryStamp) return;
+			grid.QueryMarks[entryIndex] = grid.QueryStamp;
+
+			const StaticSpriteEntry& entry = grid.Entries[entryIndex];
+			if (!AABB::Intersects(viewportAABB, entry.Bounds)) {
+				return;
+			}
+
+			auto& registry = scene.GetRegistry();
+			if (!registry.valid(entry.Entity)
+				|| !registry.all_of<Transform2DComponent, SpriteRendererComponent, StaticTag>(entry.Entity)
+				|| registry.all_of<DisabledTag>(entry.Entity)) {
+				scene.MarkStaticRenderDataDirty();
+				return;
+			}
+
+			const auto& transform = registry.get<Transform2DComponent>(entry.Entity);
+			const auto& sprite = registry.get<SpriteRendererComponent>(entry.Entity);
+			outInstances.emplace_back(
+				Vec2{ transform.Position.x, transform.Position.y },
+				Vec2{ transform.Scale.x, transform.Scale.y },
+				transform.Rotation,
+				sprite.Color,
+				sprite.TextureHandle,
+				sprite.SortingOrder,
+				sprite.SortingLayer,
+				entry.DrawIndex);
+		}
+
+		void CollectStaticSpriteInstances(Scene& scene,
+			StaticSpriteGrid& grid,
+			const AABB& viewportAABB,
+			std::vector<Instance44>& outInstances)
+		{
+			if (grid.Entries.empty()) {
+				return;
+			}
+
+			++grid.QueryStamp;
+			if (grid.QueryStamp == 0) {
+				std::fill(grid.QueryMarks.begin(), grid.QueryMarks.end(), 0);
+				grid.QueryStamp = 1;
+			}
+
+			if (!IsFinite(viewportAABB)) {
+				for (uint32_t i = 0; i < static_cast<uint32_t>(grid.Entries.size()); ++i) {
+					AppendStaticSpriteInstance(scene, grid, i, viewportAABB, outInstances);
+				}
+				return;
+			}
+
+			const int32_t minX = CellCoord(viewportAABB.Min.x, grid.CellSize);
+			const int32_t maxX = CellCoord(viewportAABB.Max.x, grid.CellSize);
+			const int32_t minY = CellCoord(viewportAABB.Min.y, grid.CellSize);
+			const int32_t maxY = CellCoord(viewportAABB.Max.y, grid.CellSize);
+
+			const int64_t cellsX = static_cast<int64_t>(maxX) - static_cast<int64_t>(minX) + 1;
+			const int64_t cellsY = static_cast<int64_t>(maxY) - static_cast<int64_t>(minY) + 1;
+			constexpr int64_t k_MaxQueryCells = 4096;
+			if (maxX >= minX && maxY >= minY && cellsX > 0 && cellsY > 0 && cellsX * cellsY <= k_MaxQueryCells) {
+				for (int32_t y = minY; y <= maxY; ++y) {
+					for (int32_t x = minX; x <= maxX; ++x) {
+						auto it = grid.Cells.find(CellKey(x, y));
+						if (it == grid.Cells.end()) continue;
+						for (uint32_t entryIndex : it->second) {
+							AppendStaticSpriteInstance(scene, grid, entryIndex, viewportAABB, outInstances);
+						}
+					}
+				}
+			}
+			else {
+				for (uint32_t i = 0; i < static_cast<uint32_t>(grid.Entries.size()); ++i) {
+					AppendStaticSpriteInstance(scene, grid, i, viewportAABB, outInstances);
+				}
+			}
+
+			for (uint32_t entryIndex : grid.OverflowEntries) {
+				AppendStaticSpriteInstance(scene, grid, entryIndex, viewportAABB, outInstances);
+			}
+		}
+
 		// ── CPU collect path ────────────────────────────────────────────────
 		size_t CollectSpriteInstances(Scene& scene,
 			const AABB& viewportAABB,
@@ -151,11 +357,25 @@ namespace Index {
 			outInstances.clear();
 			outTextures.clear();
 			auto& registry = scene.GetRegistry();
-			auto view = registry.view<Transform2DComponent, SpriteRendererComponent>(entt::exclude<DisabledTag>);
+			StaticSpriteGrid* staticGrid = nullptr;
+			if (registry.view<StaticTag>().size() > 0) {
+				staticGrid = &ResolveStaticSpriteGrid(scene);
+			}
+
+			auto view = registry.view<Transform2DComponent, SpriteRendererComponent>(entt::exclude<DisabledTag, StaticTag>);
+			uint32_t dynamicDrawIndex = 0;
 			for (auto entity : view) {
+				uint32_t currentDrawIndex = dynamicDrawIndex++;
+				if (staticGrid) {
+					auto drawIndexIt = staticGrid->DrawIndices.find(static_cast<uint32_t>(entity));
+					if (drawIndexIt != staticGrid->DrawIndices.end()) {
+						currentDrawIndex = drawIndexIt->second;
+					}
+				}
+
 				const auto& t = view.get<Transform2DComponent>(entity);
 				const auto& s = view.get<SpriteRendererComponent>(entity);
-				const AABB bounds = GetSpriteAABB(registry, entity, t);
+				const AABB bounds = CreateQuadAABB(t.Position, t.Scale, t.Rotation);
 				if (!AABB::Intersects(viewportAABB, bounds)) {
 					continue;
 				}
@@ -168,7 +388,11 @@ namespace Index {
 					s.TextureHandle,
 					s.SortingOrder,
 					s.SortingLayer,
-					static_cast<std::uint32_t>(outInstances.size()));
+					currentDrawIndex);
+			}
+
+			if (staticGrid) {
+				CollectStaticSpriteInstances(scene, *staticGrid, viewportAABB, outInstances);
 			}
 
 			auto particleView = scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>);
@@ -356,6 +580,7 @@ namespace Index {
 		// Persistent GPU resources — drop now so the device is fully idle by
 		// the time WebGPUApi::Shutdown unconfigures the surface.
 		g_BindGroupsThisFrame.clear();
+		g_StaticSpriteGrids.clear();
 		g_InstanceBuffer         = nullptr;
 		g_InstanceBufferCapacity = 0;
 		g_UniformBuffer          = nullptr;
@@ -363,9 +588,16 @@ namespace Index {
 		m_IsInitialized = false;
 	}
 
+	void Renderer2D::ClearSceneCache(const Scene* scene) {
+		if (!scene) {
+			g_StaticSpriteGrids.clear();
+			return;
+		}
+		g_StaticSpriteGrids.erase(scene);
+	}
+
 	void Renderer2D::BeginFrame() {
 		m_DrawCallsCount = 0;
-		m_RenderedInstancesCount = 0;
 		m_RenderLoopDuration = 0.0f;
 		// Reset per-frame bind groups — texture lookups they reference may
 		// be invalidated between frames by TextureManager::PurgeUnreferenced
@@ -448,8 +680,13 @@ namespace Index {
 			return;
 		}
 
+		const bool wireframePass = RenderApi::GetPolygonMode() == PolygonMode::Wireframe;
+		const bool forceBlack = RenderApi::IsColorLogicOpClearEnabled();
+		const auto pipelineMode = wireframePass
+			? WebGPUSpriteResources::SpritePipelineMode::Wireframe
+			: WebGPUSpriteResources::SpritePipelineMode::Filled;
 		wgpu::RenderPipeline pipeline = WebGPUSpriteResources::GetSpritePipeline(
-			target.ColorFormat, target.HasDepth);
+			target.ColorFormat, target.HasDepth, pipelineMode);
 		if (!pipeline) {
 			IDX_CORE_WARN_TAG("Renderer2D",
 				"No pipeline for color-format {} (hasDepth={}) — skipping submit",
@@ -471,6 +708,12 @@ namespace Index {
 		g_GpuInstanceScratch.resize(n);
 		for (size_t k = 0; k < n; ++k) {
 			WebGPUSpriteResources::EncodeInstance44(g_InstancesScratch[k], g_GpuInstanceScratch[k]);
+			if (forceBlack) {
+				g_GpuInstanceScratch[k].Color[0] = 0.0f;
+				g_GpuInstanceScratch[k].Color[1] = 0.0f;
+				g_GpuInstanceScratch[k].Color[2] = 0.0f;
+				g_GpuInstanceScratch[k].Color[3] = 1.0f;
+			}
 		}
 		queue.WriteBuffer(g_InstanceBuffer, 0,
 			g_GpuInstanceScratch.data(),
@@ -513,7 +756,7 @@ namespace Index {
 		pass.SetPipeline(pipeline);
 		pass.SetVertexBuffer(0, WebGPUSpriteResources::GetQuadVertexBuffer());
 		pass.SetVertexBuffer(1, g_InstanceBuffer);
-		pass.SetIndexBuffer(WebGPUSpriteResources::GetQuadIndexBuffer(),
+		pass.SetIndexBuffer(WebGPUSpriteResources::GetQuadIndexBuffer(pipelineMode),
 			wgpu::IndexFormat::Uint16);
 
 		// Group instances by resolved texture and issue one DrawIndexed
@@ -522,8 +765,10 @@ namespace Index {
 		// per-batch buffer rebinding.
 		const TextureHandle defaultTexture = TextureManager::GetDefaultTexture(DefaultTexture::Square);
 		auto resolveHandle = [&](TextureHandle h) {
+			if (forceBlack) return defaultTexture;
 			return TextureManager::IsValid(h) ? h : defaultTexture;
 		};
+		const std::uint32_t indexCount = WebGPUSpriteResources::GetQuadIndexCount(pipelineMode);
 
 		size_t i = 0;
 		while (i < n) {
@@ -546,7 +791,7 @@ namespace Index {
 				continue;
 			}
 			pass.SetBindGroup(0, bg);
-			pass.DrawIndexed(/*indexCount=*/6,
+			pass.DrawIndexed(/*indexCount=*/indexCount,
 				/*instanceCount=*/count,
 				/*firstIndex=*/0,
 				/*baseVertex=*/0,

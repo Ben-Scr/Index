@@ -69,8 +69,9 @@ namespace Index {
 		auto block = JobInternal::CreateBlock(1);
 
 		JobSystem::Enqueue([block, work = std::move(work)]() mutable {
-			if (work) work();
-			JobInternal::NotifyOne(block);
+			JobInternal::ExecuteAndNotify(block, [&]() {
+				if (work) work();
+			});
 		});
 
 		return JobHandle(std::move(block));

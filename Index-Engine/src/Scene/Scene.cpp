@@ -26,6 +26,7 @@
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Core/Application.hpp"
+#include "Graphics/Renderer2D.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptSystem.hpp"
@@ -213,7 +214,9 @@ namespace Index {
 	Entity Scene::CreateEntity(const std::string& name) {
 		auto entityHandle = CreateEntityHandle(EntityOrigin::Scene);
 		AddComponent<Transform2DComponent>(entityHandle);
-		AddComponent<NameComponent>(entityHandle, name);
+		if (!name.empty()) {
+			AddComponent<NameComponent>(entityHandle, name);
+		}
 		return Entity(entityHandle, *this);
 	}
 	Entity Scene::CreateEmptyEntity() {
@@ -230,7 +233,9 @@ namespace Index {
 	Entity Scene::CreateRuntimeEntity(const std::string& name) {
 		auto entityHandle = CreateEntityHandle(EntityOrigin::Runtime);
 		AddComponent<Transform2DComponent>(entityHandle);
-		AddComponent<NameComponent>(entityHandle, name);
+		if (!name.empty()) {
+			AddComponent<NameComponent>(entityHandle, name);
+		}
 		return Entity(entityHandle, *this);
 	}
 
@@ -507,6 +512,11 @@ namespace Index {
 		}
 
 		m_TearingDown = false;
+		m_TransformHierarchyDirty = true;
+		m_DirtyTransformEntities.clear();
+		m_DirtyTransformEntitySet.clear();
+		MarkStaticRenderDataDirty();
+		Renderer2D::ClearSceneCache(this);
 	}
 
 	void Scene::MarkDirty() {
@@ -516,6 +526,7 @@ namespace Index {
 		// that toggles a slider entity in/out of the scene) still want the
 		// rebuild gate to fire at least once on the next frame.
 		m_UIDirty = true;
+		MarkStaticRenderDataDirty();
 	}
 
 	bool Scene::HasGameSystem(const std::string& className) const
@@ -1052,6 +1063,10 @@ namespace Index {
 		, m_Persistent(IsPersistent)
 		, m_IsLoaded(false) {
 
+		m_Registry.on_construct<Transform2DComponent>().connect<&Scene::OnTransform2DComponentConstruct>(this);
+		m_Registry.on_destroy<Transform2DComponent>().connect<&Scene::OnTransform2DComponentDestroy>(this);
+		m_Registry.on_construct<SpriteRendererComponent>().connect<&Scene::OnSpriteRendererComponentConstruct>(this);
+		m_Registry.on_destroy<SpriteRendererComponent>().connect<&Scene::OnSpriteRendererComponentDestroy>(this);
 		m_Registry.on_construct<Rigidbody2DComponent>().connect<&Scene::OnRigidBody2DComponentConstruct>(this);
 		m_Registry.on_construct<BoxCollider2DComponent>().connect<&Scene::OnBoxCollider2DComponentConstruct>(this);
 		m_Registry.on_construct<CircleCollider2DComponent>().connect<&Scene::OnCircleCollider2DComponentConstruct>(this);
@@ -1059,6 +1074,7 @@ namespace Index {
 		m_Registry.on_construct<Camera2DComponent>().connect<&Scene::OnCamera2DComponentConstruct>(this);
 		m_Registry.on_construct<ParticleSystem2DComponent>().connect<&Scene::OnParticleSystem2DComponentConstruct>(this);
 		m_Registry.on_construct<DisabledTag>().connect<&Scene::OnDisabledTagConstruct>(this);
+		m_Registry.on_construct<StaticTag>().connect<&Scene::OnStaticTagConstruct>(this);
 
 		m_Registry.on_destroy<Rigidbody2DComponent>().connect<&Scene::OnRigidBody2DComponentDestroy>(this);
 		m_Registry.on_destroy<BoxCollider2DComponent>().connect<&Scene::OnBoxCollider2DComponentDestroy>(this);
@@ -1078,6 +1094,66 @@ namespace Index {
 		m_Registry.on_destroy<FastBoxCollider2DComponent>().connect<&Scene::OnFastBoxCollider2DDestroy>(this);
 		m_Registry.on_construct<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DConstruct>(this);
 		m_Registry.on_destroy<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DDestroy>(this);
+	}
+
+	void Scene::MarkTransformDirty(EntityHandle entity)
+	{
+		m_TransformHierarchyDirty = true;
+
+		if (entity == entt::null || !m_Registry.valid(entity)) {
+			return;
+		}
+
+		const uint32_t id = static_cast<uint32_t>(entity);
+		if (m_DirtyTransformEntitySet.insert(id).second) {
+			m_DirtyTransformEntities.push_back(entity);
+		}
+
+		if (m_Registry.all_of<StaticTag>(entity)) {
+			MarkStaticRenderDataDirty();
+		}
+	}
+
+	std::vector<EntityHandle> Scene::ConsumeDirtyTransformEntities()
+	{
+		m_TransformHierarchyDirty = false;
+		m_DirtyTransformEntitySet.clear();
+
+		std::vector<EntityHandle> dirty;
+		dirty.swap(m_DirtyTransformEntities);
+		return dirty;
+	}
+
+	void Scene::MarkStaticRenderDataDirty()
+	{
+		++m_StaticRenderDataVersion;
+		if (m_StaticRenderDataVersion == 0) {
+			m_StaticRenderDataVersion = 1;
+		}
+	}
+
+	void Scene::OnTransform2DComponentConstruct(entt::registry& registry, EntityHandle entity)
+	{
+		auto& transform = registry.get<Transform2DComponent>(entity);
+		transform.BindOwner(this, entity);
+		transform.MarkDirty();
+		MarkStaticRenderDataDirty();
+	}
+
+	void Scene::OnTransform2DComponentDestroy(entt::registry&, EntityHandle)
+	{
+		m_TransformHierarchyDirty = true;
+		MarkStaticRenderDataDirty();
+	}
+
+	void Scene::OnSpriteRendererComponentConstruct(entt::registry&, EntityHandle)
+	{
+		MarkStaticRenderDataDirty();
+	}
+
+	void Scene::OnSpriteRendererComponentDestroy(entt::registry&, EntityHandle)
+	{
+		MarkStaticRenderDataDirty();
 	}
 
 	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
@@ -1366,6 +1442,7 @@ namespace Index {
 			return;
 		}
 
+		MarkStaticRenderDataDirty();
 		ApplyEntityEnabledState(registry, entity, false);
 
 		// Propagate to direct children — each child's own on_construct hook
@@ -1391,6 +1468,7 @@ namespace Index {
 			return;
 		}
 
+		MarkStaticRenderDataDirty();
 		if (registry.all_of<InheritedDisabledTag>(entity)) {
 			registry.remove<InheritedDisabledTag>(entity);
 		}
@@ -1412,8 +1490,14 @@ namespace Index {
 		}
 	}
 
+	void Scene::OnStaticTagConstruct(entt::registry&, EntityHandle)
+	{
+		MarkStaticRenderDataDirty();
+	}
+
 	void Scene::OnStaticTagDestroy(entt::registry& registry, EntityHandle entity)
 	{
+		MarkStaticRenderDataDirty();
 		if (registry.all_of<StaticRenderData>(entity)) {
 			registry.remove<StaticRenderData>(entity);
 		}

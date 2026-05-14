@@ -218,7 +218,20 @@ namespace Index {
 			EnsureUpToDate();
 			auto it = s_IdToRecord.find(assetId);
 			if (it == s_IdToRecord.end()) {
-				return {};
+				// Another editor/runtime module may have created the asset and
+				// its .meta file after this registry copy last synced. Force one
+				// recovery scan before treating the GUID as missing.
+				if (s_KnownMissingIds.contains(assetId)) {
+					return {};
+				}
+
+				s_Dirty = true;
+				EnsureUpToDate();
+				it = s_IdToRecord.find(assetId);
+				if (it == s_IdToRecord.end()) {
+					s_KnownMissingIds.insert(assetId);
+					return {};
+				}
 			}
 
 			if (std::filesystem::exists(it->second.Path)) {
@@ -251,7 +264,16 @@ namespace Index {
 				return it->second.Kind;
 			}
 			EnsureUpToDate();
-			const auto it = s_IdToRecord.find(assetId);
+			auto it = s_IdToRecord.find(assetId);
+			if (it == s_IdToRecord.end() && !s_KnownMissingIds.contains(assetId)) {
+				// Match ResolvePath's recovery scan for late-created assets.
+				s_Dirty = true;
+				EnsureUpToDate();
+				it = s_IdToRecord.find(assetId);
+				if (it == s_IdToRecord.end()) {
+					s_KnownMissingIds.insert(assetId);
+				}
+			}
 			return it != s_IdToRecord.end() ? it->second.Kind : AssetKind::Unknown;
 		}
 

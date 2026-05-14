@@ -21,6 +21,7 @@ namespace Index {
 		// the target volume is full. Callers MUST check the return value before treating
 		// data as persisted (e.g. before clearing a dirty flag).
 		[[nodiscard]] static bool WriteAllText(const std::string& path, const std::string& text);
+		[[nodiscard]] static bool WriteAllBytes(const std::string& path, const std::vector<std::uint8_t>& bytes);
 
 		template<size_t Size>
 		static void WriteAllLines(const std::string& path, const std::array<std::string, Size> lines) {

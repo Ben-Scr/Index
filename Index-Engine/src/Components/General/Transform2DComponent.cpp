@@ -1,5 +1,6 @@
 #include "pch.hpp"
 #include "Components/General/Transform2DComponent.hpp"
+#include "Scene/Scene.hpp"
 
 namespace Index {
 
@@ -18,6 +19,13 @@ namespace Index {
 
 
 	float Transform2DComponent::GetRotationDegrees() const { return Degrees(Rotation); }
+
+	void Transform2DComponent::MarkDirty() {
+		m_Dirty = true;
+		if (m_OwnerScene && m_OwnerEntity != entt::null) {
+			m_OwnerScene->MarkTransformDirty(m_OwnerEntity);
+		}
+	}
 
 	Vec2 Transform2DComponent::GetForwardDirection() const
 	{

@@ -650,9 +650,9 @@ namespace Index {
 			}
 
 			Value root;
-			std::string parseError;
-			if (!Json::TryParse(File::ReadAllText(prefabPath), root, &parseError) || !root.IsObject()) {
-				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, parseError);
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(prefabPath, root, &readError) || !root.IsObject()) {
+				IDX_CORE_WARN_TAG("SceneSerializer", "Failed to parse prefab {}: {}", prefabPath, readError);
 				inProgress.erase(prefabGuid);
 				return false;
 			}
@@ -741,16 +741,10 @@ namespace Index {
 				return false;
 			}
 
-			const std::string json = File::ReadAllText(path);
-			if (json.empty()) {
-				IDX_CORE_WARN_TAG("SceneSerializer", "Scene file is empty: {}", path);
-				return false;
-			}
-
 			Value root;
-			std::string parseError;
-			if (!Json::TryParse(json, root, &parseError) || !root.IsObject()) {
-				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to parse scene JSON {}: {}", path, parseError);
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &readError) || !root.IsObject()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to parse scene {}: {}", path, readError);
 				return false;
 			}
 
@@ -2196,16 +2190,10 @@ namespace Index {
 				}
 			}
 
-			const std::string json = File::ReadAllText(path);
-			if (json.empty()) {
-				IDX_CORE_WARN_TAG("SceneSerializer", "Prefab file is empty: {}", path);
-				return entt::null;
-			}
-
 			Value root;
-			std::string parseError;
-			if (!Json::TryParse(json, root, &parseError) || !root.IsObject()) {
-				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to parse prefab JSON {}: {}", path, parseError);
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &readError) || !root.IsObject()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to parse prefab {}: {}", path, readError);
 				return entt::null;
 			}
 

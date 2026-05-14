@@ -212,6 +212,50 @@ namespace Index {
 			return copied;
 		}
 
+		bool IsSerializedAssetPath(const std::filesystem::path& path) {
+			std::string ext = path.extension().string();
+			std::transform(ext.begin(), ext.end(), ext.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return ext == ".scene" || ext == ".prefab";
+		}
+
+		int ConvertSerializedAssetsInDirectory(const std::filesystem::path& rootDir,
+			SceneSerializationFormat format)
+		{
+			if (!std::filesystem::exists(rootDir)) {
+				return 0;
+			}
+
+			int converted = 0;
+			std::error_code ec;
+			for (std::filesystem::recursive_directory_iterator it(rootDir,
+					std::filesystem::directory_options::skip_permission_denied, ec), end;
+				it != end;
+				it.increment(ec))
+			{
+				if (ec) {
+					ec.clear();
+					continue;
+				}
+				if (!it->is_regular_file(ec) || ec || !IsSerializedAssetPath(it->path())) {
+					ec.clear();
+					continue;
+				}
+				if (SceneSerializer::ConvertFileFormat(it->path().string(), format)) {
+					++converted;
+				}
+			}
+			return converted;
+		}
+
+		SceneSerializationFormat ToSceneSerializationFormat(
+			IndexProject::ProjectAssetSerializationFormat format)
+		{
+			return format == IndexProject::ProjectAssetSerializationFormat::Binary
+				? SceneSerializationFormat::Binary
+				: SceneSerializationFormat::Json;
+		}
+
 		// Variant that skips any file or directory whose path-relative-to-srcDir
 		// has a leading segment matching one of `excludedSegments`. Used to keep
 		// editor-only assets (IndexAssets/Textures/Editor) out of shipped builds.
@@ -1118,6 +1162,9 @@ namespace Index {
 		if (std::filesystem::exists(project->AssetsDirectory)) {
 			int updatedFiles = CopyDirIncremental(project->AssetsDirectory, outDir / "Assets");
 			IDX_INFO_TAG("Build", "Assets: {} file(s) updated", updatedFiles);
+			ReportBuildProgress(0.78f, "Optimizing scene assets");
+			int convertedFiles = ConvertSerializedAssetsInDirectory(outDir / "Assets", SceneSerializationFormat::Binary);
+			IDX_INFO_TAG("Build", "Serialized assets optimized to binary: {} file(s)", convertedFiles);
 		}
 
 		{
@@ -2084,7 +2131,7 @@ namespace Index {
 				assetSuffixIndex = static_cast<int>(IndexProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
 			}
 			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::Combo("Duplicate suffix", &assetSuffixIndex, k_AssetSuffixLabels, IM_ARRAYSIZE(k_AssetSuffixLabels))) {
+			if (ImGui::Combo("Duplicate suffix##AssetDuplicateSuffix", &assetSuffixIndex, k_AssetSuffixLabels, IM_ARRAYSIZE(k_AssetSuffixLabels))) {
 				project->EditorAssetDuplicateSuffix =
 					static_cast<IndexProject::EditorEntityNameSuffixStyle>(assetSuffixIndex);
 				changed = true;
@@ -2119,6 +2166,44 @@ namespace Index {
 		// launch. NOTE: this value is persisted to index-project.json
 		// but not yet plumbed into WebGPUApi.cpp::RequestAdapterSync —
 		// wiring it through is a separate change.
+		if (ImGui::CollapsingHeader("Serialization", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			constexpr const char* k_FormatLabels[] = { "JSON", "Binary" };
+			int formatIndex = project->AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary ? 1 : 0;
+			ImGui::SetNextItemWidth(180.0f);
+			if (ImGui::Combo("Asset format", &formatIndex, k_FormatLabels, IM_ARRAYSIZE(k_FormatLabels))) {
+				const auto nextFormat = formatIndex == 1
+					? IndexProject::ProjectAssetSerializationFormat::Binary
+					: IndexProject::ProjectAssetSerializationFormat::Json;
+				if (nextFormat != project->AssetSerializationFormat) {
+					project->AssetSerializationFormat = nextFormat;
+					const SceneSerializationFormat sceneFormat = ToSceneSerializationFormat(nextFormat);
+					const int converted = ConvertSerializedAssetsInDirectory(project->AssetsDirectory, sceneFormat);
+					if (Scene* activeScene = SceneManager::Get().GetActiveScene()) {
+						if (activeScene->IsDirty()) {
+							SceneSerializer::SaveToFile(*activeScene,
+								project->GetSceneFilePath(activeScene->GetName()),
+								sceneFormat);
+						}
+					}
+					AssetRegistry::MarkDirty();
+					AssetRegistry::Sync();
+					IDX_INFO_TAG("ProjectSettings",
+						"Reserialized {} scene/prefab asset(s) as {}",
+						converted,
+						IndexProject::ProjectAssetSerializationFormatToString(nextFormat));
+					changed = true;
+				}
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Controls how scene and prefab assets are written on disk.\n"
+					"Changing this rewrites existing .scene and .prefab files\n"
+					"only when the selected format actually changes.");
+			}
+			ImGui::Unindent(8);
+		}
+
 		if (ImGui::CollapsingHeader("Scripting", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			changed |= ImGui::Checkbox("Auto-recompile on file changes", &project->AutoRecompileScripts);
@@ -2166,7 +2251,7 @@ namespace Index {
 				suffixIndex = static_cast<int>(IndexProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
 			}
 			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::Combo("Duplicate suffix", &suffixIndex, k_StyleLabels, IM_ARRAYSIZE(k_StyleLabels))) {
+			if (ImGui::Combo("Duplicate suffix##EntityNameSuffix", &suffixIndex, k_StyleLabels, IM_ARRAYSIZE(k_StyleLabels))) {
 				project->EditorEntityNameSuffix =
 					static_cast<IndexProject::EditorEntityNameSuffixStyle>(suffixIndex);
 				changed = true;

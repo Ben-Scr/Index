@@ -34,7 +34,7 @@ public abstract class EntityScript
     protected T? AddComponent<T>() where T : Component, new() => Entity.AddComponent<T>();
     protected bool RemoveComponent<T>() where T : Component, new() => Entity.RemoveComponent<T>();
 
-    protected Entity Create(string name = "") => Entity.Create(name);
+    protected Entity Create(string? name = null) => Entity.Create(name);
     protected Entity Create(Entity source) => Entity.Create(source);
     protected Entity Instantiate(Entity prefabOrSource) => Entity.Instantiate(prefabOrSource);
 
