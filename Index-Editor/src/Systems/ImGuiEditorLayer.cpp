@@ -753,9 +753,16 @@ namespace Index {
 
 
 		if (ImGui::BeginMenu("Application")) {
-			if (ImGui::MenuItem("Reload App")) {
-				Application::Reload();
-			}
+			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, !Application::GetIsPlaying())) {
+				IndexProject* project = ProjectManager::GetCurrentProject();
+				if (project) {
+					std::string scenePath = project->GetSceneFilePath(scene.GetName());
+					SceneSerializer::SaveToFile(scene, scenePath);
+					project->LastOpenedScene = scene.GetName();
+					project->Save();
+				}
+			}	
+
 			if (ImGui::BeginMenu("Layout")) {
 				if (ImGui::MenuItem("Save Layout As...")) {
 					s_SaveLayoutAsBuffer[0] = '\0';
@@ -794,26 +801,18 @@ namespace Index {
 				}
 				ImGui::EndMenu();
 			}
+
 			if (ImGui::MenuItem("Quit")) {
 				Application::RequestQuit();
 			}
-			ImGui::EndMenu();
-		}
-
-		if (ImGui::BeginMenu("File")) {
-			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, !Application::GetIsPlaying())) {
-				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (project) {
-					std::string scenePath = project->GetSceneFilePath(scene.GetName());
-					SceneSerializer::SaveToFile(scene, scenePath);
-					project->LastOpenedScene = scene.GetName();
-					project->Save();
-				}
+			if (ImGui::MenuItem("Reload App")) {
+				Application::Reload();
 			}
-			ImGui::Separator();
-
 			ImGui::EndMenu();
 		}
+
+
+
 
 		if (ImGui::BeginMenu("Project")) {
 			bool hasProject = ProjectManager::HasProject();

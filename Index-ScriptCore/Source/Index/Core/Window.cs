@@ -30,6 +30,8 @@ public static class Window
     public static int Width => InternalCalls.Window_GetWidth();
     public static int Height => InternalCalls.Window_GetHeight();
 
+    public static Vector2 Size => throw new NotImplementedException();
+
     public static string Title
     {
         get => InternalCalls.Window_GetTitle();

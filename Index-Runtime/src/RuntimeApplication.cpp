@@ -16,10 +16,9 @@
 
 #include <Core/Version.hpp>
 #include <Core/Window.hpp>
-#include <filesystem>
 
 using namespace Index;
-
+ 
 
 class RuntimeApplication : public Index::Application {
 public:

@@ -150,6 +150,7 @@
     <Compile Include="Source\Index\UI\UIEventDispatcher.cs" />
     <Compile Include="Source\Index\UI\UITransitionMode.cs" />
     <Compile Include="Source\Index\Utility\CameraUtility.cs" />
+    <Compile Include="Source\Index\Utility\RectTransformUtility.cs" />
     <Compile Include="Source\Index\Utility\TextUtility.cs" />
     <Compile Include="Source\Index\Utility\TransformUtility.cs" />
   </ItemGroup>

@@ -805,6 +805,10 @@ namespace Index {
 		ImGui::EndChild();
 	}
 
+	ImVec2 PixelSnap(ImVec2 p)
+	{
+		return ImVec2(floorf(p.x) + 0.5f, floorf(p.y) + 0.5f);
+	}
 
 	void AssetBrowser::RenderAssetTile(const DirectoryEntry& entry, int index) {
 		ImGui::PushID(index);
@@ -820,11 +824,47 @@ namespace Index {
 			cursorPos.x + m_TileSize + 2.0f,
 			cursorPos.y + m_TileSize + ImGui::GetTextLineHeightWithSpacing() + 2.0f);
 
-		if (isSelected) {
-			const float rounding = ImGui::GetStyle().FrameRounding;
+
+
+		if (isSelected)
+		{
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
-			drawList->AddRectFilled(selectionMin, selectionMax,
-				ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelection), rounding);
+
+			ImVec2 min = selectionMin;
+			ImVec2 max = selectionMax;
+
+			// One simple inset so the selection does not touch/clamp at item edges
+			const float inset = 1.0f;
+			min.x += inset;
+			min.y += inset;
+			max.x -= inset;
+			max.y -= inset;
+
+			// Important for crisp 1px AddRect border
+			min = PixelSnap(min);
+			max = PixelSnap(max);
+
+			const float rounding = 2.0f;
+			const float thickness = 1.0f;
+
+			ImU32 fillColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelection);
+			ImU32 borderColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder);
+
+			drawList->AddRectFilled(
+				min,
+				max,
+				fillColor,
+				rounding
+			);
+
+			drawList->AddRect(
+				min,
+				max,
+				borderColor,
+				rounding,
+				ImDrawFlags_RoundCornersAll,
+				thickness
+			);
 		}
 
 		// Dim cut items so the user can see at a glance that Ctrl+X took
