@@ -74,26 +74,17 @@ namespace Index {
 
 		struct RenderStateGuard {
 			PolygonMode PreviousPolygonMode = PolygonMode::Filled;
-			bool PreviousLogicOpClear = false;
 
 			~RenderStateGuard() {
 				RenderApi::SetPolygonMode(PreviousPolygonMode);
-				if (PreviousLogicOpClear) {
-					RenderApi::BeginColorLogicOpClear();
-				}
-				else {
-					RenderApi::EndColorLogicOpClear();
-				}
 				RenderApi::SetColorMask(true, true, true, true);
 			}
 		};
 
 		RenderStateGuard stateGuard{
-			RenderApi::GetPolygonMode(),
-			RenderApi::IsColorLogicOpClearEnabled()
+			RenderApi::GetPolygonMode()
 		};
 		RenderApi::SetPolygonMode(PolygonMode::Filled);
-		RenderApi::EndColorLogicOpClear();
 		RenderApi::SetColorMask(true, true, true, true);
 
 		const int w = fbo.GetWidth();
@@ -112,9 +103,9 @@ namespace Index {
 		// renderer that honours PolygonMode::Wireframe. GuiRenderer and
 		// GizmoRenderer2D draw filled quads regardless of the wireframe flag,
 		// so re-running them during the wireframe overlay would paint
-		// fully-filled (and forceBlack'd) quads on top of the filled pass's
-		// output and mask it out — which is the "Mixed mode renders sprites
-		// purely black" bug.
+		// fully-filled solid-black quads (the wireframe sprite pipeline uses
+		// the `fs_wire_main` constant-black fragment shader) on top of the
+		// filled pass's output and mask it out.
 		auto runSpriteRender = [&]() {
 			if (onlyPassedScene) {
 				renderer->RenderSceneWithVP(scene, vp, viewportAABB);
@@ -171,24 +162,20 @@ namespace Index {
 			}
 		};
 
-		// Wireframe pass uses RenderApi::BeginColorLogicOpClear (GL_CLEAR
-		// under the hood) instead of relying on each shader to honour a
-		// debug uniform. The logic-op forces every touched pixel's RGB
-		// to 0 *after* the fragment shader runs, and the alpha mask
-		// keeps the FBO opaque. The net effect is "every triangle edge
-		// becomes solid black, regardless of what the entity's shader/
-		// texture/colour would normally output." Logic op also overrides
-		// blending, so semi-transparent quads still emit an opaque black
-		// edge — which is what the user wants in this debug view.
+		// Wireframe pass relies on the sprite wireframe pipeline +
+		// dedicated `fs_wire_main` fragment entry point — the pipeline
+		// has alpha-blending disabled and the fragment shader outputs
+		// solid (0,0,0,1), so every quad-edge line writes opaque black
+		// regardless of the entity's texture or instance colour. The
+		// alpha colour-mask keeps the FBO opaque so the writes don't
+		// leak transparency from the line draws back into compositing.
 		auto runWireframePass = [&]() {
 			RenderApi::SetPolygonMode(PolygonMode::Wireframe);
-			RenderApi::BeginColorLogicOpClear();
 			RenderApi::SetColorMask(true, true, true, false);
 			// Sprites only — UI and gizmos don't honour the wireframe flag
 			// and would paint filled quads on top of the wireframe edges.
 			runSpriteRender();
 			RenderApi::SetColorMask(true, true, true, true);
-			RenderApi::EndColorLogicOpClear();
 			RenderApi::SetPolygonMode(PolygonMode::Filled);
 		};
 

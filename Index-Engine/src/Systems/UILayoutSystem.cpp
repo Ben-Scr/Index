@@ -759,6 +759,13 @@ namespace Index {
 	}
 
 	void UILayoutSystem::Update(Scene& scene) {
+		// view<T>().size() on a single-component view is O(1) — skips the
+		// full registry walk in ComputeUILayout for scenes with no UI at
+		// all (e.g. gameplay scenes with thousands of Transform2D-only
+		// entities, where the inner view<entt::entity> + per-entity
+		// try_get<RectTransform> probe at 100k entities dominated the
+		// frame).
+		if (scene.GetRegistry().view<RectTransform2DComponent>().size() == 0) return;
 		ComputeUILayout(scene);
 	}
 

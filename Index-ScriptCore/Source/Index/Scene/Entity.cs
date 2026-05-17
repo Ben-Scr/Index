@@ -655,6 +655,284 @@ public class Entity : IEquatable<Entity>
 
     public static Entity Create(Entity source) => Instantiate(source);
 
+    // ── CreateWith / CreateWithNative ────────────────────────────────
+    //
+    // Convenience overloads for "create an entity, then attach K components
+    // in one expression". The body is a manual Create + AddComponent loop —
+    // each component is still a separate P/Invoke. For high-volume spawning
+    // with many components per entity, use EntityCommandBuffer instead; it
+    // amortizes the P/Invoke and component-resolution cost over the whole
+    // batch (~50–100× faster on the dominant cases).
+    //
+    // Two parallel families:
+    //   - `CreateWith<T...>`        — managed Component subclasses
+    //     (`where T : Component, new()`)
+    //   - `CreateWithNative<T...>`  — native IComponent structs
+    //     (`where T : unmanaged, IComponent`)
+    //
+    // Distinct method names (not overloads on the constraint) because C#
+    // overload resolution ignores generic constraints (CS0111) — same
+    // reason `AddComponent` vs. `AddNativeComponent` are distinct names.
+    // Returns `Invalid` if the entity could not be created; component
+    // attach failures (e.g. unregistered managed type) are silently
+    // ignored to match the per-component AddComponent behaviour.
+
+    public static Entity CreateWith<T1>(string? name = null)
+        where T1 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2, T3>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+        where T3 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        _ = e.AddComponent<T3>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2, T3, T4>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+        where T3 : Component, new()
+        where T4 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        _ = e.AddComponent<T3>();
+        _ = e.AddComponent<T4>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2, T3, T4, T5>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+        where T3 : Component, new()
+        where T4 : Component, new()
+        where T5 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        _ = e.AddComponent<T3>();
+        _ = e.AddComponent<T4>();
+        _ = e.AddComponent<T5>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2, T3, T4, T5, T6>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+        where T3 : Component, new()
+        where T4 : Component, new()
+        where T5 : Component, new()
+        where T6 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        _ = e.AddComponent<T3>();
+        _ = e.AddComponent<T4>();
+        _ = e.AddComponent<T5>();
+        _ = e.AddComponent<T6>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2, T3, T4, T5, T6, T7>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+        where T3 : Component, new()
+        where T4 : Component, new()
+        where T5 : Component, new()
+        where T6 : Component, new()
+        where T7 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        _ = e.AddComponent<T3>();
+        _ = e.AddComponent<T4>();
+        _ = e.AddComponent<T5>();
+        _ = e.AddComponent<T6>();
+        _ = e.AddComponent<T7>();
+        return e;
+    }
+
+    public static Entity CreateWith<T1, T2, T3, T4, T5, T6, T7, T8>(string? name = null)
+        where T1 : Component, new()
+        where T2 : Component, new()
+        where T3 : Component, new()
+        where T4 : Component, new()
+        where T5 : Component, new()
+        where T6 : Component, new()
+        where T7 : Component, new()
+        where T8 : Component, new()
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddComponent<T1>();
+        _ = e.AddComponent<T2>();
+        _ = e.AddComponent<T3>();
+        _ = e.AddComponent<T4>();
+        _ = e.AddComponent<T5>();
+        _ = e.AddComponent<T6>();
+        _ = e.AddComponent<T7>();
+        _ = e.AddComponent<T8>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1>(string? name = null)
+        where T1 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2, T3>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+        where T3 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        _ = e.AddNativeComponent<T3>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2, T3, T4>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+        where T3 : unmanaged, IComponent
+        where T4 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        _ = e.AddNativeComponent<T3>();
+        _ = e.AddNativeComponent<T4>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2, T3, T4, T5>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+        where T3 : unmanaged, IComponent
+        where T4 : unmanaged, IComponent
+        where T5 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        _ = e.AddNativeComponent<T3>();
+        _ = e.AddNativeComponent<T4>();
+        _ = e.AddNativeComponent<T5>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2, T3, T4, T5, T6>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+        where T3 : unmanaged, IComponent
+        where T4 : unmanaged, IComponent
+        where T5 : unmanaged, IComponent
+        where T6 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        _ = e.AddNativeComponent<T3>();
+        _ = e.AddNativeComponent<T4>();
+        _ = e.AddNativeComponent<T5>();
+        _ = e.AddNativeComponent<T6>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2, T3, T4, T5, T6, T7>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+        where T3 : unmanaged, IComponent
+        where T4 : unmanaged, IComponent
+        where T5 : unmanaged, IComponent
+        where T6 : unmanaged, IComponent
+        where T7 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        _ = e.AddNativeComponent<T3>();
+        _ = e.AddNativeComponent<T4>();
+        _ = e.AddNativeComponent<T5>();
+        _ = e.AddNativeComponent<T6>();
+        _ = e.AddNativeComponent<T7>();
+        return e;
+    }
+
+    public static Entity CreateWithNative<T1, T2, T3, T4, T5, T6, T7, T8>(string? name = null)
+        where T1 : unmanaged, IComponent
+        where T2 : unmanaged, IComponent
+        where T3 : unmanaged, IComponent
+        where T4 : unmanaged, IComponent
+        where T5 : unmanaged, IComponent
+        where T6 : unmanaged, IComponent
+        where T7 : unmanaged, IComponent
+        where T8 : unmanaged, IComponent
+    {
+        Entity e = Create(name);
+        if (e == Invalid) return Invalid;
+        _ = e.AddNativeComponent<T1>();
+        _ = e.AddNativeComponent<T2>();
+        _ = e.AddNativeComponent<T3>();
+        _ = e.AddNativeComponent<T4>();
+        _ = e.AddNativeComponent<T5>();
+        _ = e.AddNativeComponent<T6>();
+        _ = e.AddNativeComponent<T7>();
+        _ = e.AddNativeComponent<T8>();
+        return e;
+    }
+
     public static void Destroy(Entity entity)
     {
         if (entity is null || entity == Invalid)

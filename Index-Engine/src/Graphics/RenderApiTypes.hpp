@@ -69,12 +69,14 @@ namespace Index {
 	}
 
 	// Pixel format for offscreen render targets. The editor's per-viewport
-	// FBOs use RGBA8 + Depth24Stencil8 today; the enum exists so a future
-	// HDR pipeline (RGBA16F) doesn't have to invent a parallel type.
+	// FBOs use RGBA8 + Depth24Stencil8; the post-processing pipeline uses
+	// RGBA16F for its intermediate scene target so bloom's bright-pass
+	// threshold can survive on un-clamped HDR pixels.
 	enum class TextureFormat : uint8_t {
 		RGBA8 = 0,
 		R8,
 		Depth24Stencil8,
+		RGBA16F,
 	};
 
 	// Filtering for offscreen-render-target attachments (and the editor's

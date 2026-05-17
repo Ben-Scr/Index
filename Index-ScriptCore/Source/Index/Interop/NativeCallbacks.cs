@@ -582,6 +582,30 @@ internal unsafe struct NativeBindingsStruct
     // ulong ID of each created entity in record order; caller sizes it
     // to its own recorded entity count.
     public delegate* unmanaged<byte*, int, ulong*, int, int> Ecb_Playback;
+
+    // ── JobSystem (appended for binary compat) ──────────────────────
+    // Cross-runtime job dispatch: managed Schedule paths route into the
+    // native work-stealing pool so CLR and engine work share cores
+    // instead of fighting over them. Handles are monotonically-numbered
+    // ulong IDs (0 = invalid). See ScriptGlue.hpp for the contract.
+    public delegate* unmanaged<
+        delegate* unmanaged<void*, void>,   // work(context)
+        void*,                              // context
+        delegate* unmanaged<void*, void>,   // releaseContext(context) (called on Release)
+        ulong> JobSystem_Enqueue;
+
+    public delegate* unmanaged<
+        int, int, int,                                 // begin, end, batchSize
+        delegate* unmanaged<void*, int, int, void>,    // work(context, lo, hi)
+        void*,                                         // context
+        delegate* unmanaged<void*, void>,              // releaseContext(context)
+        ulong> JobSystem_ParallelFor;
+
+    public delegate* unmanaged<ulong, void> JobSystem_Wait;
+    public delegate* unmanaged<ulong, int> JobSystem_IsComplete;
+    public delegate* unmanaged<ulong, void> JobSystem_Release;
+    public delegate* unmanaged<int> JobSystem_GetWorkerCount;
+    public delegate* unmanaged<int> JobSystem_GetCallerWorkerIndex;
 }
 
 internal static unsafe class NativeCallbacks

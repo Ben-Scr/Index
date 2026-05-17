@@ -621,6 +621,9 @@ endforeach()
 		if (!project.ShowRuntimeLogs) {
 			root.AddMember("showRuntimeLogs", false);
 		}
+		if (!project.EnablePostProcessing) {
+			root.AddMember("enablePostProcessing", false);
+		}
 
 		// autoSaveScenes / autoSaveIntervalSeconds / showFileExtensions
 		// moved to user-scoped EditorPreferences (2026-05). Save() no
@@ -683,6 +686,9 @@ endforeach()
 				if (!d.empty()) definesJson.Append(Json::Value(d));
 			}
 			root.AddMember("customDefines", std::move(definesJson));
+		}
+		if (project.EntityBits != 20) {
+			root.AddMember("entityBits", project.EntityBits);
 		}
 
 		return root;
@@ -1289,6 +1295,8 @@ endforeach()
 					project.ShowRuntimeStats = v->AsBoolOr(true);
 				if (const Json::Value* v = root.FindMember("showRuntimeLogs"))
 					project.ShowRuntimeLogs = v->AsBoolOr(true);
+				if (const Json::Value* v = root.FindMember("enablePostProcessing"))
+					project.EnablePostProcessing = v->AsBoolOr(true);
 				// autoSaveScenes / autoSaveIntervalSeconds migrated to
 				// user-scoped EditorPreferences. We still parse the keys
 				// here so legacy projects can hand the values off (via
@@ -1347,6 +1355,18 @@ endforeach()
 							std::string s = item.AsStringOr();
 							if (!s.empty()) project.CustomDefines.push_back(std::move(s));
 						}
+					}
+				}
+				if (const Json::Value* v = root.FindMember("entityBits")) {
+					const int bits = v->AsIntOr(20);
+					if (bits == 16 || bits == 20 || bits == 22 || bits == 24 || bits == 28) {
+						project.EntityBits = bits;
+					}
+					else {
+						IDX_CORE_WARN_TAG("IndexProject",
+							"index-project.json: entityBits={} is not one of {{16, 20, 22, 24, 28}}; falling back to 20.",
+							bits);
+						project.EntityBits = 20;
 					}
 				}
 			}

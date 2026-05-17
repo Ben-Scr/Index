@@ -109,6 +109,14 @@ namespace Index {
 		// window stacks below the stats window so they don't overlap.
 		bool ShowRuntimeLogs = true;
 
+		// Global kill switch for the post-processing pipeline. When false
+		// the renderer skips the PP pass entirely (no FBO redirect, no
+		// shader work) and writes the scene straight to the final target —
+		// useful for measuring baseline cost or shipping a build without
+		// PP. Per-effect toggles still live on PostProcessing2DComponent;
+		// this flag short-circuits the whole subsystem.
+		bool EnablePostProcessing = true;
+
 		// AutoSaveScenes / AutoSaveIntervalSeconds moved to user-scoped
 		// EditorPreferences (2026-05). Legacy index-project.json values
 		// are migrated to EditorPreferences on Load and dropped on next
@@ -259,6 +267,22 @@ namespace Index {
 		// symbols convention; keeps the UI a flat list and the symbols
 		// uniform across both compilers).
 		std::vector<std::string> CustomDefines;
+
+		// EnTT entity/version bit-split selector. Translated by premake
+		// into -DINDEX_ENTITY_BITS=N which patches the vendored EnTT
+		// entt_traits<uint32_t> in External/entt/src/entt/entity/entity.hpp.
+		// Allowed values: 16, 20 (default, matches EnTT stock), 22, 24, 28.
+		// Live-entity cap is (2^N - 1):
+		//   16 -> 65,535
+		//   20 -> 1,048,575    (EnTT stock; chosen as the engine default
+		//                       so projects pay no extra memory until they
+		//                       deliberately raise the cap)
+		//   22 -> 4,194,303
+		//   24 -> 16,777,215
+		//   28 -> 268,435,455
+		// Compile-time only — the engine must be rebuilt for the change
+		// to take effect.
+		int EntityBits = 20;
 
 		std::string GetUserAssemblyOutputPath(std::string_view configuration = {}) const;
 

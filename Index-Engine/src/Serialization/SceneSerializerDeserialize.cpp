@@ -37,6 +37,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/ComponentInfo.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
 
 #include <cmath>
 #include <cctype>
@@ -1994,16 +1995,60 @@ namespace Index {
 			return entt::null;
 		}
 
+		// Fast path: replay from PrefabTemplateCache when the prefab has
+		// already been baked. Hydrate handles bulk-create + emplaceFromBytes
+		// + parent linkage internally; no disk read, no JSON parse, no
+		// per-property setter loop.
+		PrefabTemplateCache& cache = PrefabTemplateCache::Get();
+		if (const PrefabTemplate* baked = cache.Find(prefabGuid); baked != nullptr) {
+			if (baked->bakeable) {
+				EntityHandle root = cache.Hydrate(prefabGuid, scene);
+				if (root != entt::null) {
+					// Hydrate doesn't queue fixups (the cache only blesses
+					// fixup-free prefabs as bakeable), but draining is the
+					// public-API contract and a no-op when the queue is
+					// empty.
+					scene.RunPendingEntityRefFixups();
+					return root;
+				}
+				// Hydrate returned null after Find said the template
+				// existed — fall through to the slow path. Treat as
+				// "cache is missing/corrupt" rather than crashing.
+			}
+			// Unbakeable cache entry: skip the capture step below and run
+			// the slow path every time. The cache already remembers the
+			// reason; no point re-walking the tree to discover it again.
+		}
+
+		// Slow path: load + deserialize as before, and (if this is the
+		// first time we've seen this prefab) capture a template so every
+		// subsequent spawn takes the fast path. fixupCountBefore captures
+		// the entity-ref queue depth so we can detect whether
+		// DeserializeEntityTree queued any internal refs — those would
+		// scramble under a memcpy replay, so they downgrade the template
+		// to unbakeable.
 		PrefabDefinition definition;
 		if (!LoadPrefabDefinition(prefabGuid, definition)) {
 			return entt::null;
 		}
 
+		const std::size_t fixupCountBefore = scene.GetPendingEntityRefFixupCount();
 		const EntityHandle root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+		const std::size_t fixupCountAfter = scene.GetPendingEntityRefFixupCount();
+
 		// Outermost-caller drain: this is a public API used outside
 		// of scene-load too, so the prefab tree is the full batch and
 		// its fixup queue should resolve before returning.
 		scene.RunPendingEntityRefFixups();
+
+		// Capture only on a cache MISS — repeat unbakeable spawns should
+		// not pay the bake-time cost more than once.
+		if (root != entt::null && cache.Find(prefabGuid) == nullptr) {
+			const std::size_t fixupsAdded =
+				(fixupCountAfter >= fixupCountBefore) ? (fixupCountAfter - fixupCountBefore) : 0u;
+			cache.CaptureFromLive(prefabGuid, scene, root, fixupsAdded);
+		}
+
 		return root;
 	}
 

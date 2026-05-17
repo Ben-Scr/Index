@@ -12,6 +12,7 @@
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Components/Physics/BoxCollider2DComponent.hpp"
 #include "Components/Physics/CircleCollider2DComponent.hpp"
@@ -580,6 +581,265 @@ namespace Index {
 					};
 				}
 			});
+
+		// Post Processing 2D — settings only. The renderer doesn't read these
+		// yet; this slice locks in the data shape and inspector UX so scenes
+		// can be authored against it before the FBO + blit pipeline lands.
+		{
+			using PP = PostProcessing2DComponent;
+
+			PropertyMetadata cgEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.ColorGrading.Enabled; });
+			PropertyMetadata vgEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.Vignette.Enabled; });
+			PropertyMetadata caEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.ChromaticAberration.Enabled; });
+			PropertyMetadata grEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.Grain.Enabled; });
+			PropertyMetadata blEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.Bloom.Enabled; });
+			PropertyMetadata ldEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.LensDistortion.Enabled; });
+
+			std::vector<PropertyDescriptor> ppProps;
+
+			// Color Grading
+			ppProps.push_back(Properties::MakeWith<bool>("CG_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().ColorGrading.Enabled = v; },
+				Properties::Meta::Header("Color Grading")));
+			ppProps.push_back(Properties::MakeWith<float>("CG_Exposure", "Exposure",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Exposure; },
+				[](Entity& e, float v) { e.GetComponent<PP>().ColorGrading.Exposure = v; },
+				PropertyMetadata{ cgEnabled }.WithClamp(-10.0, 10.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<float>("CG_Contrast", "Contrast",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Contrast; },
+				[](Entity& e, float v) { e.GetComponent<PP>().ColorGrading.Contrast = v; },
+				PropertyMetadata{ cgEnabled }.WithClamp(0.0, 4.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<float>("CG_Saturation", "Saturation",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Saturation; },
+				[](Entity& e, float v) { e.GetComponent<PP>().ColorGrading.Saturation = v; },
+				PropertyMetadata{ cgEnabled }.WithClamp(0.0, 4.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<float>("CG_Temperature", "Temperature",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Temperature; },
+				[](Entity& e, float v) { e.GetComponent<PP>().ColorGrading.Temperature = v; },
+				PropertyMetadata{ cgEnabled }.WithClamp(-1.0, 1.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<float>("CG_Tint", "Tint",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Tint; },
+				[](Entity& e, float v) { e.GetComponent<PP>().ColorGrading.Tint = v; },
+				PropertyMetadata{ cgEnabled }.WithClamp(-1.0, 1.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<Color>("CG_ColorFilter", "Color Filter",
+				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.ColorFilter; },
+				[](Entity& e, const Color& c) { e.GetComponent<PP>().ColorGrading.ColorFilter = c; },
+				cgEnabled));
+
+			// Vignette
+			ppProps.push_back(Properties::MakeWith<bool>("VG_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().Vignette.Enabled = v; },
+				Properties::Meta::Header("Vignette")));
+			ppProps.push_back(Properties::MakeWith<Color>("VG_Color", "Color",
+				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Color; },
+				[](Entity& e, const Color& c) { e.GetComponent<PP>().Vignette.Color = c; },
+				vgEnabled));
+			ppProps.push_back(Properties::MakeWith<float>("VG_Intensity", "Intensity",
+				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Intensity; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Vignette.Intensity = v; },
+				PropertyMetadata{ vgEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<float>("VG_Smoothness", "Smoothness",
+				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Smoothness; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Vignette.Smoothness = v; },
+				PropertyMetadata{ vgEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<float>("VG_Roundness", "Roundness",
+				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Roundness; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Vignette.Roundness = v; },
+				PropertyMetadata{ vgEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<Vec2>("VG_Center", "Center",
+				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Center; },
+				[](Entity& e, const Vec2& v) { e.GetComponent<PP>().Vignette.Center = v; },
+				vgEnabled));
+
+			// Chromatic Aberration
+			ppProps.push_back(Properties::MakeWith<bool>("CA_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().ChromaticAberration.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().ChromaticAberration.Enabled = v; },
+				Properties::Meta::Header("Chromatic Aberration")));
+			ppProps.push_back(Properties::MakeWith<float>("CA_Intensity", "Intensity",
+				[](const Entity& e) { return e.GetComponent<PP>().ChromaticAberration.Intensity; },
+				[](Entity& e, float v) { e.GetComponent<PP>().ChromaticAberration.Intensity = v; },
+				PropertyMetadata{ caEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
+
+			// Grain
+			ppProps.push_back(Properties::MakeWith<bool>("GR_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().Grain.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().Grain.Enabled = v; },
+				Properties::Meta::Header("Grain")));
+			ppProps.push_back(Properties::MakeWith<float>("GR_Intensity", "Intensity",
+				[](const Entity& e) { return e.GetComponent<PP>().Grain.Intensity; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Grain.Intensity = v; },
+				PropertyMetadata{ grEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<float>("GR_Size", "Size",
+				[](const Entity& e) { return e.GetComponent<PP>().Grain.Size; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Grain.Size = v; },
+				PropertyMetadata{ grEnabled }.WithClamp(0.3, 3.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<bool>("GR_Colored", "Colored",
+				[](const Entity& e) { return e.GetComponent<PP>().Grain.Colored; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().Grain.Colored = v; },
+				grEnabled));
+
+			// Bloom
+			ppProps.push_back(Properties::MakeWith<bool>("BL_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().Bloom.Enabled = v; },
+				Properties::Meta::Header("Bloom")));
+			ppProps.push_back(Properties::MakeWith<float>("BL_Threshold", "Threshold",
+				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Threshold; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Bloom.Threshold = v; },
+				PropertyMetadata{ blEnabled }.WithClamp(0.0, 10.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<float>("BL_Intensity", "Intensity",
+				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Intensity; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Bloom.Intensity = v; },
+				PropertyMetadata{ blEnabled }.WithClamp(0.0, 10.0).WithDragSpeed(0.01f)));
+			ppProps.push_back(Properties::MakeWith<float>("BL_Scatter", "Scatter",
+				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Scatter; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Bloom.Scatter = v; },
+				PropertyMetadata{ blEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<Color>("BL_Tint", "Tint",
+				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Tint; },
+				[](Entity& e, const Color& c) { e.GetComponent<PP>().Bloom.Tint = c; },
+				blEnabled));
+
+			// Lens Distortion
+			ppProps.push_back(Properties::MakeWith<bool>("LD_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().LensDistortion.Enabled = v; },
+				Properties::Meta::Header("Lens Distortion")));
+			ppProps.push_back(Properties::MakeWith<float>("LD_Intensity", "Intensity",
+				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Intensity; },
+				[](Entity& e, float v) { e.GetComponent<PP>().LensDistortion.Intensity = v; },
+				PropertyMetadata{ ldEnabled }.WithClamp(-1.0, 1.0).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<float>("LD_Scale", "Scale",
+				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Scale; },
+				[](Entity& e, float v) { e.GetComponent<PP>().LensDistortion.Scale = v; },
+				PropertyMetadata{ ldEnabled }.WithClamp(0.5, 1.5).WithDragSpeed(0.005f)));
+			ppProps.push_back(Properties::MakeWith<Vec2>("LD_Center", "Center",
+				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Center; },
+				[](Entity& e, const Vec2& v) { e.GetComponent<PP>().LensDistortion.Center = v; },
+				ldEnabled));
+
+			ComponentInfo ppInfo{ "Post Processing", "Rendering", ComponentCategory::Component };
+			ppInfo.serializedName = "PostProcessing2D";
+			ppInfo.properties = std::move(ppProps);
+
+			ppInfo.serialize = [](Entity e) -> Json::Value {
+				const auto& p = e.GetComponent<PP>();
+				Json::Value v = Json::Value::MakeObject();
+
+				Json::Value cg = Json::Value::MakeObject();
+				cg.AddMember("enabled",     Json::Value(p.ColorGrading.Enabled));
+				cg.AddMember("exposure",    Json::Value(p.ColorGrading.Exposure));
+				cg.AddMember("contrast",    Json::Value(p.ColorGrading.Contrast));
+				cg.AddMember("saturation",  Json::Value(p.ColorGrading.Saturation));
+				cg.AddMember("temperature", Json::Value(p.ColorGrading.Temperature));
+				cg.AddMember("tint",        Json::Value(p.ColorGrading.Tint));
+				cg.AddMember("colorFilter", UIColorToJson(p.ColorGrading.ColorFilter));
+				v.AddMember("colorGrading", std::move(cg));
+
+				Json::Value vg = Json::Value::MakeObject();
+				vg.AddMember("enabled",    Json::Value(p.Vignette.Enabled));
+				vg.AddMember("color",      UIColorToJson(p.Vignette.Color));
+				vg.AddMember("intensity",  Json::Value(p.Vignette.Intensity));
+				vg.AddMember("smoothness", Json::Value(p.Vignette.Smoothness));
+				vg.AddMember("roundness",  Json::Value(p.Vignette.Roundness));
+				vg.AddMember("centerX",    Json::Value(p.Vignette.Center.x));
+				vg.AddMember("centerY",    Json::Value(p.Vignette.Center.y));
+				v.AddMember("vignette", std::move(vg));
+
+				Json::Value ca = Json::Value::MakeObject();
+				ca.AddMember("enabled",   Json::Value(p.ChromaticAberration.Enabled));
+				ca.AddMember("intensity", Json::Value(p.ChromaticAberration.Intensity));
+				v.AddMember("chromaticAberration", std::move(ca));
+
+				Json::Value gr = Json::Value::MakeObject();
+				gr.AddMember("enabled",   Json::Value(p.Grain.Enabled));
+				gr.AddMember("intensity", Json::Value(p.Grain.Intensity));
+				gr.AddMember("size",      Json::Value(p.Grain.Size));
+				gr.AddMember("colored",   Json::Value(p.Grain.Colored));
+				v.AddMember("grain", std::move(gr));
+
+				Json::Value bl = Json::Value::MakeObject();
+				bl.AddMember("enabled",   Json::Value(p.Bloom.Enabled));
+				bl.AddMember("threshold", Json::Value(p.Bloom.Threshold));
+				bl.AddMember("intensity", Json::Value(p.Bloom.Intensity));
+				bl.AddMember("scatter",   Json::Value(p.Bloom.Scatter));
+				bl.AddMember("tint",      UIColorToJson(p.Bloom.Tint));
+				v.AddMember("bloom", std::move(bl));
+
+				Json::Value ld = Json::Value::MakeObject();
+				ld.AddMember("enabled",   Json::Value(p.LensDistortion.Enabled));
+				ld.AddMember("intensity", Json::Value(p.LensDistortion.Intensity));
+				ld.AddMember("scale",     Json::Value(p.LensDistortion.Scale));
+				ld.AddMember("centerX",   Json::Value(p.LensDistortion.Center.x));
+				ld.AddMember("centerY",   Json::Value(p.LensDistortion.Center.y));
+				v.AddMember("lensDistortion", std::move(ld));
+
+				return v;
+			};
+
+			ppInfo.deserialize = [](Entity e, const Json::Value& v) {
+				auto& p = e.GetComponent<PP>();
+
+				if (const Json::Value* cg = v.FindMember("colorGrading")) {
+					if (const Json::Value* m = cg->FindMember("enabled"))     p.ColorGrading.Enabled     = m->AsBoolOr(p.ColorGrading.Enabled);
+					if (const Json::Value* m = cg->FindMember("exposure"))    p.ColorGrading.Exposure    = static_cast<float>(m->AsDoubleOr(p.ColorGrading.Exposure));
+					if (const Json::Value* m = cg->FindMember("contrast"))    p.ColorGrading.Contrast    = static_cast<float>(m->AsDoubleOr(p.ColorGrading.Contrast));
+					if (const Json::Value* m = cg->FindMember("saturation"))  p.ColorGrading.Saturation  = static_cast<float>(m->AsDoubleOr(p.ColorGrading.Saturation));
+					if (const Json::Value* m = cg->FindMember("temperature")) p.ColorGrading.Temperature = static_cast<float>(m->AsDoubleOr(p.ColorGrading.Temperature));
+					if (const Json::Value* m = cg->FindMember("tint"))        p.ColorGrading.Tint        = static_cast<float>(m->AsDoubleOr(p.ColorGrading.Tint));
+					if (const Json::Value* m = cg->FindMember("colorFilter")) p.ColorGrading.ColorFilter = UIColorFromJson(*m, p.ColorGrading.ColorFilter);
+				}
+
+				if (const Json::Value* vg = v.FindMember("vignette")) {
+					if (const Json::Value* m = vg->FindMember("enabled"))    p.Vignette.Enabled    = m->AsBoolOr(p.Vignette.Enabled);
+					if (const Json::Value* m = vg->FindMember("color"))      p.Vignette.Color      = UIColorFromJson(*m, p.Vignette.Color);
+					if (const Json::Value* m = vg->FindMember("intensity"))  p.Vignette.Intensity  = static_cast<float>(m->AsDoubleOr(p.Vignette.Intensity));
+					if (const Json::Value* m = vg->FindMember("smoothness")) p.Vignette.Smoothness = static_cast<float>(m->AsDoubleOr(p.Vignette.Smoothness));
+					if (const Json::Value* m = vg->FindMember("roundness"))  p.Vignette.Roundness  = static_cast<float>(m->AsDoubleOr(p.Vignette.Roundness));
+					if (const Json::Value* m = vg->FindMember("centerX"))    p.Vignette.Center.x   = static_cast<float>(m->AsDoubleOr(p.Vignette.Center.x));
+					if (const Json::Value* m = vg->FindMember("centerY"))    p.Vignette.Center.y   = static_cast<float>(m->AsDoubleOr(p.Vignette.Center.y));
+				}
+
+				if (const Json::Value* ca = v.FindMember("chromaticAberration")) {
+					if (const Json::Value* m = ca->FindMember("enabled"))   p.ChromaticAberration.Enabled   = m->AsBoolOr(p.ChromaticAberration.Enabled);
+					if (const Json::Value* m = ca->FindMember("intensity")) p.ChromaticAberration.Intensity = static_cast<float>(m->AsDoubleOr(p.ChromaticAberration.Intensity));
+				}
+
+				if (const Json::Value* gr = v.FindMember("grain")) {
+					if (const Json::Value* m = gr->FindMember("enabled"))   p.Grain.Enabled   = m->AsBoolOr(p.Grain.Enabled);
+					if (const Json::Value* m = gr->FindMember("intensity")) p.Grain.Intensity = static_cast<float>(m->AsDoubleOr(p.Grain.Intensity));
+					if (const Json::Value* m = gr->FindMember("size"))      p.Grain.Size      = static_cast<float>(m->AsDoubleOr(p.Grain.Size));
+					if (const Json::Value* m = gr->FindMember("colored"))   p.Grain.Colored   = m->AsBoolOr(p.Grain.Colored);
+				}
+
+				if (const Json::Value* bl = v.FindMember("bloom")) {
+					if (const Json::Value* m = bl->FindMember("enabled"))   p.Bloom.Enabled   = m->AsBoolOr(p.Bloom.Enabled);
+					if (const Json::Value* m = bl->FindMember("threshold")) p.Bloom.Threshold = static_cast<float>(m->AsDoubleOr(p.Bloom.Threshold));
+					if (const Json::Value* m = bl->FindMember("intensity")) p.Bloom.Intensity = static_cast<float>(m->AsDoubleOr(p.Bloom.Intensity));
+					if (const Json::Value* m = bl->FindMember("scatter"))   p.Bloom.Scatter   = static_cast<float>(m->AsDoubleOr(p.Bloom.Scatter));
+					if (const Json::Value* m = bl->FindMember("tint"))      p.Bloom.Tint      = UIColorFromJson(*m, p.Bloom.Tint);
+				}
+
+				if (const Json::Value* ld = v.FindMember("lensDistortion")) {
+					if (const Json::Value* m = ld->FindMember("enabled"))   p.LensDistortion.Enabled   = m->AsBoolOr(p.LensDistortion.Enabled);
+					if (const Json::Value* m = ld->FindMember("intensity")) p.LensDistortion.Intensity = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Intensity));
+					if (const Json::Value* m = ld->FindMember("scale"))     p.LensDistortion.Scale     = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Scale));
+					if (const Json::Value* m = ld->FindMember("centerX"))   p.LensDistortion.Center.x  = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Center.x));
+					if (const Json::Value* m = ld->FindMember("centerY"))   p.LensDistortion.Center.y  = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Center.y));
+				}
+			};
+
+			sceneManager.RegisterComponentType<PostProcessing2DComponent>(ppInfo);
+		}
 
 		RegisterComponent<TextRendererComponent>(sceneManager, "Text Renderer",
 			ComponentCategory::Component, "UI", "TextRenderer",

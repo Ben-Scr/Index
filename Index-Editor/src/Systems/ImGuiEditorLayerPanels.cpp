@@ -1784,6 +1784,213 @@ namespace Index {
 			ImGui::Unindent(8);
 		}
 
+		if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			changed |= ImGui::Checkbox("Enable Post-Processing", &project->EnablePostProcessing);
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Global kill switch for the post-processing pipeline.\n"
+					"When off, the renderer skips the PP pass entirely and\n"
+					"writes the scene straight to the final target.\n"
+					"Per-effect toggles still live on the camera's\n"
+					"PostProcessing2DComponent.");
+			}
+			ImGui::Unindent(8);
+		}
+
+		// EnTT entity ID bit-split. Compile-time only — premake reads
+		// the saved value from index-project.json and bakes
+		// -DINDEX_ENTITY_BITS=N into every C++ TU that touches an entt
+		// header, so a change here requires regenerating project files
+		// and rebuilding the engine before it takes effect. The cap
+		// trades against EnTT's per-slot version count, which is what
+		// detects stale handles to recycled entity IDs.
+		if (ImGui::CollapsingHeader("ECS", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			ImGui::TextUnformatted("Entity ID bits:");
+			const char* entityBitsLabels[] = {
+				"16 bits  (65,535 entities / 65,536 versions)",
+				"20 bits  (1,048,575 entities / 4,096 versions)  [default]",
+				"22 bits  (4,194,303 entities / 1,024 versions)",
+				"24 bits  (16,777,215 entities / 256 versions)",
+				"28 bits  (268,435,455 entities / 16 versions)"
+			};
+			constexpr int entityBitsValues[] = { 16, 20, 22, 24, 28 };
+			int entityBitsIdx = 1; // matches the 20-bit default
+			for (int i = 0; i < IM_ARRAYSIZE(entityBitsValues); ++i) {
+				if (entityBitsValues[i] == project->EntityBits) {
+					entityBitsIdx = i;
+					break;
+				}
+			}
+			ImGui::SetNextItemWidth(-1);
+			if (ImGui::Combo("##EntityBits", &entityBitsIdx, entityBitsLabels, IM_ARRAYSIZE(entityBitsLabels))) {
+				const int newBits = entityBitsValues[entityBitsIdx];
+				if (newBits != project->EntityBits) {
+					project->EntityBits = newBits;
+					changed = true;
+				}
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Maximum number of live entities the scene can hold.\n"
+					"Trades against the per-slot version count EnTT uses\n"
+					"to detect stale handles to recycled IDs.\n"
+					"\n"
+					"Compile-time setting — the engine must be rebuilt for\n"
+					"the change to take effect. Click \"Rebuild Engine\" below\n"
+					"to do that automatically.");
+			}
+
+			// Drift indicator + Rebuild Engine button.
+			// `GetCompiledEntityBits()` returns the bit width baked into the
+			// engine DLL the editor is currently running against. When the
+			// user moves the dropdown, project->EntityBits changes immediately
+			// but the engine DLL doesn't — that's the drift state, and the
+			// only path to resolving it is rebuilding the engine.
+			const int compiledBits = Index::GetCompiledEntityBits();
+			ImGui::Spacing();
+			if (compiledBits != project->EntityBits) {
+				ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.20f, 1.0f),
+					"Compiled: %d bits   Pending: %d bits",
+					compiledBits, project->EntityBits);
+				ImGui::Spacing();
+				if (ImGui::Button("Rebuild Engine")) {
+					ImGui::OpenPopup("Rebuild Engine?");
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip(
+						"Closes the editor and reopens it after the engine has\n"
+						"been rebuilt with the new entityBits setting.\n"
+						"\n"
+						"A separate \"Rebuilding Engine\" window will appear\n"
+						"with progress. Don't close it.");
+				}
+			}
+			else {
+				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
+			}
+
+			// Confirmation modal. The rebuild itself runs in a transient
+			// cmd.exe spawned with a generated batch script — neither the
+			// editor nor the launcher can do the build in-process because
+			// both link Index-Engine.dll and MSBuild would fail with LNK1104
+			// on the locked binary. cmd.exe doesn't load the engine, so it
+			// can freely overwrite the .dll / .exe / .lib outputs. The
+			// console window doubles as the progress UI: stage labels echo,
+			// MSBuild output streams live, and `pause` on failure lets the
+			// user read the error before the window closes.
+			ImGuiUtils::CenterNextModal();
+			if (ImGui::BeginPopupModal("Rebuild Engine?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+				ImGui::TextWrapped(
+					"Rebuild the engine with entityBits = %d?\n\n"
+					"The editor will close and a console window will open showing the build "
+					"progress. The editor reopens automatically when the build finishes. "
+					"This typically takes 1-3 minutes. Don't close the console window.",
+					project->EntityBits);
+				ImGui::Spacing();
+				if (ImGui::Button("Rebuild", ImVec2(120.0f, 0.0f))) {
+					project->Save();
+
+					// Index-Editor.exe lives at:
+					//   <repoRoot>/bin/<config>-windows-x86_64/Index-Editor/Index-Editor.exe
+					// Engine root is therefore three parents up from the exe dir.
+					const std::filesystem::path editorExeDir = Path::ExecutableDir();
+					const std::filesystem::path engineRoot =
+						editorExeDir.parent_path().parent_path().parent_path();
+					const std::filesystem::path premakeExe =
+						engineRoot / "vendor" / "bin" / "premake5.exe";
+					const std::string msbuildPath = IndexProject::GetMSBuildPath();
+					const std::filesystem::path slnPath = engineRoot / "Index.sln";
+					const std::filesystem::path editorExe = editorExeDir / "Index-Editor.exe";
+					const std::string config = IndexProject::GetActiveBuildConfiguration();
+					const std::string projectRootDir = project->RootDirectory;
+					const int newEntityBits = project->EntityBits;
+
+					// Emit the rebuild script. `timeout` at the top waits for
+					// the current editor process to fully exit so MSBuild
+					// doesn't race the DLL unload. Each stage echoes a banner
+					// so the user can read where they are in the pipeline if
+					// the build fails. `pause` keeps the window open on
+					// failure; success path closes it after relaunching the
+					// editor.
+					std::ostringstream bat;
+					bat <<
+						"@echo off\r\n"
+						"setlocal\r\n"
+						"title Rebuilding Index Engine (entityBits=" << newEntityBits << ")\r\n"
+						"echo.\r\n"
+						"echo ====================================================\r\n"
+						"echo   Rebuilding Index Engine  (entityBits=" << newEntityBits << ")\r\n"
+						"echo ====================================================\r\n"
+						"echo.\r\n"
+						"echo Waiting for editor to release its file locks...\r\n"
+						"timeout /t 3 /nobreak > nul\r\n"
+						"echo.\r\n"
+						"echo [1/3] Regenerating project files (premake)...\r\n"
+						"echo.\r\n"
+						"pushd \"" << engineRoot.string() << "\"\r\n"
+						"\"" << premakeExe.string() << "\" vs2022 --index-project=\"" << projectRootDir << "\"\r\n"
+						"if errorlevel 1 (\r\n"
+						"  echo.\r\n"
+						"  echo *** premake regeneration FAILED. ***\r\n"
+						"  echo.\r\n"
+						"  pause\r\n"
+						"  exit /b 1\r\n"
+						")\r\n"
+						"echo.\r\n"
+						"echo [2/3] Building solution (this is the long step)...\r\n"
+						"echo.\r\n"
+						"\"" << msbuildPath << "\" \"" << slnPath.string() << "\""
+						" /p:Configuration=" << config <<
+						" /p:Platform=x64 /m /v:minimal /nologo\r\n"
+						"if errorlevel 1 (\r\n"
+						"  echo.\r\n"
+						"  echo *** MSBuild FAILED. Scroll up for compile errors. ***\r\n"
+						"  echo.\r\n"
+						"  pause\r\n"
+						"  exit /b 1\r\n"
+						")\r\n"
+						"popd\r\n"
+						"echo.\r\n"
+						"echo [3/3] Relaunching editor...\r\n"
+						"echo.\r\n"
+						"start \"\" \"" << editorExe.string() << "\" --project=\"" << projectRootDir << "\"\r\n"
+						"endlocal\r\n"
+						"exit /b 0\r\n";
+
+					std::error_code mkdirEc;
+					const std::filesystem::path batDir = engineRoot / "bin-int";
+					std::filesystem::create_directories(batDir, mkdirEc);
+					const std::filesystem::path batPath = batDir / "engine-rebuild.bat";
+					std::ofstream batFile(batPath, std::ios::binary | std::ios::trunc);
+					batFile << bat.str();
+					batFile.close();
+
+					const bool spawned = Process::LaunchDetached(
+						{ "cmd.exe", "/c", batPath.string() }, engineRoot);
+					ImGui::CloseCurrentPopup();
+					if (spawned) {
+						// Clean shutdown — releases the engine DLL file lock
+						// so MSBuild can overwrite the rebuilt binary.
+						Application::GetInstance()->Quit();
+					}
+					else {
+						IDX_ERROR_TAG("Editor",
+							"Failed to spawn cmd.exe for engine rebuild (script at {})",
+							batPath.string());
+					}
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::EndPopup();
+			}
+
+			ImGui::Unindent(8);
+		}
+
 		if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			changed |= ImGui::Checkbox("Show runtime stats overlay (F6)", &project->ShowRuntimeStats);

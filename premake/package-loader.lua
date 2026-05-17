@@ -284,6 +284,11 @@ local function RegisterNativeProject(manifest)
             UseDependencySet(Dependency.EditorRuntimeCommon)
             -- Engine is a SharedLib; consumers must declare the import side of INDEX_API.
             defines { "IDX_IMPORT_DLL" }
+            -- Match the engine's EnTT entity-bit split so transitively-included
+            -- entt headers see the same entt_traits specialization (otherwise
+            -- ODR violation between engine.dll and the package's native lib).
+            -- GetIndexEntityBits() is defined in the root premake5.lua.
+            defines { "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()) }
             -- EditorRuntimeCommon pulls in EngineCoreRender, which links
             -- webgpu_dawn.lib. The lib lives under per-config Debug/Release
             -- folders so libdirs MUST be set per-config (LNK2038 otherwise).

@@ -128,6 +128,13 @@ namespace Index {
 		void SelectEntityRange(int index);
 		void DrainPendingLogEntries();
 		void RunAutoSaveTick(Application& app, float dt);
+		// In-viewport prefab edit auto-save: saves m_PrefabEditScene back to
+		// its .prefab file as soon as the user releases the active ImGui
+		// widget. Mirrors the asset-side PrefabInspector pattern. No-op when
+		// the preference is off, no prefab is being edited, or play mode is
+		// active. See RunPrefabAutoSaveTick implementation for the full
+		// trigger conditions.
+		void RunPrefabAutoSaveTick();
 		void AppendLogEntry(LogEntry entry);
 		void ClearLogEntries();
 		void ResetEditorFocusCycle();
@@ -245,7 +252,15 @@ namespace Index {
 		bool m_EntityOrderDirty = true;
 		std::vector<entt::entity> m_RenderedEntityOrder;
 		std::vector<int> m_RenderedEntityDepths;
+		// Pruned subset of m_EntityOrder: entries under a collapsed parent
+		// are dropped. The hierarchy render loop iterates this list (not
+		// m_EntityOrder) so collapsing a 100k-child subtree turns the
+		// per-frame cost from O(N_total) into O(N_visible). Parallel
+		// `m_VisibleEntityDepths` carries the depth for each entry. Both
+		// are rebuilt by the same DFS pass that produces m_EntityOrder,
+		// so any flip of m_EntityOrderDirty invalidates them together.
 		std::vector<entt::entity> m_VisibleEntityOrder;
+		std::vector<int> m_VisibleEntityDepths;
 
 		// ── Prefab edit mode ──────────────────────────────────────────
 		// Owned detached scene that contains the entity tree of the

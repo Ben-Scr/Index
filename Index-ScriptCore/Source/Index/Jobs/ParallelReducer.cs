@@ -24,12 +24,34 @@ public sealed class ParallelReducer<T> : IDisposable
     private readonly T m_Identity;
     private readonly ThreadLocal<StrongBox> m_Local;
 
+    // Intrusive lock-free stack of every StrongBox ever produced. Each
+    // box is linked in exactly once (in the ThreadLocal factory, which
+    // runs at most once per worker thread). Result()/Reset() walk this
+    // chain without allocating an enumerator — the previous
+    // implementation hit ThreadLocal.Values which snapshots into a
+    // fresh IList<T> on every call.
+    private StrongBox? m_Head;
+
     public ParallelReducer(T identity, Func<T, T, T> combine)
     {
         ArgumentNullException.ThrowIfNull(combine);
         m_Identity = identity;
         m_Combine = combine;
-        m_Local = new ThreadLocal<StrongBox>(() => new StrongBox(identity), trackAllValues: true);
+        m_Local = new ThreadLocal<StrongBox>(CreateBox);
+    }
+
+    private StrongBox CreateBox()
+    {
+        var box = new StrongBox(m_Identity);
+        // Push onto the head with CAS retry. Per-worker first-use cost
+        // only — never on the hot Add() path.
+        StrongBox? current;
+        do
+        {
+            current = Volatile.Read(ref m_Head);
+            box.Next = current;
+        } while (Interlocked.CompareExchange(ref m_Head, box, current) != current);
+        return box;
     }
 
     /// <summary>
@@ -49,9 +71,11 @@ public sealed class ParallelReducer<T> : IDisposable
     public T Result()
     {
         T acc = m_Identity;
-        foreach (StrongBox box in m_Local.Values)
+        StrongBox? node = Volatile.Read(ref m_Head);
+        while (node != null)
         {
-            acc = m_Combine(acc, box.Value);
+            acc = m_Combine(acc, node.Value);
+            node = node.Next;
         }
         return acc;
     }
@@ -61,9 +85,11 @@ public sealed class ParallelReducer<T> : IDisposable
     /// </summary>
     public void Reset()
     {
-        foreach (StrongBox box in m_Local.Values)
+        StrongBox? node = Volatile.Read(ref m_Head);
+        while (node != null)
         {
-            box.Value = m_Identity;
+            node.Value = m_Identity;
+            node = node.Next;
         }
     }
 
@@ -72,6 +98,7 @@ public sealed class ParallelReducer<T> : IDisposable
     private sealed class StrongBox
     {
         public T Value;
+        public StrongBox? Next;
 
         public StrongBox(T value)
         {

@@ -61,9 +61,12 @@
   <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Source\CreateEntityJobSample.cs" />
     <Compile Include="Source\EcbBenchmarkSystem.cs" />
     <Compile Include="Source\IJobQueryQuickTest.cs" />
+    <Compile Include="Source\JobSystemQuickTest.cs" />
     <Compile Include="Source\PlayerController.cs" />
+    <Compile Include="Source\PrefabSpawnJobSample.cs" />
     <Compile Include="Source\SpinSystem.cs" />
   </ItemGroup>
   <ItemGroup>

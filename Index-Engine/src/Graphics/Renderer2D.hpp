@@ -5,7 +5,9 @@
 #include "Instance44.hpp"
 #include "Collections/AABB.hpp"
 #include "Core/Export.hpp"
+#include "Graphics/Framebuffer.hpp"
 #include "Graphics/IRenderer.hpp"
+#include "Graphics/PostProcessing/PostProcessor.hpp"
 
 #include <glm/glm.hpp>
 #include <memory>
@@ -104,6 +106,16 @@ namespace Index {
 		// — owned here so Renderer2D's frame lifecycle drives them and
 		// callers don't need to thread TextRenderer through their own code.
 		std::unique_ptr<TextRenderer> m_TextRenderer;
+
+		// Post-processing intermediate FBO + processor. The scene FBO is
+		// recreated to match the caller's target dimensions on first frame
+		// (or whenever the caller's size changes). PostProcessor owns the
+		// blit pipeline + future effect pipelines. Both stay zero-cost when
+		// the global EnablePostProcessing toggle is off — RenderSceneWithVP
+		// skips the redirect entirely and falls through to the legacy
+		// straight-to-caller render path.
+		Framebuffer    m_SceneFbo;
+		PostProcessor  m_PostProcessor;
 
 		SceneProvider m_SceneProvider;
 

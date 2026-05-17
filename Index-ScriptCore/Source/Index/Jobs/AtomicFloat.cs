@@ -38,6 +38,7 @@ public sealed class AtomicFloat
     public float Add(float operand)
     {
         float current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (true)
         {
             float updated = current + operand;
@@ -47,6 +48,11 @@ public sealed class AtomicFloat
                 return updated;
             }
             current = prev;
+            // On CAS failure another thread won the race — back off so
+            // we don't burn the cache line in a hot retry loop. SpinOnce
+            // ramps from pause instructions to a thread yield as
+            // contention grows.
+            spinner.SpinOnce();
         }
     }
 
@@ -55,6 +61,7 @@ public sealed class AtomicFloat
     public float FetchMax(float operand)
     {
         float current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand > current)
         {
             float prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -63,6 +70,7 @@ public sealed class AtomicFloat
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }
@@ -70,6 +78,7 @@ public sealed class AtomicFloat
     public float FetchMin(float operand)
     {
         float current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand < current)
         {
             float prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -78,6 +87,7 @@ public sealed class AtomicFloat
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }

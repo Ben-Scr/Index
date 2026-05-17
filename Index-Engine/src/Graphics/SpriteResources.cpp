@@ -174,9 +174,14 @@ namespace Index::WebGPUSpriteResources {
 			colorTarget.blend     = mode == SpritePipelineMode::Wireframe ? nullptr : &blend;
 			colorTarget.writeMask = wgpu::ColorWriteMask::All;
 
+			// Wireframe pipeline uses a dedicated fragment entry point that
+			// returns solid opaque black — keeps the "debug overlay is black"
+			// decision in the shader instead of mutating the shared instance
+			// buffer at submit time (which aliased the filled-pass's instance
+			// data in Mixed draw mode and rendered the entire sprite black).
 			wgpu::FragmentState fragState{};
 			fragState.module        = module;
-			fragState.entryPoint    = "fs_main";
+			fragState.entryPoint    = mode == SpritePipelineMode::Wireframe ? "fs_wire_main" : "fs_main";
 			fragState.targetCount   = 1;
 			fragState.targets       = &colorTarget;
 

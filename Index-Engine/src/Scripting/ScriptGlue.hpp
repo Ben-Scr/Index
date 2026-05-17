@@ -654,6 +654,58 @@ namespace Index {
 		// Wire format documented in EntityCommandBufferWire.hpp.
 		int (*Ecb_Playback)(const uint8_t* buffer, int length,
 			uint64_t* outRuntimeIds, int maxOut);
+
+		// ── JobSystem (appended for binary compat) ──────────────────────
+		// Cross-runtime job dispatch — managed schedules feed into the
+		// same native work-stealing pool that physics / particles use, so
+		// the CLR ThreadPool no longer fights the engine pool for cores.
+		//
+		// Handles are monotonically-numbered uint64_t IDs (0 = invalid).
+		// The native side keeps a small map from id → JobHandle + context
+		// + releaseContext callback. Release calls releaseContext(context)
+		// then erases the entry — managed dispatch passes a
+		// `&FreeGCHandle` style callback that owns the per-job
+		// GCHandle-wrapped box.
+
+		// Enqueue a single work item. `work(context)` runs on a native
+		// worker exactly once. `releaseContext(context)` fires on Release
+		// (after Wait completes) so the managed side can free the
+		// associated GCHandle. Returns 0 if the pool is shut down or the
+		// map can't accept another entry (extremely unlikely in practice).
+		uint64_t (*JobSystem_Enqueue)(
+			void (*work)(void* context),
+			void* context,
+			void (*releaseContext)(void* context));
+
+		// Partitioned dispatch. The native side fans out [begin, end) into
+		// chunks of `batchSize` (or auto when 0) and invokes
+		// `work(context, lo, hi)` once per chunk concurrently. Returns a
+		// single handle that waits on all chunks. `releaseContext` fires
+		// once on Release (NOT per chunk) — chunks share the GCHandle.
+		uint64_t (*JobSystem_ParallelFor)(
+			int begin, int end, int batchSize,
+			void (*work)(void* context, int lo, int hi),
+			void* context,
+			void (*releaseContext)(void* context));
+
+		// Block the calling thread until the handle completes. Drains the
+		// queue while waiting (work-stealing) so a job that spawns
+		// sub-jobs and waits on them cannot deadlock. Idempotent.
+		void (*JobSystem_Wait)(uint64_t handle);
+
+		// Non-blocking completion query. Returns 1 when the handle's work
+		// is done, 0 otherwise. A zero / unknown handle returns 1
+		// ("nothing to do" reads as done).
+		int (*JobSystem_IsComplete)(uint64_t handle);
+
+		// Free the handle's slot in the native side's map. Calls the
+		// stored releaseContext(context) before erasing. Must be called
+		// exactly once per Enqueue / ParallelFor return value, after
+		// either Wait completes or IsComplete returned 1.
+		void (*JobSystem_Release)(uint64_t handle);
+
+		int (*JobSystem_GetWorkerCount)();
+		int (*JobSystem_GetCallerWorkerIndex)(); // -1 when not on a worker
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

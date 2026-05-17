@@ -475,6 +475,16 @@ namespace Index {
 		void DeferEntityRefFixup(std::function<void()> fixup);
 		void RunPendingEntityRefFixups();
 
+		// Snapshot of the deferred-fixup queue size. Used by
+		// PrefabTemplateCache to decide whether a freshly-hydrated prefab
+		// is bakeable: if DeserializeEntityTree queued fixups, the prefab
+		// contains cross-entity references whose resolution depends on
+		// scene-wide UUIDs not preserved across a memcpy-replay, so the
+		// cache marks it unbakeable and falls back to the slow path on
+		// every spawn. (V1 limitation — a follow-up will record the
+		// fixup offsets template-locally so even ref-heavy prefabs cache.)
+		std::size_t GetPendingEntityRefFixupCount() const { return m_PendingEntityRefFixups.size(); }
+
 		UUID GetSceneId() const { return m_SceneId; }
 		void SetSceneId(UUID id) { m_SceneId = id; }
 

@@ -76,6 +76,11 @@ namespace Index {
                 // emplacer would otherwise be replaced by the auto-wired
                 // trivial-memcpy emplacer below).
                 if (!info.emplaceFromBytes) info.emplaceFromBytes = existing->second.emplaceFromBytes;
+                // Symmetric preservation for writeBytes — same rationale as
+                // emplaceFromBytes, since the PrefabTemplateCache bake path
+                // needs the component's custom serializer to survive an
+                // AttachInspector re-registration.
+                if (!info.writeBytes) info.writeBytes = existing->second.writeBytes;
             }
 
             info.typeId = id;
@@ -144,6 +149,26 @@ namespace Index {
                         T value;
                         std::memcpy(&value, bytes, sizeof(T));
                         r.emplace_or_replace<T>(e, std::move(value));
+                    };
+                }
+
+                // Symmetric writeBytes auto-wire — appends a memcpy of the
+                // EnTT storage to `out` so the PrefabTemplateCache can bake
+                // a prefab once and replay it from raw bytes thereafter.
+                // Same opt-out rule as emplaceFromBytes: components that
+                // hold non-memcpy-safe state register a custom writeBytes
+                // explicitly, and the merge-preservation in the
+                // re-registration branch above keeps it alive across
+                // AttachInspector re-registration.
+                if (info.writeBytes == nullptr) {
+                    info.writeBytes = [](const entt::registry& r, EntityHandle e,
+                                          std::vector<uint8_t>& out) -> bool {
+                        const T* comp = r.try_get<T>(e);
+                        if (comp == nullptr) return false;
+                        const size_t oldSize = out.size();
+                        out.resize(oldSize + sizeof(T));
+                        std::memcpy(out.data() + oldSize, comp, sizeof(T));
+                        return true;
                     };
                 }
             }

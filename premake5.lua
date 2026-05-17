@@ -160,6 +160,67 @@ Dependency.EditorRuntimeCommon = MergeDependencySets(
     IndexModules.Editor and Dependency.EngineCoreEditor or nil
 )
 
+-- Picks the EnTT entity/version bit-split from the active project's
+-- index-project.json. Default is 20 — matches EnTT's stock split, so
+-- existing projects pay no extra memory and behave identically to the
+-- unpatched engine. Cached so repeated calls from each consumer's
+-- premake5.lua don't re-parse the file. The vendored EnTT header at
+-- External/entt/src/entt/entity/entity.hpp branches on the resulting
+-- -DINDEX_ENTITY_BITS=N to adjust entt_traits<uint32_t>::entity_mask /
+-- version_mask.
+--
+-- Mirrors the IndexProject::Load validator in
+-- Index-Engine/src/Project/IndexProject.cpp so the premake-time and
+-- runtime views of the setting stay in sync.
+IndexEntityBits = nil
+function GetIndexEntityBits()
+    if IndexEntityBits ~= nil then
+        return IndexEntityBits
+    end
+
+    local default = 20
+    local projectRootDir = _OPTIONS["index-project"]
+    if not projectRootDir or projectRootDir == "" then
+        IndexEntityBits = default
+        return IndexEntityBits
+    end
+
+    local manifestPath = path.join(projectRootDir, "index-project.json")
+    if not os.isfile(manifestPath) then
+        IndexEntityBits = default
+        return IndexEntityBits
+    end
+
+    local file = io.open(manifestPath, "rb")
+    if not file then
+        IndexEntityBits = default
+        return IndexEntityBits
+    end
+    local jsonText = file:read("*all")
+    file:close()
+    if not jsonText then
+        IndexEntityBits = default
+        return IndexEntityBits
+    end
+
+    jsonText = jsonText:gsub("//[^\n]*", ""):gsub("/%*.-%*/", "")
+    local valueText = jsonText:match('"entityBits"%s*:%s*(%-?%d+)')
+    if not valueText then
+        IndexEntityBits = default
+        return IndexEntityBits
+    end
+
+    local bits = tonumber(valueText)
+    if bits == 16 or bits == 20 or bits == 22 or bits == 24 or bits == 28 then
+        IndexEntityBits = bits
+    else
+        print("[Index] index-project.json: entityBits=" .. tostring(valueText)
+            .. " is not one of {16, 20, 22, 24, 28}; falling back to 20.")
+        IndexEntityBits = default
+    end
+    return IndexEntityBits
+end
+
 function GetIndexModuleDefines()
     local hasApplication = IndexModules.Render
         and IndexModules.Audio
@@ -175,6 +236,7 @@ function GetIndexModuleDefines()
         "INDEX_WITH_SCRIPTING=" .. (IndexModules.Scripting and "1" or "0"),
         "INDEX_WITH_EDITOR=" .. (IndexModules.Editor and "1" or "0"),
         "INDEX_WITH_APPLICATION=" .. (hasApplication and "1" or "0"),
+        "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()),
         -- Shrink magic_enum's default reflection window [-128, 127] -> [-1, 64].
         -- All engine-side reflected enums are small `enum class : uint8_t`
         -- with sequential values in [0, ~16] (see Index-Engine/src/Components/

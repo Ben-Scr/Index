@@ -30,11 +30,13 @@
 //      dir, then under the source tree.
 //
 // Why one module per Shader (not vs+fs separately):
-// WGSL is multi-entry-point. The sprite module here has both `vs_main` and
-// `fs_main`; we don't pre-split it into two modules because Dawn's pipeline
-// creation takes (module, entry_point) per stage and can re-use the same
-// module across stages. The renderer side knows the entry-point names; this
-// class only owns the module.
+// WGSL is multi-entry-point. The sprite module here has `vs_main` plus two
+// fragment entry points — `fs_main` (textured, instance-coloured) and
+// `fs_wire_main` (constant opaque black for the wireframe-debug pipeline);
+// we don't pre-split into separate modules because Dawn's pipeline creation
+// takes (module, entry_point) per stage and can re-use the same module
+// across stages. The renderer side knows the entry-point names; this class
+// only owns the module.
 //
 // The renderer ports (Renderer2D, GuiRenderer, TextRenderer, GizmoRenderer)
 // look up the wgpu::ShaderModule via WebGPUBackend::LookupShader(m_Program)
@@ -107,6 +109,17 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	let texel = textureSample(t_albedo, s_albedo, in.uv);
 	return texel * in.color;
+}
+
+// Wireframe-debug fragment entry point. Used by the Wireframe sprite
+// pipeline (LineList topology, blending disabled) — outputs solid opaque
+// black regardless of texture or instance colour so quad-edge lines render
+// as the Editor View's debug overlay. Keeping the black-write in the
+// shader (rather than mutating the shared instance buffer on the CPU)
+// avoids aliasing the filled-pass's instance data in Mixed draw mode.
+@fragment
+fn fs_wire_main(in: VertexOutput) -> @location(0) vec4<f32> {
+	return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 }
 )WGSL";
 
@@ -190,6 +203,56 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
+		// Post-process blit shader — used by PostProcessor for the
+		// fullscreen passthrough that turns the HDR intermediate scene FBO
+		// back into the caller's target. No vertex buffer needed: we draw
+		// 3 verts via the "oversized fullscreen triangle" trick (covers
+		// the viewport with a single triangle, faster than a clipped quad).
+		//   * Bind group 0: { 0: src texture, 1: linear sampler }.
+		//   * Output: textureSample(src, sampler, uv) — straight passthrough.
+		// Future effect shaders (vignette, bloom, ...) follow the same
+		// vertex layout and bind-group-0 shape so they can share the
+		// PostProcessor's bind-group-layout, sampler, and vertex stage.
+		constexpr const char* k_PostBlitWGSL = R"WGSL(
+@group(0) @binding(0) var t_src: texture_2d<f32>;
+@group(0) @binding(1) var s_src: sampler;
+
+struct VertexOutput {
+	@builtin(position) clip_position: vec4<f32>,
+	@location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
+	// Fullscreen triangle covering the viewport. Vertices in NDC:
+	//   idx 0 -> (-1, -1)    uv (0, 1)
+	//   idx 1 -> ( 3, -1)    uv (2, 1)
+	//   idx 2 -> (-1,  3)    uv (0, -1)
+	// The triangle extends past the clip rect; the rasterizer discards
+	// the off-screen pixels. One triangle instead of a quad's two means
+	// no diagonal seam where the two halves meet.
+	var pos = array<vec2<f32>, 3>(
+		vec2<f32>(-1.0, -1.0),
+		vec2<f32>( 3.0, -1.0),
+		vec2<f32>(-1.0,  3.0),
+	);
+	var uv = array<vec2<f32>, 3>(
+		vec2<f32>(0.0, 1.0),
+		vec2<f32>(2.0, 1.0),
+		vec2<f32>(0.0, -1.0),
+	);
+	var out: VertexOutput;
+	out.clip_position = vec4<f32>(pos[idx], 0.0, 1.0);
+	out.uv = uv[idx];
+	return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+	return textureSample(t_src, s_src, in.uv);
+}
+)WGSL";
+
 		struct BuiltIn {
 			std::string_view Name;
 			const char*      WGSL;
@@ -198,9 +261,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 		// the "Shader" suffix and lowercasing) to its embedded WGSL
 		// source. Future renderer ports register here as they land.
 		constexpr BuiltIn k_BuiltIns[] = {
-			{ "sprite", k_SpriteWGSL },
-			{ "text",   k_TextWGSL   },
-			{ "gizmo",  k_GizmoWGSL  },
+			{ "sprite",   k_SpriteWGSL   },
+			{ "text",     k_TextWGSL     },
+			{ "gizmo",    k_GizmoWGSL    },
+			{ "postblit", k_PostBlitWGSL },
 		};
 
 		// ── Pool ────────────────────────────────────────────────────────────

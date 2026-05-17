@@ -34,6 +34,7 @@ namespace Index {
 	struct ImageComponent;
 	class INDEX_API Camera2DComponent;
 	class INDEX_API ParticleSystem2DComponent;
+	struct INDEX_API PostProcessing2DComponent;
 	struct INDEX_API TextRendererComponent;
 
 	// Physics

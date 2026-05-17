@@ -41,10 +41,14 @@ namespace Index::Diagnostics {
 		}
 
 		std::size_t CountLoadedEntities() {
+			// Scene::GetEntityCount() returns a cached scalar — the same
+			// helper Application::Run uses for its per-frame profiler
+			// value. The previous std::distance walk over view<entt::entity>
+			// was O(N) and showed up in profiles on scenes with 10k+
+			// entities (see comment in Application.cpp:252).
 			std::size_t count = 0;
 			SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
-				auto view = scene.GetRegistry().view<entt::entity>();
-				count += static_cast<std::size_t>(std::distance(view.begin(), view.end()));
+				count += scene.GetEntityCount();
 			});
 			return count;
 		}

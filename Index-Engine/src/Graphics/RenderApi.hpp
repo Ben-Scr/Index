@@ -103,15 +103,6 @@ namespace Index {
 
 		static void SetColorMask(bool r, bool g, bool b, bool a);
 
-		// ── Color-logic-op overlay scope (editor wireframe pass) ─────
-		// The editor's "Triangle / Mixed" draw modes use a logic-op
-		// trick (GL_CLEAR) to force every wireframe-overlaid pixel to
-		// solid black regardless of the entity's shader output. Wrap
-		// the begin/end so callers don't have to know the recipe.
-		static void BeginColorLogicOpClear();
-		static void EndColorLogicOpClear();
-		static bool IsColorLogicOpClearEnabled();
-
 		// ── Framebuffer binding ──────────────────────────────────────
 		// Bind one of the engine's Framebuffer wrappers as the current
 		// render target, or restore the window's default framebuffer.

@@ -10,6 +10,7 @@
 #include "Core/Application.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Serialization/Path.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
 #include "Project/ProjectManager.hpp"
 
 #include <algorithm>
@@ -1614,6 +1615,11 @@ namespace Index {
 					ScriptEngine::ReloadAssemblies();
 				}
 				InitializeRegisteredGlobalSystems();
+				// Drop every baked prefab template: a managed reload can
+				// shift component layouts (sizeof changes, new fields)
+				// that would silently corrupt cached emplaceFromBytes
+				// payloads. The next spawn rebakes via the slow path.
+				PrefabTemplateCache::Get().InvalidateAll();
 				IDX_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded");
 			}
 			else
@@ -1692,6 +1698,12 @@ namespace Index {
 						IDX_WARN_TAG("ScriptSystem", "Keeping the previous native script DLL loaded; instances will be recreated on the next update.");
 					}
 					else {
+						// Same rationale as the managed reload branch: a
+						// native script DLL swap can change component
+						// layouts in the same address space, so the baked
+						// templates must be dropped before any subsequent
+						// spawn replays from stale bytes.
+						PrefabTemplateCache::Get().InvalidateAll();
 						IDX_INFO_TAG("ScriptSystem", "Native scripts rebuilt and reloaded");
 					}
 				}

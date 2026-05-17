@@ -41,6 +41,27 @@ namespace Index {
 		// as AddComponent but skips dependency-add logic on the assumption
 		// the component is already present. Reserved for future use.
 		Ecb_SetComponent = 2,
+
+		// Spawn a prefab tree by GUID. The record reserves ONE entity slot
+		// in the ECB's entity table — the slot at `entityIndex` becomes
+		// the prefab's ROOT. Child entities are bulk-created on the native
+		// side during playback's pre-scan pass and are NOT addressable
+		// from the managed `EntityRef` index space — managed callers reach
+		// children via the root entity's hierarchy after playback (the
+		// usual Entity.GetChildren API).
+		//
+		// Record layout:
+		//   u8  opcode      = 3
+		//   u32 entityIndex = ECB-local index of the root slot
+		//   u32 typeIdU32   = 0 (unused — reserved for future per-spawn flags)
+		//   u16 payloadSize = 8
+		//   u8  payload[8]  = u64 prefabGuid (little-endian)
+		//
+		// The fixed 11-byte prefix matches Ecb_AddComponent so the wire's
+		// merge-and-remap walker (managed EcbWire.CopyAndRemapCommands)
+		// works without per-opcode branching — it rewrites the u32
+		// entityIndex blindly and copies the payload through.
+		Ecb_InstantiatePrefab = 3,
 	};
 
 	// Sentinel "no name" in the entity table.
@@ -59,5 +80,18 @@ namespace Index {
 	// IDX_CORE_WARN_TAG-logs the offending typeId before returning this
 	// code so the managed exception carries a finger-pointable id.
 	constexpr int kEcbErrorUnknownComponent = -4;
+
+	// The batch would push the live-entity count past EnTT's configured
+	// entity_mask (the project-level entityBits setting decides this — see
+	// index-project.json). Native logs the current count, the requested
+	// addition, and the configured cap so the managed exception is
+	// actionable ("raise entityBits and rebuild").
+	constexpr int kEcbErrorEntityCapExceeded = -5;
+
+	// An Ecb_InstantiatePrefab record referenced a prefab GUID that is not
+	// registered (no .prefab asset with that GUID) OR whose template cannot
+	// be baked (e.g. holds internal entity references the v1 cache can't
+	// replay). Native logs the offending GUID; managed throws.
+	constexpr int kEcbErrorBadPrefab = -6;
 
 } // namespace Index

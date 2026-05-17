@@ -69,6 +69,14 @@ namespace Index {
 		// Clamped to >= 5.0 to match the lower bound the project-settings
 		// UI enforced when these fields lived on IndexProject.
 		static void SetAutoSaveIntervalSeconds(float seconds);
+
+		// Auto-save for in-viewport prefab edit mode. Event-driven (saves on
+		// widget release via ImGui::IsAnyItemActive), so unlike scene
+		// auto-save there is no interval — the toggle alone gates it. On by
+		// default since the in-viewport prefab edit flow has no separate
+		// save-and-keep-editing affordance besides the toolbar button.
+		static bool GetAutoSavePrefabs();
+		static void SetAutoSavePrefabs(bool value);
 	};
 
 }

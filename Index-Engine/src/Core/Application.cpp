@@ -309,6 +309,21 @@ namespace Index {
 		// 1ms timer res for accurate sleep_until in the frame-cap path. Paired with timeEndPeriod in Shutdown.
 		timeBeginPeriod(1);
 #endif
+		// Report the configured entity cap once at startup. The bit-split is
+		// chosen at compile time via index-project.json's `entityBits` field
+		// (premake bakes it into the engine TUs as -DINDEX_ENTITY_BITS=N).
+		// Surfacing the cap here lets users sanity-check the build matches
+		// the setting they expected, especially after editing the project
+		// JSON manually.
+		{
+			using EntityTraits = entt::entt_traits<EntityHandle>;
+			constexpr uint64_t kEntityCap = static_cast<uint64_t>(EntityTraits::entity_mask);
+			constexpr uint64_t kVersionCount = static_cast<uint64_t>(EntityTraits::version_mask) + 1u;
+			IDX_INFO_TAG("Scene",
+				"Entity cap: {} live entities, {} versions per slot (entityBits in index-project.json controls this).",
+				kEntityCap, kVersionCount);
+		}
+
 		m_Configuration = GetConfiguration();
 		SetName(m_Configuration.WindowSpecification.Title);
 

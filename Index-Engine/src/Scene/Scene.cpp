@@ -365,6 +365,18 @@ namespace Index {
 		}
 		IDX_CORE_ASSERT(out.size() >= n, IndexErrorCode::InvalidValue,
 			"Scene::CreateEntitiesBulk: output span is smaller than the requested count");
+		// Refuse a batch that would push the live-entity count past EnTT's
+		// configured entity_mask. Beyond the cap, registry.create() returns
+		// a wrapped entity index and the next sparse-set write reaches
+		// garbage memory (Windows surfaces it as 0xC0000005 mid-batch). The
+		// compare is O(1) per call so it's free even at six-figure batches.
+		// The cap is set by the project-level entityBits field — see
+		// External/entt/src/entt/entity/entity.hpp for the bit-split table.
+		using EntityTraits = entt::entt_traits<EntityHandle>;
+		constexpr std::size_t kMaxLiveEntities = static_cast<std::size_t>(EntityTraits::entity_mask);
+		IDX_CORE_ASSERT(m_EntityCount + n <= kMaxLiveEntities, IndexErrorCode::InvalidValue,
+			"Scene::CreateEntitiesBulk: batch would exceed the EnTT entity cap. "
+			"Raise 'entityBits' in index-project.json and rebuild.");
 		// EnTT's range-create writes one entity per iterator slot. Reserving
 		// up front bounds the entity pool's growth to a single allocation
 		// even when this is the first batch on a fresh scene.

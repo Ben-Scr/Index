@@ -235,17 +235,33 @@ namespace Index {
 				previousSourceRoot = previousRoot;
 				havePreviousSource = true;
 			}
+			else {
+				// File exists but is unreadable (locked, corrupt, transient I/O).
+				// Overwriting now would orphan every live instance — propagation
+				// needs the OLD source as a baseline for the override diff. Bail
+				// out and leave m_PrefabScene dirty so the next auto-save tick
+				// retries once the file is readable again.
+				IDX_CORE_WARN_TAG("PrefabInspector",
+					"Pre-save read of '{}' failed ({}); leaving prefab dirty for retry.",
+					m_PrefabPath, readError);
+				return false;
+			}
 		}
 
 		if (!SceneSerializer::SaveEntityToFile(*m_PrefabScene, m_RootEntity, m_PrefabPath)) {
 			return false;
 		}
-		m_PrefabScene->ClearDirty();
 
+		// Propagate BEFORE clearing the dirty flag: if propagation throws or
+		// otherwise fails mid-loop, the dirty flag stays set so the next tick
+		// retries the whole save+propagate cycle. Previously ClearDirty ran
+		// first, which left live instances stale with no retry hook.
 		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(m_PrefabPath);
 		if (prefabGuid != 0 && havePreviousSource) {
 			PropagateToLiveInstances(prefabGuid, previousSourceRoot);
 		}
+
+		m_PrefabScene->ClearDirty();
 		return true;
 	}
 
@@ -273,7 +289,12 @@ namespace Index {
 			for (EntityHandle instance : instancesToRefresh) {
 				if (!scene.IsValid(instance)) continue;
 				EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(scene, instance, previousSourceEntity);
-				if (replacement != entt::null) {
+				// RefreshPrefabInstance returns the original `instance` handle
+				// when the source prefab is orphaned (nothing changed on disk).
+				// Treat that the same as a no-op — only credit a real swap
+				// (new handle returned), otherwise we'd dirty scenes whose
+				// instances we didn't actually touch.
+				if (replacement != entt::null && replacement != instance) {
 					anyRefreshed = true;
 				}
 			}

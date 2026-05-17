@@ -49,6 +49,7 @@ public sealed class AtomicLong
     public long FetchMax(long operand)
     {
         long current = Interlocked.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand > current)
         {
             long prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -57,6 +58,7 @@ public sealed class AtomicLong
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }
@@ -64,6 +66,7 @@ public sealed class AtomicLong
     public long FetchMin(long operand)
     {
         long current = Interlocked.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand < current)
         {
             long prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -72,6 +75,7 @@ public sealed class AtomicLong
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }

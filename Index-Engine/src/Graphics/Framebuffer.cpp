@@ -79,13 +79,14 @@ namespace Index {
 		}
 
 		// Map the engine's backend-neutral TextureFormat enum to a wgpu format.
-		// Three supported formats (RGBA8 / R8 / Depth24Stencil8); anything
-		// else is a hard error rather than a silent substitution.
+		// Four supported formats (RGBA8 / R8 / Depth24Stencil8 / RGBA16F);
+		// anything else is a hard error rather than a silent substitution.
 		wgpu::TextureFormat ToWgpuFormat(TextureFormat f) noexcept {
 			switch (f) {
 				case TextureFormat::RGBA8:           return wgpu::TextureFormat::RGBA8Unorm;
 				case TextureFormat::R8:              return wgpu::TextureFormat::R8Unorm;
 				case TextureFormat::Depth24Stencil8: return wgpu::TextureFormat::Depth24PlusStencil8;
+				case TextureFormat::RGBA16F:         return wgpu::TextureFormat::RGBA16Float;
 			}
 			return wgpu::TextureFormat::RGBA8Unorm;
 		}

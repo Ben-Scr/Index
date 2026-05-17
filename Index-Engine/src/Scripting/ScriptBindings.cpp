@@ -228,6 +228,7 @@ namespace Index {
 
 	void PopulateNonComponentBindings(NativeBindings& b);
 	void PopulateEcbBindings(NativeBindings& b);
+	void PopulateJobsBindings(NativeBindings& b);
 
 	// IsValid re-check: ResolveEntityReference can succeed at lookup time, but a
 	// script callback firing between resolution and the registry access may have
@@ -2697,6 +2698,10 @@ namespace Index {
 		// compat. Wired here so the managed bindings copy picks them up
 		// in the same initialization step as the rest of the surface.
 		PopulateEcbBindings(b);
+		// JobSystem slots — same append-for-binary-compat pattern. Wires
+		// the managed Job.Schedule path into the native work-stealing
+		// pool so C# work shares cores cleanly with native systems.
+		PopulateJobsBindings(b);
 
 		b.Entity_Clone = &Index_Entity_Clone;
 		b.Entity_InstantiatePrefab = &Index_Entity_InstantiatePrefab;

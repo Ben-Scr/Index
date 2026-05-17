@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Index.Components;
+using Index.Jobs.Internal;
 
 namespace Index.Jobs;
 
@@ -432,16 +433,19 @@ public static class JobQueryExtensions
         int poolCount  = plan.PoolCount;
         int totalCells = rowCount * poolCount;
 
-        IntPtr[] frozen = new IntPtr[totalCells];
-        Array.Copy(sharedBuffer, frozen, totalCells);
-
-        GCHandle gch        = GCHandle.Alloc(frozen, GCHandleType.Pinned);
-        IntPtr   pinnedBase = gch.AddrOfPinnedObject();
+        // Rent a pre-pinned IntPtr[] from the pool instead of
+        // allocating + pinning fresh each Schedule. The pool buckets
+        // by power-of-2 size so steady-state schedules of the same
+        // shape (same row count × pool count) hit a hot bucket and
+        // re-use the same pinned array across frames.
+        JobQueryPinPool.PinnedBuffer pinBuf = JobQueryPinPool.Rent(totalCells);
+        Array.Copy(sharedBuffer, pinBuf.Array, totalCells);
+        IntPtr pinnedBase = pinBuf.PinnedBase;
 
         // From this point on, ANY exception before the AsTask().ContinueWith
-        // continuation is wired up must free the pin manually — otherwise the
-        // pinned array leaks for the rest of the process. Guard the whole
-        // schedule+attach with try/catch; the happy path frees inside the
+        // continuation is wired up must return the pin manually — otherwise
+        // the pinned array leaks for the rest of the process. Guard the whole
+        // schedule+attach with try/catch; the happy path returns inside the
         // continuation as before.
         JobHandle handle;
         try
@@ -451,11 +455,17 @@ public static class JobQueryExtensions
 
             if (parallel)
             {
-                handle = Job.ScheduleParallelFor(0, rowCount, row =>
+                // Range body — invoker fires per row inside a tight
+                // managed loop, amortizing the delegate dispatch across
+                // the whole batch instead of paying it per row.
+                handle = Job.ScheduleParallelForRange(0, rowCount, (lo, hi) =>
                 {
                     TJob local = capturedJob;
-                    IntPtr* rowBase = (IntPtr*)pinnedBase + (long)row * poolCount;
-                    invoker(ref local, rowBase, row);
+                    for (int row = lo; row < hi; row++)
+                    {
+                        IntPtr* rowBase = (IntPtr*)pinnedBase + (long)row * poolCount;
+                        invoker(ref local, rowBase, row);
+                    }
                 }, batchSize, cancellationToken);
             }
             else
@@ -472,18 +482,20 @@ public static class JobQueryExtensions
                 }, cancellationToken);
             }
 
-            // Release the pin once the job completes (success, fault, or
-            // cancellation — runs in all terminal states). Ride synchronously
-            // on the worker so we don't add ThreadPool latency. If AsTask()
-            // itself throws (custom JobHandle impl), the outer catch frees.
+            // Return the pinned buffer to the pool once the job completes
+            // (success, fault, or cancellation — runs in all terminal
+            // states). Ride synchronously on the worker so we don't add
+            // ThreadPool latency. If AsTask() itself throws (custom
+            // JobHandle impl), the outer catch returns the buffer.
+            JobQueryPinPool.PinnedBuffer capturedPinBuf = pinBuf;
             handle.AsTask().ContinueWith(_ =>
             {
-                if (gch.IsAllocated) gch.Free();
+                JobQueryPinPool.Return(capturedPinBuf);
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
         catch
         {
-            if (gch.IsAllocated) gch.Free();
+            JobQueryPinPool.Return(pinBuf);
             throw;
         }
 

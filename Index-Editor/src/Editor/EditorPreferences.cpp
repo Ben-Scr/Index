@@ -36,6 +36,7 @@ namespace Index {
 			bool ShowFileExtensions = false;
 			bool AutoSaveScenes = false;
 			float AutoSaveIntervalSeconds = 120.0f;
+			bool AutoSavePrefabs = true;
 
 			bool Loaded = false;
 			bool FreshlyCreated = false;
@@ -188,6 +189,9 @@ namespace Index {
 			s.AutoSaveIntervalSeconds = static_cast<float>(v->AsDoubleOr(120.0));
 			if (s.AutoSaveIntervalSeconds < 5.0f) s.AutoSaveIntervalSeconds = 5.0f;
 		}
+		if (const Json::Value* v = root.FindMember("AutoSavePrefabs")) {
+			s.AutoSavePrefabs = v->AsBoolOr(true);
+		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
 			// Seed from compiled-in dark defaults first so any color not
@@ -226,6 +230,7 @@ namespace Index {
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
+		root.AddMember("AutoSavePrefabs", Json::Value(s.AutoSavePrefabs));
 
 		// Always serialize CustomColors once seeded — the user can return
 		// to the saved set after experimenting with Dark/Light/System.
@@ -345,6 +350,16 @@ namespace Index {
 		const float clamped = (seconds < 5.0f) ? 5.0f : seconds;
 		if (S().AutoSaveIntervalSeconds == clamped) return;
 		S().AutoSaveIntervalSeconds = clamped;
+		Save();
+	}
+
+	bool EditorPreferences::GetAutoSavePrefabs() {
+		return S().AutoSavePrefabs;
+	}
+
+	void EditorPreferences::SetAutoSavePrefabs(bool value) {
+		if (S().AutoSavePrefabs == value) return;
+		S().AutoSavePrefabs = value;
 		Save();
 	}
 

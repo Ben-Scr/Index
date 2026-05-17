@@ -15,6 +15,8 @@
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
 #include "Math/Trigonometry.hpp"
+#include "Project/IndexProject.hpp"
+#include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
 #ifdef INDEX_PROFILER_ENABLED
 #include "Profiling/GpuTimer.hpp"
@@ -618,6 +620,17 @@ namespace Index {
 					g_BindGroupCache.erase(tex->GetHandle());
 				});
 		}
+
+		// Post-process subsystem. Init may fail (no WebGPU device, shader
+		// compile error, etc.); when it does, RenderSceneWithVP detects
+		// !IsInitialized() and skips the PP redirect, falling through to
+		// the legacy direct-to-caller render path. That keeps the engine
+		// usable even if PP setup goes wrong on weird drivers.
+		if (!m_PostProcessor.Initialize()) {
+			IDX_CORE_WARN_TAG("Renderer2D",
+				"PostProcessor::Initialize failed — scene will render direct to caller (no PP)");
+		}
+
 		m_IsInitialized = true;
 	}
 
@@ -629,6 +642,12 @@ namespace Index {
 			TextureManager::RemoveDestroyListener(g_TextureDestroyListenerToken);
 			g_TextureDestroyListenerToken = 0;
 		}
+
+		// Release PP resources before WebGPUApi::Shutdown unconfigures the
+		// device — the intermediate scene FBO and the PostProcessor's
+		// pipelines all hold Dawn handles.
+		m_PostProcessor.Shutdown();
+		m_SceneFbo.Destroy();
 
 		// Persistent GPU resources — drop now so the device is fully idle by
 		// the time WebGPUApi::Shutdown unconfigures the surface.
@@ -719,8 +738,58 @@ namespace Index {
 
 		SortInstancesInPlace(n);
 
+		// Capture the caller's bound target up front. After the optional
+		// PP redirect below, we'll restore this so subsequent renderers in
+		// the same frame (editor's UI + gizmo passes after Renderer2D)
+		// keep writing to the right surface. callerInfo also feeds the
+		// final blit's destination view + format.
+		const auto callerSnap = WebGPUBackend::SaveBoundTarget();
+		const auto callerInfo = WebGPUBackend::BeginRenderToCurrentTarget();
+		if (!callerInfo.Valid) {
+			finishTiming();
+			return;
+		}
+
+		// Decide whether to route through PostProcessor. Skip when:
+		//   * PostProcessor init failed (logged once at startup).
+		//   * Project setting EnablePostProcessing is false.
+		//   * Intermediate FBO Recreate fails for the current caller size.
+		// Any of these falls through to the legacy direct-to-caller render
+		// path with zero overhead — visually identical to pre-PP behaviour.
+		bool usePostProcess = m_PostProcessor.IsInitialized();
+		if (usePostProcess) {
+			if (IndexProject* proj = ProjectManager::GetCurrentProject()) {
+				usePostProcess = proj->EnablePostProcessing;
+			}
+		}
+		if (usePostProcess) {
+			if (!m_SceneFbo.Recreate(
+				static_cast<int>(callerInfo.Width),
+				static_cast<int>(callerInfo.Height),
+				TextureFormat::RGBA16F))
+			{
+				usePostProcess = false;
+			}
+		}
+
+		// Redirect the upcoming sprite pass into the intermediate HDR FBO
+		// instead of writing direct to the caller. Reuse whatever clear
+		// colour the caller already set (BeginFrame pulls it from the
+		// active main camera; the editor sets its panel clear colour
+		// before calling us), so the intermediate's background matches
+		// what the caller expected. Without this clear the intermediate
+		// would carry last frame's contents through.
+		if (usePostProcess) {
+			RenderApi::BindFramebuffer(m_SceneFbo);
+			RenderApi::SetViewport(0, 0,
+				static_cast<int>(callerInfo.Width),
+				static_cast<int>(callerInfo.Height));
+			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+		}
+
 		auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!target.Valid) {
+			if (usePostProcess) WebGPUBackend::RestoreBoundTarget(callerSnap);
 			finishTiming();
 			return;
 		}
@@ -733,7 +802,6 @@ namespace Index {
 		}
 
 		const bool wireframePass = RenderApi::GetPolygonMode() == PolygonMode::Wireframe;
-		const bool forceBlack = RenderApi::IsColorLogicOpClearEnabled();
 		const auto pipelineMode = wireframePass
 			? WebGPUSpriteResources::SpritePipelineMode::Wireframe
 			: WebGPUSpriteResources::SpritePipelineMode::Filled;
@@ -760,12 +828,6 @@ namespace Index {
 		g_GpuInstanceScratch.resize(n);
 		for (size_t k = 0; k < n; ++k) {
 			WebGPUSpriteResources::EncodeInstance44(g_InstancesScratch[k], g_GpuInstanceScratch[k]);
-			if (forceBlack) {
-				g_GpuInstanceScratch[k].Color[0] = 0.0f;
-				g_GpuInstanceScratch[k].Color[1] = 0.0f;
-				g_GpuInstanceScratch[k].Color[2] = 0.0f;
-				g_GpuInstanceScratch[k].Color[3] = 1.0f;
-			}
 		}
 		queue.WriteBuffer(g_InstanceBuffer, 0,
 			g_GpuInstanceScratch.data(),
@@ -817,7 +879,6 @@ namespace Index {
 		// per-batch buffer rebinding.
 		const TextureHandle defaultTexture = TextureManager::GetDefaultTexture(DefaultTexture::Square);
 		auto resolveHandle = [&](TextureHandle h) {
-			if (forceBlack) return defaultTexture;
 			return TextureManager::IsValid(h) ? h : defaultTexture;
 		};
 		const std::uint32_t indexCount = WebGPUSpriteResources::GetQuadIndexCount(pipelineMode);
@@ -855,7 +916,28 @@ namespace Index {
 
 		pass.End();
 
-		if (target.IsSwapChain) {
+		// If we redirected through the intermediate HDR FBO, blit it back
+		// to the caller's view now (passthrough for Phase B — future
+		// phases drop effect passes between these two steps and ping-pong
+		// between FBO_A / FBO_B). RestoreBoundTarget puts the caller's
+		// bind state back so subsequent renderers in the same frame
+		// (editor's UI / gizmo passes after Renderer2D) keep writing to
+		// the right surface.
+		if (usePostProcess) {
+			m_PostProcessor.Blit(m_SceneFbo,
+				callerInfo.ColorView,
+				callerInfo.ColorFormat,
+				callerInfo.Width,
+				callerInfo.Height);
+			WebGPUBackend::RestoreBoundTarget(callerSnap);
+		}
+
+		// Use callerInfo.IsSwapChain (NOT target.IsSwapChain) because
+		// after the PP redirect, `target` refers to the intermediate FBO
+		// — which is never the swap chain. The swap chain bookkeeping
+		// must reflect whether the FINAL written-to surface is the swap
+		// chain (caller's target), which is what callerInfo describes.
+		if (callerInfo.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
 		finishTiming();

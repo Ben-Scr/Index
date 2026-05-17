@@ -127,10 +127,19 @@
     <Compile Include="Source\Index\Jobs\AtomicLong.cs" />
     <Compile Include="Source\Index\Jobs\AtomicRef.cs" />
     <Compile Include="Source\Index\Jobs\IJobQuery.cs" />
+    <Compile Include="Source\Index\Jobs\Internal\JobBoxPool.cs" />
+    <Compile Include="Source\Index\Jobs\Internal\JobExceptionRegistry.cs" />
+    <Compile Include="Source\Index\Jobs\Internal\JobLayoutCache.cs" />
+    <Compile Include="Source\Index\Jobs\Internal\JobNativeDispatch.cs" />
+    <Compile Include="Source\Index\Jobs\Internal\JobQueryPinPool.cs" />
     <Compile Include="Source\Index\Jobs\Job.cs" />
+    <Compile Include="Source\Index\Jobs\JobContext.cs" />
     <Compile Include="Source\Index\Jobs\ParallelReducer.cs" />
+    <Compile Include="Source\Index\Jobs\ReadOnlyAttribute.cs" />
+    <Compile Include="Source\Index\Jobs\WriteOnlyAttribute.cs" />
     <Compile Include="Source\Index\Math\Color.cs" />
     <Compile Include="Source\Index\Math\Mathf.cs" />
+    <Compile Include="Source\Index\Math\ParallelRandom.cs" />
     <Compile Include="Source\Index\Math\PerlinNoise2D.cs" />
     <Compile Include="Source\Index\Math\Quaternion.cs" />
     <Compile Include="Source\Index\Math\Random.cs" />
@@ -150,6 +159,7 @@
     <Compile Include="Source\Index\Scene\Components.cs" />
     <Compile Include="Source\Index\Scene\Entity.cs" />
     <Compile Include="Source\Index\Scene\EntityCommandBuffer.cs" />
+    <Compile Include="Source\Index\Scene\EntityCommandBufferParallelWriter.cs" />
     <Compile Include="Source\Index\Scene\EntityRef.cs" />
     <Compile Include="Source\Index\Scene\EntityScript.cs" />
     <Compile Include="Source\Index\Scene\GameSystem.cs" />

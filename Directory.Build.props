@@ -2,13 +2,13 @@
   <!--
     Pin the MSVC toolset to a version that fully implements the C++20 features
     used by EnTT (CWG2074 typename deduction, consteval). MSVC 14.38 (VS 17.8)
-    miscompiles entt/core/hashed_string.hpp and related headers; 14.43 (VS 17.13)
+    miscompiles entt/core/hashed_string.hpp and related headers; 14.44 (VS 17.14)
     builds cleanly. PlatformToolset stays v143 — only the VCTools sub-version is
     pinned so the build is reproducible across machines that have multiple
     toolsets side-by-side installed.
   -->
   <PropertyGroup>
-    <VCToolsVersion>14.43.34808</VCToolsVersion>
+    <VCToolsVersion>14.44.35207</VCToolsVersion>
     <!--
       Force the 64-bit hosted cl.exe. The 32-bit compiler is limited to a
       ~2 GB process heap and runs out during template-heavy translation

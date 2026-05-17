@@ -73,7 +73,7 @@ namespace Index {
 			return GetComponent<NameComponent>().Name;
 		}
 		else {
-			return "Unnamed Entity (" + std::to_string(static_cast<std::uint32_t>(m_EntityHandle)) + ")";
+			return "Unnamed Entity (" + std::to_string(GetRuntimeID()) + ")";
 		}
 	}
 

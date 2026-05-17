@@ -164,6 +164,30 @@ namespace Index::WebGPUBackend {
 	// drawing rather than open a pass on a null view.
 	CurrentTargetInfo BeginRenderToCurrentTarget();
 
+	// Snapshot/restore the engine's bound-target state. Used by render
+	// passes that need to temporarily redirect to a private intermediate
+	// FBO (PostProcessor's scene FBO) and then put the caller's binding
+	// back so subsequent renderers in the same frame (editor's UI / gizmo
+	// passes after Renderer2D in the per-panel render flow) keep writing
+	// to the right target.
+	//
+	// `SaveBoundTarget` returns a copy of the current g_CurrentTarget;
+	// `RestoreBoundTarget` writes it back AND flushes any commands
+	// recorded against the in-between target so per-pass uniform/instance
+	// WriteBuffer copies take effect before subsequent passes overwrite
+	// the same buffer offsets (same rationale as BindFramebuffer's
+	// implicit flush).
+	struct BoundTargetSnapshot {
+		wgpu::TextureView   ColorView;
+		wgpu::TextureView   DepthView;
+		wgpu::TextureFormat ColorFormat = wgpu::TextureFormat::Undefined;
+		uint32_t            Width       = 0;
+		uint32_t            Height      = 0;
+		bool                IsSwapChain = true;
+	};
+	BoundTargetSnapshot SaveBoundTarget();
+	void RestoreBoundTarget(const BoundTargetSnapshot& snap);
+
 	// Returns the per-frame wgpu::CommandEncoder. Lazy-created on first
 	// access; renderers use it to BeginRenderPass + queue their draws.
 	// Returns null when uninitialised.

@@ -33,6 +33,7 @@
 #include "Graphics/OpenGL.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Scene/Scene.hpp"
@@ -479,6 +480,7 @@ namespace Index {
 	void ImGuiEditorLayer::OnUpdate(Application& app, float dt) {
 		DrainPendingLogEntries();
 		RunAutoSaveTick(app, dt);
+		RunPrefabAutoSaveTick();
 
 		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
 			if (!project->AssetsDirectory.empty() && project->AssetsDirectory != m_AssetWatcherRoot) {
@@ -757,6 +759,39 @@ namespace Index {
 			active->ClearDirty();
 			IDX_INFO_TAG("Editor", "Auto-saved scene '{}'.", active->GetName());
 		}
+	}
+
+	void ImGuiEditorLayer::RunPrefabAutoSaveTick() {
+		// Only relevant while a detached prefab scene is being edited.
+		if (!m_PrefabEditScene) return;
+		if (!EditorPreferences::GetAutoSavePrefabs()) return;
+		// Match the rest of the editor's save gates — play-mode edits
+		// (including prefab tweaks made mid-Play) are deliberately
+		// discarded on Stop, so auto-saving them would surprise the user.
+		if (Application::GetIsPlaying()) return;
+
+		// Authoritative dirty bit lives on the detached scene; every
+		// component edit, add, remove, parent, and entity create/destroy
+		// routes through Scene::MarkDirty. m_PrefabEditDirty is just a
+		// per-frame mirror updated during the entities panel.
+		if (!m_PrefabEditScene->IsDirty()) return;
+
+		// Debounce against in-flight widget interactions. While the user is
+		// dragging a slider, holding an InputText, or otherwise has any
+		// ImGui widget claimed as active, IsAnyItemActive() stays true and
+		// we wait — saving every frame of a drag would thrash disk and
+		// fire propagation on every intermediate value. On release the
+		// flag clears and the next tick saves. Mirrors the proven pattern
+		// in PrefabInspector::RenderImpl.
+		//
+		// Caveat: this only debounces ImGui-owned widgets. Transform-gizmo
+		// drags and hierarchy drag-reorder use ImGui's active-id system
+		// too, so in practice they're covered as well; if a future
+		// non-ImGui drag interaction needs explicit handling, gate this on
+		// `!ImGuizmo::IsUsing()` etc.
+		if (ImGui::IsAnyItemActive()) return;
+
+		SavePrefabEditChanges();
 	}
 
 	void ImGuiEditorLayer::ClearLogEntries() {
@@ -2254,6 +2289,18 @@ namespace Index {
 				previousSourceRoot = previousRoot;
 				havePreviousSource = true;
 			}
+			else {
+				// File exists but is unreadable (locked by external tool,
+				// corrupt, transient I/O). Overwriting now would orphan every
+				// live instance — propagation needs the OLD source as a
+				// baseline for the override diff. Bail out and leave the
+				// detached scene dirty so the next auto-save tick retries
+				// once the file is readable again.
+				IDX_CORE_WARN_TAG("PrefabEdit",
+					"Pre-save read of '{}' failed ({}); leaving prefab dirty for retry.",
+					m_PrefabEditPath, readError);
+				return false;
+			}
 		}
 
 		if (!SceneSerializer::SaveEntityToFile(*m_PrefabEditScene, m_PrefabEditRootEntity, m_PrefabEditPath)) {
@@ -2261,16 +2308,16 @@ namespace Index {
 			return false;
 		}
 
-		// Mark the detached scene clean so the toolbar no longer shows the
-		// "*" suffix and any auto-save downstream (none today, but mirrors
-		// the asset inspector path) doesn't loop on the same edits.
-		m_PrefabEditScene->ClearDirty();
-		m_PrefabEditDirty = false;
-
 		// Refresh live instances of this prefab in every loaded scene with
 		// override-preservation: RefreshPrefabInstance snapshots the
 		// instance's overrides relative to the OLD source, re-instantiates
 		// against the new source, and re-applies the overrides on top.
+		//
+		// Propagation runs BEFORE we clear the dirty flag. If propagation
+		// throws or otherwise fails mid-loop, the prefab stays dirty and the
+		// next auto-save tick retries the full save+propagate. Previously the
+		// dirty flag cleared first, leaving live instances stale with no
+		// retry hook.
 		if (havePreviousSource) {
 			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(m_PrefabEditPath);
 			if (prefabGuid != 0) {
@@ -2287,7 +2334,12 @@ namespace Index {
 					bool anyRefreshed = false;
 					for (EntityHandle t : targets) {
 						if (!s.IsValid(t)) continue;
-						if (SceneSerializer::RefreshPrefabInstance(s, t, previousSourceRoot) != entt::null) {
+						EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(s, t, previousSourceRoot);
+						// Orphaned-source case returns the original `t`
+						// handle (nothing refreshed). Only credit a real
+						// swap so we don't spuriously dirty scenes whose
+						// instances weren't actually touched.
+						if (replacement != entt::null && replacement != t) {
 							anyRefreshed = true;
 						}
 					}
@@ -2296,6 +2348,11 @@ namespace Index {
 			}
 		}
 
+		// Mark the detached scene clean so the toolbar no longer shows the
+		// "*" suffix and the per-frame auto-save tick doesn't loop on the
+		// same edits.
+		m_PrefabEditScene->ClearDirty();
+		m_PrefabEditDirty = false;
 		return true;
 	}
 
@@ -2359,6 +2416,7 @@ namespace Index {
 	// ──────────────────────────────────────────────
 
 	void ImGuiEditorLayer::RenderEntitiesPanel() {
+		INDEX_PROFILE_SCOPE("Hierarchy Panel");
 		ImGui::Begin("Entities");
 
 		// Prefab-edit-mode toolbar. Drawn above the hierarchy so the
@@ -2440,13 +2498,13 @@ namespace Index {
 			}
 		}
 		std::string sceneToRemove;
-		std::vector<EntityHandle> nextVisibleEntityOrder;
 
 		for (Scene* scenePtrRaw : scenesToShow) {
 			if (!scenePtrRaw) continue;
 			Scene& scene = *scenePtrRaw;
 
-			ImGui::PushID(static_cast<int>(static_cast<uint64_t>(scene.GetSceneId())));
+			const uint64_t sceneIdValue = static_cast<uint64_t>(scene.GetSceneId());
+			ImGui::PushID(reinterpret_cast<const void*>(static_cast<uintptr_t>(sceneIdValue)));
 
 			ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow
 				| ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed;
@@ -2520,10 +2578,17 @@ namespace Index {
 				// has changed. We detect change by:
 				//   • m_EntityOrderDirty (flipped at every callsite that used
 				//     to clear() the order: entity create / delete / drop /
-				//     scene swap / etc.)
+				//     scene swap / etc., and at every collapse/expand toggle
+				//     so the pruned m_VisibleEntityOrder rebuilds).
 				//   • registry size mismatch as a safety net for any caller
 				//     that mutates the registry without flipping the flag.
-				const auto registryCount = static_cast<std::size_t>(std::distance(view.begin(), view.end()));
+				// view.size() is O(1) for the entity-storage view (swap_only
+				// deletion policy: returns the free-list cut-off, which is
+				// the alive-entity count). The previous std::distance walk
+				// was O(N) and dominated the editor frame at 100k entities.
+				// size_hint() is only available on in_place policies and
+				// won't compile here.
+				const auto registryCount = static_cast<std::size_t>(view.size());
 				const bool needsRebuild = m_EntityOrderDirty
 					|| m_EntityOrder.size() != registryCount;
 
@@ -2568,24 +2633,45 @@ namespace Index {
 					// the user's chosen m_EntityOrder; their subtrees follow
 					// in the order each parent's HierarchyComponent::Children
 					// lists them.
+					//
+					// Same pass also builds m_VisibleEntityOrder / m_VisibleEntityDepths
+					// — the pruned subset that excludes descendants of any
+					// collapsed parent. The render loop iterates that pruned
+					// list, so a fully-folded scene with 100k entities drops
+					// from O(N) iteration to O(visible roots) per frame.
 					m_RenderedEntityDepths.clear();
 					m_RenderedEntityDepths.reserve(m_EntityOrder.size());
+					std::vector<entt::entity> visibleReordered;
+					std::vector<int> visibleDepths;
+					visibleReordered.reserve(m_EntityOrder.size());
+					visibleDepths.reserve(m_EntityOrder.size());
 					{
 						auto& reg = scene.GetRegistry();
 						std::vector<entt::entity> reordered;
 						reordered.reserve(m_EntityOrder.size());
 						std::unordered_set<uint32_t> emitted;
 
-						std::function<void(EntityHandle, int)> emitSubtree =
-							[&](EntityHandle e, int depth) {
+						// `insideCollapsed` is true when any ancestor on the
+						// current DFS path is folded. The node itself still
+						// goes into the full m_EntityOrder (drag-reorder and
+						// scene ops read that), but the visible-list push is
+						// suppressed for the duration of the subtree.
+						std::function<void(EntityHandle, int, bool)> emitSubtree =
+							[&](EntityHandle e, int depth, bool insideCollapsed) {
 								if (!reg.valid(e)) return;
 								const uint32_t key = static_cast<uint32_t>(e);
 								if (!emitted.insert(key).second) return; // already in tree
 								reordered.push_back(e);
 								m_RenderedEntityDepths.push_back(depth);
+								if (!insideCollapsed) {
+									visibleReordered.push_back(e);
+									visibleDepths.push_back(depth);
+								}
+								const bool descendInsideCollapsed = insideCollapsed
+									|| m_CollapsedHierarchyEntities.contains(key);
 								if (reg.all_of<HierarchyComponent>(e)) {
 									for (EntityHandle child : reg.get<HierarchyComponent>(e).Children) {
-										emitSubtree(child, depth + 1);
+										emitSubtree(child, depth + 1, descendInsideCollapsed);
 									}
 								}
 							};
@@ -2599,7 +2685,7 @@ namespace Index {
 								parent = reg.get<HierarchyComponent>(e).Parent;
 							}
 							if (parent == entt::null) {
-								emitSubtree(e, 0);
+								emitSubtree(e, 0, /*insideCollapsed*/ false);
 							}
 						}
 						// Pass 2: anything still missing — orphaned children
@@ -2608,24 +2694,16 @@ namespace Index {
 							if (!reg.valid(e)) continue;
 							const uint32_t key = static_cast<uint32_t>(e);
 							if (emitted.contains(key)) continue;
-							emitSubtree(e, 0);
+							emitSubtree(e, 0, /*insideCollapsed*/ false);
 						}
 						m_EntityOrder = std::move(reordered);
 					}
 
 					m_RenderedEntityOrder = m_EntityOrder;
+					m_VisibleEntityOrder = std::move(visibleReordered);
+					m_VisibleEntityDepths = std::move(visibleDepths);
 					m_EntityOrderDirty = false;
 				}
-
-				// Local alias so the existing render loop reads from the
-				// cached depth list whether we just rebuilt or not.
-				const std::vector<int>& entityDepths = m_RenderedEntityDepths;
-
-				int currentIndentDepth = 0;
-				// When set to >= 0, any subsequent entity with depth greater than
-				// this value is hidden because one of its ancestors is folded.
-				// Reset whenever we surface back to that depth or shallower.
-				int hideUnderDepth = -1;
 
 				// Tighten vertical spacing between rows so the hierarchy reads as
 				// a dense list (Unity-style) rather than spaced-out items. Only
@@ -2634,35 +2712,36 @@ namespace Index {
 				const ImVec2 defaultItemSpacing = ImGui::GetStyle().ItemSpacing;
 				ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(defaultItemSpacing.x, 1.0f));
 
-				for (int entityIdx = 0; entityIdx < static_cast<int>(m_EntityOrder.size()); entityIdx++) {
-					const EntityHandle entityHandle = m_EntityOrder[entityIdx];
+				// Iterate the pruned visible list (built by the DFS above;
+				// descendants of any collapsed parent are absent, so we never
+				// touch them). ImGuiListClipper virtualizes the visible window
+				// so a fully-expanded 100k-flat scene only iterates the rows
+				// currently inside the scroll viewport. Per-row Indent/Unindent
+				// (vs. the prior currentIndentDepth tracker) keeps indent state
+				// independent of which rows the clipper happens to skip.
+				ImGuiListClipper clipper;
+				clipper.Begin(static_cast<int>(m_VisibleEntityOrder.size()));
+				while (clipper.Step()) {
+				for (int entityIdx = clipper.DisplayStart; entityIdx < clipper.DisplayEnd; ++entityIdx) {
+					const EntityHandle entityHandle = m_VisibleEntityOrder[static_cast<std::size_t>(entityIdx)];
 					if (!scene.IsValid(entityHandle)) continue;
 					Entity entity = scene.GetEntity(entityHandle);
 					const bool selected = IsEntitySelected(entityHandle);
 
-					const int targetDepth = entityIdx < static_cast<int>(entityDepths.size())
-						? entityDepths[entityIdx] : 0;
+					const int targetDepth = entityIdx < static_cast<int>(m_VisibleEntityDepths.size())
+						? m_VisibleEntityDepths[static_cast<std::size_t>(entityIdx)] : 0;
 
-					// Skip entities whose ancestor (at hideUnderDepth) is folded.
-					if (hideUnderDepth >= 0) {
-						if (targetDepth > hideUnderDepth) {
-							continue;
-						}
-						hideUnderDepth = -1;
-					}
+					// Selection-index callers used to take an index into a
+					// separately-accumulated "rendered rows" list; with the
+					// iterated list now being that list, entityIdx fills the
+					// same role.
+					const int visibleIndex = entityIdx;
 
-					const int visibleIndex = static_cast<int>(nextVisibleEntityOrder.size());
-					nextVisibleEntityOrder.push_back(entityHandle);
-
-					// Step indent up/down to match this entity's depth.
-					while (currentIndentDepth < targetDepth) {
-						ImGui::Indent(14.0f);
-						++currentIndentDepth;
-					}
-					while (currentIndentDepth > targetDepth) {
-						ImGui::Unindent(14.0f);
-						--currentIndentDepth;
-					}
+					// Per-row indent: balanced inside the loop body (Unindent
+					// at the bottom), so clipping never strands an unbalanced
+					// indent on the layout stack.
+					const float rowIndent = static_cast<float>(targetDepth) * 14.0f;
+					if (rowIndent > 0.0f) ImGui::Indent(rowIndent);
 
 					ImGui::PushID(static_cast<int>(static_cast<uint32_t>(entityHandle)));
 
@@ -2688,6 +2767,10 @@ namespace Index {
 									m_CollapsedHierarchyEntities.insert(static_cast<uint32_t>(entityHandle));
 								}
 								isCollapsed = !isCollapsed;
+								// Collapse state feeds into the visible-list
+								// pruning done by the DFS rebuild, so any
+								// toggle has to trigger a rebuild next frame.
+								m_EntityOrderDirty = true;
 							}
 							const ImU32 arrowColor = ImGui::GetColorU32(
 								ImGui::IsItemHovered() ? ImGuiCol_HeaderHovered : ImGuiCol_Text);
@@ -3010,20 +3093,12 @@ namespace Index {
 					if (entityIsDisabled)
 						ImGui::PopStyleColor();
 
-					// Hide every descendant until we surface back to this depth or shallower.
-					if (hasChildren && isCollapsed) {
-						hideUnderDepth = targetDepth;
-					}
-
 					ImGui::PopID();
-				}
 
-				// Pop any remaining indents from nested entities so the
-				// next scene tree node starts cleanly at depth 0.
-				while (currentIndentDepth > 0) {
-					ImGui::Unindent(14.0f);
-					--currentIndentDepth;
+					if (rowIndent > 0.0f) ImGui::Unindent(rowIndent);
 				}
+				} // while (clipper.Step())
+				clipper.End();
 
 				ImGui::PopStyleVar(); // ItemSpacing
 
@@ -3032,8 +3107,6 @@ namespace Index {
 
 			ImGui::PopID();
 		}
-
-		m_VisibleEntityOrder = std::move(nextVisibleEntityOrder);
 
 		// Deferred scene removal (after iteration)
 		if (!sceneToRemove.empty()) {

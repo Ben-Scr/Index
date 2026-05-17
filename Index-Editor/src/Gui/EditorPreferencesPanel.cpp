@@ -349,6 +349,20 @@ namespace Index {
 				EditorPreferences::SetAutoSaveIntervalSeconds(interval);
 			}
 		}
+
+		ImGui::Spacing();
+
+		bool autoSavePrefabs = EditorPreferences::GetAutoSavePrefabs();
+		if (ImGui::Checkbox("Auto-save prefabs", &autoSavePrefabs)) {
+			EditorPreferences::SetAutoSavePrefabs(autoSavePrefabs);
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip(
+				"In prefab edit mode, save the prefab as soon as you release\n"
+				"the active inspector / hierarchy widget — no Ctrl+S needed.\n"
+				"Drags and text-input debounce naturally; the save fires once\n"
+				"per edit on release. Skipped during Play mode.");
+		}
 	}
 
 	void EditorPreferencesPanel::RenderLayoutModals() {

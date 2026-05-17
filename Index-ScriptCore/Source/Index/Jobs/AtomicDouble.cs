@@ -37,6 +37,7 @@ public sealed class AtomicDouble
     public double Add(double operand)
     {
         double current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (true)
         {
             double updated = current + operand;
@@ -46,6 +47,10 @@ public sealed class AtomicDouble
                 return updated;
             }
             current = prev;
+            // SpinOnce ramps from pause instructions to thread yield as
+            // contention grows; avoids burning the cache line in a tight
+            // retry loop when many workers race on the same atomic.
+            spinner.SpinOnce();
         }
     }
 
@@ -54,6 +59,7 @@ public sealed class AtomicDouble
     public double FetchMax(double operand)
     {
         double current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand > current)
         {
             double prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -62,6 +68,7 @@ public sealed class AtomicDouble
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }
@@ -69,6 +76,7 @@ public sealed class AtomicDouble
     public double FetchMin(double operand)
     {
         double current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand < current)
         {
             double prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -77,6 +85,7 @@ public sealed class AtomicDouble
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }

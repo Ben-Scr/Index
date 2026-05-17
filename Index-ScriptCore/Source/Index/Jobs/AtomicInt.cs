@@ -53,6 +53,7 @@ public sealed class AtomicInt
     public int FetchMax(int operand)
     {
         int current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand > current)
         {
             int prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -61,6 +62,7 @@ public sealed class AtomicInt
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }
@@ -68,6 +70,7 @@ public sealed class AtomicInt
     public int FetchMin(int operand)
     {
         int current = Volatile.Read(ref m_Value);
+        SpinWait spinner = default;
         while (operand < current)
         {
             int prev = Interlocked.CompareExchange(ref m_Value, operand, current);
@@ -76,6 +79,7 @@ public sealed class AtomicInt
                 return prev;
             }
             current = prev;
+            spinner.SpinOnce();
         }
         return current;
     }

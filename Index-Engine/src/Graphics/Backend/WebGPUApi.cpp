@@ -142,7 +142,6 @@ namespace Index {
 		uint32_t g_ScissorX  = 0, g_ScissorY  = 0, g_ScissorW  = 0, g_ScissorH  = 0;
 		bool     g_ScissorActive = false;
 		PolygonMode g_PolygonMode = PolygonMode::Filled;
-		bool g_ColorLogicOpClear = false;
 
 		// ── Helpers ─────────────────────────────────────────────────────────
 
@@ -644,6 +643,33 @@ namespace Index {
 		void FlushCommands() {
 			FlushFrameCommands();
 		}
+
+		BoundTargetSnapshot SaveBoundTarget() {
+			BoundTargetSnapshot snap;
+			snap.ColorView   = g_CurrentTarget.ColorView;
+			snap.DepthView   = g_CurrentTarget.DepthView;
+			snap.ColorFormat = g_CurrentTarget.ColorFormat;
+			snap.Width       = g_CurrentTarget.Width;
+			snap.Height      = g_CurrentTarget.Height;
+			snap.IsSwapChain = g_CurrentTarget.IsSwapChain;
+			return snap;
+		}
+
+		void RestoreBoundTarget(const BoundTargetSnapshot& snap) {
+			// Flush commands recorded against the intervening target so any
+			// per-pass uniform/instance WriteBuffer copies take effect before
+			// subsequent passes on the restored target overwrite the same
+			// buffer offsets. Same rationale as BindFramebuffer's flush.
+			FlushFrameCommands();
+
+			g_CurrentTarget = TargetState{};
+			g_CurrentTarget.ColorView   = snap.ColorView;
+			g_CurrentTarget.DepthView   = snap.DepthView;
+			g_CurrentTarget.ColorFormat = snap.ColorFormat;
+			g_CurrentTarget.Width       = snap.Width;
+			g_CurrentTarget.Height      = snap.Height;
+			g_CurrentTarget.IsSwapChain = snap.IsSwapChain;
+		}
 	}
 
 	// ── RenderApi: Lifecycle ────────────────────────────────────────────────
@@ -929,14 +955,6 @@ namespace Index {
 	void RenderApi::SetColorMask(bool /*r*/, bool /*g*/, bool /*b*/, bool /*a*/) {
 		// Per-pipeline via ColorTargetState::writeMask; Stage 2.
 	}
-
-	// Editor wireframe-overlay (color-logic-op CLEAR trick). WebGPU has no
-	// logic-op blend state at all; the equivalent in Stage 3+ is a custom
-	// shader pass that writes solid black for wireframe-overlaid pixels.
-	// Stage 1 gracefully degrades to a normal pass.
-	void RenderApi::BeginColorLogicOpClear() { g_ColorLogicOpClear = true; }
-	void RenderApi::EndColorLogicOpClear()   { g_ColorLogicOpClear = false; }
-	bool RenderApi::IsColorLogicOpClearEnabled() { return g_ColorLogicOpClear; }
 
 	// ── Framebuffer binding ────────────────────────────────────────────────
 	// Resolves the FBO's opaque backend ID into the wgpu::TextureView pair

@@ -89,6 +89,28 @@ namespace Index {
 		void (*emplaceFromBytes)(entt::registry& registry, EntityHandle entity,
 			const void* bytes, size_t size) = nullptr;
 
+		// Symmetric counterpart to emplaceFromBytes — serializes the live
+		// component instance to a contiguous byte buffer that emplaceFromBytes
+		// can later consume. Used by the PrefabTemplateCache to bake a prefab
+		// into a memcpy-ready blob after the first slow-path hydrate so every
+		// subsequent spawn skips JSON entirely.
+		//
+		// Contract: appends exactly `rawSize` bytes to `out` when the entity
+		// has the component and returns true; returns false (and leaves `out`
+		// untouched) when the component is missing. Auto-wired by
+		// ComponentRegistry::Register for any non-empty T as a raw memcpy of
+		// the EnTT storage. Components whose representation holds scene-bound
+		// pointers / handles (ParticleSystem2DComponent's m_EmitterScene,
+		// m_EmitterEntity) are still safe under the auto-wired path *iff*
+		// they own an `on_construct` hook that rebinds — emplaceFromBytes
+		// fires on_construct as part of `emplace_or_replace`. Components that
+		// own non-trivial heap state (std::vector, std::string with non-SSO
+		// payload) MUST override this with a body that projects a
+		// serializable view, or the bytes will alias freed memory after the
+		// source entity is destroyed.
+		bool (*writeBytes)(const entt::registry& registry, EntityHandle entity,
+			std::vector<uint8_t>& out) = nullptr;
+
 		// Optional post-add hook fired by ComponentRegistry::AddWithDependencies
 		// AFTER the default `add` runs. Used by UI widgets (Button, Slider,
 		// Toggle, Dropdown, InputField, Scrollbar) to seed their NormalColor

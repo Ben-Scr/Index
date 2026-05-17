@@ -14,6 +14,7 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
@@ -55,6 +56,7 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::OnPreRender(Application& app) {
+		INDEX_PROFILE_SCOPE("Editor PreRender");
 		(void)app;
 
 		// Drain prefab-edit-mode entry BEFORE the active-scene early-return.
@@ -64,7 +66,7 @@ namespace Index {
 		// is self-contained). Without this hoist, the asset browser's
 		// "double-click .prefab" and right-click → Open paths would silently
 		// do nothing in the no-active-scene case.
-		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized) {
+		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0) {
 			std::string earlyPendingPrefabEdit = m_AssetBrowser.TakePendingPrefabEdit();
 			if (!earlyPendingPrefabEdit.empty()) {
 				IDX_INFO_TAG("PrefabEdit", "Opening prefab from asset browser: {}", earlyPendingPrefabEdit);
@@ -184,14 +186,14 @@ namespace Index {
 			auto* app = Application::GetInstance();
 			if (app) {
 				auto drops = app->TakePendingFileDrops();
-				if (!drops.empty() && m_AssetBrowserInitialized) {
+				if (!drops.empty() && m_AssetBrowserInitialized && m_BuildState == 0) {
 					m_AssetBrowser.OnExternalFileDrop(drops);
 				}
 			}
 		}
 
-		// Process deferred scene drop from Hierarchy drag-and-drop (blocked during Play Mode)
-		if (!m_PendingSceneFileDrop.empty() && !Application::GetIsPlaying()) {
+		// Process deferred scene drop from Hierarchy drag-and-drop (blocked during Play Mode and active build)
+		if (!m_PendingSceneFileDrop.empty() && !Application::GetIsPlaying() && m_BuildState == 0) {
 			std::string dropPath = m_PendingSceneFileDrop;
 			m_PendingSceneFileDrop.clear();
 
@@ -208,8 +210,8 @@ namespace Index {
 			}
 		}
 
-		// Process deferred scene switch (blocked during Play Mode)
-		if (!m_PendingSceneSwitch.empty() && !Application::GetIsPlaying()) {
+		// Process deferred scene switch (blocked during Play Mode and active build)
+		if (!m_PendingSceneSwitch.empty() && !Application::GetIsPlaying() && m_BuildState == 0) {
 			std::string switchPath = m_PendingSceneSwitch;
 			m_PendingSceneSwitch.clear();
 
@@ -237,8 +239,8 @@ namespace Index {
 			}
 		}
 
-		// Intercept Asset Browser scene load (blocked during Play Mode)
-		if (!Application::GetIsPlaying()) {
+		// Intercept Asset Browser scene load (blocked during Play Mode and active build)
+		if (!Application::GetIsPlaying() && m_BuildState == 0) {
 			std::string pendingLoad = m_AssetBrowser.TakePendingSceneLoad();
 			if (!pendingLoad.empty()) {
 				Scene* active = SceneManager::Get().GetActiveScene();
@@ -260,7 +262,7 @@ namespace Index {
 		// persist transient play-mode state. Pass `repeat=false` so holding the
 		// key down doesn't re-fire Save every frame (which would hammer disk +
 		// scene serialization at the OS key-repeat rate).
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !Application::GetIsPlaying()) {
+		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !Application::GetIsPlaying() && m_BuildState == 0) {
 			if (IsInPrefabEditMode()) {
 				// Full prefab-edit mode: save the detached scene back to its
 				// .prefab without exiting edit mode. Without this branch,
@@ -285,36 +287,54 @@ namespace Index {
 
 		// Intercept quit request: exit playmode first, then check for unsaved changes
 		if (Application::IsQuitRequested()) {
-			// Exit playmode and restore scene first
-			if (Application::GetIsPlaying()) {
-				RestoreEditorSceneAfterPlaymode();
-			}
-
-			// If the user is mid-prefab-edit with unsaved changes, auto-save
-			// before exiting. Losing prefab edits to a stray Cmd-W is the same
-			// data-loss class as losing scene edits, but layering another
-			// modal on top of the scene quit dialog gets noisy fast — auto-
-			// save is the safer default here, and matches the
-			// switch-prefab-while-editing path above.
-			if (m_PrefabEditScene && m_PrefabEditScene->IsDirty()) {
-				SavePrefabEditChanges();
-			}
-			// Always tear down prefab edit mode on quit so its detached
-			// scene's destructors run before SceneManager / static state
-			// cleanup, regardless of dirty status.
-			if (m_PrefabEditScene) {
-				ClosePrefabEditing(false);
-			}
-
-			Scene* active = SceneManager::Get().GetActiveScene();
-			if (active && active->IsDirty()) {
-				m_ShowQuitSaveDialog = true;
+			// Refuse to quit mid-build — closing now would kill the worker
+			// thread (m_BuildFuture) and leave partially-written build
+			// artifacts on disk. CancelQuit swallows the signal so it
+			// doesn't re-fire every frame; the user can retry once the
+			// build finishes.
+			if (m_BuildState != 0) {
 				Application::CancelQuit();
+			}
+			else {
+				// Exit playmode and restore scene first
+				if (Application::GetIsPlaying()) {
+					RestoreEditorSceneAfterPlaymode();
+				}
+
+				// If the user is mid-prefab-edit with unsaved changes, auto-save
+				// before exiting. Losing prefab edits to a stray Cmd-W is the same
+				// data-loss class as losing scene edits, but layering another
+				// modal on top of the scene quit dialog gets noisy fast — auto-
+				// save is the safer default here, and matches the
+				// switch-prefab-while-editing path above.
+				if (m_PrefabEditScene && m_PrefabEditScene->IsDirty()) {
+					SavePrefabEditChanges();
+				}
+				// Always tear down prefab edit mode on quit so its detached
+				// scene's destructors run before SceneManager / static state
+				// cleanup, regardless of dirty status.
+				if (m_PrefabEditScene) {
+					ClosePrefabEditing(false);
+				}
+
+				Scene* active = SceneManager::Get().GetActiveScene();
+				if (active && active->IsDirty()) {
+					m_ShowQuitSaveDialog = true;
+					Application::CancelQuit();
+				}
 			}
 		}
 
 		RenderDockspaceRoot();
+
+		// Block menu-bar interaction while a project build is in flight —
+		// File→New/Open, Edit→Undo, etc. all mutate state the build worker
+		// is reading. The four save/discard/quit modals below stay outside
+		// this gate so the user can still dismiss any modal that was already
+		// open when the build started.
+		ImGui::BeginDisabled(m_BuildState > 0);
 		RenderMainMenu(scene);
+		ImGui::EndDisabled();
 
 		// Save confirmation modal dialog (scene switch)
 		if (m_ShowSaveConfirmDialog) {
@@ -486,6 +506,13 @@ namespace Index {
 		// OS window viewport instead of using a stale region.
 		Window::ClearUIRegion();
 
+		// Block all panel interaction while a project build is in flight.
+		// The Build button already self-disables via its own BeginDisabled
+		// inside RenderBuildPanel; BeginDisabled nests, so it stays disabled
+		// here as expected. The build progress overlay below is rendered
+		// outside this gate so its text stays readable.
+		ImGui::BeginDisabled(m_BuildState > 0);
+
 		RenderToolbar();
 		RenderEntitiesPanel();
 		// Inspector + editor view follow the prefab-edit override when
@@ -512,6 +539,8 @@ namespace Index {
 		RenderProjectSettingsPanel();
 		RenderPackageManagerPanel();
 		m_EditorPreferencesPanel.Render(&m_ShowEditorPreferences);
+
+		ImGui::EndDisabled();
 
 		// Splash preview — replays the runtime's splash timeline as
 		// a foreground overlay over the editor when the user clicks
