@@ -58,6 +58,9 @@ internal static class UIEventDispatcher
             DispatchToggles();
             DispatchDropdowns();
             DispatchInputFields();
+            DispatchScrollbars();
+            DispatchScrollRects();
+            DispatchCircularSliders();
         }
         catch (Exception ex)
         {
@@ -168,12 +171,12 @@ internal static class UIEventDispatcher
 
     private static void DispatchButtons()
     {
-        // Buttons fan out their click event from whichever entity owns
+        // Buttons fan out three edge events from whichever entity owns
         // the Interactable: the button entity itself OR the configured
-        // TargetGraphic. The dispatcher looks up the target's
-        // IsClicked flag rather than tracking a button-side edge,
-        // because that flag is already a one-frame edge on the
-        // Interactable side.
+        // TargetGraphic. The dispatcher looks up the target's per-frame
+        // edge flags rather than tracking button-side edges, because
+        // IsMouseDown / IsClicked / IsMouseUp are already one-frame
+        // edges on the Interactable side.
         int count = Query("Button");
         for (int i = 0; i < count; i++)
         {
@@ -192,10 +195,54 @@ internal static class UIEventDispatcher
                 }
             }
             if (interactableId == 0) continue;
-            if (!InternalCalls.Interactable_GetIsClicked(interactableId)) continue;
+
+            bool mouseDown = InternalCalls.Interactable_GetIsMouseDown(interactableId);
+            bool clicked   = InternalCalls.Interactable_GetIsClicked(interactableId);
+            bool mouseUp   = InternalCalls.Interactable_GetIsMouseUp(interactableId);
+            if (!mouseDown && !clicked && !mouseUp) continue;
 
             Button? button = new Entity(buttonId).GetComponent<Button>();
-            button?.RaiseClick();
+            if (button == null) continue;
+
+            if (mouseDown) button.RaiseClickDown();
+            if (clicked)   button.RaiseClick();
+            if (mouseUp)   button.RaiseClickUp();
+        }
+    }
+
+    private static void DispatchScrollbars()
+    {
+        int count = Query("Scrollbar");
+        for (int i = 0; i < count; i++)
+        {
+            ulong id = s_QueryBuffer[i];
+            if (!InternalCalls.Scrollbar_GetValueChangedThisFrame(id)) continue;
+            Scrollbar? scrollbar = new Entity(id).GetComponent<Scrollbar>();
+            scrollbar?.RaiseValueChanged();
+        }
+    }
+
+    private static void DispatchScrollRects()
+    {
+        int count = Query("Scroll Rect");
+        for (int i = 0; i < count; i++)
+        {
+            ulong id = s_QueryBuffer[i];
+            if (!InternalCalls.ScrollRect_GetValueChangedThisFrame(id)) continue;
+            ScrollRect? scrollRect = new Entity(id).GetComponent<ScrollRect>();
+            scrollRect?.RaiseValueChanged();
+        }
+    }
+
+    private static void DispatchCircularSliders()
+    {
+        int count = Query("Circular Slider");
+        for (int i = 0; i < count; i++)
+        {
+            ulong id = s_QueryBuffer[i];
+            if (!InternalCalls.CircularSlider_GetValueChangedThisFrame(id)) continue;
+            CircularSlider? circular = new Entity(id).GetComponent<CircularSlider>();
+            circular?.RaiseValueChanged();
         }
     }
 

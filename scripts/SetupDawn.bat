@@ -61,27 +61,45 @@ goto :error
 
 REM --- Clone ------------------------------------------------------------------
 if exist "%DAWN_DIR%\CMakeLists.txt" goto :clone_done
-echo [1/4] Cloning Dawn ^(this may take a few minutes^)...
+echo [1/5] Cloning Dawn ^(this may take a few minutes^)...
 git clone --depth=1 https://dawn.googlesource.com/dawn "%DAWN_DIR%"
 if errorlevel 1 (
     echo [ERROR] git clone failed.
     goto :error
 )
-goto :configure
+goto :fetch_deps
 :clone_done
-echo [1/4] Dawn already present at %DAWN_DIR% ^(skipping clone^).
+echo [1/5] Dawn already present at %DAWN_DIR% ^(skipping clone^).
+
+REM --- Fetch trimmed deps -----------------------------------------------------
+REM Dawn's stock fetcher (invoked by -DDAWN_FETCH_DEPENDENCIES=ON) pulls 18
+REM submodules with a hardcoded list. We pre-fetch only the 16 we need via
+REM our wrapper, then leave DAWN_FETCH_DEPENDENCIES off so CMake doesn't
+REM re-pull glfw3 / googletest / google_benchmark.
+:fetch_deps
+echo [2/5] Fetching Dawn third-party deps ^(trimmed list^)...
+where python >nul 2>nul
+if not errorlevel 1 (
+    python "scripts\FetchDawnDepsMinimal.py"
+) else (
+    py "scripts\FetchDawnDepsMinimal.py"
+)
+if errorlevel 1 (
+    echo [ERROR] Dep fetch failed.
+    goto :error
+)
 
 REM --- Configure --------------------------------------------------------------
 :configure
-echo [2/4] Configuring Dawn via CMake...
-"!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 -DDAWN_FETCH_DEPENDENCIES=ON -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF
+echo [3/5] Configuring Dawn via CMake...
+"!CMAKE_EXE!" -S "%DAWN_DIR%" -B "%DAWN_BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC -DDAWN_ENABLE_INSTALL=OFF -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_TESTS=OFF -DDAWN_USE_GLFW=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF
 if errorlevel 1 (
     echo [ERROR] CMake configure failed.
     goto :error
 )
 
 REM --- Build ------------------------------------------------------------------
-echo [3/4] Building webgpu_dawn ^(Debug + Release^)...
+echo [4/5] Building webgpu_dawn ^(Debug + Release^)...
 "!CMAKE_EXE!" --build "%DAWN_BUILD_DIR%" --config Debug --target webgpu_dawn
 if errorlevel 1 (
     echo [ERROR] Debug build failed.
@@ -94,7 +112,7 @@ if errorlevel 1 (
 )
 
 REM --- Regenerate Index.sln ---------------------------------------------------
-echo [4/4] Regenerating Index.sln via Premake...
+echo [5/5] Regenerating Index.sln via Premake...
 if not exist "vendor\bin\premake5.exe" goto :no_premake
 "vendor\bin\premake5.exe" vs2022
 if errorlevel 1 echo [WARN] Premake regen returned non-zero. Run manually: vendor\bin\premake5.exe vs2022

@@ -12,6 +12,7 @@ namespace Index {
 		bool Resizeable{ true };
 		bool Decorated{ true };
 		bool Fullscreen{ false };
+		bool Windowed{ false };
 		Color Clearcolor;
 
 		WindowSpecification() = default;
@@ -22,6 +23,10 @@ namespace Index {
 
 		WindowSpecification(int width, int height, const std::string& title, bool resizeable, bool decorated, bool fullscreen)
 			: Width{ width }, Height{ height }, Title{ title }, Resizeable{ resizeable }, Decorated{ decorated }, Fullscreen{ fullscreen } {
+		}
+
+		WindowSpecification(int width, int height, const std::string& title, bool resizeable, bool decorated, bool fullscreen, bool windowed)
+			: Width{ width }, Height{ height }, Title{ title }, Resizeable{ resizeable }, Decorated{ decorated }, Fullscreen{ fullscreen }, Windowed{windowed} {
 		}
 	};
 

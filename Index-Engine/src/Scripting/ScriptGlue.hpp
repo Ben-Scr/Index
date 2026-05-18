@@ -706,6 +706,244 @@ namespace Index {
 
 		int (*JobSystem_GetWorkerCount)();
 		int (*JobSystem_GetCallerWorkerIndex)(); // -1 when not on a worker
+
+		// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider /
+		//       Layout Groups / ContentSizeFitter / WidthConstraint
+		//       (appended for binary compat — order MUST match the C#
+		//       NativeBindingsStruct mirror and the assignments at the
+		//       end of ScriptBindings::PopulateNativeBindings.) ──
+
+		// ── UI: Scrollbar ─────────────────────────────────────────────
+		float    (*Scrollbar_GetValue)(uint64_t entityID);
+		void     (*Scrollbar_SetValue)(uint64_t entityID, float value);
+		float    (*Scrollbar_GetSize)(uint64_t entityID);
+		void     (*Scrollbar_SetSize)(uint64_t entityID, float value);
+		int      (*Scrollbar_GetNumberOfSteps)(uint64_t entityID);
+		void     (*Scrollbar_SetNumberOfSteps)(uint64_t entityID, int value);
+		int      (*Scrollbar_GetDirection)(uint64_t entityID);
+		void     (*Scrollbar_SetDirection)(uint64_t entityID, int value);
+		int      (*Scrollbar_GetIsReadOnly)(uint64_t entityID);
+		void     (*Scrollbar_SetIsReadOnly)(uint64_t entityID, int value);
+		uint64_t (*Scrollbar_GetHandleEntity)(uint64_t entityID);
+		void     (*Scrollbar_SetHandleEntity)(uint64_t entityID, uint64_t refUuid);
+		int      (*Scrollbar_GetValueChangedThisFrame)(uint64_t entityID);
+		void     (*Scrollbar_MarkValueObserved)(uint64_t entityID);
+		void     (*Scrollbar_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*Scrollbar_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*Scrollbar_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*Scrollbar_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*Scrollbar_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*Scrollbar_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*Scrollbar_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*Scrollbar_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*Scrollbar_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*Scrollbar_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+		int      (*Scrollbar_GetTransitionMode)(uint64_t entityID);
+		void     (*Scrollbar_SetTransitionMode)(uint64_t entityID, int mode);
+		uint64_t (*Scrollbar_GetNormalSprite)(uint64_t entityID);
+		void     (*Scrollbar_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Scrollbar_GetHoveredSprite)(uint64_t entityID);
+		void     (*Scrollbar_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Scrollbar_GetPressedSprite)(uint64_t entityID);
+		void     (*Scrollbar_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Scrollbar_GetDisabledSprite)(uint64_t entityID);
+		void     (*Scrollbar_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*Scrollbar_GetFocusedSprite)(uint64_t entityID);
+		void     (*Scrollbar_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		// ── UI: ScrollRect ────────────────────────────────────────────
+		uint64_t (*ScrollRect_GetContent)(uint64_t entityID);
+		void     (*ScrollRect_SetContent)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*ScrollRect_GetViewport)(uint64_t entityID);
+		void     (*ScrollRect_SetViewport)(uint64_t entityID, uint64_t refUuid);
+		int      (*ScrollRect_GetHorizontal)(uint64_t entityID);
+		void     (*ScrollRect_SetHorizontal)(uint64_t entityID, int value);
+		int      (*ScrollRect_GetVertical)(uint64_t entityID);
+		void     (*ScrollRect_SetVertical)(uint64_t entityID, int value);
+		int      (*ScrollRect_GetMovementType)(uint64_t entityID);
+		void     (*ScrollRect_SetMovementType)(uint64_t entityID, int value);
+		float    (*ScrollRect_GetElasticity)(uint64_t entityID);
+		void     (*ScrollRect_SetElasticity)(uint64_t entityID, float value);
+		int      (*ScrollRect_GetInertia)(uint64_t entityID);
+		void     (*ScrollRect_SetInertia)(uint64_t entityID, int value);
+		float    (*ScrollRect_GetDecelerationRate)(uint64_t entityID);
+		void     (*ScrollRect_SetDecelerationRate)(uint64_t entityID, float value);
+		float    (*ScrollRect_GetScrollSensitivity)(uint64_t entityID);
+		void     (*ScrollRect_SetScrollSensitivity)(uint64_t entityID, float value);
+		uint64_t (*ScrollRect_GetHorizontalScrollbar)(uint64_t entityID);
+		void     (*ScrollRect_SetHorizontalScrollbar)(uint64_t entityID, uint64_t refUuid);
+		uint64_t (*ScrollRect_GetVerticalScrollbar)(uint64_t entityID);
+		void     (*ScrollRect_SetVerticalScrollbar)(uint64_t entityID, uint64_t refUuid);
+		int      (*ScrollRect_GetHorizontalScrollbarVisibility)(uint64_t entityID);
+		void     (*ScrollRect_SetHorizontalScrollbarVisibility)(uint64_t entityID, int value);
+		int      (*ScrollRect_GetVerticalScrollbarVisibility)(uint64_t entityID);
+		void     (*ScrollRect_SetVerticalScrollbarVisibility)(uint64_t entityID, int value);
+		float    (*ScrollRect_GetHorizontalScrollbarSpacing)(uint64_t entityID);
+		void     (*ScrollRect_SetHorizontalScrollbarSpacing)(uint64_t entityID, float value);
+		float    (*ScrollRect_GetVerticalScrollbarSpacing)(uint64_t entityID);
+		void     (*ScrollRect_SetVerticalScrollbarSpacing)(uint64_t entityID, float value);
+		void     (*ScrollRect_GetNormalizedPosition)(uint64_t entityID, float* outX, float* outY);
+		void     (*ScrollRect_SetNormalizedPosition)(uint64_t entityID, float x, float y);
+		int      (*ScrollRect_GetValueChangedThisFrame)(uint64_t entityID);
+		void     (*ScrollRect_MarkValueObserved)(uint64_t entityID);
+
+		// ── UI: Mask ──────────────────────────────────────────────────
+		int  (*Mask_GetShowMaskGraphic)(uint64_t entityID);
+		void (*Mask_SetShowMaskGraphic)(uint64_t entityID, int value);
+
+		// ── UI: CircularSlider ────────────────────────────────────────
+		float    (*CircularSlider_GetValue)(uint64_t entityID);
+		void     (*CircularSlider_SetValue)(uint64_t entityID, float value);
+		float    (*CircularSlider_GetMinValue)(uint64_t entityID);
+		void     (*CircularSlider_SetMinValue)(uint64_t entityID, float value);
+		float    (*CircularSlider_GetMaxValue)(uint64_t entityID);
+		void     (*CircularSlider_SetMaxValue)(uint64_t entityID, float value);
+		int      (*CircularSlider_GetWholeNumbers)(uint64_t entityID);
+		void     (*CircularSlider_SetWholeNumbers)(uint64_t entityID, int value);
+		int      (*CircularSlider_GetIsReadOnly)(uint64_t entityID);
+		void     (*CircularSlider_SetIsReadOnly)(uint64_t entityID, int value);
+		float    (*CircularSlider_GetStartAngleDegrees)(uint64_t entityID);
+		void     (*CircularSlider_SetStartAngleDegrees)(uint64_t entityID, float value);
+		float    (*CircularSlider_GetSweepDegrees)(uint64_t entityID);
+		void     (*CircularSlider_SetSweepDegrees)(uint64_t entityID, float value);
+		int      (*CircularSlider_GetClockwise)(uint64_t entityID);
+		void     (*CircularSlider_SetClockwise)(uint64_t entityID, int value);
+		float    (*CircularSlider_GetRingThickness)(uint64_t entityID);
+		void     (*CircularSlider_SetRingThickness)(uint64_t entityID, float value);
+		int      (*CircularSlider_GetRingSegments)(uint64_t entityID);
+		void     (*CircularSlider_SetRingSegments)(uint64_t entityID, int value);
+		void     (*CircularSlider_GetBackgroundColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetBackgroundColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*CircularSlider_GetFillColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetFillColor)(uint64_t entityID, float r, float g, float b, float a);
+		uint64_t (*CircularSlider_GetHandleEntity)(uint64_t entityID);
+		void     (*CircularSlider_SetHandleEntity)(uint64_t entityID, uint64_t refUuid);
+		int      (*CircularSlider_GetValueChangedThisFrame)(uint64_t entityID);
+		void     (*CircularSlider_MarkValueObserved)(uint64_t entityID);
+		void     (*CircularSlider_GetNormalColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetNormalColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*CircularSlider_GetHoveredColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetHoveredColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*CircularSlider_GetPressedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetPressedColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*CircularSlider_GetDisabledColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
+		void     (*CircularSlider_GetFocusedColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
+		void     (*CircularSlider_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
+		int      (*CircularSlider_GetTransitionMode)(uint64_t entityID);
+		void     (*CircularSlider_SetTransitionMode)(uint64_t entityID, int mode);
+		uint64_t (*CircularSlider_GetNormalSprite)(uint64_t entityID);
+		void     (*CircularSlider_SetNormalSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*CircularSlider_GetHoveredSprite)(uint64_t entityID);
+		void     (*CircularSlider_SetHoveredSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*CircularSlider_GetPressedSprite)(uint64_t entityID);
+		void     (*CircularSlider_SetPressedSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*CircularSlider_GetDisabledSprite)(uint64_t entityID);
+		void     (*CircularSlider_SetDisabledSprite)(uint64_t entityID, uint64_t uuid);
+		uint64_t (*CircularSlider_GetFocusedSprite)(uint64_t entityID);
+		void     (*CircularSlider_SetFocusedSprite)(uint64_t entityID, uint64_t uuid);
+
+		// ── UI: HorizontalLayoutGroup ─────────────────────────────────
+		float (*HorizontalLayoutGroup_GetPaddingLeft)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetPaddingLeft)(uint64_t entityID, float value);
+		float (*HorizontalLayoutGroup_GetPaddingRight)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetPaddingRight)(uint64_t entityID, float value);
+		float (*HorizontalLayoutGroup_GetPaddingTop)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetPaddingTop)(uint64_t entityID, float value);
+		float (*HorizontalLayoutGroup_GetPaddingBottom)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetPaddingBottom)(uint64_t entityID, float value);
+		float (*HorizontalLayoutGroup_GetSpacing)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetSpacing)(uint64_t entityID, float value);
+		int   (*HorizontalLayoutGroup_GetChildAlignment)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetChildAlignment)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetReverseArrangement)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetReverseArrangement)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetControlChildWidth)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetControlChildWidth)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetControlChildHeight)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetControlChildHeight)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetUseChildScaleWidth)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetUseChildScaleWidth)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetUseChildScaleHeight)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetUseChildScaleHeight)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetChildForceExpandWidth)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetChildForceExpandWidth)(uint64_t entityID, int value);
+		int   (*HorizontalLayoutGroup_GetChildForceExpandHeight)(uint64_t entityID);
+		void  (*HorizontalLayoutGroup_SetChildForceExpandHeight)(uint64_t entityID, int value);
+
+		// ── UI: VerticalLayoutGroup ───────────────────────────────────
+		float (*VerticalLayoutGroup_GetPaddingLeft)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetPaddingLeft)(uint64_t entityID, float value);
+		float (*VerticalLayoutGroup_GetPaddingRight)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetPaddingRight)(uint64_t entityID, float value);
+		float (*VerticalLayoutGroup_GetPaddingTop)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetPaddingTop)(uint64_t entityID, float value);
+		float (*VerticalLayoutGroup_GetPaddingBottom)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetPaddingBottom)(uint64_t entityID, float value);
+		float (*VerticalLayoutGroup_GetSpacing)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetSpacing)(uint64_t entityID, float value);
+		int   (*VerticalLayoutGroup_GetChildAlignment)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetChildAlignment)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetReverseArrangement)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetReverseArrangement)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetControlChildWidth)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetControlChildWidth)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetControlChildHeight)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetControlChildHeight)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetUseChildScaleWidth)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetUseChildScaleWidth)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetUseChildScaleHeight)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetUseChildScaleHeight)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetChildForceExpandWidth)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetChildForceExpandWidth)(uint64_t entityID, int value);
+		int   (*VerticalLayoutGroup_GetChildForceExpandHeight)(uint64_t entityID);
+		void  (*VerticalLayoutGroup_SetChildForceExpandHeight)(uint64_t entityID, int value);
+
+		// ── UI: GridLayoutGroup ───────────────────────────────────────
+		float (*GridLayoutGroup_GetPaddingLeft)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetPaddingLeft)(uint64_t entityID, float value);
+		float (*GridLayoutGroup_GetPaddingRight)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetPaddingRight)(uint64_t entityID, float value);
+		float (*GridLayoutGroup_GetPaddingTop)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetPaddingTop)(uint64_t entityID, float value);
+		float (*GridLayoutGroup_GetPaddingBottom)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetPaddingBottom)(uint64_t entityID, float value);
+		void  (*GridLayoutGroup_GetCellSize)(uint64_t entityID, float* outX, float* outY);
+		void  (*GridLayoutGroup_SetCellSize)(uint64_t entityID, float x, float y);
+		void  (*GridLayoutGroup_GetSpacing)(uint64_t entityID, float* outX, float* outY);
+		void  (*GridLayoutGroup_SetSpacing)(uint64_t entityID, float x, float y);
+		int   (*GridLayoutGroup_GetStartCorner)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetStartCorner)(uint64_t entityID, int value);
+		int   (*GridLayoutGroup_GetStartAxis)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetStartAxis)(uint64_t entityID, int value);
+		int   (*GridLayoutGroup_GetChildAlignment)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetChildAlignment)(uint64_t entityID, int value);
+		int   (*GridLayoutGroup_GetConstraint)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetConstraint)(uint64_t entityID, int value);
+		int   (*GridLayoutGroup_GetConstraintCount)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetConstraintCount)(uint64_t entityID, int value);
+		int   (*GridLayoutGroup_GetReverse)(uint64_t entityID);
+		void  (*GridLayoutGroup_SetReverse)(uint64_t entityID, int value);
+
+		// ── UI: ContentSizeFitter ─────────────────────────────────────
+		int   (*ContentSizeFitter_GetHorizontalFit)(uint64_t entityID);
+		void  (*ContentSizeFitter_SetHorizontalFit)(uint64_t entityID, int value);
+		int   (*ContentSizeFitter_GetVerticalFit)(uint64_t entityID);
+		void  (*ContentSizeFitter_SetVerticalFit)(uint64_t entityID, int value);
+		float (*ContentSizeFitter_GetPaddingLeft)(uint64_t entityID);
+		void  (*ContentSizeFitter_SetPaddingLeft)(uint64_t entityID, float value);
+		float (*ContentSizeFitter_GetPaddingRight)(uint64_t entityID);
+		void  (*ContentSizeFitter_SetPaddingRight)(uint64_t entityID, float value);
+		float (*ContentSizeFitter_GetPaddingTop)(uint64_t entityID);
+		void  (*ContentSizeFitter_SetPaddingTop)(uint64_t entityID, float value);
+		float (*ContentSizeFitter_GetPaddingBottom)(uint64_t entityID);
+		void  (*ContentSizeFitter_SetPaddingBottom)(uint64_t entityID, float value);
+
+		// ── UI: WidthConstraint ───────────────────────────────────────
+		float (*WidthConstraint_GetMinWidth)(uint64_t entityID);
+		void  (*WidthConstraint_SetMinWidth)(uint64_t entityID, float value);
+		float (*WidthConstraint_GetMaxWidth)(uint64_t entityID);
+		void  (*WidthConstraint_SetMaxWidth)(uint64_t entityID, float value);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

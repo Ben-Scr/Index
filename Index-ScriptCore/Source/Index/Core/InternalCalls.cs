@@ -1189,4 +1189,266 @@ internal static unsafe class InternalCalls
     { float cr, cg, cb, ca; NativeCallbacks.Bindings.Dropdown_GetOptionTextColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static void Dropdown_SetOptionTextColor(ulong id, float r, float g, float b, float a)
         => NativeCallbacks.Bindings.Dropdown_SetOptionTextColor(id, r, g, b, a);
+
+    // ── UI: Scrollbar ───────────────────────────────────────────────
+    internal static float Scrollbar_GetValue(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetValue(id);
+    internal static void Scrollbar_SetValue(ulong id, float v) => NativeCallbacks.Bindings.Scrollbar_SetValue(id, v);
+    internal static float Scrollbar_GetSize(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetSize(id);
+    internal static void Scrollbar_SetSize(ulong id, float v) => NativeCallbacks.Bindings.Scrollbar_SetSize(id, v);
+    internal static int Scrollbar_GetNumberOfSteps(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetNumberOfSteps(id);
+    internal static void Scrollbar_SetNumberOfSteps(ulong id, int v) => NativeCallbacks.Bindings.Scrollbar_SetNumberOfSteps(id, v);
+    internal static int Scrollbar_GetDirection(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetDirection(id);
+    internal static void Scrollbar_SetDirection(ulong id, int v) => NativeCallbacks.Bindings.Scrollbar_SetDirection(id, v);
+    internal static bool Scrollbar_GetIsReadOnly(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetIsReadOnly(id) != 0;
+    internal static void Scrollbar_SetIsReadOnly(ulong id, bool v) => NativeCallbacks.Bindings.Scrollbar_SetIsReadOnly(id, v ? 1 : 0);
+    internal static ulong Scrollbar_GetHandleEntity(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetHandleEntity(id);
+    internal static void Scrollbar_SetHandleEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.Scrollbar_SetHandleEntity(id, refUuid);
+    internal static bool Scrollbar_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetValueChangedThisFrame(id) != 0;
+    internal static void Scrollbar_MarkValueObserved(ulong id) => NativeCallbacks.Bindings.Scrollbar_MarkValueObserved(id);
+    internal static void Scrollbar_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Scrollbar_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Scrollbar_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Scrollbar_SetNormalColor(id, r, g, b, a);
+    internal static void Scrollbar_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Scrollbar_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Scrollbar_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Scrollbar_SetHoveredColor(id, r, g, b, a);
+    internal static void Scrollbar_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Scrollbar_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Scrollbar_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Scrollbar_SetPressedColor(id, r, g, b, a);
+    internal static void Scrollbar_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Scrollbar_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Scrollbar_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Scrollbar_SetDisabledColor(id, r, g, b, a);
+    internal static void Scrollbar_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.Scrollbar_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void Scrollbar_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.Scrollbar_SetFocusedColor(id, r, g, b, a);
+    internal static int Scrollbar_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetTransitionMode(id);
+    internal static void Scrollbar_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.Scrollbar_SetTransitionMode(id, mode);
+    internal static ulong Scrollbar_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetNormalSprite(id);
+    internal static void Scrollbar_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Scrollbar_SetNormalSprite(id, uuid);
+    internal static ulong Scrollbar_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetHoveredSprite(id);
+    internal static void Scrollbar_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Scrollbar_SetHoveredSprite(id, uuid);
+    internal static ulong Scrollbar_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetPressedSprite(id);
+    internal static void Scrollbar_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Scrollbar_SetPressedSprite(id, uuid);
+    internal static ulong Scrollbar_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetDisabledSprite(id);
+    internal static void Scrollbar_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Scrollbar_SetDisabledSprite(id, uuid);
+    internal static ulong Scrollbar_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.Scrollbar_GetFocusedSprite(id);
+    internal static void Scrollbar_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.Scrollbar_SetFocusedSprite(id, uuid);
+
+    // ── UI: ScrollRect ──────────────────────────────────────────────
+    internal static ulong ScrollRect_GetContent(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetContent(id);
+    internal static void ScrollRect_SetContent(ulong id, ulong refUuid) => NativeCallbacks.Bindings.ScrollRect_SetContent(id, refUuid);
+    internal static ulong ScrollRect_GetViewport(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetViewport(id);
+    internal static void ScrollRect_SetViewport(ulong id, ulong refUuid) => NativeCallbacks.Bindings.ScrollRect_SetViewport(id, refUuid);
+    internal static bool ScrollRect_GetHorizontal(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetHorizontal(id) != 0;
+    internal static void ScrollRect_SetHorizontal(ulong id, bool v) => NativeCallbacks.Bindings.ScrollRect_SetHorizontal(id, v ? 1 : 0);
+    internal static bool ScrollRect_GetVertical(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetVertical(id) != 0;
+    internal static void ScrollRect_SetVertical(ulong id, bool v) => NativeCallbacks.Bindings.ScrollRect_SetVertical(id, v ? 1 : 0);
+    internal static int ScrollRect_GetMovementType(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetMovementType(id);
+    internal static void ScrollRect_SetMovementType(ulong id, int v) => NativeCallbacks.Bindings.ScrollRect_SetMovementType(id, v);
+    internal static float ScrollRect_GetElasticity(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetElasticity(id);
+    internal static void ScrollRect_SetElasticity(ulong id, float v) => NativeCallbacks.Bindings.ScrollRect_SetElasticity(id, v);
+    internal static bool ScrollRect_GetInertia(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetInertia(id) != 0;
+    internal static void ScrollRect_SetInertia(ulong id, bool v) => NativeCallbacks.Bindings.ScrollRect_SetInertia(id, v ? 1 : 0);
+    internal static float ScrollRect_GetDecelerationRate(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetDecelerationRate(id);
+    internal static void ScrollRect_SetDecelerationRate(ulong id, float v) => NativeCallbacks.Bindings.ScrollRect_SetDecelerationRate(id, v);
+    internal static float ScrollRect_GetScrollSensitivity(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetScrollSensitivity(id);
+    internal static void ScrollRect_SetScrollSensitivity(ulong id, float v) => NativeCallbacks.Bindings.ScrollRect_SetScrollSensitivity(id, v);
+    internal static ulong ScrollRect_GetHorizontalScrollbar(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetHorizontalScrollbar(id);
+    internal static void ScrollRect_SetHorizontalScrollbar(ulong id, ulong refUuid) => NativeCallbacks.Bindings.ScrollRect_SetHorizontalScrollbar(id, refUuid);
+    internal static ulong ScrollRect_GetVerticalScrollbar(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetVerticalScrollbar(id);
+    internal static void ScrollRect_SetVerticalScrollbar(ulong id, ulong refUuid) => NativeCallbacks.Bindings.ScrollRect_SetVerticalScrollbar(id, refUuid);
+    internal static int ScrollRect_GetHorizontalScrollbarVisibility(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetHorizontalScrollbarVisibility(id);
+    internal static void ScrollRect_SetHorizontalScrollbarVisibility(ulong id, int v) => NativeCallbacks.Bindings.ScrollRect_SetHorizontalScrollbarVisibility(id, v);
+    internal static int ScrollRect_GetVerticalScrollbarVisibility(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetVerticalScrollbarVisibility(id);
+    internal static void ScrollRect_SetVerticalScrollbarVisibility(ulong id, int v) => NativeCallbacks.Bindings.ScrollRect_SetVerticalScrollbarVisibility(id, v);
+    internal static float ScrollRect_GetHorizontalScrollbarSpacing(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetHorizontalScrollbarSpacing(id);
+    internal static void ScrollRect_SetHorizontalScrollbarSpacing(ulong id, float v) => NativeCallbacks.Bindings.ScrollRect_SetHorizontalScrollbarSpacing(id, v);
+    internal static float ScrollRect_GetVerticalScrollbarSpacing(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetVerticalScrollbarSpacing(id);
+    internal static void ScrollRect_SetVerticalScrollbarSpacing(ulong id, float v) => NativeCallbacks.Bindings.ScrollRect_SetVerticalScrollbarSpacing(id, v);
+    internal static void ScrollRect_GetNormalizedPosition(ulong id, out float x, out float y)
+    { float cx, cy; NativeCallbacks.Bindings.ScrollRect_GetNormalizedPosition(id, &cx, &cy); x = cx; y = cy; }
+    internal static void ScrollRect_SetNormalizedPosition(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.ScrollRect_SetNormalizedPosition(id, x, y);
+    internal static bool ScrollRect_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.ScrollRect_GetValueChangedThisFrame(id) != 0;
+    internal static void ScrollRect_MarkValueObserved(ulong id) => NativeCallbacks.Bindings.ScrollRect_MarkValueObserved(id);
+
+    // ── UI: Mask ────────────────────────────────────────────────────
+    internal static bool Mask_GetShowMaskGraphic(ulong id) => NativeCallbacks.Bindings.Mask_GetShowMaskGraphic(id) != 0;
+    internal static void Mask_SetShowMaskGraphic(ulong id, bool v) => NativeCallbacks.Bindings.Mask_SetShowMaskGraphic(id, v ? 1 : 0);
+
+    // ── UI: CircularSlider ──────────────────────────────────────────
+    internal static float CircularSlider_GetValue(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetValue(id);
+    internal static void CircularSlider_SetValue(ulong id, float v) => NativeCallbacks.Bindings.CircularSlider_SetValue(id, v);
+    internal static float CircularSlider_GetMinValue(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetMinValue(id);
+    internal static void CircularSlider_SetMinValue(ulong id, float v) => NativeCallbacks.Bindings.CircularSlider_SetMinValue(id, v);
+    internal static float CircularSlider_GetMaxValue(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetMaxValue(id);
+    internal static void CircularSlider_SetMaxValue(ulong id, float v) => NativeCallbacks.Bindings.CircularSlider_SetMaxValue(id, v);
+    internal static bool CircularSlider_GetWholeNumbers(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetWholeNumbers(id) != 0;
+    internal static void CircularSlider_SetWholeNumbers(ulong id, bool v) => NativeCallbacks.Bindings.CircularSlider_SetWholeNumbers(id, v ? 1 : 0);
+    internal static bool CircularSlider_GetIsReadOnly(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetIsReadOnly(id) != 0;
+    internal static void CircularSlider_SetIsReadOnly(ulong id, bool v) => NativeCallbacks.Bindings.CircularSlider_SetIsReadOnly(id, v ? 1 : 0);
+    internal static float CircularSlider_GetStartAngleDegrees(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetStartAngleDegrees(id);
+    internal static void CircularSlider_SetStartAngleDegrees(ulong id, float v) => NativeCallbacks.Bindings.CircularSlider_SetStartAngleDegrees(id, v);
+    internal static float CircularSlider_GetSweepDegrees(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetSweepDegrees(id);
+    internal static void CircularSlider_SetSweepDegrees(ulong id, float v) => NativeCallbacks.Bindings.CircularSlider_SetSweepDegrees(id, v);
+    internal static bool CircularSlider_GetClockwise(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetClockwise(id) != 0;
+    internal static void CircularSlider_SetClockwise(ulong id, bool v) => NativeCallbacks.Bindings.CircularSlider_SetClockwise(id, v ? 1 : 0);
+    internal static float CircularSlider_GetRingThickness(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetRingThickness(id);
+    internal static void CircularSlider_SetRingThickness(ulong id, float v) => NativeCallbacks.Bindings.CircularSlider_SetRingThickness(id, v);
+    internal static int CircularSlider_GetRingSegments(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetRingSegments(id);
+    internal static void CircularSlider_SetRingSegments(ulong id, int v) => NativeCallbacks.Bindings.CircularSlider_SetRingSegments(id, v);
+    internal static void CircularSlider_GetBackgroundColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetBackgroundColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetBackgroundColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetBackgroundColor(id, r, g, b, a);
+    internal static void CircularSlider_GetFillColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetFillColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetFillColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetFillColor(id, r, g, b, a);
+    internal static ulong CircularSlider_GetHandleEntity(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetHandleEntity(id);
+    internal static void CircularSlider_SetHandleEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.CircularSlider_SetHandleEntity(id, refUuid);
+    internal static bool CircularSlider_GetValueChangedThisFrame(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetValueChangedThisFrame(id) != 0;
+    internal static void CircularSlider_MarkValueObserved(ulong id) => NativeCallbacks.Bindings.CircularSlider_MarkValueObserved(id);
+    internal static void CircularSlider_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetNormalColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetNormalColor(id, r, g, b, a);
+    internal static void CircularSlider_GetHoveredColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetHoveredColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetHoveredColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetHoveredColor(id, r, g, b, a);
+    internal static void CircularSlider_GetPressedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetPressedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetPressedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetPressedColor(id, r, g, b, a);
+    internal static void CircularSlider_GetDisabledColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetDisabledColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetDisabledColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetDisabledColor(id, r, g, b, a);
+    internal static void CircularSlider_GetFocusedColor(ulong id, out float r, out float g, out float b, out float a)
+    { float cr, cg, cb, ca; NativeCallbacks.Bindings.CircularSlider_GetFocusedColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
+    internal static void CircularSlider_SetFocusedColor(ulong id, float r, float g, float b, float a)
+        => NativeCallbacks.Bindings.CircularSlider_SetFocusedColor(id, r, g, b, a);
+    internal static int CircularSlider_GetTransitionMode(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetTransitionMode(id);
+    internal static void CircularSlider_SetTransitionMode(ulong id, int mode) => NativeCallbacks.Bindings.CircularSlider_SetTransitionMode(id, mode);
+    internal static ulong CircularSlider_GetNormalSprite(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetNormalSprite(id);
+    internal static void CircularSlider_SetNormalSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.CircularSlider_SetNormalSprite(id, uuid);
+    internal static ulong CircularSlider_GetHoveredSprite(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetHoveredSprite(id);
+    internal static void CircularSlider_SetHoveredSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.CircularSlider_SetHoveredSprite(id, uuid);
+    internal static ulong CircularSlider_GetPressedSprite(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetPressedSprite(id);
+    internal static void CircularSlider_SetPressedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.CircularSlider_SetPressedSprite(id, uuid);
+    internal static ulong CircularSlider_GetDisabledSprite(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetDisabledSprite(id);
+    internal static void CircularSlider_SetDisabledSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.CircularSlider_SetDisabledSprite(id, uuid);
+    internal static ulong CircularSlider_GetFocusedSprite(ulong id) => NativeCallbacks.Bindings.CircularSlider_GetFocusedSprite(id);
+    internal static void CircularSlider_SetFocusedSprite(ulong id, ulong uuid) => NativeCallbacks.Bindings.CircularSlider_SetFocusedSprite(id, uuid);
+
+    // ── UI: HorizontalLayoutGroup ───────────────────────────────────
+    internal static float HorizontalLayoutGroup_GetPaddingLeft(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetPaddingLeft(id);
+    internal static void HorizontalLayoutGroup_SetPaddingLeft(ulong id, float v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetPaddingLeft(id, v);
+    internal static float HorizontalLayoutGroup_GetPaddingRight(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetPaddingRight(id);
+    internal static void HorizontalLayoutGroup_SetPaddingRight(ulong id, float v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetPaddingRight(id, v);
+    internal static float HorizontalLayoutGroup_GetPaddingTop(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetPaddingTop(id);
+    internal static void HorizontalLayoutGroup_SetPaddingTop(ulong id, float v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetPaddingTop(id, v);
+    internal static float HorizontalLayoutGroup_GetPaddingBottom(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetPaddingBottom(id);
+    internal static void HorizontalLayoutGroup_SetPaddingBottom(ulong id, float v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetPaddingBottom(id, v);
+    internal static float HorizontalLayoutGroup_GetSpacing(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetSpacing(id);
+    internal static void HorizontalLayoutGroup_SetSpacing(ulong id, float v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetSpacing(id, v);
+    internal static int HorizontalLayoutGroup_GetChildAlignment(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetChildAlignment(id);
+    internal static void HorizontalLayoutGroup_SetChildAlignment(ulong id, int v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetChildAlignment(id, v);
+    internal static bool HorizontalLayoutGroup_GetReverseArrangement(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetReverseArrangement(id) != 0;
+    internal static void HorizontalLayoutGroup_SetReverseArrangement(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetReverseArrangement(id, v ? 1 : 0);
+    internal static bool HorizontalLayoutGroup_GetControlChildWidth(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetControlChildWidth(id) != 0;
+    internal static void HorizontalLayoutGroup_SetControlChildWidth(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetControlChildWidth(id, v ? 1 : 0);
+    internal static bool HorizontalLayoutGroup_GetControlChildHeight(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetControlChildHeight(id) != 0;
+    internal static void HorizontalLayoutGroup_SetControlChildHeight(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetControlChildHeight(id, v ? 1 : 0);
+    internal static bool HorizontalLayoutGroup_GetUseChildScaleWidth(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetUseChildScaleWidth(id) != 0;
+    internal static void HorizontalLayoutGroup_SetUseChildScaleWidth(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetUseChildScaleWidth(id, v ? 1 : 0);
+    internal static bool HorizontalLayoutGroup_GetUseChildScaleHeight(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetUseChildScaleHeight(id) != 0;
+    internal static void HorizontalLayoutGroup_SetUseChildScaleHeight(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetUseChildScaleHeight(id, v ? 1 : 0);
+    internal static bool HorizontalLayoutGroup_GetChildForceExpandWidth(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetChildForceExpandWidth(id) != 0;
+    internal static void HorizontalLayoutGroup_SetChildForceExpandWidth(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetChildForceExpandWidth(id, v ? 1 : 0);
+    internal static bool HorizontalLayoutGroup_GetChildForceExpandHeight(ulong id) => NativeCallbacks.Bindings.HorizontalLayoutGroup_GetChildForceExpandHeight(id) != 0;
+    internal static void HorizontalLayoutGroup_SetChildForceExpandHeight(ulong id, bool v) => NativeCallbacks.Bindings.HorizontalLayoutGroup_SetChildForceExpandHeight(id, v ? 1 : 0);
+
+    // ── UI: VerticalLayoutGroup ─────────────────────────────────────
+    internal static float VerticalLayoutGroup_GetPaddingLeft(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetPaddingLeft(id);
+    internal static void VerticalLayoutGroup_SetPaddingLeft(ulong id, float v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetPaddingLeft(id, v);
+    internal static float VerticalLayoutGroup_GetPaddingRight(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetPaddingRight(id);
+    internal static void VerticalLayoutGroup_SetPaddingRight(ulong id, float v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetPaddingRight(id, v);
+    internal static float VerticalLayoutGroup_GetPaddingTop(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetPaddingTop(id);
+    internal static void VerticalLayoutGroup_SetPaddingTop(ulong id, float v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetPaddingTop(id, v);
+    internal static float VerticalLayoutGroup_GetPaddingBottom(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetPaddingBottom(id);
+    internal static void VerticalLayoutGroup_SetPaddingBottom(ulong id, float v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetPaddingBottom(id, v);
+    internal static float VerticalLayoutGroup_GetSpacing(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetSpacing(id);
+    internal static void VerticalLayoutGroup_SetSpacing(ulong id, float v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetSpacing(id, v);
+    internal static int VerticalLayoutGroup_GetChildAlignment(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetChildAlignment(id);
+    internal static void VerticalLayoutGroup_SetChildAlignment(ulong id, int v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetChildAlignment(id, v);
+    internal static bool VerticalLayoutGroup_GetReverseArrangement(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetReverseArrangement(id) != 0;
+    internal static void VerticalLayoutGroup_SetReverseArrangement(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetReverseArrangement(id, v ? 1 : 0);
+    internal static bool VerticalLayoutGroup_GetControlChildWidth(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetControlChildWidth(id) != 0;
+    internal static void VerticalLayoutGroup_SetControlChildWidth(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetControlChildWidth(id, v ? 1 : 0);
+    internal static bool VerticalLayoutGroup_GetControlChildHeight(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetControlChildHeight(id) != 0;
+    internal static void VerticalLayoutGroup_SetControlChildHeight(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetControlChildHeight(id, v ? 1 : 0);
+    internal static bool VerticalLayoutGroup_GetUseChildScaleWidth(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetUseChildScaleWidth(id) != 0;
+    internal static void VerticalLayoutGroup_SetUseChildScaleWidth(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetUseChildScaleWidth(id, v ? 1 : 0);
+    internal static bool VerticalLayoutGroup_GetUseChildScaleHeight(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetUseChildScaleHeight(id) != 0;
+    internal static void VerticalLayoutGroup_SetUseChildScaleHeight(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetUseChildScaleHeight(id, v ? 1 : 0);
+    internal static bool VerticalLayoutGroup_GetChildForceExpandWidth(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetChildForceExpandWidth(id) != 0;
+    internal static void VerticalLayoutGroup_SetChildForceExpandWidth(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetChildForceExpandWidth(id, v ? 1 : 0);
+    internal static bool VerticalLayoutGroup_GetChildForceExpandHeight(ulong id) => NativeCallbacks.Bindings.VerticalLayoutGroup_GetChildForceExpandHeight(id) != 0;
+    internal static void VerticalLayoutGroup_SetChildForceExpandHeight(ulong id, bool v) => NativeCallbacks.Bindings.VerticalLayoutGroup_SetChildForceExpandHeight(id, v ? 1 : 0);
+
+    // ── UI: GridLayoutGroup ─────────────────────────────────────────
+    internal static float GridLayoutGroup_GetPaddingLeft(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetPaddingLeft(id);
+    internal static void GridLayoutGroup_SetPaddingLeft(ulong id, float v) => NativeCallbacks.Bindings.GridLayoutGroup_SetPaddingLeft(id, v);
+    internal static float GridLayoutGroup_GetPaddingRight(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetPaddingRight(id);
+    internal static void GridLayoutGroup_SetPaddingRight(ulong id, float v) => NativeCallbacks.Bindings.GridLayoutGroup_SetPaddingRight(id, v);
+    internal static float GridLayoutGroup_GetPaddingTop(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetPaddingTop(id);
+    internal static void GridLayoutGroup_SetPaddingTop(ulong id, float v) => NativeCallbacks.Bindings.GridLayoutGroup_SetPaddingTop(id, v);
+    internal static float GridLayoutGroup_GetPaddingBottom(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetPaddingBottom(id);
+    internal static void GridLayoutGroup_SetPaddingBottom(ulong id, float v) => NativeCallbacks.Bindings.GridLayoutGroup_SetPaddingBottom(id, v);
+    internal static void GridLayoutGroup_GetCellSize(ulong id, out float x, out float y)
+    { float cx, cy; NativeCallbacks.Bindings.GridLayoutGroup_GetCellSize(id, &cx, &cy); x = cx; y = cy; }
+    internal static void GridLayoutGroup_SetCellSize(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.GridLayoutGroup_SetCellSize(id, x, y);
+    internal static void GridLayoutGroup_GetSpacing(ulong id, out float x, out float y)
+    { float cx, cy; NativeCallbacks.Bindings.GridLayoutGroup_GetSpacing(id, &cx, &cy); x = cx; y = cy; }
+    internal static void GridLayoutGroup_SetSpacing(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.GridLayoutGroup_SetSpacing(id, x, y);
+    internal static int GridLayoutGroup_GetStartCorner(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetStartCorner(id);
+    internal static void GridLayoutGroup_SetStartCorner(ulong id, int v) => NativeCallbacks.Bindings.GridLayoutGroup_SetStartCorner(id, v);
+    internal static int GridLayoutGroup_GetStartAxis(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetStartAxis(id);
+    internal static void GridLayoutGroup_SetStartAxis(ulong id, int v) => NativeCallbacks.Bindings.GridLayoutGroup_SetStartAxis(id, v);
+    internal static int GridLayoutGroup_GetChildAlignment(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetChildAlignment(id);
+    internal static void GridLayoutGroup_SetChildAlignment(ulong id, int v) => NativeCallbacks.Bindings.GridLayoutGroup_SetChildAlignment(id, v);
+    internal static int GridLayoutGroup_GetConstraint(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetConstraint(id);
+    internal static void GridLayoutGroup_SetConstraint(ulong id, int v) => NativeCallbacks.Bindings.GridLayoutGroup_SetConstraint(id, v);
+    internal static int GridLayoutGroup_GetConstraintCount(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetConstraintCount(id);
+    internal static void GridLayoutGroup_SetConstraintCount(ulong id, int v) => NativeCallbacks.Bindings.GridLayoutGroup_SetConstraintCount(id, v);
+    internal static bool GridLayoutGroup_GetReverse(ulong id) => NativeCallbacks.Bindings.GridLayoutGroup_GetReverse(id) != 0;
+    internal static void GridLayoutGroup_SetReverse(ulong id, bool v) => NativeCallbacks.Bindings.GridLayoutGroup_SetReverse(id, v ? 1 : 0);
+
+    // ── UI: ContentSizeFitter ───────────────────────────────────────
+    internal static bool ContentSizeFitter_GetHorizontalFit(ulong id) => NativeCallbacks.Bindings.ContentSizeFitter_GetHorizontalFit(id) != 0;
+    internal static void ContentSizeFitter_SetHorizontalFit(ulong id, bool v) => NativeCallbacks.Bindings.ContentSizeFitter_SetHorizontalFit(id, v ? 1 : 0);
+    internal static bool ContentSizeFitter_GetVerticalFit(ulong id) => NativeCallbacks.Bindings.ContentSizeFitter_GetVerticalFit(id) != 0;
+    internal static void ContentSizeFitter_SetVerticalFit(ulong id, bool v) => NativeCallbacks.Bindings.ContentSizeFitter_SetVerticalFit(id, v ? 1 : 0);
+    internal static float ContentSizeFitter_GetPaddingLeft(ulong id) => NativeCallbacks.Bindings.ContentSizeFitter_GetPaddingLeft(id);
+    internal static void ContentSizeFitter_SetPaddingLeft(ulong id, float v) => NativeCallbacks.Bindings.ContentSizeFitter_SetPaddingLeft(id, v);
+    internal static float ContentSizeFitter_GetPaddingRight(ulong id) => NativeCallbacks.Bindings.ContentSizeFitter_GetPaddingRight(id);
+    internal static void ContentSizeFitter_SetPaddingRight(ulong id, float v) => NativeCallbacks.Bindings.ContentSizeFitter_SetPaddingRight(id, v);
+    internal static float ContentSizeFitter_GetPaddingTop(ulong id) => NativeCallbacks.Bindings.ContentSizeFitter_GetPaddingTop(id);
+    internal static void ContentSizeFitter_SetPaddingTop(ulong id, float v) => NativeCallbacks.Bindings.ContentSizeFitter_SetPaddingTop(id, v);
+    internal static float ContentSizeFitter_GetPaddingBottom(ulong id) => NativeCallbacks.Bindings.ContentSizeFitter_GetPaddingBottom(id);
+    internal static void ContentSizeFitter_SetPaddingBottom(ulong id, float v) => NativeCallbacks.Bindings.ContentSizeFitter_SetPaddingBottom(id, v);
+
+    // ── UI: WidthConstraint ─────────────────────────────────────────
+    internal static float WidthConstraint_GetMinWidth(ulong id) => NativeCallbacks.Bindings.WidthConstraint_GetMinWidth(id);
+    internal static void WidthConstraint_SetMinWidth(ulong id, float v) => NativeCallbacks.Bindings.WidthConstraint_SetMinWidth(id, v);
+    internal static float WidthConstraint_GetMaxWidth(ulong id) => NativeCallbacks.Bindings.WidthConstraint_GetMaxWidth(id);
+    internal static void WidthConstraint_SetMaxWidth(ulong id, float v) => NativeCallbacks.Bindings.WidthConstraint_SetMaxWidth(id, v);
 }

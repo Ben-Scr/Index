@@ -35,7 +35,7 @@ public:
 		std::string title = "Index Editor " + std::string(IDX_VERSION);
 		if (ProjectManager::HasProject())
 			title += " - " + ProjectManager::GetCurrentProject()->Name;
-		config.WindowSpecification = WindowSpecification(0, 0, title, true, true, true);
+		config.WindowSpecification = WindowSpecification(0, 0, title, true, true, true, true);
 		config.EnableAudio = true;
 		config.EnableGizmoRenderer = true;
 		// GuiRenderer is the screen-space UI pass for RectTransform2D

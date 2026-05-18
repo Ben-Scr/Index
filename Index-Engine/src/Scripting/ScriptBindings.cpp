@@ -37,11 +37,20 @@
 #include "Components/Audio/AudioSourceComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/UI/ButtonComponent.hpp"
+#include "Components/UI/CircularSliderComponent.hpp"
+#include "Components/UI/ContentSizeFitterComponent.hpp"
 #include "Components/UI/DropdownComponent.hpp"
+#include "Components/UI/GridLayoutGroupComponent.hpp"
+#include "Components/UI/HorizontalLayoutGroupComponent.hpp"
 #include "Components/UI/InputFieldComponent.hpp"
 #include "Components/UI/InteractableComponent.hpp"
+#include "Components/UI/MaskComponent.hpp"
+#include "Components/UI/ScrollRectComponent.hpp"
+#include "Components/UI/ScrollbarComponent.hpp"
 #include "Components/UI/SliderComponent.hpp"
 #include "Components/UI/ToggleComponent.hpp"
+#include "Components/UI/VerticalLayoutGroupComponent.hpp"
+#include "Components/UI/WidthConstraintComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Audio/AudioManager.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -2687,6 +2696,272 @@ namespace Index {
 		comp.Options.clear();
 	}
 
+	// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layout Groups /
+	//       ContentSizeFitter / WidthConstraint ────────────────────────
+	// One Get/Set pair per field, generated through scalar macros so the
+	// per-field code stays one line each. The macros assume comp.MEMBER is
+	// the underlying storage — same convention as the earlier WIDGET_*
+	// blocks above.
+
+	#define WIDGET_FLOAT_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static float GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0.0f); \
+			return comp.MEMBER; \
+		} \
+		static void SETTER(uint64_t entityID, float value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = value; \
+		}
+
+	#define WIDGET_INT_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return comp.MEMBER; \
+		} \
+		static void SETTER(uint64_t entityID, int value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = value; \
+		}
+
+	#define WIDGET_BOOL_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return comp.MEMBER ? 1 : 0; \
+		} \
+		static void SETTER(uint64_t entityID, int value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = (value != 0); \
+		}
+
+	#define WIDGET_ENUM_BINDING(COMP, MEMBER, ENUM_TYPE, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return static_cast<int>(comp.MEMBER); \
+		} \
+		static void SETTER(uint64_t entityID, int value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = static_cast<ENUM_TYPE>(value); \
+		}
+
+	#define WIDGET_VEC2_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static void GETTER(uint64_t entityID, float* outX, float* outY) { \
+			GET_COMPONENT(COMP, entityID, (void)(*outX = 0, *outY = 0)); \
+			*outX = comp.MEMBER.x; *outY = comp.MEMBER.y; \
+		} \
+		static void SETTER(uint64_t entityID, float x, float y) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = Vec2{ x, y }; \
+		}
+
+	#define WIDGET_COLOR_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static void GETTER(uint64_t entityID, float* r, float* g, float* b, float* a) { \
+			GET_COMPONENT(COMP, entityID, (void)(*r = 1, *g = 1, *b = 1, *a = 1)); \
+			*r = comp.MEMBER.r; *g = comp.MEMBER.g; *b = comp.MEMBER.b; *a = comp.MEMBER.a; \
+		} \
+		static void SETTER(uint64_t entityID, float r, float g, float b, float a) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = Color{ r, g, b, a }; \
+		}
+
+	#define WIDGET_SPRITE_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static uint64_t GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0ull); \
+			return static_cast<uint64_t>(comp.MEMBER); \
+		} \
+		static void SETTER(uint64_t entityID, uint64_t uuid) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = UUID(uuid); \
+		}
+
+	#define WIDGET_TRANSITIONMODE_BINDING(COMP, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return static_cast<int>(comp.TransitionMode); \
+		} \
+		static void SETTER(uint64_t entityID, int mode) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.TransitionMode = static_cast<UITransitionMode>(mode); \
+		}
+
+	#define WIDGET_ENTITYREF_BINDING(COMP, MEMBER, GETTER, SETTER) \
+		static uint64_t GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0ull); \
+			if (comp.MEMBER == entt::null) return 0ull; \
+			return scene->GetEntityPersistentID(comp.MEMBER); \
+		} \
+		static void SETTER(uint64_t entityID, uint64_t refUuid) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			if (refUuid == 0) { comp.MEMBER = entt::null; return; } \
+			EntityHandle resolved = entt::null; \
+			if (scene->TryResolveEntityRef(refUuid, resolved)) { \
+				comp.MEMBER = resolved; \
+			} \
+		}
+
+	// ── Scrollbar ───────────────────────────────────────────────────────
+	WIDGET_FLOAT_BINDING(ScrollbarComponent, Value,         Index_Scrollbar_GetValue,         Index_Scrollbar_SetValue)
+	WIDGET_FLOAT_BINDING(ScrollbarComponent, Size,          Index_Scrollbar_GetSize,          Index_Scrollbar_SetSize)
+	WIDGET_INT_BINDING  (ScrollbarComponent, NumberOfSteps, Index_Scrollbar_GetNumberOfSteps, Index_Scrollbar_SetNumberOfSteps)
+	WIDGET_ENUM_BINDING (ScrollbarComponent, Direction, ScrollbarDirection, Index_Scrollbar_GetDirection, Index_Scrollbar_SetDirection)
+	WIDGET_BOOL_BINDING (ScrollbarComponent, IsReadOnly,    Index_Scrollbar_GetIsReadOnly,    Index_Scrollbar_SetIsReadOnly)
+	WIDGET_ENTITYREF_BINDING(ScrollbarComponent, HandleEntity, Index_Scrollbar_GetHandleEntity, Index_Scrollbar_SetHandleEntity)
+
+	static int  Index_Scrollbar_GetValueChangedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(ScrollbarComponent, entityID, 0);
+		return comp.ValueChangedThisFrame ? 1 : 0;
+	}
+	static void Index_Scrollbar_MarkValueObserved(uint64_t entityID) {
+		GET_COMPONENT(ScrollbarComponent, entityID, );
+		comp.LastObservedValue = comp.Value;
+		comp.ValueObserved = true;
+	}
+
+	WIDGET_COLOR_BINDING(ScrollbarComponent, NormalColor,   Index_Scrollbar_GetNormalColor,   Index_Scrollbar_SetNormalColor)
+	WIDGET_COLOR_BINDING(ScrollbarComponent, HoveredColor,  Index_Scrollbar_GetHoveredColor,  Index_Scrollbar_SetHoveredColor)
+	WIDGET_COLOR_BINDING(ScrollbarComponent, PressedColor,  Index_Scrollbar_GetPressedColor,  Index_Scrollbar_SetPressedColor)
+	WIDGET_COLOR_BINDING(ScrollbarComponent, DisabledColor, Index_Scrollbar_GetDisabledColor, Index_Scrollbar_SetDisabledColor)
+	WIDGET_COLOR_BINDING(ScrollbarComponent, FocusedColor,  Index_Scrollbar_GetFocusedColor,  Index_Scrollbar_SetFocusedColor)
+	WIDGET_TRANSITIONMODE_BINDING(ScrollbarComponent, Index_Scrollbar_GetTransitionMode, Index_Scrollbar_SetTransitionMode)
+	WIDGET_SPRITE_BINDING(ScrollbarComponent, NormalSprite,   Index_Scrollbar_GetNormalSprite,   Index_Scrollbar_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(ScrollbarComponent, HoveredSprite,  Index_Scrollbar_GetHoveredSprite,  Index_Scrollbar_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(ScrollbarComponent, PressedSprite,  Index_Scrollbar_GetPressedSprite,  Index_Scrollbar_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(ScrollbarComponent, DisabledSprite, Index_Scrollbar_GetDisabledSprite, Index_Scrollbar_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(ScrollbarComponent, FocusedSprite,  Index_Scrollbar_GetFocusedSprite,  Index_Scrollbar_SetFocusedSprite)
+
+	// ── ScrollRect ──────────────────────────────────────────────────────
+	WIDGET_ENTITYREF_BINDING(ScrollRectComponent, Content,             Index_ScrollRect_GetContent,             Index_ScrollRect_SetContent)
+	WIDGET_ENTITYREF_BINDING(ScrollRectComponent, Viewport,            Index_ScrollRect_GetViewport,            Index_ScrollRect_SetViewport)
+	WIDGET_ENTITYREF_BINDING(ScrollRectComponent, HorizontalScrollbar, Index_ScrollRect_GetHorizontalScrollbar, Index_ScrollRect_SetHorizontalScrollbar)
+	WIDGET_ENTITYREF_BINDING(ScrollRectComponent, VerticalScrollbar,   Index_ScrollRect_GetVerticalScrollbar,   Index_ScrollRect_SetVerticalScrollbar)
+	WIDGET_BOOL_BINDING (ScrollRectComponent, Horizontal,           Index_ScrollRect_GetHorizontal,           Index_ScrollRect_SetHorizontal)
+	WIDGET_BOOL_BINDING (ScrollRectComponent, Vertical,             Index_ScrollRect_GetVertical,             Index_ScrollRect_SetVertical)
+	WIDGET_BOOL_BINDING (ScrollRectComponent, Inertia,              Index_ScrollRect_GetInertia,              Index_ScrollRect_SetInertia)
+	WIDGET_ENUM_BINDING (ScrollRectComponent, MovementType, ScrollRectMovementType, Index_ScrollRect_GetMovementType, Index_ScrollRect_SetMovementType)
+	WIDGET_ENUM_BINDING (ScrollRectComponent, HorizontalScrollbarVisibility, ScrollbarVisibility, Index_ScrollRect_GetHorizontalScrollbarVisibility, Index_ScrollRect_SetHorizontalScrollbarVisibility)
+	WIDGET_ENUM_BINDING (ScrollRectComponent, VerticalScrollbarVisibility,   ScrollbarVisibility, Index_ScrollRect_GetVerticalScrollbarVisibility,   Index_ScrollRect_SetVerticalScrollbarVisibility)
+	WIDGET_FLOAT_BINDING(ScrollRectComponent, Elasticity,                  Index_ScrollRect_GetElasticity,                  Index_ScrollRect_SetElasticity)
+	WIDGET_FLOAT_BINDING(ScrollRectComponent, DecelerationRate,            Index_ScrollRect_GetDecelerationRate,            Index_ScrollRect_SetDecelerationRate)
+	WIDGET_FLOAT_BINDING(ScrollRectComponent, ScrollSensitivity,           Index_ScrollRect_GetScrollSensitivity,           Index_ScrollRect_SetScrollSensitivity)
+	WIDGET_FLOAT_BINDING(ScrollRectComponent, HorizontalScrollbarSpacing,  Index_ScrollRect_GetHorizontalScrollbarSpacing,  Index_ScrollRect_SetHorizontalScrollbarSpacing)
+	WIDGET_FLOAT_BINDING(ScrollRectComponent, VerticalScrollbarSpacing,    Index_ScrollRect_GetVerticalScrollbarSpacing,    Index_ScrollRect_SetVerticalScrollbarSpacing)
+	WIDGET_VEC2_BINDING (ScrollRectComponent, NormalizedPosition,          Index_ScrollRect_GetNormalizedPosition,          Index_ScrollRect_SetNormalizedPosition)
+
+	static int  Index_ScrollRect_GetValueChangedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(ScrollRectComponent, entityID, 0);
+		return comp.ValueChangedThisFrame ? 1 : 0;
+	}
+	static void Index_ScrollRect_MarkValueObserved(uint64_t entityID) {
+		GET_COMPONENT(ScrollRectComponent, entityID, );
+		comp.LastObservedNormalizedPosition = comp.NormalizedPosition;
+		comp.ValueObserved = true;
+	}
+
+	// ── Mask ────────────────────────────────────────────────────────────
+	WIDGET_BOOL_BINDING(MaskComponent, ShowMaskGraphic, Index_Mask_GetShowMaskGraphic, Index_Mask_SetShowMaskGraphic)
+
+	// ── CircularSlider ──────────────────────────────────────────────────
+	WIDGET_FLOAT_BINDING(CircularSliderComponent, Value,             Index_CircularSlider_GetValue,             Index_CircularSlider_SetValue)
+	WIDGET_FLOAT_BINDING(CircularSliderComponent, MinValue,          Index_CircularSlider_GetMinValue,          Index_CircularSlider_SetMinValue)
+	WIDGET_FLOAT_BINDING(CircularSliderComponent, MaxValue,          Index_CircularSlider_GetMaxValue,          Index_CircularSlider_SetMaxValue)
+	WIDGET_BOOL_BINDING (CircularSliderComponent, WholeNumbers,      Index_CircularSlider_GetWholeNumbers,      Index_CircularSlider_SetWholeNumbers)
+	WIDGET_BOOL_BINDING (CircularSliderComponent, IsReadOnly,        Index_CircularSlider_GetIsReadOnly,        Index_CircularSlider_SetIsReadOnly)
+	WIDGET_FLOAT_BINDING(CircularSliderComponent, StartAngleDegrees, Index_CircularSlider_GetStartAngleDegrees, Index_CircularSlider_SetStartAngleDegrees)
+	WIDGET_FLOAT_BINDING(CircularSliderComponent, SweepDegrees,      Index_CircularSlider_GetSweepDegrees,      Index_CircularSlider_SetSweepDegrees)
+	WIDGET_BOOL_BINDING (CircularSliderComponent, Clockwise,         Index_CircularSlider_GetClockwise,         Index_CircularSlider_SetClockwise)
+	WIDGET_FLOAT_BINDING(CircularSliderComponent, RingThickness,     Index_CircularSlider_GetRingThickness,     Index_CircularSlider_SetRingThickness)
+	WIDGET_INT_BINDING  (CircularSliderComponent, RingSegments,      Index_CircularSlider_GetRingSegments,      Index_CircularSlider_SetRingSegments)
+	WIDGET_COLOR_BINDING(CircularSliderComponent, BackgroundColor,   Index_CircularSlider_GetBackgroundColor,   Index_CircularSlider_SetBackgroundColor)
+	WIDGET_COLOR_BINDING(CircularSliderComponent, FillColor,         Index_CircularSlider_GetFillColor,         Index_CircularSlider_SetFillColor)
+	WIDGET_ENTITYREF_BINDING(CircularSliderComponent, HandleEntity,  Index_CircularSlider_GetHandleEntity,      Index_CircularSlider_SetHandleEntity)
+
+	static int  Index_CircularSlider_GetValueChangedThisFrame(uint64_t entityID) {
+		GET_COMPONENT(CircularSliderComponent, entityID, 0);
+		return comp.ValueChangedThisFrame ? 1 : 0;
+	}
+	static void Index_CircularSlider_MarkValueObserved(uint64_t entityID) {
+		GET_COMPONENT(CircularSliderComponent, entityID, );
+		comp.LastObservedValue = comp.Value;
+		comp.ValueObserved = true;
+	}
+
+	WIDGET_COLOR_BINDING(CircularSliderComponent, NormalColor,   Index_CircularSlider_GetNormalColor,   Index_CircularSlider_SetNormalColor)
+	WIDGET_COLOR_BINDING(CircularSliderComponent, HoveredColor,  Index_CircularSlider_GetHoveredColor,  Index_CircularSlider_SetHoveredColor)
+	WIDGET_COLOR_BINDING(CircularSliderComponent, PressedColor,  Index_CircularSlider_GetPressedColor,  Index_CircularSlider_SetPressedColor)
+	WIDGET_COLOR_BINDING(CircularSliderComponent, DisabledColor, Index_CircularSlider_GetDisabledColor, Index_CircularSlider_SetDisabledColor)
+	WIDGET_COLOR_BINDING(CircularSliderComponent, FocusedColor,  Index_CircularSlider_GetFocusedColor,  Index_CircularSlider_SetFocusedColor)
+	WIDGET_TRANSITIONMODE_BINDING(CircularSliderComponent, Index_CircularSlider_GetTransitionMode, Index_CircularSlider_SetTransitionMode)
+	WIDGET_SPRITE_BINDING(CircularSliderComponent, NormalSprite,   Index_CircularSlider_GetNormalSprite,   Index_CircularSlider_SetNormalSprite)
+	WIDGET_SPRITE_BINDING(CircularSliderComponent, HoveredSprite,  Index_CircularSlider_GetHoveredSprite,  Index_CircularSlider_SetHoveredSprite)
+	WIDGET_SPRITE_BINDING(CircularSliderComponent, PressedSprite,  Index_CircularSlider_GetPressedSprite,  Index_CircularSlider_SetPressedSprite)
+	WIDGET_SPRITE_BINDING(CircularSliderComponent, DisabledSprite, Index_CircularSlider_GetDisabledSprite, Index_CircularSlider_SetDisabledSprite)
+	WIDGET_SPRITE_BINDING(CircularSliderComponent, FocusedSprite,  Index_CircularSlider_GetFocusedSprite,  Index_CircularSlider_SetFocusedSprite)
+
+	// ── HorizontalLayoutGroup ───────────────────────────────────────────
+	WIDGET_FLOAT_BINDING(HorizontalLayoutGroupComponent, PaddingLeft,             Index_HorizontalLayoutGroup_GetPaddingLeft,             Index_HorizontalLayoutGroup_SetPaddingLeft)
+	WIDGET_FLOAT_BINDING(HorizontalLayoutGroupComponent, PaddingRight,            Index_HorizontalLayoutGroup_GetPaddingRight,            Index_HorizontalLayoutGroup_SetPaddingRight)
+	WIDGET_FLOAT_BINDING(HorizontalLayoutGroupComponent, PaddingTop,              Index_HorizontalLayoutGroup_GetPaddingTop,              Index_HorizontalLayoutGroup_SetPaddingTop)
+	WIDGET_FLOAT_BINDING(HorizontalLayoutGroupComponent, PaddingBottom,           Index_HorizontalLayoutGroup_GetPaddingBottom,           Index_HorizontalLayoutGroup_SetPaddingBottom)
+	WIDGET_FLOAT_BINDING(HorizontalLayoutGroupComponent, Spacing,                 Index_HorizontalLayoutGroup_GetSpacing,                 Index_HorizontalLayoutGroup_SetSpacing)
+	WIDGET_ENUM_BINDING (HorizontalLayoutGroupComponent, ChildAlignment, UIAlignment, Index_HorizontalLayoutGroup_GetChildAlignment, Index_HorizontalLayoutGroup_SetChildAlignment)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, ReverseArrangement,      Index_HorizontalLayoutGroup_GetReverseArrangement,      Index_HorizontalLayoutGroup_SetReverseArrangement)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, ControlChildWidth,       Index_HorizontalLayoutGroup_GetControlChildWidth,       Index_HorizontalLayoutGroup_SetControlChildWidth)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, ControlChildHeight,      Index_HorizontalLayoutGroup_GetControlChildHeight,      Index_HorizontalLayoutGroup_SetControlChildHeight)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, UseChildScaleWidth,      Index_HorizontalLayoutGroup_GetUseChildScaleWidth,      Index_HorizontalLayoutGroup_SetUseChildScaleWidth)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, UseChildScaleHeight,     Index_HorizontalLayoutGroup_GetUseChildScaleHeight,     Index_HorizontalLayoutGroup_SetUseChildScaleHeight)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, ChildForceExpandWidth,   Index_HorizontalLayoutGroup_GetChildForceExpandWidth,   Index_HorizontalLayoutGroup_SetChildForceExpandWidth)
+	WIDGET_BOOL_BINDING (HorizontalLayoutGroupComponent, ChildForceExpandHeight,  Index_HorizontalLayoutGroup_GetChildForceExpandHeight,  Index_HorizontalLayoutGroup_SetChildForceExpandHeight)
+
+	// ── VerticalLayoutGroup ─────────────────────────────────────────────
+	WIDGET_FLOAT_BINDING(VerticalLayoutGroupComponent, PaddingLeft,             Index_VerticalLayoutGroup_GetPaddingLeft,             Index_VerticalLayoutGroup_SetPaddingLeft)
+	WIDGET_FLOAT_BINDING(VerticalLayoutGroupComponent, PaddingRight,            Index_VerticalLayoutGroup_GetPaddingRight,            Index_VerticalLayoutGroup_SetPaddingRight)
+	WIDGET_FLOAT_BINDING(VerticalLayoutGroupComponent, PaddingTop,              Index_VerticalLayoutGroup_GetPaddingTop,              Index_VerticalLayoutGroup_SetPaddingTop)
+	WIDGET_FLOAT_BINDING(VerticalLayoutGroupComponent, PaddingBottom,           Index_VerticalLayoutGroup_GetPaddingBottom,           Index_VerticalLayoutGroup_SetPaddingBottom)
+	WIDGET_FLOAT_BINDING(VerticalLayoutGroupComponent, Spacing,                 Index_VerticalLayoutGroup_GetSpacing,                 Index_VerticalLayoutGroup_SetSpacing)
+	WIDGET_ENUM_BINDING (VerticalLayoutGroupComponent, ChildAlignment, UIAlignment, Index_VerticalLayoutGroup_GetChildAlignment, Index_VerticalLayoutGroup_SetChildAlignment)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, ReverseArrangement,      Index_VerticalLayoutGroup_GetReverseArrangement,      Index_VerticalLayoutGroup_SetReverseArrangement)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, ControlChildWidth,       Index_VerticalLayoutGroup_GetControlChildWidth,       Index_VerticalLayoutGroup_SetControlChildWidth)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, ControlChildHeight,      Index_VerticalLayoutGroup_GetControlChildHeight,      Index_VerticalLayoutGroup_SetControlChildHeight)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, UseChildScaleWidth,      Index_VerticalLayoutGroup_GetUseChildScaleWidth,      Index_VerticalLayoutGroup_SetUseChildScaleWidth)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, UseChildScaleHeight,     Index_VerticalLayoutGroup_GetUseChildScaleHeight,     Index_VerticalLayoutGroup_SetUseChildScaleHeight)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, ChildForceExpandWidth,   Index_VerticalLayoutGroup_GetChildForceExpandWidth,   Index_VerticalLayoutGroup_SetChildForceExpandWidth)
+	WIDGET_BOOL_BINDING (VerticalLayoutGroupComponent, ChildForceExpandHeight,  Index_VerticalLayoutGroup_GetChildForceExpandHeight,  Index_VerticalLayoutGroup_SetChildForceExpandHeight)
+
+	// ── GridLayoutGroup ─────────────────────────────────────────────────
+	WIDGET_FLOAT_BINDING(GridLayoutGroupComponent, PaddingLeft,     Index_GridLayoutGroup_GetPaddingLeft,     Index_GridLayoutGroup_SetPaddingLeft)
+	WIDGET_FLOAT_BINDING(GridLayoutGroupComponent, PaddingRight,    Index_GridLayoutGroup_GetPaddingRight,    Index_GridLayoutGroup_SetPaddingRight)
+	WIDGET_FLOAT_BINDING(GridLayoutGroupComponent, PaddingTop,      Index_GridLayoutGroup_GetPaddingTop,      Index_GridLayoutGroup_SetPaddingTop)
+	WIDGET_FLOAT_BINDING(GridLayoutGroupComponent, PaddingBottom,   Index_GridLayoutGroup_GetPaddingBottom,   Index_GridLayoutGroup_SetPaddingBottom)
+	WIDGET_VEC2_BINDING (GridLayoutGroupComponent, CellSize,        Index_GridLayoutGroup_GetCellSize,        Index_GridLayoutGroup_SetCellSize)
+	WIDGET_VEC2_BINDING (GridLayoutGroupComponent, Spacing,         Index_GridLayoutGroup_GetSpacing,         Index_GridLayoutGroup_SetSpacing)
+	WIDGET_ENUM_BINDING (GridLayoutGroupComponent, StartCorner,    GridLayoutStartCorner, Index_GridLayoutGroup_GetStartCorner,    Index_GridLayoutGroup_SetStartCorner)
+	WIDGET_ENUM_BINDING (GridLayoutGroupComponent, StartAxis,      GridLayoutStartAxis,   Index_GridLayoutGroup_GetStartAxis,      Index_GridLayoutGroup_SetStartAxis)
+	WIDGET_ENUM_BINDING (GridLayoutGroupComponent, ChildAlignment, UIAlignment,           Index_GridLayoutGroup_GetChildAlignment, Index_GridLayoutGroup_SetChildAlignment)
+	WIDGET_ENUM_BINDING (GridLayoutGroupComponent, Constraint,     GridLayoutConstraint,  Index_GridLayoutGroup_GetConstraint,     Index_GridLayoutGroup_SetConstraint)
+	WIDGET_INT_BINDING  (GridLayoutGroupComponent, ConstraintCount, Index_GridLayoutGroup_GetConstraintCount, Index_GridLayoutGroup_SetConstraintCount)
+	WIDGET_BOOL_BINDING (GridLayoutGroupComponent, Reverse,         Index_GridLayoutGroup_GetReverse,         Index_GridLayoutGroup_SetReverse)
+
+	// ── ContentSizeFitter ───────────────────────────────────────────────
+	WIDGET_BOOL_BINDING (ContentSizeFitterComponent, HorizontalFit,  Index_ContentSizeFitter_GetHorizontalFit,  Index_ContentSizeFitter_SetHorizontalFit)
+	WIDGET_BOOL_BINDING (ContentSizeFitterComponent, VerticalFit,    Index_ContentSizeFitter_GetVerticalFit,    Index_ContentSizeFitter_SetVerticalFit)
+	WIDGET_FLOAT_BINDING(ContentSizeFitterComponent, PaddingLeft,    Index_ContentSizeFitter_GetPaddingLeft,    Index_ContentSizeFitter_SetPaddingLeft)
+	WIDGET_FLOAT_BINDING(ContentSizeFitterComponent, PaddingRight,   Index_ContentSizeFitter_GetPaddingRight,   Index_ContentSizeFitter_SetPaddingRight)
+	WIDGET_FLOAT_BINDING(ContentSizeFitterComponent, PaddingTop,     Index_ContentSizeFitter_GetPaddingTop,     Index_ContentSizeFitter_SetPaddingTop)
+	WIDGET_FLOAT_BINDING(ContentSizeFitterComponent, PaddingBottom,  Index_ContentSizeFitter_GetPaddingBottom,  Index_ContentSizeFitter_SetPaddingBottom)
+
+	// ── WidthConstraint ─────────────────────────────────────────────────
+	WIDGET_FLOAT_BINDING(WidthConstraintComponent, MinWidth, Index_WidthConstraint_GetMinWidth, Index_WidthConstraint_SetMinWidth)
+	WIDGET_FLOAT_BINDING(WidthConstraintComponent, MaxWidth, Index_WidthConstraint_GetMaxWidth, Index_WidthConstraint_SetMaxWidth)
+
+	#undef WIDGET_FLOAT_BINDING
+	#undef WIDGET_INT_BINDING
+	#undef WIDGET_BOOL_BINDING
+	#undef WIDGET_ENUM_BINDING
+	#undef WIDGET_VEC2_BINDING
+	#undef WIDGET_COLOR_BINDING
+	#undef WIDGET_SPRITE_BINDING
+	#undef WIDGET_TRANSITIONMODE_BINDING
+	#undef WIDGET_ENTITYREF_BINDING
+
 	#undef GET_COMPONENT
 
 	// ── Registration ────────────────────────────────────────────────────
@@ -3157,6 +3432,243 @@ namespace Index {
 		b.Entity_GetComponentPtr   = &Index_Entity_GetComponentPtr;
 		b.Entity_GetComponentSize  = &Index_Entity_GetComponentSize;
 		b.Scene_OpenQueryView      = &Index_Scene_OpenQueryView;
+
+		// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layouts /
+		//       ContentSizeFitter / WidthConstraint (appended for binary
+		//       compat — order MUST match NativeBindings struct field
+		//       order in ScriptGlue.hpp and the C# mirror.) ──────────────
+
+		// Scrollbar
+		b.Scrollbar_GetValue                 = &Index_Scrollbar_GetValue;
+		b.Scrollbar_SetValue                 = &Index_Scrollbar_SetValue;
+		b.Scrollbar_GetSize                  = &Index_Scrollbar_GetSize;
+		b.Scrollbar_SetSize                  = &Index_Scrollbar_SetSize;
+		b.Scrollbar_GetNumberOfSteps         = &Index_Scrollbar_GetNumberOfSteps;
+		b.Scrollbar_SetNumberOfSteps         = &Index_Scrollbar_SetNumberOfSteps;
+		b.Scrollbar_GetDirection             = &Index_Scrollbar_GetDirection;
+		b.Scrollbar_SetDirection             = &Index_Scrollbar_SetDirection;
+		b.Scrollbar_GetIsReadOnly            = &Index_Scrollbar_GetIsReadOnly;
+		b.Scrollbar_SetIsReadOnly            = &Index_Scrollbar_SetIsReadOnly;
+		b.Scrollbar_GetHandleEntity          = &Index_Scrollbar_GetHandleEntity;
+		b.Scrollbar_SetHandleEntity          = &Index_Scrollbar_SetHandleEntity;
+		b.Scrollbar_GetValueChangedThisFrame = &Index_Scrollbar_GetValueChangedThisFrame;
+		b.Scrollbar_MarkValueObserved        = &Index_Scrollbar_MarkValueObserved;
+		b.Scrollbar_GetNormalColor   = &Index_Scrollbar_GetNormalColor;
+		b.Scrollbar_SetNormalColor   = &Index_Scrollbar_SetNormalColor;
+		b.Scrollbar_GetHoveredColor  = &Index_Scrollbar_GetHoveredColor;
+		b.Scrollbar_SetHoveredColor  = &Index_Scrollbar_SetHoveredColor;
+		b.Scrollbar_GetPressedColor  = &Index_Scrollbar_GetPressedColor;
+		b.Scrollbar_SetPressedColor  = &Index_Scrollbar_SetPressedColor;
+		b.Scrollbar_GetDisabledColor = &Index_Scrollbar_GetDisabledColor;
+		b.Scrollbar_SetDisabledColor = &Index_Scrollbar_SetDisabledColor;
+		b.Scrollbar_GetFocusedColor  = &Index_Scrollbar_GetFocusedColor;
+		b.Scrollbar_SetFocusedColor  = &Index_Scrollbar_SetFocusedColor;
+		b.Scrollbar_GetTransitionMode = &Index_Scrollbar_GetTransitionMode;
+		b.Scrollbar_SetTransitionMode = &Index_Scrollbar_SetTransitionMode;
+		b.Scrollbar_GetNormalSprite   = &Index_Scrollbar_GetNormalSprite;
+		b.Scrollbar_SetNormalSprite   = &Index_Scrollbar_SetNormalSprite;
+		b.Scrollbar_GetHoveredSprite  = &Index_Scrollbar_GetHoveredSprite;
+		b.Scrollbar_SetHoveredSprite  = &Index_Scrollbar_SetHoveredSprite;
+		b.Scrollbar_GetPressedSprite  = &Index_Scrollbar_GetPressedSprite;
+		b.Scrollbar_SetPressedSprite  = &Index_Scrollbar_SetPressedSprite;
+		b.Scrollbar_GetDisabledSprite = &Index_Scrollbar_GetDisabledSprite;
+		b.Scrollbar_SetDisabledSprite = &Index_Scrollbar_SetDisabledSprite;
+		b.Scrollbar_GetFocusedSprite  = &Index_Scrollbar_GetFocusedSprite;
+		b.Scrollbar_SetFocusedSprite  = &Index_Scrollbar_SetFocusedSprite;
+
+		// ScrollRect
+		b.ScrollRect_GetContent                       = &Index_ScrollRect_GetContent;
+		b.ScrollRect_SetContent                       = &Index_ScrollRect_SetContent;
+		b.ScrollRect_GetViewport                      = &Index_ScrollRect_GetViewport;
+		b.ScrollRect_SetViewport                      = &Index_ScrollRect_SetViewport;
+		b.ScrollRect_GetHorizontal                    = &Index_ScrollRect_GetHorizontal;
+		b.ScrollRect_SetHorizontal                    = &Index_ScrollRect_SetHorizontal;
+		b.ScrollRect_GetVertical                      = &Index_ScrollRect_GetVertical;
+		b.ScrollRect_SetVertical                      = &Index_ScrollRect_SetVertical;
+		b.ScrollRect_GetMovementType                  = &Index_ScrollRect_GetMovementType;
+		b.ScrollRect_SetMovementType                  = &Index_ScrollRect_SetMovementType;
+		b.ScrollRect_GetElasticity                    = &Index_ScrollRect_GetElasticity;
+		b.ScrollRect_SetElasticity                    = &Index_ScrollRect_SetElasticity;
+		b.ScrollRect_GetInertia                       = &Index_ScrollRect_GetInertia;
+		b.ScrollRect_SetInertia                       = &Index_ScrollRect_SetInertia;
+		b.ScrollRect_GetDecelerationRate              = &Index_ScrollRect_GetDecelerationRate;
+		b.ScrollRect_SetDecelerationRate              = &Index_ScrollRect_SetDecelerationRate;
+		b.ScrollRect_GetScrollSensitivity             = &Index_ScrollRect_GetScrollSensitivity;
+		b.ScrollRect_SetScrollSensitivity             = &Index_ScrollRect_SetScrollSensitivity;
+		b.ScrollRect_GetHorizontalScrollbar           = &Index_ScrollRect_GetHorizontalScrollbar;
+		b.ScrollRect_SetHorizontalScrollbar           = &Index_ScrollRect_SetHorizontalScrollbar;
+		b.ScrollRect_GetVerticalScrollbar             = &Index_ScrollRect_GetVerticalScrollbar;
+		b.ScrollRect_SetVerticalScrollbar             = &Index_ScrollRect_SetVerticalScrollbar;
+		b.ScrollRect_GetHorizontalScrollbarVisibility = &Index_ScrollRect_GetHorizontalScrollbarVisibility;
+		b.ScrollRect_SetHorizontalScrollbarVisibility = &Index_ScrollRect_SetHorizontalScrollbarVisibility;
+		b.ScrollRect_GetVerticalScrollbarVisibility   = &Index_ScrollRect_GetVerticalScrollbarVisibility;
+		b.ScrollRect_SetVerticalScrollbarVisibility   = &Index_ScrollRect_SetVerticalScrollbarVisibility;
+		b.ScrollRect_GetHorizontalScrollbarSpacing    = &Index_ScrollRect_GetHorizontalScrollbarSpacing;
+		b.ScrollRect_SetHorizontalScrollbarSpacing    = &Index_ScrollRect_SetHorizontalScrollbarSpacing;
+		b.ScrollRect_GetVerticalScrollbarSpacing      = &Index_ScrollRect_GetVerticalScrollbarSpacing;
+		b.ScrollRect_SetVerticalScrollbarSpacing      = &Index_ScrollRect_SetVerticalScrollbarSpacing;
+		b.ScrollRect_GetNormalizedPosition            = &Index_ScrollRect_GetNormalizedPosition;
+		b.ScrollRect_SetNormalizedPosition            = &Index_ScrollRect_SetNormalizedPosition;
+		b.ScrollRect_GetValueChangedThisFrame         = &Index_ScrollRect_GetValueChangedThisFrame;
+		b.ScrollRect_MarkValueObserved                = &Index_ScrollRect_MarkValueObserved;
+
+		// Mask
+		b.Mask_GetShowMaskGraphic = &Index_Mask_GetShowMaskGraphic;
+		b.Mask_SetShowMaskGraphic = &Index_Mask_SetShowMaskGraphic;
+
+		// CircularSlider
+		b.CircularSlider_GetValue                 = &Index_CircularSlider_GetValue;
+		b.CircularSlider_SetValue                 = &Index_CircularSlider_SetValue;
+		b.CircularSlider_GetMinValue              = &Index_CircularSlider_GetMinValue;
+		b.CircularSlider_SetMinValue              = &Index_CircularSlider_SetMinValue;
+		b.CircularSlider_GetMaxValue              = &Index_CircularSlider_GetMaxValue;
+		b.CircularSlider_SetMaxValue              = &Index_CircularSlider_SetMaxValue;
+		b.CircularSlider_GetWholeNumbers          = &Index_CircularSlider_GetWholeNumbers;
+		b.CircularSlider_SetWholeNumbers          = &Index_CircularSlider_SetWholeNumbers;
+		b.CircularSlider_GetIsReadOnly            = &Index_CircularSlider_GetIsReadOnly;
+		b.CircularSlider_SetIsReadOnly            = &Index_CircularSlider_SetIsReadOnly;
+		b.CircularSlider_GetStartAngleDegrees     = &Index_CircularSlider_GetStartAngleDegrees;
+		b.CircularSlider_SetStartAngleDegrees     = &Index_CircularSlider_SetStartAngleDegrees;
+		b.CircularSlider_GetSweepDegrees          = &Index_CircularSlider_GetSweepDegrees;
+		b.CircularSlider_SetSweepDegrees          = &Index_CircularSlider_SetSweepDegrees;
+		b.CircularSlider_GetClockwise             = &Index_CircularSlider_GetClockwise;
+		b.CircularSlider_SetClockwise             = &Index_CircularSlider_SetClockwise;
+		b.CircularSlider_GetRingThickness         = &Index_CircularSlider_GetRingThickness;
+		b.CircularSlider_SetRingThickness         = &Index_CircularSlider_SetRingThickness;
+		b.CircularSlider_GetRingSegments          = &Index_CircularSlider_GetRingSegments;
+		b.CircularSlider_SetRingSegments          = &Index_CircularSlider_SetRingSegments;
+		b.CircularSlider_GetBackgroundColor       = &Index_CircularSlider_GetBackgroundColor;
+		b.CircularSlider_SetBackgroundColor       = &Index_CircularSlider_SetBackgroundColor;
+		b.CircularSlider_GetFillColor             = &Index_CircularSlider_GetFillColor;
+		b.CircularSlider_SetFillColor             = &Index_CircularSlider_SetFillColor;
+		b.CircularSlider_GetHandleEntity          = &Index_CircularSlider_GetHandleEntity;
+		b.CircularSlider_SetHandleEntity          = &Index_CircularSlider_SetHandleEntity;
+		b.CircularSlider_GetValueChangedThisFrame = &Index_CircularSlider_GetValueChangedThisFrame;
+		b.CircularSlider_MarkValueObserved        = &Index_CircularSlider_MarkValueObserved;
+		b.CircularSlider_GetNormalColor   = &Index_CircularSlider_GetNormalColor;
+		b.CircularSlider_SetNormalColor   = &Index_CircularSlider_SetNormalColor;
+		b.CircularSlider_GetHoveredColor  = &Index_CircularSlider_GetHoveredColor;
+		b.CircularSlider_SetHoveredColor  = &Index_CircularSlider_SetHoveredColor;
+		b.CircularSlider_GetPressedColor  = &Index_CircularSlider_GetPressedColor;
+		b.CircularSlider_SetPressedColor  = &Index_CircularSlider_SetPressedColor;
+		b.CircularSlider_GetDisabledColor = &Index_CircularSlider_GetDisabledColor;
+		b.CircularSlider_SetDisabledColor = &Index_CircularSlider_SetDisabledColor;
+		b.CircularSlider_GetFocusedColor  = &Index_CircularSlider_GetFocusedColor;
+		b.CircularSlider_SetFocusedColor  = &Index_CircularSlider_SetFocusedColor;
+		b.CircularSlider_GetTransitionMode = &Index_CircularSlider_GetTransitionMode;
+		b.CircularSlider_SetTransitionMode = &Index_CircularSlider_SetTransitionMode;
+		b.CircularSlider_GetNormalSprite   = &Index_CircularSlider_GetNormalSprite;
+		b.CircularSlider_SetNormalSprite   = &Index_CircularSlider_SetNormalSprite;
+		b.CircularSlider_GetHoveredSprite  = &Index_CircularSlider_GetHoveredSprite;
+		b.CircularSlider_SetHoveredSprite  = &Index_CircularSlider_SetHoveredSprite;
+		b.CircularSlider_GetPressedSprite  = &Index_CircularSlider_GetPressedSprite;
+		b.CircularSlider_SetPressedSprite  = &Index_CircularSlider_SetPressedSprite;
+		b.CircularSlider_GetDisabledSprite = &Index_CircularSlider_GetDisabledSprite;
+		b.CircularSlider_SetDisabledSprite = &Index_CircularSlider_SetDisabledSprite;
+		b.CircularSlider_GetFocusedSprite  = &Index_CircularSlider_GetFocusedSprite;
+		b.CircularSlider_SetFocusedSprite  = &Index_CircularSlider_SetFocusedSprite;
+
+		// HorizontalLayoutGroup
+		b.HorizontalLayoutGroup_GetPaddingLeft            = &Index_HorizontalLayoutGroup_GetPaddingLeft;
+		b.HorizontalLayoutGroup_SetPaddingLeft            = &Index_HorizontalLayoutGroup_SetPaddingLeft;
+		b.HorizontalLayoutGroup_GetPaddingRight           = &Index_HorizontalLayoutGroup_GetPaddingRight;
+		b.HorizontalLayoutGroup_SetPaddingRight           = &Index_HorizontalLayoutGroup_SetPaddingRight;
+		b.HorizontalLayoutGroup_GetPaddingTop             = &Index_HorizontalLayoutGroup_GetPaddingTop;
+		b.HorizontalLayoutGroup_SetPaddingTop             = &Index_HorizontalLayoutGroup_SetPaddingTop;
+		b.HorizontalLayoutGroup_GetPaddingBottom          = &Index_HorizontalLayoutGroup_GetPaddingBottom;
+		b.HorizontalLayoutGroup_SetPaddingBottom          = &Index_HorizontalLayoutGroup_SetPaddingBottom;
+		b.HorizontalLayoutGroup_GetSpacing                = &Index_HorizontalLayoutGroup_GetSpacing;
+		b.HorizontalLayoutGroup_SetSpacing                = &Index_HorizontalLayoutGroup_SetSpacing;
+		b.HorizontalLayoutGroup_GetChildAlignment         = &Index_HorizontalLayoutGroup_GetChildAlignment;
+		b.HorizontalLayoutGroup_SetChildAlignment         = &Index_HorizontalLayoutGroup_SetChildAlignment;
+		b.HorizontalLayoutGroup_GetReverseArrangement     = &Index_HorizontalLayoutGroup_GetReverseArrangement;
+		b.HorizontalLayoutGroup_SetReverseArrangement     = &Index_HorizontalLayoutGroup_SetReverseArrangement;
+		b.HorizontalLayoutGroup_GetControlChildWidth      = &Index_HorizontalLayoutGroup_GetControlChildWidth;
+		b.HorizontalLayoutGroup_SetControlChildWidth      = &Index_HorizontalLayoutGroup_SetControlChildWidth;
+		b.HorizontalLayoutGroup_GetControlChildHeight     = &Index_HorizontalLayoutGroup_GetControlChildHeight;
+		b.HorizontalLayoutGroup_SetControlChildHeight     = &Index_HorizontalLayoutGroup_SetControlChildHeight;
+		b.HorizontalLayoutGroup_GetUseChildScaleWidth     = &Index_HorizontalLayoutGroup_GetUseChildScaleWidth;
+		b.HorizontalLayoutGroup_SetUseChildScaleWidth     = &Index_HorizontalLayoutGroup_SetUseChildScaleWidth;
+		b.HorizontalLayoutGroup_GetUseChildScaleHeight    = &Index_HorizontalLayoutGroup_GetUseChildScaleHeight;
+		b.HorizontalLayoutGroup_SetUseChildScaleHeight    = &Index_HorizontalLayoutGroup_SetUseChildScaleHeight;
+		b.HorizontalLayoutGroup_GetChildForceExpandWidth  = &Index_HorizontalLayoutGroup_GetChildForceExpandWidth;
+		b.HorizontalLayoutGroup_SetChildForceExpandWidth  = &Index_HorizontalLayoutGroup_SetChildForceExpandWidth;
+		b.HorizontalLayoutGroup_GetChildForceExpandHeight = &Index_HorizontalLayoutGroup_GetChildForceExpandHeight;
+		b.HorizontalLayoutGroup_SetChildForceExpandHeight = &Index_HorizontalLayoutGroup_SetChildForceExpandHeight;
+
+		// VerticalLayoutGroup
+		b.VerticalLayoutGroup_GetPaddingLeft            = &Index_VerticalLayoutGroup_GetPaddingLeft;
+		b.VerticalLayoutGroup_SetPaddingLeft            = &Index_VerticalLayoutGroup_SetPaddingLeft;
+		b.VerticalLayoutGroup_GetPaddingRight           = &Index_VerticalLayoutGroup_GetPaddingRight;
+		b.VerticalLayoutGroup_SetPaddingRight           = &Index_VerticalLayoutGroup_SetPaddingRight;
+		b.VerticalLayoutGroup_GetPaddingTop             = &Index_VerticalLayoutGroup_GetPaddingTop;
+		b.VerticalLayoutGroup_SetPaddingTop             = &Index_VerticalLayoutGroup_SetPaddingTop;
+		b.VerticalLayoutGroup_GetPaddingBottom          = &Index_VerticalLayoutGroup_GetPaddingBottom;
+		b.VerticalLayoutGroup_SetPaddingBottom          = &Index_VerticalLayoutGroup_SetPaddingBottom;
+		b.VerticalLayoutGroup_GetSpacing                = &Index_VerticalLayoutGroup_GetSpacing;
+		b.VerticalLayoutGroup_SetSpacing                = &Index_VerticalLayoutGroup_SetSpacing;
+		b.VerticalLayoutGroup_GetChildAlignment         = &Index_VerticalLayoutGroup_GetChildAlignment;
+		b.VerticalLayoutGroup_SetChildAlignment         = &Index_VerticalLayoutGroup_SetChildAlignment;
+		b.VerticalLayoutGroup_GetReverseArrangement     = &Index_VerticalLayoutGroup_GetReverseArrangement;
+		b.VerticalLayoutGroup_SetReverseArrangement     = &Index_VerticalLayoutGroup_SetReverseArrangement;
+		b.VerticalLayoutGroup_GetControlChildWidth      = &Index_VerticalLayoutGroup_GetControlChildWidth;
+		b.VerticalLayoutGroup_SetControlChildWidth      = &Index_VerticalLayoutGroup_SetControlChildWidth;
+		b.VerticalLayoutGroup_GetControlChildHeight     = &Index_VerticalLayoutGroup_GetControlChildHeight;
+		b.VerticalLayoutGroup_SetControlChildHeight     = &Index_VerticalLayoutGroup_SetControlChildHeight;
+		b.VerticalLayoutGroup_GetUseChildScaleWidth     = &Index_VerticalLayoutGroup_GetUseChildScaleWidth;
+		b.VerticalLayoutGroup_SetUseChildScaleWidth     = &Index_VerticalLayoutGroup_SetUseChildScaleWidth;
+		b.VerticalLayoutGroup_GetUseChildScaleHeight    = &Index_VerticalLayoutGroup_GetUseChildScaleHeight;
+		b.VerticalLayoutGroup_SetUseChildScaleHeight    = &Index_VerticalLayoutGroup_SetUseChildScaleHeight;
+		b.VerticalLayoutGroup_GetChildForceExpandWidth  = &Index_VerticalLayoutGroup_GetChildForceExpandWidth;
+		b.VerticalLayoutGroup_SetChildForceExpandWidth  = &Index_VerticalLayoutGroup_SetChildForceExpandWidth;
+		b.VerticalLayoutGroup_GetChildForceExpandHeight = &Index_VerticalLayoutGroup_GetChildForceExpandHeight;
+		b.VerticalLayoutGroup_SetChildForceExpandHeight = &Index_VerticalLayoutGroup_SetChildForceExpandHeight;
+
+		// GridLayoutGroup
+		b.GridLayoutGroup_GetPaddingLeft     = &Index_GridLayoutGroup_GetPaddingLeft;
+		b.GridLayoutGroup_SetPaddingLeft     = &Index_GridLayoutGroup_SetPaddingLeft;
+		b.GridLayoutGroup_GetPaddingRight    = &Index_GridLayoutGroup_GetPaddingRight;
+		b.GridLayoutGroup_SetPaddingRight    = &Index_GridLayoutGroup_SetPaddingRight;
+		b.GridLayoutGroup_GetPaddingTop      = &Index_GridLayoutGroup_GetPaddingTop;
+		b.GridLayoutGroup_SetPaddingTop      = &Index_GridLayoutGroup_SetPaddingTop;
+		b.GridLayoutGroup_GetPaddingBottom   = &Index_GridLayoutGroup_GetPaddingBottom;
+		b.GridLayoutGroup_SetPaddingBottom   = &Index_GridLayoutGroup_SetPaddingBottom;
+		b.GridLayoutGroup_GetCellSize        = &Index_GridLayoutGroup_GetCellSize;
+		b.GridLayoutGroup_SetCellSize        = &Index_GridLayoutGroup_SetCellSize;
+		b.GridLayoutGroup_GetSpacing         = &Index_GridLayoutGroup_GetSpacing;
+		b.GridLayoutGroup_SetSpacing         = &Index_GridLayoutGroup_SetSpacing;
+		b.GridLayoutGroup_GetStartCorner     = &Index_GridLayoutGroup_GetStartCorner;
+		b.GridLayoutGroup_SetStartCorner     = &Index_GridLayoutGroup_SetStartCorner;
+		b.GridLayoutGroup_GetStartAxis       = &Index_GridLayoutGroup_GetStartAxis;
+		b.GridLayoutGroup_SetStartAxis       = &Index_GridLayoutGroup_SetStartAxis;
+		b.GridLayoutGroup_GetChildAlignment  = &Index_GridLayoutGroup_GetChildAlignment;
+		b.GridLayoutGroup_SetChildAlignment  = &Index_GridLayoutGroup_SetChildAlignment;
+		b.GridLayoutGroup_GetConstraint      = &Index_GridLayoutGroup_GetConstraint;
+		b.GridLayoutGroup_SetConstraint      = &Index_GridLayoutGroup_SetConstraint;
+		b.GridLayoutGroup_GetConstraintCount = &Index_GridLayoutGroup_GetConstraintCount;
+		b.GridLayoutGroup_SetConstraintCount = &Index_GridLayoutGroup_SetConstraintCount;
+		b.GridLayoutGroup_GetReverse         = &Index_GridLayoutGroup_GetReverse;
+		b.GridLayoutGroup_SetReverse         = &Index_GridLayoutGroup_SetReverse;
+
+		// ContentSizeFitter
+		b.ContentSizeFitter_GetHorizontalFit  = &Index_ContentSizeFitter_GetHorizontalFit;
+		b.ContentSizeFitter_SetHorizontalFit  = &Index_ContentSizeFitter_SetHorizontalFit;
+		b.ContentSizeFitter_GetVerticalFit    = &Index_ContentSizeFitter_GetVerticalFit;
+		b.ContentSizeFitter_SetVerticalFit    = &Index_ContentSizeFitter_SetVerticalFit;
+		b.ContentSizeFitter_GetPaddingLeft    = &Index_ContentSizeFitter_GetPaddingLeft;
+		b.ContentSizeFitter_SetPaddingLeft    = &Index_ContentSizeFitter_SetPaddingLeft;
+		b.ContentSizeFitter_GetPaddingRight   = &Index_ContentSizeFitter_GetPaddingRight;
+		b.ContentSizeFitter_SetPaddingRight   = &Index_ContentSizeFitter_SetPaddingRight;
+		b.ContentSizeFitter_GetPaddingTop     = &Index_ContentSizeFitter_GetPaddingTop;
+		b.ContentSizeFitter_SetPaddingTop     = &Index_ContentSizeFitter_SetPaddingTop;
+		b.ContentSizeFitter_GetPaddingBottom  = &Index_ContentSizeFitter_GetPaddingBottom;
+		b.ContentSizeFitter_SetPaddingBottom  = &Index_ContentSizeFitter_SetPaddingBottom;
+
+		// WidthConstraint
+		b.WidthConstraint_GetMinWidth = &Index_WidthConstraint_GetMinWidth;
+		b.WidthConstraint_SetMinWidth = &Index_WidthConstraint_SetMinWidth;
+		b.WidthConstraint_GetMaxWidth = &Index_WidthConstraint_GetMaxWidth;
+		b.WidthConstraint_SetMaxWidth = &Index_WidthConstraint_SetMaxWidth;
 	}
 
 } // namespace Index

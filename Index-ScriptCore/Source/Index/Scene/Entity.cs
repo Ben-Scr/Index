@@ -170,6 +170,20 @@ public class Entity : IEquatable<Entity>
         { typeof(Index.UI.Toggle),         "Toggle" },
         { typeof(Index.UI.InputField),     "Input Field" },
         { typeof(Index.UI.Dropdown),       "Dropdown" },
+
+        // ── UI (additional) ─────────────────────────────────────────
+        // Strings must match the native display name registered in
+        // BuiltInComponentRegistration.cpp — Entity_HasComponent /
+        // Scene_QueryEntities look up native components by this name.
+        { typeof(Index.UI.ScrollRect),            "Scroll Rect" },
+        { typeof(Index.UI.Scrollbar),             "Scrollbar" },
+        { typeof(Index.UI.Mask),                  "Mask" },
+        { typeof(Index.UI.CircularSlider),        "Circular Slider" },
+        { typeof(Index.UI.HorizontalLayoutGroup), "Horizontal Layout Group" },
+        { typeof(Index.UI.VerticalLayoutGroup),   "Vertical Layout Group" },
+        { typeof(Index.UI.GridLayoutGroup),       "Grid Layout Group" },
+        { typeof(Index.UI.ContentSizeFitter),     "Content Size Fitter" },
+        { typeof(Index.UI.WidthConstraint),       "Width Constraint" },
     };
 
     private static string? GetNativeName<T>() where T : Component, new() => GetComponentName(typeof(T));

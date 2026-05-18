@@ -779,12 +779,27 @@ namespace Index {
 		// before calling us), so the intermediate's background matches
 		// what the caller expected. Without this clear the intermediate
 		// would carry last frame's contents through.
+		//
+		// Wireframe pass exception: clear the intermediate to TRANSPARENT
+		// (alpha=0) so the alpha-aware PostProcessor::Blit below preserves
+		// whatever the caller already painted (the filled pass + UI +
+		// gizmos in Mixed mode) and writes only the line pixels (which the
+		// wireframe pipeline outputs as alpha=1 opaque black) on top.
+		// Filled-pass intermediates stay opaque, so blitting them is
+		// visually identical to the previous overwrite behaviour.
 		if (usePostProcess) {
 			RenderApi::BindFramebuffer(m_SceneFbo);
 			RenderApi::SetViewport(0, 0,
 				static_cast<int>(callerInfo.Width),
 				static_cast<int>(callerInfo.Height));
-			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+			if (RenderApi::GetPolygonMode() == PolygonMode::Wireframe) {
+				const Color savedClear = RenderApi::GetClearColor();
+				RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+				RenderApi::SetClearColor(savedClear);
+			} else {
+				RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+			}
 		}
 
 		auto target = WebGPUBackend::BeginRenderToCurrentTarget();

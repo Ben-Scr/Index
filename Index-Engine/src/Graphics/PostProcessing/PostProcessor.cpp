@@ -170,11 +170,26 @@ namespace Index {
 			vertexState.buffers = nullptr;
 
 			// Fragment stage — output to the requested target format with
-			// blending disabled (we're writing opaque source pixels straight
-			// through).
+			// straight-alpha blending so the intermediate's alpha channel
+			// drives compositing. The filled-pass intermediate is fully
+			// opaque (alpha=1 everywhere) so straight-alpha collapses to
+			// overwrite, matching the previous behaviour. The wireframe
+			// pass clears its intermediate to alpha=0 and writes opaque
+			// black at line pixels only — alpha-aware blit composites
+			// those edge pixels onto the caller while preserving whatever
+			// the caller already painted underneath (filled sprite + UI +
+			// gizmos in Mixed draw mode).
+			wgpu::BlendState blend{};
+			blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
+			blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+			blend.color.operation = wgpu::BlendOperation::Add;
+			blend.alpha.srcFactor = wgpu::BlendFactor::One;
+			blend.alpha.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
+			blend.alpha.operation = wgpu::BlendOperation::Add;
+
 			wgpu::ColorTargetState colorTarget{};
 			colorTarget.format = dstFormat;
-			colorTarget.blend = nullptr;
+			colorTarget.blend = &blend;
 			colorTarget.writeMask = wgpu::ColorWriteMask::All;
 
 			wgpu::FragmentState fragmentState{};

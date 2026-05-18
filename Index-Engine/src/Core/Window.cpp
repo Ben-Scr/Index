@@ -158,8 +158,10 @@ namespace Index {
 		SetDecorated(props.Decorated);
 		SetResizeable(props.Resizeable);
 
-		if (props.Fullscreen)
+		if (props.Fullscreen && !props.Windowed)
 			SetFullScreen(true);
+		else if (props.Fullscreen && props.Windowed)
+			MaximizeWindow();
 		else
 			CenterWindow();
 

@@ -277,6 +277,13 @@ project "Index-Engine"
     filter "files:**/BuiltInComponentRegistration.cpp"
         buildoptions { "/bigobj" }
 
+    -- ScriptBindings.cpp hosts every Index_<Component>_<Member> binding for the
+    -- C#/native bridge. Each WIDGET_*_BINDING macro expands into a pair of free
+    -- functions, and with every UI widget covered the TU's section count exceeds
+    -- the COFF default limit (C1128). Same fix as BuiltInComponentRegistration.
+    filter "files:**/ScriptBindings.cpp"
+        buildoptions { "/bigobj" }
+
     filter "system:windows"
         systemversion "latest"
 

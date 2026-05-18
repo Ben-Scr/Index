@@ -606,6 +606,242 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, void> JobSystem_Release;
     public delegate* unmanaged<int> JobSystem_GetWorkerCount;
     public delegate* unmanaged<int> JobSystem_GetCallerWorkerIndex;
+
+    // ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layout Groups /
+    //       ContentSizeFitter / WidthConstraint (appended for binary compat) ─
+    // Order must match ScriptGlue.hpp's NativeBindings struct exactly.
+
+    // ── UI: Scrollbar ─────────────────────────────────────────────
+    public delegate* unmanaged<ulong, float> Scrollbar_GetValue;
+    public delegate* unmanaged<ulong, float, void> Scrollbar_SetValue;
+    public delegate* unmanaged<ulong, float> Scrollbar_GetSize;
+    public delegate* unmanaged<ulong, float, void> Scrollbar_SetSize;
+    public delegate* unmanaged<ulong, int> Scrollbar_GetNumberOfSteps;
+    public delegate* unmanaged<ulong, int, void> Scrollbar_SetNumberOfSteps;
+    public delegate* unmanaged<ulong, int> Scrollbar_GetDirection;
+    public delegate* unmanaged<ulong, int, void> Scrollbar_SetDirection;
+    public delegate* unmanaged<ulong, int> Scrollbar_GetIsReadOnly;
+    public delegate* unmanaged<ulong, int, void> Scrollbar_SetIsReadOnly;
+    public delegate* unmanaged<ulong, ulong> Scrollbar_GetHandleEntity;
+    public delegate* unmanaged<ulong, ulong, void> Scrollbar_SetHandleEntity;
+    public delegate* unmanaged<ulong, int> Scrollbar_GetValueChangedThisFrame;
+    public delegate* unmanaged<ulong, void> Scrollbar_MarkValueObserved;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Scrollbar_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Scrollbar_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Scrollbar_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Scrollbar_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Scrollbar_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Scrollbar_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Scrollbar_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Scrollbar_SetDisabledColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Scrollbar_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> Scrollbar_SetFocusedColor;
+    public delegate* unmanaged<ulong, int> Scrollbar_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> Scrollbar_SetTransitionMode;
+    public delegate* unmanaged<ulong, ulong> Scrollbar_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> Scrollbar_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> Scrollbar_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> Scrollbar_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> Scrollbar_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Scrollbar_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> Scrollbar_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> Scrollbar_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> Scrollbar_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> Scrollbar_SetFocusedSprite;
+
+    // ── UI: ScrollRect ────────────────────────────────────────────
+    public delegate* unmanaged<ulong, ulong> ScrollRect_GetContent;
+    public delegate* unmanaged<ulong, ulong, void> ScrollRect_SetContent;
+    public delegate* unmanaged<ulong, ulong> ScrollRect_GetViewport;
+    public delegate* unmanaged<ulong, ulong, void> ScrollRect_SetViewport;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetHorizontal;
+    public delegate* unmanaged<ulong, int, void> ScrollRect_SetHorizontal;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetVertical;
+    public delegate* unmanaged<ulong, int, void> ScrollRect_SetVertical;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetMovementType;
+    public delegate* unmanaged<ulong, int, void> ScrollRect_SetMovementType;
+    public delegate* unmanaged<ulong, float> ScrollRect_GetElasticity;
+    public delegate* unmanaged<ulong, float, void> ScrollRect_SetElasticity;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetInertia;
+    public delegate* unmanaged<ulong, int, void> ScrollRect_SetInertia;
+    public delegate* unmanaged<ulong, float> ScrollRect_GetDecelerationRate;
+    public delegate* unmanaged<ulong, float, void> ScrollRect_SetDecelerationRate;
+    public delegate* unmanaged<ulong, float> ScrollRect_GetScrollSensitivity;
+    public delegate* unmanaged<ulong, float, void> ScrollRect_SetScrollSensitivity;
+    public delegate* unmanaged<ulong, ulong> ScrollRect_GetHorizontalScrollbar;
+    public delegate* unmanaged<ulong, ulong, void> ScrollRect_SetHorizontalScrollbar;
+    public delegate* unmanaged<ulong, ulong> ScrollRect_GetVerticalScrollbar;
+    public delegate* unmanaged<ulong, ulong, void> ScrollRect_SetVerticalScrollbar;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetHorizontalScrollbarVisibility;
+    public delegate* unmanaged<ulong, int, void> ScrollRect_SetHorizontalScrollbarVisibility;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetVerticalScrollbarVisibility;
+    public delegate* unmanaged<ulong, int, void> ScrollRect_SetVerticalScrollbarVisibility;
+    public delegate* unmanaged<ulong, float> ScrollRect_GetHorizontalScrollbarSpacing;
+    public delegate* unmanaged<ulong, float, void> ScrollRect_SetHorizontalScrollbarSpacing;
+    public delegate* unmanaged<ulong, float> ScrollRect_GetVerticalScrollbarSpacing;
+    public delegate* unmanaged<ulong, float, void> ScrollRect_SetVerticalScrollbarSpacing;
+    public delegate* unmanaged<ulong, float*, float*, void> ScrollRect_GetNormalizedPosition;
+    public delegate* unmanaged<ulong, float, float, void> ScrollRect_SetNormalizedPosition;
+    public delegate* unmanaged<ulong, int> ScrollRect_GetValueChangedThisFrame;
+    public delegate* unmanaged<ulong, void> ScrollRect_MarkValueObserved;
+
+    // ── UI: Mask ──────────────────────────────────────────────────
+    public delegate* unmanaged<ulong, int> Mask_GetShowMaskGraphic;
+    public delegate* unmanaged<ulong, int, void> Mask_SetShowMaskGraphic;
+
+    // ── UI: CircularSlider ────────────────────────────────────────
+    public delegate* unmanaged<ulong, float> CircularSlider_GetValue;
+    public delegate* unmanaged<ulong, float, void> CircularSlider_SetValue;
+    public delegate* unmanaged<ulong, float> CircularSlider_GetMinValue;
+    public delegate* unmanaged<ulong, float, void> CircularSlider_SetMinValue;
+    public delegate* unmanaged<ulong, float> CircularSlider_GetMaxValue;
+    public delegate* unmanaged<ulong, float, void> CircularSlider_SetMaxValue;
+    public delegate* unmanaged<ulong, int> CircularSlider_GetWholeNumbers;
+    public delegate* unmanaged<ulong, int, void> CircularSlider_SetWholeNumbers;
+    public delegate* unmanaged<ulong, int> CircularSlider_GetIsReadOnly;
+    public delegate* unmanaged<ulong, int, void> CircularSlider_SetIsReadOnly;
+    public delegate* unmanaged<ulong, float> CircularSlider_GetStartAngleDegrees;
+    public delegate* unmanaged<ulong, float, void> CircularSlider_SetStartAngleDegrees;
+    public delegate* unmanaged<ulong, float> CircularSlider_GetSweepDegrees;
+    public delegate* unmanaged<ulong, float, void> CircularSlider_SetSweepDegrees;
+    public delegate* unmanaged<ulong, int> CircularSlider_GetClockwise;
+    public delegate* unmanaged<ulong, int, void> CircularSlider_SetClockwise;
+    public delegate* unmanaged<ulong, float> CircularSlider_GetRingThickness;
+    public delegate* unmanaged<ulong, float, void> CircularSlider_SetRingThickness;
+    public delegate* unmanaged<ulong, int> CircularSlider_GetRingSegments;
+    public delegate* unmanaged<ulong, int, void> CircularSlider_SetRingSegments;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetBackgroundColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetBackgroundColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetFillColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetFillColor;
+    public delegate* unmanaged<ulong, ulong> CircularSlider_GetHandleEntity;
+    public delegate* unmanaged<ulong, ulong, void> CircularSlider_SetHandleEntity;
+    public delegate* unmanaged<ulong, int> CircularSlider_GetValueChangedThisFrame;
+    public delegate* unmanaged<ulong, void> CircularSlider_MarkValueObserved;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetNormalColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetNormalColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetHoveredColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetHoveredColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetPressedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetPressedColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetDisabledColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetDisabledColor;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> CircularSlider_GetFocusedColor;
+    public delegate* unmanaged<ulong, float, float, float, float, void> CircularSlider_SetFocusedColor;
+    public delegate* unmanaged<ulong, int> CircularSlider_GetTransitionMode;
+    public delegate* unmanaged<ulong, int, void> CircularSlider_SetTransitionMode;
+    public delegate* unmanaged<ulong, ulong> CircularSlider_GetNormalSprite;
+    public delegate* unmanaged<ulong, ulong, void> CircularSlider_SetNormalSprite;
+    public delegate* unmanaged<ulong, ulong> CircularSlider_GetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong, void> CircularSlider_SetHoveredSprite;
+    public delegate* unmanaged<ulong, ulong> CircularSlider_GetPressedSprite;
+    public delegate* unmanaged<ulong, ulong, void> CircularSlider_SetPressedSprite;
+    public delegate* unmanaged<ulong, ulong> CircularSlider_GetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong, void> CircularSlider_SetDisabledSprite;
+    public delegate* unmanaged<ulong, ulong> CircularSlider_GetFocusedSprite;
+    public delegate* unmanaged<ulong, ulong, void> CircularSlider_SetFocusedSprite;
+
+    // ── UI: HorizontalLayoutGroup ─────────────────────────────────
+    public delegate* unmanaged<ulong, float> HorizontalLayoutGroup_GetPaddingLeft;
+    public delegate* unmanaged<ulong, float, void> HorizontalLayoutGroup_SetPaddingLeft;
+    public delegate* unmanaged<ulong, float> HorizontalLayoutGroup_GetPaddingRight;
+    public delegate* unmanaged<ulong, float, void> HorizontalLayoutGroup_SetPaddingRight;
+    public delegate* unmanaged<ulong, float> HorizontalLayoutGroup_GetPaddingTop;
+    public delegate* unmanaged<ulong, float, void> HorizontalLayoutGroup_SetPaddingTop;
+    public delegate* unmanaged<ulong, float> HorizontalLayoutGroup_GetPaddingBottom;
+    public delegate* unmanaged<ulong, float, void> HorizontalLayoutGroup_SetPaddingBottom;
+    public delegate* unmanaged<ulong, float> HorizontalLayoutGroup_GetSpacing;
+    public delegate* unmanaged<ulong, float, void> HorizontalLayoutGroup_SetSpacing;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetChildAlignment;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetChildAlignment;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetReverseArrangement;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetReverseArrangement;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetControlChildWidth;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetControlChildWidth;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetControlChildHeight;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetControlChildHeight;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetUseChildScaleWidth;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetUseChildScaleWidth;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetUseChildScaleHeight;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetUseChildScaleHeight;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetChildForceExpandWidth;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetChildForceExpandWidth;
+    public delegate* unmanaged<ulong, int> HorizontalLayoutGroup_GetChildForceExpandHeight;
+    public delegate* unmanaged<ulong, int, void> HorizontalLayoutGroup_SetChildForceExpandHeight;
+
+    // ── UI: VerticalLayoutGroup ───────────────────────────────────
+    public delegate* unmanaged<ulong, float> VerticalLayoutGroup_GetPaddingLeft;
+    public delegate* unmanaged<ulong, float, void> VerticalLayoutGroup_SetPaddingLeft;
+    public delegate* unmanaged<ulong, float> VerticalLayoutGroup_GetPaddingRight;
+    public delegate* unmanaged<ulong, float, void> VerticalLayoutGroup_SetPaddingRight;
+    public delegate* unmanaged<ulong, float> VerticalLayoutGroup_GetPaddingTop;
+    public delegate* unmanaged<ulong, float, void> VerticalLayoutGroup_SetPaddingTop;
+    public delegate* unmanaged<ulong, float> VerticalLayoutGroup_GetPaddingBottom;
+    public delegate* unmanaged<ulong, float, void> VerticalLayoutGroup_SetPaddingBottom;
+    public delegate* unmanaged<ulong, float> VerticalLayoutGroup_GetSpacing;
+    public delegate* unmanaged<ulong, float, void> VerticalLayoutGroup_SetSpacing;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetChildAlignment;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetChildAlignment;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetReverseArrangement;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetReverseArrangement;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetControlChildWidth;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetControlChildWidth;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetControlChildHeight;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetControlChildHeight;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetUseChildScaleWidth;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetUseChildScaleWidth;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetUseChildScaleHeight;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetUseChildScaleHeight;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetChildForceExpandWidth;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetChildForceExpandWidth;
+    public delegate* unmanaged<ulong, int> VerticalLayoutGroup_GetChildForceExpandHeight;
+    public delegate* unmanaged<ulong, int, void> VerticalLayoutGroup_SetChildForceExpandHeight;
+
+    // ── UI: GridLayoutGroup ───────────────────────────────────────
+    public delegate* unmanaged<ulong, float> GridLayoutGroup_GetPaddingLeft;
+    public delegate* unmanaged<ulong, float, void> GridLayoutGroup_SetPaddingLeft;
+    public delegate* unmanaged<ulong, float> GridLayoutGroup_GetPaddingRight;
+    public delegate* unmanaged<ulong, float, void> GridLayoutGroup_SetPaddingRight;
+    public delegate* unmanaged<ulong, float> GridLayoutGroup_GetPaddingTop;
+    public delegate* unmanaged<ulong, float, void> GridLayoutGroup_SetPaddingTop;
+    public delegate* unmanaged<ulong, float> GridLayoutGroup_GetPaddingBottom;
+    public delegate* unmanaged<ulong, float, void> GridLayoutGroup_SetPaddingBottom;
+    public delegate* unmanaged<ulong, float*, float*, void> GridLayoutGroup_GetCellSize;
+    public delegate* unmanaged<ulong, float, float, void> GridLayoutGroup_SetCellSize;
+    public delegate* unmanaged<ulong, float*, float*, void> GridLayoutGroup_GetSpacing;
+    public delegate* unmanaged<ulong, float, float, void> GridLayoutGroup_SetSpacing;
+    public delegate* unmanaged<ulong, int> GridLayoutGroup_GetStartCorner;
+    public delegate* unmanaged<ulong, int, void> GridLayoutGroup_SetStartCorner;
+    public delegate* unmanaged<ulong, int> GridLayoutGroup_GetStartAxis;
+    public delegate* unmanaged<ulong, int, void> GridLayoutGroup_SetStartAxis;
+    public delegate* unmanaged<ulong, int> GridLayoutGroup_GetChildAlignment;
+    public delegate* unmanaged<ulong, int, void> GridLayoutGroup_SetChildAlignment;
+    public delegate* unmanaged<ulong, int> GridLayoutGroup_GetConstraint;
+    public delegate* unmanaged<ulong, int, void> GridLayoutGroup_SetConstraint;
+    public delegate* unmanaged<ulong, int> GridLayoutGroup_GetConstraintCount;
+    public delegate* unmanaged<ulong, int, void> GridLayoutGroup_SetConstraintCount;
+    public delegate* unmanaged<ulong, int> GridLayoutGroup_GetReverse;
+    public delegate* unmanaged<ulong, int, void> GridLayoutGroup_SetReverse;
+
+    // ── UI: ContentSizeFitter ─────────────────────────────────────
+    public delegate* unmanaged<ulong, int> ContentSizeFitter_GetHorizontalFit;
+    public delegate* unmanaged<ulong, int, void> ContentSizeFitter_SetHorizontalFit;
+    public delegate* unmanaged<ulong, int> ContentSizeFitter_GetVerticalFit;
+    public delegate* unmanaged<ulong, int, void> ContentSizeFitter_SetVerticalFit;
+    public delegate* unmanaged<ulong, float> ContentSizeFitter_GetPaddingLeft;
+    public delegate* unmanaged<ulong, float, void> ContentSizeFitter_SetPaddingLeft;
+    public delegate* unmanaged<ulong, float> ContentSizeFitter_GetPaddingRight;
+    public delegate* unmanaged<ulong, float, void> ContentSizeFitter_SetPaddingRight;
+    public delegate* unmanaged<ulong, float> ContentSizeFitter_GetPaddingTop;
+    public delegate* unmanaged<ulong, float, void> ContentSizeFitter_SetPaddingTop;
+    public delegate* unmanaged<ulong, float> ContentSizeFitter_GetPaddingBottom;
+    public delegate* unmanaged<ulong, float, void> ContentSizeFitter_SetPaddingBottom;
+
+    // ── UI: WidthConstraint ───────────────────────────────────────
+    public delegate* unmanaged<ulong, float> WidthConstraint_GetMinWidth;
+    public delegate* unmanaged<ulong, float, void> WidthConstraint_SetMinWidth;
+    public delegate* unmanaged<ulong, float> WidthConstraint_GetMaxWidth;
+    public delegate* unmanaged<ulong, float, void> WidthConstraint_SetMaxWidth;
 }
 
 internal static unsafe class NativeCallbacks

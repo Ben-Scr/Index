@@ -245,16 +245,33 @@ public class Interactable : Component
 //
 // State-tint preset that the engine applies to the Image on the same
 // entity each frame. Click semantics live on the sibling Interactable;
-// Button.OnClicked is a per-instance convenience event that fires once
-// on the frame the sibling Interactable reports a click — same edge
-// semantics as Interactable.OnClicked, no per-frame retriggering while
-// the mouse is held. Passes the Button so subscribers can read any
-// sibling component (Image, RectTransform, etc.) directly:
-//   button.OnClicked += b => b.Entity.GetComponent<Image>().Color = Color.Red;
+// the three Button events fan out from the sibling Interactable's
+// per-frame edges so a button with a separate TargetGraphic still
+// receives them. Edge semantics mirror Interactable's MouseDown /
+// Click / MouseUp — no per-frame retriggering while the mouse is held.
+// Each handler receives the Button so it can read any sibling
+// component (Image, RectTransform, etc.) directly:
+//   button.OnClickDown += b => b.PressedColor = Color.Red;
+//   button.OnClicked   += b => Audio.Play("click");
+//   button.OnClickUp   += b => b.PressedColor = Color.White;
 
 public class Button : Component
 {
+    // Rising edge of mouse-button-down while the cursor is over the
+    // button (or its TargetGraphic). Fires once on the frame the press
+    // starts.
+    public event Action<Button>? OnClickDown;
+
+    // Completed click: fires once on the frame the user releases the
+    // mouse over the same button they pressed on. Mirrors the
+    // sibling Interactable.OnClicked semantics.
     public event Action<Button>? OnClicked;
+
+    // Rising edge of mouse-button-up while the cursor is over the
+    // button (or its TargetGraphic). Fires whether or not the release
+    // forms a completed click — pair with OnClickDown for hold-style
+    // interactions (charge attacks, drag-to-cancel).
+    public event Action<Button>? OnClickUp;
 
     // Optional explicit visual target. When set, the button retints /
     // sprite-swaps the ImageComponent (or, lacking one, the
@@ -384,6 +401,8 @@ public class Button : Component
     }
 
     internal void RaiseClick() => OnClicked?.Invoke(this);
+    internal void RaiseClickDown() => OnClickDown?.Invoke(this);
+    internal void RaiseClickUp() => OnClickUp?.Invoke(this);
 }
 
 // ── Slider ──────────────────────────────────────────────────────────
@@ -1152,4 +1171,914 @@ public class Dropdown : Component
     }
 
     internal void RaiseSelectedIndexChange() => OnSelectedIndexChange?.Invoke(SelectedIndex);
+}
+
+// ── Scrollbar ───────────────────────────────────────────────────────
+//
+// Draggable handle inside a track that produces a normalised [0, 1]
+// Value. Mirrors Unity's Scrollbar — see
+// Index-Engine/src/Components/UI/ScrollbarComponent.hpp for the full
+// state-machine notes (page-clicks, snapping, drag thresholds).
+
+public class Scrollbar : Component
+{
+    // Fires when Value changes this frame (drag, page-click, SetValue
+    // with notify). Passes the new normalized value.
+    public event Action<float>? OnValueChanged;
+
+    public float Value
+    {
+        get => InternalCalls.Scrollbar_GetValue(RequireComponent<Scrollbar>());
+        set => InternalCalls.Scrollbar_SetValue(RequireComponent<Scrollbar>(), value);
+    }
+
+    // Handle's length as a fraction of the track in [0, 1]. Larger
+    // values give a chunkier handle; pair with a ScrollRect to track
+    // viewport / content ratio automatically.
+    public float Size
+    {
+        get => InternalCalls.Scrollbar_GetSize(RequireComponent<Scrollbar>());
+        set => InternalCalls.Scrollbar_SetSize(RequireComponent<Scrollbar>(), value);
+    }
+
+    // 0 = smooth drag; > 1 snaps Value to (NumberOfSteps - 1)
+    // equal divisions across the track. Set to (rowCount + 1) for a
+    // scrollbar that snaps row-by-row through a list.
+    public int NumberOfSteps
+    {
+        get => InternalCalls.Scrollbar_GetNumberOfSteps(RequireComponent<Scrollbar>());
+        set => InternalCalls.Scrollbar_SetNumberOfSteps(RequireComponent<Scrollbar>(), value);
+    }
+
+    public ScrollbarDirection Direction
+    {
+        get => (ScrollbarDirection)InternalCalls.Scrollbar_GetDirection(RequireComponent<Scrollbar>());
+        set => InternalCalls.Scrollbar_SetDirection(RequireComponent<Scrollbar>(), (int)value);
+    }
+
+    public bool IsReadOnly
+    {
+        get => InternalCalls.Scrollbar_GetIsReadOnly(RequireComponent<Scrollbar>());
+        set => InternalCalls.Scrollbar_SetIsReadOnly(RequireComponent<Scrollbar>(), value);
+    }
+
+    // The child entity whose RectTransform is rewritten each frame to
+    // position + size the visual handle. UIEventSystem auto-resolves a
+    // child named "Handle" with an ImageComponent when null.
+    public Entity? HandleEntity
+    {
+        get
+        {
+            ulong id = InternalCalls.Scrollbar_GetHandleEntity(RequireComponent<Scrollbar>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.Scrollbar_SetHandleEntity(RequireComponent<Scrollbar>(), value?.ID ?? 0);
+    }
+
+    public bool ValueChangedThisFrame => InternalCalls.Scrollbar_GetValueChangedThisFrame(RequireComponent<Scrollbar>());
+
+    // Programmatic value set with optional event suppression. Mirrors
+    // Slider.SetValue — see that method for the rationale.
+    public void SetValue(float value, bool notifyEvent = true)
+    {
+        ulong id = RequireComponent<Scrollbar>();
+        float previous = InternalCalls.Scrollbar_GetValue(id);
+        InternalCalls.Scrollbar_SetValue(id, value);
+        InternalCalls.Scrollbar_MarkValueObserved(id);
+        if (notifyEvent)
+        {
+            float applied = InternalCalls.Scrollbar_GetValue(id);
+            if (applied != previous)
+                OnValueChanged?.Invoke(applied);
+        }
+    }
+
+    public Vector4 NormalColor
+    {
+        get
+        {
+            ulong id = RequireComponent<Scrollbar>();
+            InternalCalls.Scrollbar_GetNormalColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.Scrollbar_SetNormalColor(RequireComponent<Scrollbar>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    public Vector4 HoveredColor
+    {
+        get
+        {
+            ulong id = RequireComponent<Scrollbar>();
+            InternalCalls.Scrollbar_GetHoveredColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.Scrollbar_SetHoveredColor(RequireComponent<Scrollbar>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    public Vector4 PressedColor
+    {
+        get
+        {
+            ulong id = RequireComponent<Scrollbar>();
+            InternalCalls.Scrollbar_GetPressedColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.Scrollbar_SetPressedColor(RequireComponent<Scrollbar>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    public Vector4 DisabledColor
+    {
+        get
+        {
+            ulong id = RequireComponent<Scrollbar>();
+            InternalCalls.Scrollbar_GetDisabledColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.Scrollbar_SetDisabledColor(RequireComponent<Scrollbar>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
+    public Vector4 FocusedColor
+    {
+        get
+        {
+            ulong id = RequireComponent<Scrollbar>();
+            InternalCalls.Scrollbar_GetFocusedColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.Scrollbar_SetFocusedColor(RequireComponent<Scrollbar>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    public UITransitionMode TransitionMode
+    {
+        get => (UITransitionMode)InternalCalls.Scrollbar_GetTransitionMode(RequireComponent<Scrollbar>());
+        set => InternalCalls.Scrollbar_SetTransitionMode(RequireComponent<Scrollbar>(), (int)value);
+    }
+
+    public Texture? NormalSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.Scrollbar_GetNormalSprite(RequireComponent<Scrollbar>()));
+        set => InternalCalls.Scrollbar_SetNormalSprite(RequireComponent<Scrollbar>(), value?.UUID ?? 0);
+    }
+    public Texture? HoveredSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.Scrollbar_GetHoveredSprite(RequireComponent<Scrollbar>()));
+        set => InternalCalls.Scrollbar_SetHoveredSprite(RequireComponent<Scrollbar>(), value?.UUID ?? 0);
+    }
+    public Texture? PressedSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.Scrollbar_GetPressedSprite(RequireComponent<Scrollbar>()));
+        set => InternalCalls.Scrollbar_SetPressedSprite(RequireComponent<Scrollbar>(), value?.UUID ?? 0);
+    }
+    public Texture? DisabledSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.Scrollbar_GetDisabledSprite(RequireComponent<Scrollbar>()));
+        set => InternalCalls.Scrollbar_SetDisabledSprite(RequireComponent<Scrollbar>(), value?.UUID ?? 0);
+    }
+    public Texture? FocusedSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.Scrollbar_GetFocusedSprite(RequireComponent<Scrollbar>()));
+        set => InternalCalls.Scrollbar_SetFocusedSprite(RequireComponent<Scrollbar>(), value?.UUID ?? 0);
+    }
+
+    internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
+}
+
+// ── ScrollRect ──────────────────────────────────────────────────────
+//
+// Clipping viewport that scrolls a Content rect to reveal off-screen
+// children. Mirrors Unity's ScrollRect — see
+// Index-Engine/src/Components/UI/ScrollRectComponent.hpp for the drag /
+// inertia / elastic-rebound semantics. Pair with a Mask on the
+// Viewport to clip overflow.
+
+public class ScrollRect : Component
+{
+    // Fires when NormalizedPosition changes this frame (drag, wheel,
+    // scrollbar drag, programmatic SetNormalizedPosition with notify).
+    // Passes the new position so handlers don't have to re-read.
+    public event Action<Vector2>? OnValueChanged;
+
+    public Entity? Content
+    {
+        get
+        {
+            ulong id = InternalCalls.ScrollRect_GetContent(RequireComponent<ScrollRect>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.ScrollRect_SetContent(RequireComponent<ScrollRect>(), value?.ID ?? 0);
+    }
+
+    // Optional explicit viewport rect (defaults to the ScrollRect entity
+    // itself when unset). The viewport is the clipping region; usually
+    // hosts a Mask so off-viewport content doesn't bleed out.
+    public Entity? Viewport
+    {
+        get
+        {
+            ulong id = InternalCalls.ScrollRect_GetViewport(RequireComponent<ScrollRect>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.ScrollRect_SetViewport(RequireComponent<ScrollRect>(), value?.ID ?? 0);
+    }
+
+    public bool Horizontal
+    {
+        get => InternalCalls.ScrollRect_GetHorizontal(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetHorizontal(RequireComponent<ScrollRect>(), value);
+    }
+
+    public bool Vertical
+    {
+        get => InternalCalls.ScrollRect_GetVertical(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetVertical(RequireComponent<ScrollRect>(), value);
+    }
+
+    public ScrollRectMovementType MovementType
+    {
+        get => (ScrollRectMovementType)InternalCalls.ScrollRect_GetMovementType(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetMovementType(RequireComponent<ScrollRect>(), (int)value);
+    }
+
+    // Rubber-band rebound rate when MovementType==Elastic. Smaller =
+    // springier; larger = stiffer. Default 0.1.
+    public float Elasticity
+    {
+        get => InternalCalls.ScrollRect_GetElasticity(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetElasticity(RequireComponent<ScrollRect>(), value);
+    }
+
+    public bool Inertia
+    {
+        get => InternalCalls.ScrollRect_GetInertia(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetInertia(RequireComponent<ScrollRect>(), value);
+    }
+
+    // Per-second friction applied to inertia drift. 0 = velocity decays
+    // immediately; 1 = no decay. Default 0.135 ≈ Unity's default.
+    public float DecelerationRate
+    {
+        get => InternalCalls.ScrollRect_GetDecelerationRate(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetDecelerationRate(RequireComponent<ScrollRect>(), value);
+    }
+
+    // Wheel scroll multiplier in inspector-friendly units (5 = default
+    // speed, 10 = double, 1 = ⅕). See the native struct for the
+    // /100 scaling rationale.
+    public float ScrollSensitivity
+    {
+        get => InternalCalls.ScrollRect_GetScrollSensitivity(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetScrollSensitivity(RequireComponent<ScrollRect>(), value);
+    }
+
+    public Entity? HorizontalScrollbar
+    {
+        get
+        {
+            ulong id = InternalCalls.ScrollRect_GetHorizontalScrollbar(RequireComponent<ScrollRect>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.ScrollRect_SetHorizontalScrollbar(RequireComponent<ScrollRect>(), value?.ID ?? 0);
+    }
+
+    public Entity? VerticalScrollbar
+    {
+        get
+        {
+            ulong id = InternalCalls.ScrollRect_GetVerticalScrollbar(RequireComponent<ScrollRect>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.ScrollRect_SetVerticalScrollbar(RequireComponent<ScrollRect>(), value?.ID ?? 0);
+    }
+
+    public ScrollbarVisibility HorizontalScrollbarVisibility
+    {
+        get => (ScrollbarVisibility)InternalCalls.ScrollRect_GetHorizontalScrollbarVisibility(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetHorizontalScrollbarVisibility(RequireComponent<ScrollRect>(), (int)value);
+    }
+
+    public ScrollbarVisibility VerticalScrollbarVisibility
+    {
+        get => (ScrollbarVisibility)InternalCalls.ScrollRect_GetVerticalScrollbarVisibility(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetVerticalScrollbarVisibility(RequireComponent<ScrollRect>(), (int)value);
+    }
+
+    public float HorizontalScrollbarSpacing
+    {
+        get => InternalCalls.ScrollRect_GetHorizontalScrollbarSpacing(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetHorizontalScrollbarSpacing(RequireComponent<ScrollRect>(), value);
+    }
+
+    public float VerticalScrollbarSpacing
+    {
+        get => InternalCalls.ScrollRect_GetVerticalScrollbarSpacing(RequireComponent<ScrollRect>());
+        set => InternalCalls.ScrollRect_SetVerticalScrollbarSpacing(RequireComponent<ScrollRect>(), value);
+    }
+
+    // Current normalized scroll position. X = horizontal in [0..1]
+    // (0 = left, 1 = right); Y = vertical in [0..1] (0 = bottom,
+    // 1 = top). Outside [0,1] is allowed during Elastic / Unrestricted
+    // drag — handlers wanting the resolved bounds-checked value should
+    // wait for ValueChangedThisFrame.
+    public Vector2 NormalizedPosition
+    {
+        get
+        {
+            ulong id = RequireComponent<ScrollRect>();
+            InternalCalls.ScrollRect_GetNormalizedPosition(id, out float x, out float y);
+            return new Vector2(x, y);
+        }
+        set => InternalCalls.ScrollRect_SetNormalizedPosition(RequireComponent<ScrollRect>(), value.X, value.Y);
+    }
+
+    public bool ValueChangedThisFrame => InternalCalls.ScrollRect_GetValueChangedThisFrame(RequireComponent<ScrollRect>());
+
+    // Programmatic position set with optional event suppression. Same
+    // pattern as Slider.SetValue.
+    public void SetNormalizedPosition(Vector2 value, bool notifyEvent = true)
+    {
+        ulong id = RequireComponent<ScrollRect>();
+        InternalCalls.ScrollRect_GetNormalizedPosition(id, out float px, out float py);
+        InternalCalls.ScrollRect_SetNormalizedPosition(id, value.X, value.Y);
+        InternalCalls.ScrollRect_MarkValueObserved(id);
+        if (notifyEvent)
+        {
+            InternalCalls.ScrollRect_GetNormalizedPosition(id, out float ax, out float ay);
+            if (ax != px || ay != py)
+                OnValueChanged?.Invoke(new Vector2(ax, ay));
+        }
+    }
+
+    internal void RaiseValueChanged() => OnValueChanged?.Invoke(NormalizedPosition);
+}
+
+// ── Mask ────────────────────────────────────────────────────────────
+//
+// Clips descendant rendering to the entity's resolved rect. See
+// Index-Engine/src/Components/UI/MaskComponent.hpp for the nesting and
+// scissor-rect details.
+
+public class Mask : Component
+{
+    // When true the mask entity's own ImageComponent (if any) still
+    // renders normally. When false, the entity's image is suppressed at
+    // draw time and only the clipping effect remains — useful for an
+    // invisible viewport clipper.
+    public bool ShowMaskGraphic
+    {
+        get => InternalCalls.Mask_GetShowMaskGraphic(RequireComponent<Mask>());
+        set => InternalCalls.Mask_SetShowMaskGraphic(RequireComponent<Mask>(), value);
+    }
+}
+
+// ── CircularSlider ──────────────────────────────────────────────────
+//
+// Ring-shaped value control. Same value semantics as Slider but the
+// drag math is polar and rendering is a pair of arcs. See
+// Index-Engine/src/Components/UI/CircularSliderComponent.hpp for the
+// geometry / hit-test notes.
+
+public class CircularSlider : Component
+{
+    // Fires when Value changes this frame (drag, programmatic
+    // SetValue with notify). Passes the new value.
+    public event Action<float>? OnValueChanged;
+
+    public float Value
+    {
+        get => InternalCalls.CircularSlider_GetValue(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetValue(RequireComponent<CircularSlider>(), value);
+    }
+
+    public float MinValue
+    {
+        get => InternalCalls.CircularSlider_GetMinValue(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetMinValue(RequireComponent<CircularSlider>(), value);
+    }
+
+    public float MaxValue
+    {
+        get => InternalCalls.CircularSlider_GetMaxValue(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetMaxValue(RequireComponent<CircularSlider>(), value);
+    }
+
+    public bool WholeNumbers
+    {
+        get => InternalCalls.CircularSlider_GetWholeNumbers(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetWholeNumbers(RequireComponent<CircularSlider>(), value);
+    }
+
+    public bool IsReadOnly
+    {
+        get => InternalCalls.CircularSlider_GetIsReadOnly(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetIsReadOnly(RequireComponent<CircularSlider>(), value);
+    }
+
+    // Standard math convention: 0° = +X right, 90° = +Y up, etc.
+    // Default 90° puts Value=Min at 12 o'clock.
+    public float StartAngleDegrees
+    {
+        get => InternalCalls.CircularSlider_GetStartAngleDegrees(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetStartAngleDegrees(RequireComponent<CircularSlider>(), value);
+    }
+
+    // How much of the ring the slider covers. 360 = full ring,
+    // 270 = quarter gap ("C" shape), etc.
+    public float SweepDegrees
+    {
+        get => InternalCalls.CircularSlider_GetSweepDegrees(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetSweepDegrees(RequireComponent<CircularSlider>(), value);
+    }
+
+    public bool Clockwise
+    {
+        get => InternalCalls.CircularSlider_GetClockwise(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetClockwise(RequireComponent<CircularSlider>(), value);
+    }
+
+    public float RingThickness
+    {
+        get => InternalCalls.CircularSlider_GetRingThickness(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetRingThickness(RequireComponent<CircularSlider>(), value);
+    }
+
+    // Approximation density of the rendered arc. 64 is plenty for a
+    // 200 px ring; bump it if you scale up.
+    public int RingSegments
+    {
+        get => InternalCalls.CircularSlider_GetRingSegments(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetRingSegments(RequireComponent<CircularSlider>(), value);
+    }
+
+    public Vector4 BackgroundColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetBackgroundColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetBackgroundColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    public Vector4 FillColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetFillColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetFillColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    // Optional child whose RectTransform is rewritten each frame to sit
+    // on the ring at the current Value angle.
+    public Entity? HandleEntity
+    {
+        get
+        {
+            ulong id = InternalCalls.CircularSlider_GetHandleEntity(RequireComponent<CircularSlider>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.CircularSlider_SetHandleEntity(RequireComponent<CircularSlider>(), value?.ID ?? 0);
+    }
+
+    public bool ValueChangedThisFrame => InternalCalls.CircularSlider_GetValueChangedThisFrame(RequireComponent<CircularSlider>());
+
+    // Programmatic value set with optional event suppression. Mirrors
+    // Slider.SetValue.
+    public void SetValue(float value, bool notifyEvent = true)
+    {
+        ulong id = RequireComponent<CircularSlider>();
+        float previous = InternalCalls.CircularSlider_GetValue(id);
+        InternalCalls.CircularSlider_SetValue(id, value);
+        InternalCalls.CircularSlider_MarkValueObserved(id);
+        if (notifyEvent)
+        {
+            float applied = InternalCalls.CircularSlider_GetValue(id);
+            if (applied != previous)
+                OnValueChanged?.Invoke(applied);
+        }
+    }
+
+    // Normalized [0, 1] value — convenient for piping into colors,
+    // alphas, audio volumes, etc.
+    public float NormalizedValue
+    {
+        get
+        {
+            float min = MinValue;
+            float max = MaxValue;
+            float range = max - min;
+            return range != 0.0f ? (Value - min) / range : 0.0f;
+        }
+    }
+
+    // Per-state handle palette. Mirrors Slider — these tint the
+    // HandleEntity's ImageComponent, not the ring itself.
+    public Vector4 NormalColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetNormalColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetNormalColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+    public Vector4 HoveredColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetHoveredColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetHoveredColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+    public Vector4 PressedColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetPressedColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetPressedColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+    public Vector4 DisabledColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetDisabledColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetDisabledColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
+    public Vector4 FocusedColor
+    {
+        get
+        {
+            ulong id = RequireComponent<CircularSlider>();
+            InternalCalls.CircularSlider_GetFocusedColor(id, out float r, out float g, out float b, out float a);
+            return new Color(r, g, b, a);
+        }
+        set => InternalCalls.CircularSlider_SetFocusedColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
+    }
+
+    public UITransitionMode TransitionMode
+    {
+        get => (UITransitionMode)InternalCalls.CircularSlider_GetTransitionMode(RequireComponent<CircularSlider>());
+        set => InternalCalls.CircularSlider_SetTransitionMode(RequireComponent<CircularSlider>(), (int)value);
+    }
+
+    public Texture? NormalSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.CircularSlider_GetNormalSprite(RequireComponent<CircularSlider>()));
+        set => InternalCalls.CircularSlider_SetNormalSprite(RequireComponent<CircularSlider>(), value?.UUID ?? 0);
+    }
+    public Texture? HoveredSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.CircularSlider_GetHoveredSprite(RequireComponent<CircularSlider>()));
+        set => InternalCalls.CircularSlider_SetHoveredSprite(RequireComponent<CircularSlider>(), value?.UUID ?? 0);
+    }
+    public Texture? PressedSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.CircularSlider_GetPressedSprite(RequireComponent<CircularSlider>()));
+        set => InternalCalls.CircularSlider_SetPressedSprite(RequireComponent<CircularSlider>(), value?.UUID ?? 0);
+    }
+    public Texture? DisabledSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.CircularSlider_GetDisabledSprite(RequireComponent<CircularSlider>()));
+        set => InternalCalls.CircularSlider_SetDisabledSprite(RequireComponent<CircularSlider>(), value?.UUID ?? 0);
+    }
+    public Texture? FocusedSprite
+    {
+        get => Index.Texture.FromAssetUUID(InternalCalls.CircularSlider_GetFocusedSprite(RequireComponent<CircularSlider>()));
+        set => InternalCalls.CircularSlider_SetFocusedSprite(RequireComponent<CircularSlider>(), value?.UUID ?? 0);
+    }
+
+    internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
+}
+
+// ── HorizontalLayoutGroup ───────────────────────────────────────────
+//
+// Lays out direct children left-to-right (or right-to-left) inside the
+// parent rect. See
+// Index-Engine/src/Components/UI/HorizontalLayoutGroupComponent.hpp
+// for the padding / spacing / alignment / expand semantics.
+
+public class HorizontalLayoutGroup : Component
+{
+    public float PaddingLeft
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetPaddingLeft(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetPaddingLeft(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+    public float PaddingRight
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetPaddingRight(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetPaddingRight(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+    public float PaddingTop
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetPaddingTop(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetPaddingTop(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+    public float PaddingBottom
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetPaddingBottom(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetPaddingBottom(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+
+    public float Spacing
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetSpacing(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetSpacing(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+
+    public UIAlignment ChildAlignment
+    {
+        get => (UIAlignment)InternalCalls.HorizontalLayoutGroup_GetChildAlignment(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetChildAlignment(RequireComponent<HorizontalLayoutGroup>(), (int)value);
+    }
+
+    public bool ReverseArrangement
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetReverseArrangement(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetReverseArrangement(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+
+    public bool ControlChildWidth
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetControlChildWidth(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetControlChildWidth(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+    public bool ControlChildHeight
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetControlChildHeight(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetControlChildHeight(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+
+    public bool UseChildScaleWidth
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetUseChildScaleWidth(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetUseChildScaleWidth(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+    public bool UseChildScaleHeight
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetUseChildScaleHeight(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetUseChildScaleHeight(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+
+    public bool ChildForceExpandWidth
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetChildForceExpandWidth(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetChildForceExpandWidth(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+    public bool ChildForceExpandHeight
+    {
+        get => InternalCalls.HorizontalLayoutGroup_GetChildForceExpandHeight(RequireComponent<HorizontalLayoutGroup>());
+        set => InternalCalls.HorizontalLayoutGroup_SetChildForceExpandHeight(RequireComponent<HorizontalLayoutGroup>(), value);
+    }
+}
+
+// ── VerticalLayoutGroup ─────────────────────────────────────────────
+//
+// Top-to-bottom (or bottom-to-top) sibling of HorizontalLayoutGroup —
+// same field set, dominant axis flipped. See
+// Index-Engine/src/Components/UI/VerticalLayoutGroupComponent.hpp.
+
+public class VerticalLayoutGroup : Component
+{
+    public float PaddingLeft
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetPaddingLeft(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetPaddingLeft(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+    public float PaddingRight
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetPaddingRight(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetPaddingRight(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+    public float PaddingTop
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetPaddingTop(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetPaddingTop(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+    public float PaddingBottom
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetPaddingBottom(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetPaddingBottom(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+
+    public float Spacing
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetSpacing(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetSpacing(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+
+    public UIAlignment ChildAlignment
+    {
+        get => (UIAlignment)InternalCalls.VerticalLayoutGroup_GetChildAlignment(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetChildAlignment(RequireComponent<VerticalLayoutGroup>(), (int)value);
+    }
+
+    public bool ReverseArrangement
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetReverseArrangement(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetReverseArrangement(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+
+    public bool ControlChildWidth
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetControlChildWidth(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetControlChildWidth(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+    public bool ControlChildHeight
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetControlChildHeight(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetControlChildHeight(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+
+    public bool UseChildScaleWidth
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetUseChildScaleWidth(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetUseChildScaleWidth(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+    public bool UseChildScaleHeight
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetUseChildScaleHeight(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetUseChildScaleHeight(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+
+    public bool ChildForceExpandWidth
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetChildForceExpandWidth(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetChildForceExpandWidth(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+    public bool ChildForceExpandHeight
+    {
+        get => InternalCalls.VerticalLayoutGroup_GetChildForceExpandHeight(RequireComponent<VerticalLayoutGroup>());
+        set => InternalCalls.VerticalLayoutGroup_SetChildForceExpandHeight(RequireComponent<VerticalLayoutGroup>(), value);
+    }
+}
+
+// ── GridLayoutGroup ─────────────────────────────────────────────────
+//
+// Lays out direct children in a 2D grid of uniform cells. See
+// Index-Engine/src/Components/UI/GridLayoutGroupComponent.hpp.
+
+public class GridLayoutGroup : Component
+{
+    public float PaddingLeft
+    {
+        get => InternalCalls.GridLayoutGroup_GetPaddingLeft(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetPaddingLeft(RequireComponent<GridLayoutGroup>(), value);
+    }
+    public float PaddingRight
+    {
+        get => InternalCalls.GridLayoutGroup_GetPaddingRight(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetPaddingRight(RequireComponent<GridLayoutGroup>(), value);
+    }
+    public float PaddingTop
+    {
+        get => InternalCalls.GridLayoutGroup_GetPaddingTop(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetPaddingTop(RequireComponent<GridLayoutGroup>(), value);
+    }
+    public float PaddingBottom
+    {
+        get => InternalCalls.GridLayoutGroup_GetPaddingBottom(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetPaddingBottom(RequireComponent<GridLayoutGroup>(), value);
+    }
+
+    // Per-cell pixel size. Applied to every child's SizeDelta.
+    public Vector2 CellSize
+    {
+        get
+        {
+            ulong id = RequireComponent<GridLayoutGroup>();
+            InternalCalls.GridLayoutGroup_GetCellSize(id, out float x, out float y);
+            return new Vector2(x, y);
+        }
+        set => InternalCalls.GridLayoutGroup_SetCellSize(RequireComponent<GridLayoutGroup>(), value.X, value.Y);
+    }
+
+    // Per-axis gap between cells (X = horizontal, Y = vertical).
+    public Vector2 Spacing
+    {
+        get
+        {
+            ulong id = RequireComponent<GridLayoutGroup>();
+            InternalCalls.GridLayoutGroup_GetSpacing(id, out float x, out float y);
+            return new Vector2(x, y);
+        }
+        set => InternalCalls.GridLayoutGroup_SetSpacing(RequireComponent<GridLayoutGroup>(), value.X, value.Y);
+    }
+
+    public GridLayoutStartCorner StartCorner
+    {
+        get => (GridLayoutStartCorner)InternalCalls.GridLayoutGroup_GetStartCorner(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetStartCorner(RequireComponent<GridLayoutGroup>(), (int)value);
+    }
+
+    public GridLayoutStartAxis StartAxis
+    {
+        get => (GridLayoutStartAxis)InternalCalls.GridLayoutGroup_GetStartAxis(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetStartAxis(RequireComponent<GridLayoutGroup>(), (int)value);
+    }
+
+    public UIAlignment ChildAlignment
+    {
+        get => (UIAlignment)InternalCalls.GridLayoutGroup_GetChildAlignment(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetChildAlignment(RequireComponent<GridLayoutGroup>(), (int)value);
+    }
+
+    public GridLayoutConstraint Constraint
+    {
+        get => (GridLayoutConstraint)InternalCalls.GridLayoutGroup_GetConstraint(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetConstraint(RequireComponent<GridLayoutGroup>(), (int)value);
+    }
+
+    public int ConstraintCount
+    {
+        get => InternalCalls.GridLayoutGroup_GetConstraintCount(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetConstraintCount(RequireComponent<GridLayoutGroup>(), value);
+    }
+
+    // When true, children map onto cells in reverse hierarchy order
+    // (last child → first cell). Cell positions still flow from
+    // StartCorner along StartAxis as usual.
+    public bool Reverse
+    {
+        get => InternalCalls.GridLayoutGroup_GetReverse(RequireComponent<GridLayoutGroup>());
+        set => InternalCalls.GridLayoutGroup_SetReverse(RequireComponent<GridLayoutGroup>(), value);
+    }
+}
+
+// ── ContentSizeFitter ───────────────────────────────────────────────
+//
+// Auto-resizes the entity's RectTransform along enabled axes to fit the
+// bounding box of its direct children. See
+// Index-Engine/src/Components/UI/ContentSizeFitterComponent.hpp for the
+// per-axis fit semantics and nested-fitter resolution order.
+
+public class ContentSizeFitter : Component
+{
+    public bool HorizontalFit
+    {
+        get => InternalCalls.ContentSizeFitter_GetHorizontalFit(RequireComponent<ContentSizeFitter>());
+        set => InternalCalls.ContentSizeFitter_SetHorizontalFit(RequireComponent<ContentSizeFitter>(), value);
+    }
+
+    public bool VerticalFit
+    {
+        get => InternalCalls.ContentSizeFitter_GetVerticalFit(RequireComponent<ContentSizeFitter>());
+        set => InternalCalls.ContentSizeFitter_SetVerticalFit(RequireComponent<ContentSizeFitter>(), value);
+    }
+
+    public float PaddingLeft
+    {
+        get => InternalCalls.ContentSizeFitter_GetPaddingLeft(RequireComponent<ContentSizeFitter>());
+        set => InternalCalls.ContentSizeFitter_SetPaddingLeft(RequireComponent<ContentSizeFitter>(), value);
+    }
+    public float PaddingRight
+    {
+        get => InternalCalls.ContentSizeFitter_GetPaddingRight(RequireComponent<ContentSizeFitter>());
+        set => InternalCalls.ContentSizeFitter_SetPaddingRight(RequireComponent<ContentSizeFitter>(), value);
+    }
+    public float PaddingTop
+    {
+        get => InternalCalls.ContentSizeFitter_GetPaddingTop(RequireComponent<ContentSizeFitter>());
+        set => InternalCalls.ContentSizeFitter_SetPaddingTop(RequireComponent<ContentSizeFitter>(), value);
+    }
+    public float PaddingBottom
+    {
+        get => InternalCalls.ContentSizeFitter_GetPaddingBottom(RequireComponent<ContentSizeFitter>());
+        set => InternalCalls.ContentSizeFitter_SetPaddingBottom(RequireComponent<ContentSizeFitter>(), value);
+    }
+}
+
+// ── WidthConstraint ─────────────────────────────────────────────────
+//
+// Clamps the entity's RectTransform.SizeDelta.x to [MinWidth, MaxWidth]
+// each frame. A negative bound disables that side of the clamp. See
+// Index-Engine/src/Components/UI/WidthConstraintComponent.hpp.
+
+public class WidthConstraint : Component
+{
+    public float MinWidth
+    {
+        get => InternalCalls.WidthConstraint_GetMinWidth(RequireComponent<WidthConstraint>());
+        set => InternalCalls.WidthConstraint_SetMinWidth(RequireComponent<WidthConstraint>(), value);
+    }
+
+    public float MaxWidth
+    {
+        get => InternalCalls.WidthConstraint_GetMaxWidth(RequireComponent<WidthConstraint>());
+        set => InternalCalls.WidthConstraint_SetMaxWidth(RequireComponent<WidthConstraint>(), value);
+    }
 }
