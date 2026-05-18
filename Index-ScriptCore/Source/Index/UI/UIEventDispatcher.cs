@@ -24,10 +24,13 @@ namespace Index.UI;
 //   - IsClicked / IsMouseDown / IsMouseUp are already one-frame edges
 //     in UIEventSystem (set true on the frame they happen, cleared
 //     next tick), so we fire those directly.
-//   - IsHovered / IsPressed are continuous polling flags. We track
-//     previous state per entity and fire OnHovered / OnPressed only
-//     on the rising edge so handlers don't run every frame the user
-//     is hovering or holding the mouse.
+//   - IsHovered is continuous; we track previous state per entity and
+//     fire OnHovered only on the rising edge so handlers don't run
+//     every frame the user is hovering.
+//   - IsPressed is continuous too, but OnPressed deliberately fires
+//     every frame the widget is held (charge meters, hold-to-scroll,
+//     drag-preview). Subscribers that only want the edge should use
+//     OnMouseDown instead.
 //   - InputField has no native "TextChangedThisFrame" flag, so we
 //     diff against the last observed text per entity instead. Scripts
 //     calling InputField.SetValue(..., notifyEvent: false) push the new
@@ -36,7 +39,6 @@ namespace Index.UI;
 internal static class UIEventDispatcher
 {
     private static readonly HashSet<ulong> s_PrevHovered = new();
-    private static readonly HashSet<ulong> s_PrevPressed = new();
     private static readonly HashSet<ulong> s_PrevFocused = new();
     private static readonly HashSet<ulong> s_PrevFocusedInputFields = new();
     private static readonly Dictionary<ulong, string> s_LastInputFieldText = new();
@@ -88,17 +90,15 @@ internal static class UIEventDispatcher
         if (count == 0)
         {
             s_PrevHovered.Clear();
-            s_PrevPressed.Clear();
             s_PrevFocused.Clear();
             return;
         }
 
-        // We rebuild "currently hovered / pressed / focused" sets from
-        // this frame and swap them in afterwards, so the next tick's
-        // edge detection sees the right baseline even when entities
-        // disappear or change Focusable.
+        // We rebuild "currently hovered / focused" sets from this frame
+        // and swap them in afterwards, so the next tick's edge detection
+        // sees the right baseline even when entities disappear or change
+        // Focusable. OnPressed fires every frame and needs no edge set.
         var nowHovered = new HashSet<ulong>();
-        var nowPressed = new HashSet<ulong>();
         var nowFocused = new HashSet<ulong>();
 
         for (int i = 0; i < count; i++)
@@ -131,11 +131,7 @@ internal static class UIEventDispatcher
             }
 
             if (pressed)
-            {
-                nowPressed.Add(id);
-                if (!s_PrevPressed.Contains(id))
-                    interactable.RaisePressed();
-            }
+                interactable.RaisePressed();
 
             if (focused)
             {
@@ -163,20 +159,19 @@ internal static class UIEventDispatcher
 
         s_PrevHovered.Clear();
         foreach (ulong id in nowHovered) s_PrevHovered.Add(id);
-        s_PrevPressed.Clear();
-        foreach (ulong id in nowPressed) s_PrevPressed.Add(id);
         s_PrevFocused.Clear();
         foreach (ulong id in nowFocused) s_PrevFocused.Add(id);
     }
 
     private static void DispatchButtons()
     {
-        // Buttons fan out three edge events from whichever entity owns
-        // the Interactable: the button entity itself OR the configured
-        // TargetGraphic. The dispatcher looks up the target's per-frame
-        // edge flags rather than tracking button-side edges, because
-        // IsMouseDown / IsClicked / IsMouseUp are already one-frame
-        // edges on the Interactable side.
+        // Buttons fan out three edge events and one continuous event
+        // from whichever entity owns the Interactable: the button entity
+        // itself OR the configured TargetGraphic. The dispatcher reads
+        // the target's per-frame flags directly — IsMouseDown / IsClicked
+        // / IsMouseUp are already one-frame edges on the Interactable
+        // side, and IsPressed is the sticky held flag that OnPressed
+        // fans out every frame.
         int count = Query("Button");
         for (int i = 0; i < count; i++)
         {
@@ -199,7 +194,8 @@ internal static class UIEventDispatcher
             bool mouseDown = InternalCalls.Interactable_GetIsMouseDown(interactableId);
             bool clicked   = InternalCalls.Interactable_GetIsClicked(interactableId);
             bool mouseUp   = InternalCalls.Interactable_GetIsMouseUp(interactableId);
-            if (!mouseDown && !clicked && !mouseUp) continue;
+            bool pressed   = InternalCalls.Interactable_GetIsPressed(interactableId);
+            if (!mouseDown && !clicked && !mouseUp && !pressed) continue;
 
             Button? button = new Entity(buttonId).GetComponent<Button>();
             if (button == null) continue;
@@ -207,6 +203,7 @@ internal static class UIEventDispatcher
             if (mouseDown) button.RaiseClickDown();
             if (clicked)   button.RaiseClick();
             if (mouseUp)   button.RaiseClickUp();
+            if (pressed)   button.RaisePressed();
         }
     }
 

@@ -37,7 +37,7 @@ namespace Index {
 		// Floating add-package windows opened from the "+" button's drop-down menu.
 		void RenderGitInstallWindow();
 		void RenderNuGetInstallWindow();
-		// "Create new package" wizard — wraps `scripts/NewPackage.py` so the editor
+		// "Create new package" wizard — wraps `scripts/packages/NewPackage.py` so the editor
 		// and CLI go through the exact same scaffolding code path.
 		void RenderNewPackageWindow();
 		void HandleNewPackageCreate();
@@ -129,7 +129,7 @@ namespace Index {
 		char m_GitHubUrlBuffer[512]{};
 
 		// "Create new package" wizard state. Layer flags map onto
-		// scripts/NewPackage.py's --layers tokens; the target radio decides
+		// scripts/packages/NewPackage.py's --layers tokens; the target radio decides
 		// whether the package is created in the engine packages tree or under
 		// the active project's Packages/ folder (the latter is force-disabled
 		// when no project is open).

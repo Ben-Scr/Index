@@ -801,6 +801,28 @@ namespace Index {
 
 		int count = 0;
 		auto& registry = scene->GetRegistry();
+
+		// Fast path: single native-component requirement → iterate only that
+		// component's storage. UIEventDispatcher.Tick() calls this 9× per
+		// frame (one per UI widget type); the registry-wide walk below was
+		// O(totalEntities × widgetTypes) and dominated the frame at 100k+
+		// entities even when zero UI widgets existed. The typed-storage walk
+		// is O(matchingEntities) — returns instantly when the component pool
+		// is empty.
+		if (requirements.size() == 1
+			&& requirements[0].Native
+			&& requirements[0].Native->storageHash != 0)
+		{
+			const auto* storage = registry.storage(requirements[0].Native->storageHash);
+			if (!storage) return 0;
+			for (auto entityHandle : *storage) {
+				if (count < maxOut)
+					outEntityIDs[count] = GetEntityScriptId(*scene, entityHandle);
+				count++;
+			}
+			return count;
+		}
+
 		auto view = registry.view<entt::entity>();
 		for (EntityHandle entityHandle : view) {
 			if (!registry.valid(entityHandle)) continue;

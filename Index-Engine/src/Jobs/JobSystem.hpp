@@ -25,6 +25,15 @@ namespace Index {
 		static void Shutdown();
 		static bool IsInitialized();
 
+		// Resize the worker pool. Drains queued work, joins existing
+		// workers, then spawns a fresh set with the new count. Safe at
+		// engine boot (e.g. from a script Awake hook) before any long-
+		// lived job loop. Blocks until in-flight jobs finish, so calling
+		// this mid-frame is correct but may stall briefly. `workerCount`
+		// follows JobSystemSpec semantics: <=0 selects automatic,
+		// >0 is clamped to [1, 32]. Returns the resolved worker count.
+		static int  Reconfigure(int workerCount);
+
 		static int  GetWorkerCount();
 		static bool IsCallerWorker();
 		// 0..GetWorkerCount()-1 when called from a worker, -1 elsewhere.

@@ -6,6 +6,7 @@
 #include "Editor/ExternalEditorInfo.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
+#include "Gui/ImGuiFonts.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/ReferencePicker.hpp"
 
@@ -217,6 +218,26 @@ namespace Index {
 		}
 		ImGui::PopID();
 		ImGui::TextDisabled("Takes effect after restarting the editor.");
+
+		ImGui::Spacing();
+
+		// Font size — applies live (deferred atlas rebuild on the next
+		// OnPreRender). No restart caveat.
+		ImGui::PushID("EditorFontSize");
+		int fontSize = static_cast<int>(EditorPreferences::GetEditorFontSize() + 0.5f);
+		ImGui::SetNextItemWidth(280.0f);
+		if (ImGui::SliderInt("Font Size",
+				&fontSize,
+				static_cast<int>(EditorPreferences::k_MinEditorFontSize),
+				static_cast<int>(EditorPreferences::k_MaxEditorFontSize),
+				"%d px")) {
+			EditorPreferences::SetEditorFontSize(static_cast<float>(fontSize));
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##EditorFontSizeReset")) {
+			EditorPreferences::SetEditorFontSize(k_IndexImGuiFontSize);
+		}
+		ImGui::PopID();
 	}
 
 	void EditorPreferencesPanel::RenderScriptingTab() {

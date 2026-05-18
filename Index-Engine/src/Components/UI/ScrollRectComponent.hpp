@@ -3,8 +3,6 @@
 #include "Collections/Vec2.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
-
 namespace Index {
 
 	// How the scroll content reacts when dragged past the content bounds.
@@ -58,8 +56,8 @@ namespace Index {
 	// NormalizedPosition.y in [0, 1] = (0 bottom edge, 1 top edge).
 	// Outside [0, 1] is allowed when MovementType==Elastic or Unrestricted.
 	struct ScrollRectComponent {
-		EntityHandle Content = entt::null;
-		EntityHandle Viewport = entt::null;
+		EntityHandle Content = kNullEntity;
+		EntityHandle Viewport = kNullEntity;
 
 		bool Horizontal = true;
 		bool Vertical = true;
@@ -81,8 +79,8 @@ namespace Index {
 		// Optional scrollbar entities + their visibility rules. The
 		// scrollbar entity is found via name ("Scrollbar Horizontal" /
 		// "Scrollbar Vertical") when Horizontal/VerticalScrollbar is unset.
-		EntityHandle HorizontalScrollbar = entt::null;
-		EntityHandle VerticalScrollbar = entt::null;
+		EntityHandle HorizontalScrollbar = kNullEntity;
+		EntityHandle VerticalScrollbar = kNullEntity;
 		ScrollbarVisibility HorizontalScrollbarVisibility = ScrollbarVisibility::AutoHideAndExpandViewport;
 		ScrollbarVisibility VerticalScrollbarVisibility   = ScrollbarVisibility::AutoHideAndExpandViewport;
 		float HorizontalScrollbarSpacing = -3.0f;

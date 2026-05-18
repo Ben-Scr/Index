@@ -11,6 +11,7 @@
 #include "Core/KeyCode.hpp"
 #include "Core/MouseButton.hpp"
 #include "Core/Window.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
 
 #include <algorithm>
@@ -63,6 +64,7 @@ namespace Index {
 	void UIFocusSystem::Update(Scene& scene) {
 		Application* app = Application::GetInstance();
 		if (!app) return;
+		INDEX_PROFILE_SCOPE("UIFocus");
 		Input& input = app->GetInput();
 
 		auto& registry = scene.GetRegistry();

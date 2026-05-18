@@ -73,7 +73,7 @@ local function NormaliseLayerNames(manifest)
     end
 end
 
--- PascalCase.PascalCase[.PascalCase…]. Same shape as scripts/NewPackage.py's
+-- PascalCase.PascalCase[.PascalCase…]. Same shape as scripts/packages/NewPackage.py's
 -- regex. Anything outside this character set breaks downstream as a project
 -- name, folder name, or DllImport library name — fail loudly at validation
 -- time rather than silently mid-build.
@@ -137,7 +137,7 @@ local function ValidateManifest(manifest, manifestPath)
     -- `native` links the engine via EditorRuntimeCommon; `native_standalone`
     -- explicitly does not. Combining both into the same Pkg.<Name>.Native
     -- silently links the engine into the "standalone" sources, breaking
-    -- the layer's whole reason to exist. scripts/NewPackage.py already
+    -- the layer's whole reason to exist. scripts/packages/NewPackage.py already
     -- rejects this combo; mirror that here so hand-written manifests fail
     -- the same way.
     if manifest.layers.native and manifest.layers.native_standalone then
@@ -289,6 +289,12 @@ local function RegisterNativeProject(manifest)
             -- ODR violation between engine.dll and the package's native lib).
             -- GetIndexEntityBits() is defined in the root premake5.lua.
             defines { "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()) }
+            -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h
+            -- to override the above -D without a premake regen. The EnTT patch
+            -- in entity.hpp picks it up via __has_include. Native package layers
+            -- must have the folder on their include path so that override path
+            -- stays consistent with the main engine binaries.
+            includedirs { IndexEntityBitsConfigIncludeDir }
             -- EditorRuntimeCommon pulls in EngineCoreRender, which links
             -- webgpu_dawn.lib. The lib lives under per-config Debug/Release
             -- folders so libdirs MUST be set per-config (LNK2038 otherwise).
@@ -318,7 +324,10 @@ local function RegisterNativeProject(manifest)
 
         filter "system:windows"
             systemversion "latest"
-            buildoptions { "/utf-8", "/FS" }
+            -- See Index-Engine/premake5.lua for the rationale on
+            -- MultiProcessorCompile + /Zc:preprocessor.
+            flags { "MultiProcessorCompile" }
+            buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
             defines { "IDX_PLATFORM_WINDOWS" }
 
         filter "system:linux"

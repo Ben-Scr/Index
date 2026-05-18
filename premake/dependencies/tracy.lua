@@ -51,13 +51,18 @@ project "Tracy"
     }
 
     filter "system:windows"
+        -- See Index-Engine/premake5.lua for the rationale on
+        -- MultiProcessorCompile.
+        --
         -- /Zc:preprocessor: enables MSVC's standards-conformant preprocessor.
         -- Required by Tracy v0.11+ on MSVC because TracyETW.cpp uses
         -- __LINE__ inside a `static constexpr SourceLocationData{...}` aggregate
         -- initialiser. MSVC's traditional preprocessor expands __LINE__ to
         -- __LINE__Var (a non-constant intermediate) which fails constexpr
         -- evaluation (C2131). The conformant preprocessor expands it to a
-        -- proper integer literal.
+        -- proper integer literal. The rest of the engine now sets this flag
+        -- too (Index-Engine/premake5.lua etc.) so all TUs agree.
+        flags { "MultiProcessorCompile" }
         buildoptions { "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "_CRT_SECURE_NO_WARNINGS" }

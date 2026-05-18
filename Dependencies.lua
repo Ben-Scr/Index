@@ -178,7 +178,7 @@ Dependency["EngineCore"] =
 }
 
 -- Render-API dep set — WebGPU via Dawn. Dawn is built out-of-band by
--- scripts/SetupDawn.bat into a monolithic webgpu_dawn.lib;
+-- scripts/dawn/SetupDawn.bat into a monolithic webgpu_dawn.lib;
 -- premake/dependencies/dawn.lua exposes DawnLayout with the resulting
 -- include + lib paths. No DependsOn entry for a premake project because
 -- Dawn isn't built by premake — it's a vendored pre-built static lib.

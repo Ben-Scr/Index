@@ -5,23 +5,23 @@ Bump the `version` field in an Index package's `index-package.lua` manifest.
 Usage examples
 --------------
     # Bump patch (0.1.0 -> 0.1.1):
-    python scripts/BumpPackageVersion.py Index.Tilemap2D --patch
+    python scripts/packages/BumpPackageVersion.py Index.Tilemap2D --patch
 
     # Bump minor (0.1.0 -> 0.2.0; resets patch to 0):
-    python scripts/BumpPackageVersion.py Index.Tilemap2D --minor
+    python scripts/packages/BumpPackageVersion.py Index.Tilemap2D --minor
 
     # Bump major (0.1.0 -> 1.0.0; resets minor and patch to 0):
-    python scripts/BumpPackageVersion.py Index.Tilemap2D --major
+    python scripts/packages/BumpPackageVersion.py Index.Tilemap2D --major
 
     # Set an explicit version (any semver-shaped string is accepted):
-    python scripts/BumpPackageVersion.py Index.Tilemap2D --set 2.1.3
+    python scripts/packages/BumpPackageVersion.py Index.Tilemap2D --set 2.1.3
 
     # Project-local package (looked up under <project>/Packages/<Name>/):
-    python scripts/BumpPackageVersion.py MyGame.Loot --patch \\
+    python scripts/packages/BumpPackageVersion.py MyGame.Loot --patch \\
         --project "C:/path/to/MyProject"
 
     # Dry-run — show what the change would be without writing:
-    python scripts/BumpPackageVersion.py Index.Tilemap2D --patch --dry-run
+    python scripts/packages/BumpPackageVersion.py Index.Tilemap2D --patch --dry-run
 
 The script does a regex-based rewrite — it doesn't parse the full Lua
 manifest. The `version` field MUST be on its own line in the form
@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$")
 # Matches: `version` `=` `"X.Y.Z"` with arbitrary whitespace + an optional

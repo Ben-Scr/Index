@@ -27,6 +27,7 @@
 #include "Components/General/PrefabInstanceComponent.hpp"
 #include "Core/Application.hpp"
 #include "Graphics/Renderer2D.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/ScriptSystem.hpp"
@@ -65,6 +66,7 @@ namespace Index {
 					return;
 				}
 				if (m_Handle != 0) {
+					INDEX_PROFILE_SCOPE("ManagedGameSystem");
 					ScriptEngine::InvokeGameSystemUpdate(m_Handle);
 				}
 			}

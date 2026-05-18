@@ -77,6 +77,14 @@ public static class Application
     public static bool IsEditor => InternalCalls.Application_IsEditor();
 
     /// <summary>
+    /// Number of logical CPU cores on the host machine. Returns 4 as a
+    /// floor when the OS can't report a value. Use this to size
+    /// thread-count budgets — e.g. <c>JobSystem.Configure(cores - 2)</c>
+    /// to leave headroom for the OS, render, and audio threads.
+    /// </summary>
+    public static int ProcessorCount => InternalCalls.Application_GetProcessorCount();
+
+    /// <summary>
     /// The current OS clipboard contents as a UTF-8 string. Reads/writes the
     /// system clipboard via the engine's GLFW window. Returns an empty string
     /// in headless contexts (no window); the setter is a no-op there.

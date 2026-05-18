@@ -176,6 +176,11 @@ namespace Index {
 		return JobSystem::GetWorkerIndex();
 	}
 
+	static int Index_JobSystem_Reconfigure(int workerCount)
+	{
+		return JobSystem::Reconfigure(workerCount);
+	}
+
 	void PopulateJobsBindings(NativeBindings& b)
 	{
 		b.JobSystem_Enqueue              = &Index_JobSystem_Enqueue;
@@ -185,6 +190,7 @@ namespace Index {
 		b.JobSystem_Release              = &Index_JobSystem_Release;
 		b.JobSystem_GetWorkerCount       = &Index_JobSystem_GetWorkerCount;
 		b.JobSystem_GetCallerWorkerIndex = &Index_JobSystem_GetCallerWorkerIndex;
+		b.JobSystem_Reconfigure          = &Index_JobSystem_Reconfigure;
 	}
 
 } // namespace Index

@@ -7,7 +7,6 @@
 #include "Scene/EntityHandle.hpp"
 
 #include <cstdint>
-#include <entt/entt.hpp>
 #include <string>
 
 namespace Index {
@@ -109,10 +108,10 @@ namespace Index {
 		float RightRepeatAccumulator = 0.0f;
 
 		// Child entity carrying the TextRendererComponent that renders
-		// either Text or PlaceholderText each frame. entt::null disables
+		// either Text or PlaceholderText each frame. kNullEntity disables
 		// the child-text path (the field still tracks Text in case the
 		// game reads it directly).
-		EntityHandle TextEntity = entt::null;
+		EntityHandle TextEntity = kNullEntity;
 
 		// Tint applied to TextEntity when Text is non-empty or the field
 		// is focused (so a caret-visible empty focused field also uses

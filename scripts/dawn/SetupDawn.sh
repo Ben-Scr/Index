@@ -8,7 +8,7 @@
 # ============================================================================
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 DAWN_DIR="External/dawn"
 DAWN_BUILD_DIR="${DAWN_DIR}/build"

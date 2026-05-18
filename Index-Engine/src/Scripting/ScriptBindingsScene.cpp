@@ -103,6 +103,15 @@ namespace Index {
 		return Application::IsEditor() ? 1 : 0;
 	}
 
+	// Logical-core count on the host machine. Returns 4 as a floor when
+	// the OS can't report a value (matches the JobSystem auto path's
+	// fallback so script-driven thread budgets stay consistent with
+	// engine-internal sizing).
+	static int Index_Application_GetProcessorCount() {
+		unsigned int hw = std::thread::hardware_concurrency();
+		return hw > 0 ? static_cast<int>(hw) : 4;
+	}
+
 	static float Index_Application_GetFixedDeltaTime() {
 		auto* app = Application::GetInstance();
 		return app ? app->GetTime().GetFixedDeltaTime() : (1.0f / 50.0f);
@@ -533,6 +542,7 @@ namespace Index {
 		b.Application_GetScreenWidth = &Index_Application_GetScreenWidth;
 		b.Application_GetScreenHeight = &Index_Application_GetScreenHeight;
 		b.Application_IsEditor = &Index_Application_IsEditor;
+		b.Application_GetProcessorCount = &Index_Application_GetProcessorCount;
 		b.Application_GetTargetFrameRate = &Index_Application_GetTargetFrameRate;
 		b.Application_SetTargetFrameRate = &Index_Application_SetTargetFrameRate;
 		b.Application_Quit = &Index_Application_Quit;

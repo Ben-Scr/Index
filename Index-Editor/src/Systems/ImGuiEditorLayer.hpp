@@ -30,12 +30,15 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <typeindex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <chrono>
 
 namespace Index {
+
+	class IndexProject;
 
 	// Editor-view debug draw mode (toolbar dropdown). Default renders
 	// the scene normally; Triangle switches glPolygonMode to GL_LINE so
@@ -93,8 +96,13 @@ namespace Index {
 		void RenderProjectPanel();
 		void RenderBuildPanel();
 		void RenderBuildProfilesPanel();
-		void RenderPlayerSettingsPanel();
 		void RenderProjectSettingsPanel();
+		void RenderSettings_Display(IndexProject& project, bool& changed);
+		void RenderSettings_Graphics(IndexProject& project, bool& changed);
+		void RenderSettings_Branding(IndexProject& project, bool& changed);
+		void RenderSettings_Build(IndexProject& project, bool& changed);
+		void RenderSettings_Editor(IndexProject& project, bool& changed);
+		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalSystemsChanged);
 		// Splash preview overlay. Drawn on top of the dockspace with an
 		// ImGui foreground draw list so the editor stays interactive
 		// underneath; the preview self-completes after FadeIn +
@@ -126,6 +134,16 @@ namespace Index {
 		void SetSingleEntitySelection(EntityHandle entity, int index);
 		void ToggleEntitySelection(EntityHandle entity, int index);
 		void SelectEntityRange(int index);
+
+		// Maintain the parallel O(1)-lookup set + bump the version counter
+		// that downstream caches (inspector) use to invalidate. Call after
+		// any bulk mutation of m_SelectedEntities (clear + re-fill).
+		void RebuildSelectionSet();
+		// One-pass recomputation of inspector-side derived state. Triggered
+		// lazily when m_InspectorCache.Version != m_SelectionVersion at the
+		// top of RenderInspectorPanel. Keeps the 25k-selection inspector
+		// from doing N-per-component-per-frame work.
+		void RecomputeInspectorSelectionCache(Scene& scene);
 		void DrainPendingLogEntries();
 		void RunAutoSaveTick(Application& app, float dt);
 		// In-viewport prefab edit auto-save: saves m_PrefabEditScene back to
@@ -225,8 +243,40 @@ namespace Index {
 		EntityHandle m_SelectedEntity = entt::null;
 		EntityHandle m_PressedEntity = entt::null;
 		std::vector<EntityHandle> m_SelectedEntities;
+		// Parallel index into m_SelectedEntities. The vector remains the
+		// source of truth (range-select / last-selected ordering depends on
+		// it); this set exists purely to make IsEntitySelected and the
+		// dedup pass inside GetSelectedEntities O(1)/O(N) instead of
+		// O(N)/O(N²). Every mutation site updates both containers — see
+		// RebuildSelectionSet for the bulk-rebuild path.
+		std::unordered_set<EntityHandle> m_SelectedEntitySet;
+		// Bumped every time the selection mutates. Inspector / future
+		// consumers compare against their own cached snapshot to decide
+		// whether their derived state is still valid.
+		std::uint64_t m_SelectionVersion = 0;
 		int m_LastEntitySelectionIndex = -1;
 		bool m_IsSceneNodeSelected = false;
+
+		// Inspector-side cache of derived per-selection facts. Recomputed
+		// in one pass when m_SelectionVersion changes — the alternative
+		// (per-frame N×M loops over selection × components) collapses the
+		// editor at 25k selected entities. Sentinel-initialised Version
+		// forces a recompute on first inspector render. CommonComponentTypes
+		// is the gate the per-frame component loop checks: a single O(1)
+		// hash lookup replaces the prior O(N) info.has() sweep per type.
+		struct InspectorSelectionCache {
+			std::uint64_t Version = UINT64_MAX;
+			std::vector<EntityHandle> Handles;
+			std::unordered_set<std::type_index> CommonComponentTypes;
+			std::vector<std::string> PartialComponents;
+			bool NameUniform = true;
+			std::string FirstName;
+			bool EnabledUniform = true;
+			bool EnabledFirst = true;
+			bool StaticUniform = true;
+			bool StaticFirst = false;
+		};
+		InspectorSelectionCache m_InspectorCache;
 		EventId m_LogSubscriptionId{};
 		std::vector<LogEntry> m_LogEntries;
 		std::shared_ptr<LogDispatchState> m_LogDispatchState;
@@ -417,7 +467,6 @@ namespace Index {
 		bool m_ShowBuildProfilesPanel = false;
 		BuildProfilesPanel m_BuildProfilesPanel;
 		bool m_BuildProfilesPanelInitialized = false;
-		bool m_ShowPlayerSettings = false;
 		bool m_ShowPackageManager = false;
 		bool m_ShowProfiler = false;
 		ProfilerPanel m_ProfilerPanel;
@@ -428,11 +477,23 @@ namespace Index {
 		std::vector<std::string> m_BuildSceneList;
 		int m_DraggedSceneIndex = -1;
 		bool m_ShowProjectSettings = false;
+		// Side-tab nav state for the unified Project Settings window.
+		// Selection persists across panel close/open within a session;
+		// not serialized — opening the panel after restart lands on Display.
+		enum class SettingsCategory : uint8_t {
+			Display = 0,
+			Graphics,
+			Branding,
+			Build,
+			Editor,
+			Systems,
+		};
+		SettingsCategory m_SelectedSettingsCategory = SettingsCategory::Display;
 		bool m_ShowEditorPreferences = false;
 		EditorPreferencesPanel m_EditorPreferencesPanel;
 		bool m_PackageManagerInitialized = false;
 		// Splash preview state. Set by the Show Preview button in the
-		// Player Settings panel; consumed by the editor's chrome update
+		// Project Settings panel (Branding tab); consumed by the editor's chrome update
 		// each frame to advance + render the preview overlay. Mirrors
 		// the runtime's RuntimeSplashLayer timeline (fade in → hold →
 		// fade out) but draws on top of the editor's main viewport

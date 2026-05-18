@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Index package remover — inverse of `scripts/NewPackage.py`.
+Index package remover — inverse of `scripts/packages/NewPackage.py`.
 
 Deletes a package directory, removes it from a project's `index-project.json`
 allow-list (when `--project` is given), and re-runs premake so the project
@@ -9,16 +9,16 @@ disappears from the IDE solution on next reload.
 Usage examples
 --------------
     # Engine package:
-    python scripts/RemovePackage.py Index.Foo
+    python scripts/packages/RemovePackage.py Index.Foo
 
     # Project-local package (also removes from index-project.json):
-    python scripts/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject"
+    python scripts/packages/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject"
 
     # Skip premake regen (CI / batch removal):
-    python scripts/RemovePackage.py Index.Foo --no-premake
+    python scripts/packages/RemovePackage.py Index.Foo --no-premake
 
     # Skip the directory delete (only remove from allow-list):
-    python scripts/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject" --keep-files
+    python scripts/packages/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject" --keep-files
 
 By default the script prompts before deleting non-empty directories. Pass
 `--force` to skip the prompt (useful for CI).
@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PREMAKE_EXE = REPO_ROOT / "vendor" / "bin" / "premake5.exe"
 
 PACKAGE_NAME_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$")
@@ -121,7 +121,7 @@ def run_premake(project_path: Path | None) -> None:
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Remove an Index package (inverse of scripts/NewPackage.py).",
+        description="Remove an Index package (inverse of scripts/packages/NewPackage.py).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("name", help="Package name in PascalCase.PascalCase form.")

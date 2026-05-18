@@ -136,7 +136,23 @@ public static class JobSystem
     private static int s_WorkerCount = ResolveWorkerCount(-1);
 
     public static bool IsInitialized => true;
-    public static int WorkerCount => Volatile.Read(ref s_WorkerCount);
+    public static int WorkerCount
+    {
+        get
+        {
+            // Prefer the native pool's worker count when the binding is
+            // available — the native side is the source of truth for how
+            // many threads typed Schedule<TJob> calls fan out across.
+            // Falls back to the managed cache during very early init
+            // before the host bridge has populated the bindings table.
+            unsafe
+            {
+                var fn = NativeCallbacks.Bindings.JobSystem_GetWorkerCount;
+                if (fn != null) return fn();
+            }
+            return Volatile.Read(ref s_WorkerCount);
+        }
+    }
     public static bool IsCallerWorker => Thread.CurrentThread.IsThreadPoolThread;
     public static int WorkerIndex => -1;
 
@@ -147,7 +163,17 @@ public static class JobSystem
 
     public static void Configure(int workerCount = -1)
     {
-        int resolved = ResolveWorkerCount(workerCount);
+        // Resize the native pool first so the managed cache mirrors
+        // whatever the engine actually settled on (the native side
+        // applies its own clamps and INDEX_WITH_SCRIPTING headroom rules
+        // for the auto path). When the native binding isn't yet wired,
+        // resolve managed-side and let the next native init catch up.
+        int resolved;
+        unsafe
+        {
+            var fn = NativeCallbacks.Bindings.JobSystem_Reconfigure;
+            resolved = fn != null ? fn(workerCount) : ResolveWorkerCount(workerCount);
+        }
         Volatile.Write(ref s_WorkerCount, resolved);
 
         // Invalidate the cached default ParallelOptions so RunParallelFor

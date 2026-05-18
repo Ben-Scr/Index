@@ -842,6 +842,12 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, void> WidthConstraint_SetMinWidth;
     public delegate* unmanaged<ulong, float> WidthConstraint_GetMaxWidth;
     public delegate* unmanaged<ulong, float, void> WidthConstraint_SetMaxWidth;
+
+    // ── CPU / JobSystem tuning (appended for binary compat) ──
+    // Mirror of ScriptGlue.hpp NativeBindings tail. Order must match the
+    // C++ struct exactly; do not reorder.
+    public delegate* unmanaged<int> Application_GetProcessorCount;
+    public delegate* unmanaged<int, int> JobSystem_Reconfigure;
 }
 
 internal static unsafe class NativeCallbacks

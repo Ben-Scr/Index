@@ -180,8 +180,19 @@ public class Interactable : Component
 {
     public event Action<Interactable>? OnHovered;
     public event Action<Interactable>? OnClicked;
+
+    // Fires every frame the user is holding the mouse down on this
+    // Interactable — continuous, not edge. Use OnMouseDown for the
+    // rising edge (one fire per press).
     public event Action<Interactable>? OnPressed;
     public event Action<Interactable>? OnMouseDown;
+
+    // OnMouseUp pairs 1:1 with OnMouseDown — it fires on whichever
+    // Interactable received the press, even if the cursor has since
+    // left the rect. Use this for drag-style widgets that need to
+    // release state on "let go" (joysticks, scrubbers, sliders). For
+    // the hover-gated completion event (press AND release while still
+    // over the widget), use OnClicked instead.
     public event Action<Interactable>? OnMouseUp;
 
     // Keyboard / controller focus transitions. OnFocusEnter fires on
@@ -245,15 +256,16 @@ public class Interactable : Component
 //
 // State-tint preset that the engine applies to the Image on the same
 // entity each frame. Click semantics live on the sibling Interactable;
-// the three Button events fan out from the sibling Interactable's
-// per-frame edges so a button with a separate TargetGraphic still
-// receives them. Edge semantics mirror Interactable's MouseDown /
-// Click / MouseUp — no per-frame retriggering while the mouse is held.
+// the Button events fan out from the sibling Interactable's per-frame
+// flags so a button with a separate TargetGraphic still receives them.
+// OnClickDown / OnClicked / OnClickUp are edges (one fire per press);
+// OnPressed is continuous (fires every frame the button is held).
 // Each handler receives the Button so it can read any sibling
 // component (Image, RectTransform, etc.) directly:
 //   button.OnClickDown += b => b.PressedColor = Color.Red;
 //   button.OnClicked   += b => Audio.Play("click");
 //   button.OnClickUp   += b => b.PressedColor = Color.White;
+//   button.OnPressed   += b => chargeAmount += Time.DeltaTime;
 
 public class Button : Component
 {
@@ -272,6 +284,13 @@ public class Button : Component
     // forms a completed click — pair with OnClickDown for hold-style
     // interactions (charge attacks, drag-to-cancel).
     public event Action<Button>? OnClickUp;
+
+    // Fires every frame the button is being held — i.e. for the entire
+    // span between OnClickDown and OnClickUp. Unlike the three edge
+    // events above, this is continuous: a 30-frame press calls the
+    // handler 30 times. Pair with Time.DeltaTime for charge meters,
+    // auto-fire, hold-to-scroll, drag-preview behaviours.
+    public event Action<Button>? OnPressed;
 
     // Optional explicit visual target. When set, the button retints /
     // sprite-swaps the ImageComponent (or, lacking one, the
@@ -403,6 +422,7 @@ public class Button : Component
     internal void RaiseClick() => OnClicked?.Invoke(this);
     internal void RaiseClickDown() => OnClickDown?.Invoke(this);
     internal void RaiseClickUp() => OnClickUp?.Invoke(this);
+    internal void RaisePressed() => OnPressed?.Invoke(this);
 }
 
 // ── Slider ──────────────────────────────────────────────────────────

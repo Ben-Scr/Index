@@ -21,6 +21,29 @@ namespace Index {
 		return config;
 	}
 
+	ApplicationConfig ApplicationConfig::Headless() {
+		ApplicationConfig config;
+		config.EnableWindow = false;
+		// Subsystems below all need a window / GL context. Application::Initialize
+		// also force-disables these with a warning when EnableWindow=false, so
+		// users who flip EnableWindow manually still get a working build — but
+		// we set them here too so the factory's intent is self-documenting.
+		config.EnableGuiRenderer = false;
+		config.EnableGizmoRenderer = false;
+		config.EnableRenderer2D = false;
+		config.EnableTextureManager = false;
+		config.EnableShaderManager = false;
+		config.SetWindowIcon = false;
+		config.Vsync = false;
+		// Run as fast as the simulation allows — RL training and asset
+		// processing typically want unbounded throughput. Callers that
+		// want a cap can flip this back on and set SetTargetFramerate.
+		config.UseTargetFrameRateForMainLoop = false;
+		// Kept on intentionally: EnablePhysics2D, EnableAudio, EnableScripting,
+		// EnablePackageHost. Game logic / training environments usually need them.
+		return config;
+	}
+
 	ApplicationConfig ApplicationConfig::Game() {
 		// Today's default-constructed config — full game runtime: rendering,
 		// physics, audio, scripting, packages. Lives here so callers can spell

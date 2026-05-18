@@ -6,8 +6,6 @@
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
-
 namespace Index {
 
 	// Direction the slider's value axis runs along. The handle slides
@@ -36,7 +34,7 @@ namespace Index {
 	// the thumb is the click/drag target rather than the whole track.
 	// UIEventSystem falls back to an InteractableComponent on the slider
 	// parent when the handle has none, so older scenes still work. Leave
-	// HandleEntity as entt::null to draw the slider track-only (useful
+	// HandleEntity as kNullEntity to draw the slider track-only (useful
 	// when the thumb is implemented some other way, e.g. a fill bar);
 	// in that case the parent must own the InteractableComponent for the
 	// slider to be draggable.
@@ -76,23 +74,23 @@ namespace Index {
 		// inspector still work.
 		bool IsReadOnly = false;
 
-		EntityHandle HandleEntity = entt::null;
-		EntityHandle FillEntity = entt::null;
+		EntityHandle HandleEntity = kNullEntity;
+		EntityHandle FillEntity = kNullEntity;
 		// Optional explicit reference to the slider's static track
 		// background. UIEventSystem auto-resolves a child named
 		// "Background" with an ImageComponent when this is unset, so
 		// existing scenes don't need a manual hookup. The slider
 		// system never mutates this entity — it's exposed as a
 		// scene-author convenience for theming and z-ordering.
-		EntityHandle BackgroundEntity = entt::null;
+		EntityHandle BackgroundEntity = kNullEntity;
 
 		// Optional child whose TextRendererComponent gets rewritten each
 		// frame to "{0..100}%" of the slider's normalised value. Used
 		// by the Progress Bar preset (read-only slider with a centred
-		// percent label). entt::null disables the auto-write — game
+		// percent label). kNullEntity disables the auto-write — game
 		// code can drive a label manually instead. Mirrors the
 		// LabelEntity contract on Dropdown.
-		EntityHandle LabelEntity = entt::null;
+		EntityHandle LabelEntity = kNullEntity;
 
 		// Set to true by UIEventSystem on the frame Value moved. Cleared
 		// at the start of the next event-system tick so callers don't

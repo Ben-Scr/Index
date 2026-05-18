@@ -2,6 +2,7 @@
 
 #include "Core/Log.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
+#include "Gui/ImGuiFonts.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
@@ -32,6 +33,7 @@ namespace Index {
 			bool CustomColorsSeeded = false;
 
 			uint64_t EditorFontAssetId = k_DefaultFontAssetId;
+			float EditorFontSize = k_IndexImGuiFontSize;
 
 			bool ShowFileExtensions = false;
 			bool AutoSaveScenes = false;
@@ -179,6 +181,12 @@ namespace Index {
 				s.EditorFontAssetId = k_DefaultFontAssetId;
 			}
 		}
+		if (const Json::Value* v = root.FindMember("EditorFontSize")) {
+			float size = static_cast<float>(v->AsDoubleOr(static_cast<double>(k_IndexImGuiFontSize)));
+			if (size < EditorPreferences::k_MinEditorFontSize) size = EditorPreferences::k_MinEditorFontSize;
+			if (size > EditorPreferences::k_MaxEditorFontSize) size = EditorPreferences::k_MaxEditorFontSize;
+			s.EditorFontSize = size;
+		}
 		if (const Json::Value* v = root.FindMember("ShowFileExtensions")) {
 			s.ShowFileExtensions = v->AsBoolOr(false);
 		}
@@ -212,6 +220,13 @@ namespace Index {
 			}
 			s.CustomColorsSeeded = true;
 		}
+
+		// Push the just-loaded EditorFontSize into ImGui's style. The
+		// ImGuiContext was created by ImGuiContextLayer's earlier
+		// OnAttach (it pushes ahead of ImGuiEditorLayer, which is what
+		// calls Load), so the style object is live and FontSizeBase
+		// takes effect on the very next frame.
+		ImGuiContextLayer::ApplyEditorFontSize();
 	}
 
 	bool EditorPreferences::WasFreshlyCreated() {
@@ -227,6 +242,7 @@ namespace Index {
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(s.Theme))));
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
+		root.AddMember("EditorFontSize", Json::Value(static_cast<double>(s.EditorFontSize)));
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
@@ -320,6 +336,20 @@ namespace Index {
 		if (S().EditorFontAssetId == normalized) return;
 		S().EditorFontAssetId = normalized;
 		Save();
+	}
+
+	float EditorPreferences::GetEditorFontSize() {
+		return S().EditorFontSize;
+	}
+
+	void EditorPreferences::SetEditorFontSize(float sizePx) {
+		float clamped = sizePx;
+		if (clamped < k_MinEditorFontSize) clamped = k_MinEditorFontSize;
+		if (clamped > k_MaxEditorFontSize) clamped = k_MaxEditorFontSize;
+		if (S().EditorFontSize == clamped) return;
+		S().EditorFontSize = clamped;
+		Save();
+		ImGuiContextLayer::ApplyEditorFontSize();
 	}
 
 	bool EditorPreferences::GetShowFileExtensions() {

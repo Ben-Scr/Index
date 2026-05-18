@@ -84,6 +84,7 @@ namespace Index {
             }
 
             info.typeId = id;
+            info.storageHash = entt::type_hash<T>::value();
             info.has = [](Entity e) { return e.HasComponent<T>(); };
             info.add = [](Entity e) { e.AddComponent<T>(); };
             info.remove = [](Entity e) { e.RemoveComponent<T>(); };

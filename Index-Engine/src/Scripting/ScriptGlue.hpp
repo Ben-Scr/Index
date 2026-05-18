@@ -944,6 +944,20 @@ namespace Index {
 		void  (*WidthConstraint_SetMinWidth)(uint64_t entityID, float value);
 		float (*WidthConstraint_GetMaxWidth)(uint64_t entityID);
 		void  (*WidthConstraint_SetMaxWidth)(uint64_t entityID, float value);
+
+		// ── CPU / JobSystem tuning (appended for binary compat) ──
+		// Returns std::thread::hardware_concurrency() with a floor of 4
+		// when the OS can't report a value. Exposed to scripts as
+		// `Index.Application.ProcessorCount` so games can size their
+		// own thread budgets against the host machine.
+		int (*Application_GetProcessorCount)();
+
+		// Resize the engine job pool. `workerCount <= 0` selects the
+		// auto-resolved default; positive values pass through verbatim
+		// (clamped to [1, 32]). Returns the resolved worker count after
+		// the resize. Drains queued work and joins existing workers, so
+		// safe to call at any time but may briefly stall the caller.
+		int (*JobSystem_Reconfigure)(int workerCount);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

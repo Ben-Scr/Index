@@ -1251,6 +1251,34 @@ namespace Index::PropertyDrawer {
 				sectionVisible = ImGui::CollapsingHeader(
 					headerLabel.c_str(),
 					ImGuiTreeNodeFlags_DefaultOpen);
+
+				// Per-section right-click context menu. Only attaches
+				// when the descriptor carries a ResetSectionFn — used by
+				// PostProcessing2D's effect groups so each (Vignette /
+				// Bloom / ...) can be reverted to its default settings
+				// independently of the others. BeginPopupContextItem
+				// targets the last submitted item (the CollapsingHeader
+				// above); on activation we write the reset through to
+				// every selected entity so multi-selection resets behave
+				// like every other inspector edit.
+				if (desc.Metadata.ResetSectionFn) {
+					const std::string popupId = "##ctx_" + headerLabel;
+					if (ImGui::BeginPopupContextItem(popupId.c_str(),
+						ImGuiPopupFlags_MouseButtonRight))
+					{
+						const std::string menuLabel = "Reset \""
+							+ desc.Metadata.HeaderContent
+							+ "\" to defaults";
+						if (ImGui::MenuItem(menuLabel.c_str())) {
+							for (const Entity& e : entities) {
+								Entity mutEntity = e;
+								desc.Metadata.ResetSectionFn(mutEntity);
+							}
+						}
+						ImGui::EndPopup();
+					}
+				}
+
 				sectionOpen = true;
 				// No Indent() here — earlier we did, but ImGui's inspector
 				// row layout is split into a fixed label column + a value

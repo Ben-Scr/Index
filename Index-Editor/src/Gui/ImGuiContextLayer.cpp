@@ -27,6 +27,9 @@
 #include <filesystem>
 
 namespace Index {
+
+	float ImGuiContextLayer::s_DpiScale = 1.0f;
+
 	namespace {
 		constexpr const char* k_ImGuiIniFileName = "imgui.ini";
 
@@ -237,12 +240,19 @@ namespace Index {
 		float xScale = 1.0f, yScale = 1.0f;
 		glfwGetWindowContentScale(glfwWindow, &xScale, &yScale);
 		const float dpiScale = std::max(1.0f, xScale);
+		s_DpiScale = dpiScale;
 
-		// Honor the user's Editor Font preference. Engine-side LoadIndexImGuiFont
-		// is hardcoded to GoogleSans and stays the default; resolve the picked
-		// asset here so engine code doesn't have to know about EditorPreferences.
-		// Startup-only — the prefs panel tells the user a restart is required,
-		// so we don't rebuild the font atlas mid-session.
+		// Honor the user's Editor Font preference (typeface only — the
+		// size is applied dynamically via style.FontSizeBase, see
+		// ApplyEditorFontSize, which is invoked once EditorPreferences::Load
+		// has actually run on a later layer's OnAttach).
+		// EditorPreferences::Load() has not run yet here (it lives on
+		// ImGuiEditorLayer::OnAttach, which pushes after this layer),
+		// so GetEditorFontAssetId() returns the default for new installs
+		// and the user's saved id only afterwards. Loading a font here
+		// determines the LegacySize used as the initial FontSizeBase;
+		// we pass k_IndexImGuiFontSize * dpiScale so a freshly-launched
+		// editor renders at the engine default until prefs are applied.
 		{
 			const uint64_t fontId = EditorPreferences::GetEditorFontAssetId();
 			bool loadedCustom = false;
@@ -374,6 +384,23 @@ namespace Index {
 		// window close, or layout mutation issued during this frame is
 		// guaranteed visible to SaveIniSettingsToDisk.
 		FlushSettingsIfDirtyOrPeriodic();
+	}
+
+	void ImGuiContextLayer::ApplyEditorFontSize() {
+		// ImGui 1.92+ exposes dynamic font sizing via style.FontSizeBase
+		// — the dynamic atlas re-bakes glyphs at the new size on the
+		// next frame and the WebGPU backend re-uploads the texture
+		// through its ImGuiBackendFlags_RendererHasTextures path. No
+		// atlas mutation, no ImFont* invalidation, safe to call mid-
+		// frame from the prefs panel slider. `_NextFrameFontSizeBase`
+		// is the documented hack (see ImGui demo's FontSizeBase
+		// DragFloat handler) for the mid-frame case.
+		ImGuiContext* ctx = ImGui::GetCurrentContext();
+		if (ctx == nullptr) return;
+		const float scaled = EditorPreferences::GetEditorFontSize() * s_DpiScale;
+		ImGuiStyle& style = ImGui::GetStyle();
+		style.FontSizeBase = scaled;
+		style._NextFrameFontSizeBase = scaled;
 	}
 
 	void ImGuiContextLayer::FlushSettingsIfDirtyOrPeriodic() {

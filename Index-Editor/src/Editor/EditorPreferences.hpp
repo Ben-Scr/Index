@@ -59,6 +59,15 @@ namespace Index {
 		// editor launch (font atlas rebuild is not wired in this change).
 		static void SetEditorFontAssetId(uint64_t id);
 
+		static float GetEditorFontSize();
+		// Clamped to [k_MinEditorFontSize, k_MaxEditorFontSize]. Persisted
+		// immediately. Applied live: requests a deferred atlas rebuild on
+		// ImGuiContextLayer so the new size shows up next frame.
+		static void SetEditorFontSize(float sizePx);
+
+		static constexpr float k_MinEditorFontSize = 10.0f;
+		static constexpr float k_MaxEditorFontSize = 24.0f;
+
 		// ── Behavior (migrated from IndexProject) ─────────────────
 		static bool GetShowFileExtensions();
 		static void SetShowFileExtensions(bool value);

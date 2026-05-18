@@ -1558,8 +1558,8 @@ namespace Index {
 
 			if (ImGui::CollapsingHeader("Build Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Indent(8);
-				if (ImGui::Button("Open Player Settings")) {
-					m_ShowPlayerSettings = true;
+				if (ImGui::Button("Open Project Settings")) {
+					m_ShowProjectSettings = true;
 				}
 
 				ImGui::Spacing();
@@ -1734,10 +1734,21 @@ namespace Index {
 		m_BuildProfilesPanel.Render(&m_ShowBuildProfilesPanel);
 	}
 
-	void ImGuiEditorLayer::RenderPlayerSettingsPanel() {
-		if (!m_ShowPlayerSettings) return;
+	// Unified Project Settings window. Side-tab nav on the left lists the
+	// six topical categories (Display, Graphics, Branding, Build, Editor,
+	// Systems); the right pane renders the selected category. All settings
+	// here live in the per-project IndexProject struct and round-trip
+	// through index-project.json, regardless of whether they affect the
+	// editor's UX or the shipped game's runtime.
+	void ImGuiEditorLayer::RenderProjectSettingsPanel() {
+		if (!m_ShowProjectSettings) return;
 
-		ImGui::Begin("Project Settings", &m_ShowPlayerSettings);
+		ImGui::SetNextWindowSize(ImVec2(760.0f, 520.0f), ImGuiCond_FirstUseEver);
+		if (!ImGui::Begin("Project Settings", &m_ShowProjectSettings)) {
+			ImGui::End();
+			return;
+		}
+
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
 			ImGui::TextDisabled("No project loaded");
@@ -1745,16 +1756,87 @@ namespace Index {
 			return;
 		}
 
+		constexpr const char* k_CategoryLabels[] = {
+			"Display",
+			"Graphics",
+			"Branding",
+			"Build",
+			"Editor",
+			"Systems",
+		};
+		static_assert(IM_ARRAYSIZE(k_CategoryLabels)
+			== static_cast<int>(SettingsCategory::Systems) + 1,
+			"k_CategoryLabels out of sync with SettingsCategory enum");
+
+		const float listColumnWidth = ImGui::GetContentRegionAvail().x * 0.22f;
+		const float listW = std::max(160.0f, listColumnWidth);
+
+		ImGui::BeginChild("##SettingsNav", ImVec2(listW, 0), /*border*/ true);
+		for (int i = 0; i < IM_ARRAYSIZE(k_CategoryLabels); ++i) {
+			const bool selected = static_cast<int>(m_SelectedSettingsCategory) == i;
+			if (ImGui::Selectable(k_CategoryLabels[i], selected)) {
+				m_SelectedSettingsCategory = static_cast<SettingsCategory>(i);
+			}
+		}
+		ImGui::EndChild();
+
+		ImGui::SameLine();
+
 		bool changed = false;
+		bool globalSystemsChanged = false;
+
+		ImGui::BeginChild("##SettingsContent", ImVec2(0, 0));
+		switch (m_SelectedSettingsCategory) {
+			case SettingsCategory::Display:  RenderSettings_Display(*project, changed);  break;
+			case SettingsCategory::Graphics: RenderSettings_Graphics(*project, changed); break;
+			case SettingsCategory::Branding: RenderSettings_Branding(*project, changed); break;
+			case SettingsCategory::Build:    RenderSettings_Build(*project, changed);    break;
+			case SettingsCategory::Editor:   RenderSettings_Editor(*project, changed);   break;
+			case SettingsCategory::Systems:
+				RenderSettings_Systems(*project, changed, globalSystemsChanged);
+				break;
+		}
+		ImGui::EndChild();
+
+		// Single save site — every helper bitwise-ORs into `changed`, and
+		// the Global Systems handshake re-runs the script engine's project-
+		// scope system list whenever the Systems helper flipped its bool.
+		if (changed) {
+			project->Save();
+			if (globalSystemsChanged) {
+				std::vector<std::string> activeGlobalSystems;
+				for (const auto& registration : project->GlobalSystems) {
+					if (registration.Active && !registration.ClassName.empty()) {
+						activeGlobalSystems.push_back(registration.ClassName);
+					}
+				}
+				ScriptEngine::ShutdownGlobalSystems();
+				ScriptEngine::InitializeGlobalSystems(activeGlobalSystems);
+			}
+		}
+
+		// Render any reference picker popup opened from this panel (App
+		// Icon, Splash images, Cursors, Default Font). Single call site —
+		// the old two-panel layout duplicated this.
+		ReferencePicker::RenderPopup();
+
+		ImGui::End();
+	}
+
+	// Display — build resolution + UI scaling reference dimensions.
+	// Window dims drive the runtime's window creation; UI scaling
+	// configures UILayoutSystem's reference-to-current ratio so UI authored
+	// at one resolution renders proportionally at any window size.
+	void ImGuiEditorLayer::RenderSettings_Display(IndexProject& project, bool& changed) {
 		if (ImGui::CollapsingHeader("Window", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
-			changed |= ImGui::InputInt("Width", &project->BuildWidth);
-			changed |= ImGui::InputInt("Height", &project->BuildHeight);
-			if (project->BuildWidth < 320) project->BuildWidth = 320;
-			if (project->BuildHeight < 240) project->BuildHeight = 240;
+			changed |= ImGui::InputInt("Width", &project.BuildWidth);
+			changed |= ImGui::InputInt("Height", &project.BuildHeight);
+			if (project.BuildWidth < 320) project.BuildWidth = 320;
+			if (project.BuildHeight < 240) project.BuildHeight = 240;
 			ImGui::Spacing();
-			changed |= ImGui::Checkbox("Fullscreen", &project->BuildFullscreen);
-			changed |= ImGui::Checkbox("Resizable", &project->BuildResizable);
+			changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
+			changed |= ImGui::Checkbox("Resizable", &project.BuildResizable);
 			ImGui::Unindent(8);
 		}
 
@@ -1767,11 +1849,11 @@ namespace Index {
 		// Game View previews 1:1 unless the user opts in.
 		if (ImGui::CollapsingHeader("UI Scaling", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
-			changed |= ImGui::InputInt("Reference Width##UIRef", &project->UIReferenceWidth);
-			changed |= ImGui::InputInt("Reference Height##UIRef", &project->UIReferenceHeight);
-			if (project->UIReferenceWidth  < 1) project->UIReferenceWidth  = 1;
-			if (project->UIReferenceHeight < 1) project->UIReferenceHeight = 1;
-			changed |= ImGui::SliderFloat("Match Width / Height", &project->UIScaleMatch, 0.0f, 1.0f, "%.2f");
+			changed |= ImGui::InputInt("Reference Width##UIRef", &project.UIReferenceWidth);
+			changed |= ImGui::InputInt("Reference Height##UIRef", &project.UIReferenceHeight);
+			if (project.UIReferenceWidth  < 1) project.UIReferenceWidth  = 1;
+			if (project.UIReferenceHeight < 1) project.UIReferenceHeight = 1;
+			changed |= ImGui::SliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip(
 					"0 = scale UI by window WIDTH only.\n"
@@ -1783,10 +1865,66 @@ namespace Index {
 			}
 			ImGui::Unindent(8);
 		}
+	}
 
-		if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
+	// Graphics — render backend + post-processing kill switch + default
+	// font. The render backend lives here (rather than under Editor) even
+	// though changing it affects the editor too, because the same value
+	// is what ships in the built game.
+	void ImGuiEditorLayer::RenderSettings_Graphics(IndexProject& project, bool& changed) {
+		// Static state for the render-backend restart modal. Function-static
+		// is safe — only one Graphics tab can be visible at once.
+		static bool s_RenderBackendChangePopup = false;
+		static IndexProject::RenderBackend s_PendingRenderBackend = IndexProject::RenderBackend::Auto;
+
+		if (ImGui::CollapsingHeader("Render Backend", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Enable Post-Processing", &project->EnablePostProcessing);
+
+			ImGui::SetNextItemWidth(220.0f);
+			if (ImGui::BeginCombo("Rendering API", RenderBackendLabel(project.ActiveRenderBackend))) {
+				for (const RenderBackendOption& option : k_RenderBackendOptions) {
+					const bool selected = option.Backend == project.ActiveRenderBackend;
+					const bool supported = IsRenderBackendSupportedOnHost(option.Backend);
+					if (!supported) ImGui::BeginDisabled();
+					if (ImGui::Selectable(option.Label, selected)) {
+						if (supported && option.Backend != project.ActiveRenderBackend) {
+							s_PendingRenderBackend = option.Backend;
+							s_RenderBackendChangePopup = true;
+						}
+					}
+					if (!supported) ImGui::EndDisabled();
+					if (!supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+						ImGui::SetTooltip("%s", RenderBackendUnsupportedReason(option.Backend));
+					}
+					if (selected) {
+						ImGui::SetItemDefaultFocus();
+					}
+				}
+				ImGui::EndCombo();
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Which native API Dawn (WebGPU) uses at runtime. The\n"
+					"choice is applied when the engine requests its GPU\n"
+					"adapter at startup, so the change only takes effect\n"
+					"after restarting the editor / built game.\n"
+					"\n"
+					"  • Auto: Dawn picks the most capable backend for\n"
+					"    the host platform (D3D12 on Windows, Metal on\n"
+					"    macOS, Vulkan on Linux).\n"
+					"  • Vulkan / D3D11 / D3D12 / OpenGL: explicit backend.\n"
+					"    Selecting one not supported by the host platform\n"
+					"    (e.g. D3D12 on Linux) makes adapter-request fail\n"
+					"    at startup; the log line says exactly which\n"
+					"    backend was requested.");
+			}
+
+			ImGui::Unindent(8);
+		}
+
+		if (ImGui::CollapsingHeader("Post-Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			changed |= ImGui::Checkbox("Enable Post-Processing", &project.EnablePostProcessing);
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip(
 					"Global kill switch for the post-processing pipeline.\n"
@@ -1798,229 +1936,78 @@ namespace Index {
 			ImGui::Unindent(8);
 		}
 
-		// EnTT entity ID bit-split. Compile-time only — premake reads
-		// the saved value from index-project.json and bakes
-		// -DINDEX_ENTITY_BITS=N into every C++ TU that touches an entt
-		// header, so a change here requires regenerating project files
-		// and rebuilding the engine before it takes effect. The cap
-		// trades against EnTT's per-slot version count, which is what
-		// detects stale handles to recycled entity IDs.
-		if (ImGui::CollapsingHeader("ECS", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::CollapsingHeader("Default Font", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
-			ImGui::TextUnformatted("Entity ID bits:");
-			const char* entityBitsLabels[] = {
-				"16 bits  (65,535 entities / 65,536 versions)",
-				"20 bits  (1,048,575 entities / 4,096 versions)  [default]",
-				"22 bits  (4,194,303 entities / 1,024 versions)",
-				"24 bits  (16,777,215 entities / 256 versions)",
-				"28 bits  (268,435,455 entities / 16 versions)"
-			};
-			constexpr int entityBitsValues[] = { 16, 20, 22, 24, 28 };
-			int entityBitsIdx = 1; // matches the 20-bit default
-			for (int i = 0; i < IM_ARRAYSIZE(entityBitsValues); ++i) {
-				if (entityBitsValues[i] == project->EntityBits) {
-					entityBitsIdx = i;
-					break;
-				}
-			}
-			ImGui::SetNextItemWidth(-1);
-			if (ImGui::Combo("##EntityBits", &entityBitsIdx, entityBitsLabels, IM_ARRAYSIZE(entityBitsLabels))) {
-				const int newBits = entityBitsValues[entityBitsIdx];
-				if (newBits != project->EntityBits) {
-					project->EntityBits = newBits;
-					changed = true;
-				}
-			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Maximum number of live entities the scene can hold.\n"
-					"Trades against the per-slot version count EnTT uses\n"
-					"to detect stale handles to recycled IDs.\n"
-					"\n"
-					"Compile-time setting — the engine must be rebuilt for\n"
-					"the change to take effect. Click \"Rebuild Engine\" below\n"
-					"to do that automatically.");
-			}
-
-			// Drift indicator + Rebuild Engine button.
-			// `GetCompiledEntityBits()` returns the bit width baked into the
-			// engine DLL the editor is currently running against. When the
-			// user moves the dropdown, project->EntityBits changes immediately
-			// but the engine DLL doesn't — that's the drift state, and the
-			// only path to resolving it is rebuilding the engine.
-			const int compiledBits = Index::GetCompiledEntityBits();
-			ImGui::Spacing();
-			if (compiledBits != project->EntityBits) {
-				ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.20f, 1.0f),
-					"Compiled: %d bits   Pending: %d bits",
-					compiledBits, project->EntityBits);
-				ImGui::Spacing();
-				if (ImGui::Button("Rebuild Engine")) {
-					ImGui::OpenPopup("Rebuild Engine?");
-				}
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetTooltip(
-						"Closes the editor and reopens it after the engine has\n"
-						"been rebuilt with the new entityBits setting.\n"
-						"\n"
-						"A separate \"Rebuilding Engine\" window will appear\n"
-						"with progress. Don't close it.");
-				}
-			}
-			else {
-				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
-			}
-
-			// Confirmation modal. The rebuild itself runs in a transient
-			// cmd.exe spawned with a generated batch script — neither the
-			// editor nor the launcher can do the build in-process because
-			// both link Index-Engine.dll and MSBuild would fail with LNK1104
-			// on the locked binary. cmd.exe doesn't load the engine, so it
-			// can freely overwrite the .dll / .exe / .lib outputs. The
-			// console window doubles as the progress UI: stage labels echo,
-			// MSBuild output streams live, and `pause` on failure lets the
-			// user read the error before the window closes.
-			ImGuiUtils::CenterNextModal();
-			if (ImGui::BeginPopupModal("Rebuild Engine?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-				ImGui::TextWrapped(
-					"Rebuild the engine with entityBits = %d?\n\n"
-					"The editor will close and a console window will open showing the build "
-					"progress. The editor reopens automatically when the build finishes. "
-					"This typically takes 1-3 minutes. Don't close the console window.",
-					project->EntityBits);
-				ImGui::Spacing();
-				if (ImGui::Button("Rebuild", ImVec2(120.0f, 0.0f))) {
-					project->Save();
-
-					// Index-Editor.exe lives at:
-					//   <repoRoot>/bin/<config>-windows-x86_64/Index-Editor/Index-Editor.exe
-					// Engine root is therefore three parents up from the exe dir.
-					const std::filesystem::path editorExeDir = Path::ExecutableDir();
-					const std::filesystem::path engineRoot =
-						editorExeDir.parent_path().parent_path().parent_path();
-					const std::filesystem::path premakeExe =
-						engineRoot / "vendor" / "bin" / "premake5.exe";
-					const std::string msbuildPath = IndexProject::GetMSBuildPath();
-					const std::filesystem::path slnPath = engineRoot / "Index.sln";
-					const std::filesystem::path editorExe = editorExeDir / "Index-Editor.exe";
-					const std::string config = IndexProject::GetActiveBuildConfiguration();
-					const std::string projectRootDir = project->RootDirectory;
-					const int newEntityBits = project->EntityBits;
-
-					// Emit the rebuild script. `timeout` at the top waits for
-					// the current editor process to fully exit so MSBuild
-					// doesn't race the DLL unload. Each stage echoes a banner
-					// so the user can read where they are in the pipeline if
-					// the build fails. `pause` keeps the window open on
-					// failure; success path closes it after relaunching the
-					// editor.
-					std::ostringstream bat;
-					bat <<
-						"@echo off\r\n"
-						"setlocal\r\n"
-						"title Rebuilding Index Engine (entityBits=" << newEntityBits << ")\r\n"
-						"echo.\r\n"
-						"echo ====================================================\r\n"
-						"echo   Rebuilding Index Engine  (entityBits=" << newEntityBits << ")\r\n"
-						"echo ====================================================\r\n"
-						"echo.\r\n"
-						"echo Waiting for editor to release its file locks...\r\n"
-						"timeout /t 3 /nobreak > nul\r\n"
-						"echo.\r\n"
-						"echo [1/3] Regenerating project files (premake)...\r\n"
-						"echo.\r\n"
-						"pushd \"" << engineRoot.string() << "\"\r\n"
-						"\"" << premakeExe.string() << "\" vs2022 --index-project=\"" << projectRootDir << "\"\r\n"
-						"if errorlevel 1 (\r\n"
-						"  echo.\r\n"
-						"  echo *** premake regeneration FAILED. ***\r\n"
-						"  echo.\r\n"
-						"  pause\r\n"
-						"  exit /b 1\r\n"
-						")\r\n"
-						"echo.\r\n"
-						"echo [2/3] Building solution (this is the long step)...\r\n"
-						"echo.\r\n"
-						"\"" << msbuildPath << "\" \"" << slnPath.string() << "\""
-						" /p:Configuration=" << config <<
-						" /p:Platform=x64 /m /v:minimal /nologo\r\n"
-						"if errorlevel 1 (\r\n"
-						"  echo.\r\n"
-						"  echo *** MSBuild FAILED. Scroll up for compile errors. ***\r\n"
-						"  echo.\r\n"
-						"  pause\r\n"
-						"  exit /b 1\r\n"
-						")\r\n"
-						"popd\r\n"
-						"echo.\r\n"
-						"echo [3/3] Relaunching editor...\r\n"
-						"echo.\r\n"
-						"start \"\" \"" << editorExe.string() << "\" --project=\"" << projectRootDir << "\"\r\n"
-						"endlocal\r\n"
-						"exit /b 0\r\n";
-
-					std::error_code mkdirEc;
-					const std::filesystem::path batDir = engineRoot / "bin-int";
-					std::filesystem::create_directories(batDir, mkdirEc);
-					const std::filesystem::path batPath = batDir / "engine-rebuild.bat";
-					std::ofstream batFile(batPath, std::ios::binary | std::ios::trunc);
-					batFile << bat.str();
-					batFile.close();
-
-					const bool spawned = Process::LaunchDetached(
-						{ "cmd.exe", "/c", batPath.string() }, engineRoot);
-					ImGui::CloseCurrentPopup();
-					if (spawned) {
-						// Clean shutdown — releases the engine DLL file lock
-						// so MSBuild can overwrite the rebuilt binary.
-						Application::GetInstance()->Quit();
-					}
-					else {
-						IDX_ERROR_TAG("Editor",
-							"Failed to spawn cmd.exe for engine rebuild (script at {})",
-							batPath.string());
-					}
-				}
-				ImGui::SameLine();
-				if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
-					ImGui::CloseCurrentPopup();
-				}
-				ImGui::EndPopup();
-			}
-
-			ImGui::Unindent(8);
-		}
-
-		if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Show runtime stats overlay (F6)", &project->ShowRuntimeStats);
-			changed |= ImGui::Checkbox("Show runtime log overlay (F7)", &project->ShowRuntimeLogs);
-			ImGui::Unindent(8);
-		}
-
-		// Asset Browser + Auto-Save moved to the Project Settings panel
-		// (editor-side preferences). Keeping the Player Settings panel
-		// focused on runtime / shipped-game knobs so users don't have
-		// to scan past editor-experience toggles to find what ships in
-		// the build.
-
-		if (ImGui::CollapsingHeader("Executable", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::Indent(8);
-			ImGui::TextUnformatted("Output Name:");
-			char exeBuf[256];
-			std::string current = project->ExecutableName.empty() ? project->Name : project->ExecutableName;
-			std::snprintf(exeBuf, sizeof(exeBuf), "%s", current.c_str());
-			ImGui::SetNextItemWidth(-1);
-			if (ImGui::InputText("##ExecutableName", exeBuf, sizeof(exeBuf))) {
-				const std::string newName(exeBuf);
-				project->ExecutableName = (newName == project->Name) ? "" : newName;
+			constexpr const char* k_DefaultFontPickerKey = "ProjectSettings.DefaultFont";
+			if (auto pending = ReferencePicker::ConsumeSelection(k_DefaultFontPickerKey); pending) {
+				uint64_t pickedId = ParsePickerAssetId(*pending);
+				project.DefaultFontAssetId = pickedId != 0 ? pickedId : k_DefaultFontAssetId;
 				changed = true;
 			}
-			ImGui::TextDisabled("Default: project name (\"%s\"). The platform extension is appended automatically.",
-				project->Name.c_str());
+
+			bool fontMissing = false;
+			std::string fontSecondary;
+			std::string fontDisplay = ReferencePicker::ResolveAssetDisplay(
+				project.DefaultFontAssetId, AssetKind::Font, fontMissing, &fontSecondary);
+			ImGui::TextUnformatted("Default Font");
+			ImGui::SameLine(130.0f);
+			ImGui::PushID("ProjectDefaultFont");
+			if (ImGui::Button(fontDisplay.c_str(), ImVec2(260.0f, 0.0f))) {
+				ReferencePicker::OpenForFieldKey(k_DefaultFontPickerKey, "Select Default Font",
+					ReferencePicker::CollectAssetsByKind(AssetKind::Font),
+					ReferencePicker::Style::Plain);
+			}
+			if (ImGui::IsItemHovered() && !fontSecondary.empty()) {
+				ImGui::SetTooltip("%s", fontSecondary.c_str());
+			}
+			ImGui::PopID();
+			ImGui::SameLine();
+			if (ImGui::Button("Reset##ProjectDefaultFont")) {
+				project.DefaultFontAssetId = k_DefaultFontAssetId;
+				changed = true;
+			}
+
 			ImGui::Unindent(8);
 		}
 
+		// Render-backend restart modal. Stays in the Graphics helper so the
+		// function-static popup state remains scoped here.
+		if (s_RenderBackendChangePopup) {
+			ImGui::OpenPopup("Restart Renderer?");
+			s_RenderBackendChangePopup = false;
+		}
+		ImGuiUtils::CenterNextModal();
+		if (ImGui::BeginPopupModal("Restart Renderer?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::TextWrapped(
+				"Changing the rendering API from %s to %s requires the renderer to be reinitialized.",
+				RenderBackendLabel(project.ActiveRenderBackend),
+				RenderBackendLabel(s_PendingRenderBackend));
+			ImGui::Spacing();
+			if (ImGui::Button("Restart Now", ImVec2(120.0f, 0.0f))) {
+				project.ActiveRenderBackend = s_PendingRenderBackend;
+				project.Save();
+				ImGui::CloseCurrentPopup();
+				Application::Reload();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Save For Later", ImVec2(120.0f, 0.0f))) {
+				project.ActiveRenderBackend = s_PendingRenderBackend;
+				changed = true;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+
+	// Branding — splash screen, app icon, and cursors. The shipped game's
+	// visual identity. App icon embeds into the runtime .exe at build time;
+	// cursors apply live to the editor window so changes are visible
+	// immediately rather than after a relaunch.
+	void ImGuiEditorLayer::RenderSettings_Branding(IndexProject& project, bool& changed) {
 		if (ImGui::CollapsingHeader("Splash Screen", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			constexpr const char* k_SplashPickerKey = "ProjectSettings.SplashImage";
@@ -2030,66 +2017,66 @@ namespace Index {
 				uint64_t pickedId = 0;
 				try { pickedId = std::stoull(raw); } catch (...) { pickedId = 0; }
 				if (pickedId == 0) {
-					project->SplashScreen.ImagePath.clear();
+					project.SplashScreen.ImagePath.clear();
 					changed = true;
 				}
 				else {
 					std::string absPath = AssetRegistry::ResolvePath(pickedId);
 					if (!absPath.empty()) {
-						project->SplashScreen.ImagePath =
-							SplashAssetResolve::NormalizeForStorage(absPath, project);
+						project.SplashScreen.ImagePath =
+							SplashAssetResolve::NormalizeForStorage(absPath, &project);
 						changed = true;
 					}
 				}
 			}
 
-			changed |= ImGui::Checkbox("Enabled##Splash", &project->SplashScreen.Enabled);
+			changed |= ImGui::Checkbox("Enabled##Splash", &project.SplashScreen.Enabled);
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip("When off, the runtime loads the startup scene immediately with no splash.");
 			}
 
-			if (project->SplashScreen.Enabled) {
+			if (project.SplashScreen.Enabled) {
 				ImGui::Spacing();
 				changed |= ImGui::SliderFloat("Duration (s)##Splash",
-					&project->SplashScreen.DurationSeconds, 0.5f, 10.0f, "%.2f");
+					&project.SplashScreen.DurationSeconds, 0.5f, 10.0f, "%.2f");
 				changed |= ImGui::SliderFloat("Fade In (s)##Splash",
-					&project->SplashScreen.FadeInSeconds, 0.0f, 3.0f, "%.2f");
+					&project.SplashScreen.FadeInSeconds, 0.0f, 3.0f, "%.2f");
 				changed |= ImGui::SliderFloat("Fade Out (s)##Splash",
-					&project->SplashScreen.FadeOutSeconds, 0.0f, 3.0f, "%.2f");
+					&project.SplashScreen.FadeOutSeconds, 0.0f, 3.0f, "%.2f");
 
 				ImGui::Spacing();
 				float bg[3] = {
-					project->SplashScreen.BackgroundR,
-					project->SplashScreen.BackgroundG,
-					project->SplashScreen.BackgroundB,
+					project.SplashScreen.BackgroundR,
+					project.SplashScreen.BackgroundG,
+					project.SplashScreen.BackgroundB,
 				};
 				if (ImGui::ColorEdit3("Background##Splash", bg)) {
-					project->SplashScreen.BackgroundR = bg[0];
-					project->SplashScreen.BackgroundG = bg[1];
-					project->SplashScreen.BackgroundB = bg[2];
+					project.SplashScreen.BackgroundR = bg[0];
+					project.SplashScreen.BackgroundG = bg[1];
+					project.SplashScreen.BackgroundB = bg[2];
 					changed = true;
 				}
 
 				float fontColor[3] = {
-					project->SplashScreen.FontColorR,
-					project->SplashScreen.FontColorG,
-					project->SplashScreen.FontColorB,
+					project.SplashScreen.FontColorR,
+					project.SplashScreen.FontColorG,
+					project.SplashScreen.FontColorB,
 				};
 				if (ImGui::ColorEdit3("Font Color##Splash", fontColor)) {
-					project->SplashScreen.FontColorR = fontColor[0];
-					project->SplashScreen.FontColorG = fontColor[1];
-					project->SplashScreen.FontColorB = fontColor[2];
+					project.SplashScreen.FontColorR = fontColor[0];
+					project.SplashScreen.FontColorG = fontColor[1];
+					project.SplashScreen.FontColorB = fontColor[2];
 					changed = true;
 				}
-				if (ImGui::DragFloat("Font Size##Splash", &project->SplashScreen.FontSize,
+				if (ImGui::DragFloat("Font Size##Splash", &project.SplashScreen.FontSize,
 						0.5f, 6.0f, 96.0f, "%.0f px")) {
-					if (project->SplashScreen.FontSize < 1.0f) project->SplashScreen.FontSize = 1.0f;
+					if (project.SplashScreen.FontSize < 1.0f) project.SplashScreen.FontSize = 1.0f;
 					changed = true;
 				}
 
 				ImGui::Spacing();
 				ImGui::TextUnformatted("Image (optional, replaces default Index logo):");
-				if (project->SplashScreen.ImagePath.empty()) {
+				if (project.SplashScreen.ImagePath.empty()) {
 					// Render the engine default logo as a placeholder so
 					// the user sees what'll ship. Same source the runtime
 					// splash falls back to.
@@ -2107,7 +2094,7 @@ namespace Index {
 					ImGui::TextDisabled("(default Index logo)");
 				}
 				else {
-					ImGuiUtils::TextDisabledEllipsis(project->SplashScreen.ImagePath);
+					ImGuiUtils::TextDisabledEllipsis(project.SplashScreen.ImagePath);
 				}
 				if (ImGui::Button("Browse...##SplashImage")) {
 					ReferencePicker::OpenForFieldKey(k_SplashPickerKey, "Select Splash Image",
@@ -2115,14 +2102,14 @@ namespace Index {
 						ReferencePicker::Style::Thumbnails);
 				}
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
-					project->SplashScreen.ImagePath =
-						SplashAssetResolve::NormalizeForStorage(dropped, project);
+					project.SplashScreen.ImagePath =
+						SplashAssetResolve::NormalizeForStorage(dropped, &project);
 					changed = true;
 				})) {}
-				if (!project->SplashScreen.ImagePath.empty()) {
+				if (!project.SplashScreen.ImagePath.empty()) {
 					ImGui::SameLine();
 					if (ImGui::Button("Clear##SplashImage")) {
-						project->SplashScreen.ImagePath.clear();
+						project.SplashScreen.ImagePath.clear();
 						changed = true;
 					}
 				}
@@ -2139,24 +2126,24 @@ namespace Index {
 					uint64_t pickedId = 0;
 					try { pickedId = std::stoull(raw); } catch (...) { pickedId = 0; }
 					if (pickedId == 0) {
-						project->SplashScreen.BackgroundImagePath.clear();
+						project.SplashScreen.BackgroundImagePath.clear();
 						changed = true;
 					}
 					else {
 						std::string absPath = AssetRegistry::ResolvePath(pickedId);
 						if (!absPath.empty()) {
-							project->SplashScreen.BackgroundImagePath =
-								SplashAssetResolve::NormalizeForStorage(absPath, project);
+							project.SplashScreen.BackgroundImagePath =
+								SplashAssetResolve::NormalizeForStorage(absPath, &project);
 							changed = true;
 						}
 					}
 				}
 
-				if (project->SplashScreen.BackgroundImagePath.empty()) {
+				if (project.SplashScreen.BackgroundImagePath.empty()) {
 					ImGui::TextDisabled("(no background image — solid colour fill above)");
 				}
 				else {
-					ImGuiUtils::TextDisabledEllipsis(project->SplashScreen.BackgroundImagePath);
+					ImGuiUtils::TextDisabledEllipsis(project.SplashScreen.BackgroundImagePath);
 				}
 				if (ImGui::Button("Browse...##SplashBgImage")) {
 					ReferencePicker::OpenForFieldKey(k_SplashBgPickerKey, "Select Splash Background",
@@ -2164,14 +2151,14 @@ namespace Index {
 						ReferencePicker::Style::Thumbnails);
 				}
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
-					project->SplashScreen.BackgroundImagePath =
-						SplashAssetResolve::NormalizeForStorage(dropped, project);
+					project.SplashScreen.BackgroundImagePath =
+						SplashAssetResolve::NormalizeForStorage(dropped, &project);
 					changed = true;
 				})) {}
-				if (!project->SplashScreen.BackgroundImagePath.empty()) {
+				if (!project.SplashScreen.BackgroundImagePath.empty()) {
 					ImGui::SameLine();
 					if (ImGui::Button("Clear##SplashBgImage")) {
-						project->SplashScreen.BackgroundImagePath.clear();
+						project.SplashScreen.BackgroundImagePath.clear();
 						changed = true;
 					}
 				}
@@ -2179,11 +2166,11 @@ namespace Index {
 				ImGui::Spacing();
 				ImGui::TextUnformatted("Custom Text (optional, replaces version + platform line):");
 				char textBuf[256];
-				std::snprintf(textBuf, sizeof(textBuf), "%s", project->SplashScreen.CustomText.c_str());
+				std::snprintf(textBuf, sizeof(textBuf), "%s", project.SplashScreen.CustomText.c_str());
 				ImGui::SetNextItemWidth(-1);
 				if (ImGui::InputTextWithHint("##SplashText", "Leave empty for engine default",
 					textBuf, sizeof(textBuf))) {
-					project->SplashScreen.CustomText = textBuf;
+					project.SplashScreen.CustomText = textBuf;
 					changed = true;
 				}
 
@@ -2226,22 +2213,22 @@ namespace Index {
 				uint64_t pickedId = 0;
 				try { pickedId = std::stoull(raw); } catch (...) { pickedId = 0; }
 				if (pickedId == 0) {
-					project->AppIconPath.clear();
+					project.AppIconPath.clear();
 					changed = true;
 				}
 				else {
 					std::string absPath = AssetRegistry::ResolvePath(pickedId);
 					if (!absPath.empty()) {
-						project->AppIconPath =
-							SplashAssetResolve::NormalizeForStorage(absPath, project);
+						project.AppIconPath =
+							SplashAssetResolve::NormalizeForStorage(absPath, &project);
 						changed = true;
 					}
 				}
 			}
 
-			if (!project->AppIconPath.empty()) {
+			if (!project.AppIconPath.empty()) {
 				TextureHandle iconHandle = TextureManager::LoadTexture(
-					SplashAssetResolve::Resolve(project->AppIconPath, project));
+					SplashAssetResolve::Resolve(project.AppIconPath, &project));
 				Texture2D* iconTex = TextureManager::GetTexture(iconHandle);
 				if (iconTex && iconTex->IsValid()) {
 					ImGui::Image(
@@ -2251,7 +2238,7 @@ namespace Index {
 				}
 				else {
 					ImGui::TextDisabled("Failed to load:");
-					ImGuiUtils::TextDisabledEllipsis(project->AppIconPath);
+					ImGuiUtils::TextDisabledEllipsis(project.AppIconPath);
 				}
 
 				ImGui::BeginGroup();
@@ -2261,19 +2248,19 @@ namespace Index {
 						ReferencePicker::Style::Thumbnails);
 				}
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
-					project->AppIconPath =
-						SplashAssetResolve::NormalizeForStorage(dropped, project);
+					project.AppIconPath =
+						SplashAssetResolve::NormalizeForStorage(dropped, &project);
 					changed = true;
 				})) {}
 				ImGui::SameLine();
 				if (ImGui::Button("Clear##AppIcon")) {
-					project->AppIconPath.clear();
+					project.AppIconPath.clear();
 					changed = true;
 				}
 				ImGui::EndGroup();
 
 				if (iconTex && iconTex->IsValid()) {
-					ImGuiUtils::TextDisabledEllipsis(project->AppIconPath);
+					ImGuiUtils::TextDisabledEllipsis(project.AppIconPath);
 				}
 			}
 			else {
@@ -2307,16 +2294,12 @@ namespace Index {
 				}
 				// Drop target lives on the Browse button itself — keeps
 				// the affordance consistent with every other Browse... in
-				// this panel (Splash Image, Cursors). Previously the drop
-				// target wrapped the entire App Icon section's last item
-				// (the disabled-text hint), which made the drop hit-area
-				// inconsistent with the rest of the panel and confused
-				// users about WHERE to drop. Note: NOT calling
+				// this panel (Splash Image, Cursors). Note: NOT calling
 				// SetWindowIcon — the AppIconPath is the SHIPPED game's
 				// icon, not the editor's window icon.
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
-					project->AppIconPath =
-						SplashAssetResolve::NormalizeForStorage(dropped, project);
+					project.AppIconPath =
+						SplashAssetResolve::NormalizeForStorage(dropped, &project);
 					changed = true;
 				})) {}
 				ImGui::SameLine();
@@ -2333,7 +2316,7 @@ namespace Index {
 			auto resolveProjectRelativeCursor = [&](const std::string& rel) -> std::string {
 				std::filesystem::path p(rel);
 				if (p.is_absolute()) return rel;
-				return (std::filesystem::path(project->RootDirectory) / p).string();
+				return (std::filesystem::path(project.RootDirectory) / p).string();
 			};
 
 			// Apply a project-relative path to the live Window cursor so
@@ -2383,7 +2366,7 @@ namespace Index {
 						std::string absPath = AssetRegistry::ResolvePath(pickedId);
 						if (!absPath.empty()) {
 							std::filesystem::path absFs(absPath);
-							std::filesystem::path assetsDir(project->AssetsDirectory);
+							std::filesystem::path assetsDir(project.AssetsDirectory);
 							if (absFs.string().find(assetsDir.string()) == 0) {
 								slotPath = std::filesystem::relative(absFs, assetsDir.parent_path()).string();
 							}
@@ -2409,7 +2392,7 @@ namespace Index {
 						ReferencePicker::Style::Thumbnails);
 				}
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
-					slotPath = ToProjectRelativeAssetPath(dropped, project->AssetsDirectory);
+					slotPath = ToProjectRelativeAssetPath(dropped, project.AssetsDirectory);
 					changed = true;
 					applyCursorLive(slotPath, liveSetter);
 				})) {}
@@ -2425,10 +2408,10 @@ namespace Index {
 			};
 
 			renderCursorSlot("Default cursor", "ProjectSettings.DefaultCursor",
-				project->CursorImagePath, &Window::SetCursorImage);
+				project.CursorImagePath, &Window::SetCursorImage);
 			ImGui::Spacing();
 			renderCursorSlot("UI hover cursor", "ProjectSettings.UICursor",
-				project->UIInteractableCursorImagePath, &Window::SetUICursorImage);
+				project.UIInteractableCursorImagePath, &Window::SetUICursorImage);
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip(
 					"Shown while the cursor sits over an Index UI element\n"
@@ -2438,41 +2421,315 @@ namespace Index {
 
 			ImGui::Unindent(8);
 		}
-
-		if (changed) {
-			project->Save();
-		}
-
-		// Render any reference picker popup opened from this panel
-		// (App Icon, Splash image). Without this, OpenForFieldKey
-		// stages a request that never gets a render call and the popup
-		// never appears for fields hosted outside the inspector.
-		ReferencePicker::RenderPopup();
-
-		ImGui::End();
 	}
 
-	// Project Settings — editor-side preferences scoped to this project.
-	// Distinct from Player Settings (which configures the shipped game's
-	// runtime). Anything here only affects the editor's UX while the
-	// project is open: how the asset browser renders names, when scenes
-	// auto-save, etc. Adding new editor-experience toggles? They belong
-	// in this panel, not Player Settings.
-	void ImGuiEditorLayer::RenderProjectSettingsPanel() {
-		if (!m_ShowProjectSettings) return;
-
-		ImGui::Begin("Project Settings", &m_ShowProjectSettings);
-		IndexProject* project = ProjectManager::GetCurrentProject();
-		if (!project) {
-			ImGui::TextDisabled("No project loaded");
-			ImGui::End();
-			return;
+	// Build — Executable Name + Runtime Diagnostics + ECS Entity Bits.
+	// EntityBits lives here (rather than its own engine-internals category)
+	// because it's a compile-time / build-time setting: changing it requires
+	// rebuilding the engine, which the "Rebuild Engine" button automates.
+	void ImGuiEditorLayer::RenderSettings_Build(IndexProject& project, bool& changed) {
+		if (ImGui::CollapsingHeader("Executable", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			ImGui::TextUnformatted("Output Name:");
+			char exeBuf[256];
+			std::string current = project.ExecutableName.empty() ? project.Name : project.ExecutableName;
+			std::snprintf(exeBuf, sizeof(exeBuf), "%s", current.c_str());
+			ImGui::SetNextItemWidth(-1);
+			if (ImGui::InputText("##ExecutableName", exeBuf, sizeof(exeBuf))) {
+				const std::string newName(exeBuf);
+				project.ExecutableName = (newName == project.Name) ? "" : newName;
+				changed = true;
+			}
+			ImGui::TextDisabled("Default: project name (\"%s\"). The platform extension is appended automatically.",
+				project.Name.c_str());
+			ImGui::Unindent(8);
 		}
 
-		bool changed = false;
-		static bool s_RenderBackendChangePopup = false;
-		static IndexProject::RenderBackend s_PendingRenderBackend = IndexProject::RenderBackend::Auto;
+		if (ImGui::CollapsingHeader("Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			changed |= ImGui::Checkbox("Show runtime stats overlay (F6)", &project.ShowRuntimeStats);
+			changed |= ImGui::Checkbox("Show runtime log overlay (F7)", &project.ShowRuntimeLogs);
+			ImGui::Unindent(8);
+		}
 
+		// EnTT entity ID bit-split. Compile-time only — premake reads
+		// the saved value from index-project.json and bakes
+		// -DINDEX_ENTITY_BITS=N into every C++ TU that touches an entt
+		// header, so a change here requires regenerating project files
+		// and rebuilding the engine before it takes effect. The cap
+		// trades against EnTT's per-slot version count, which is what
+		// detects stale handles to recycled entity IDs.
+		if (ImGui::CollapsingHeader("ECS Entity Bits", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			ImGui::TextUnformatted("Entity ID bits:");
+			const char* entityBitsLabels[] = {
+				"16 bits  (65,535 entities / 65,536 versions)",
+				"20 bits  (1,048,575 entities / 4,096 versions)  [default]",
+				"22 bits  (4,194,303 entities / 1,024 versions)",
+				"24 bits  (16,777,215 entities / 256 versions)",
+				"28 bits  (268,435,455 entities / 16 versions)"
+			};
+			constexpr int entityBitsValues[] = { 16, 20, 22, 24, 28 };
+			int entityBitsIdx = 1; // matches the 20-bit default
+			for (int i = 0; i < IM_ARRAYSIZE(entityBitsValues); ++i) {
+				if (entityBitsValues[i] == project.EntityBits) {
+					entityBitsIdx = i;
+					break;
+				}
+			}
+			ImGui::SetNextItemWidth(-1);
+			if (ImGui::Combo("##EntityBits", &entityBitsIdx, entityBitsLabels, IM_ARRAYSIZE(entityBitsLabels))) {
+				const int newBits = entityBitsValues[entityBitsIdx];
+				if (newBits != project.EntityBits) {
+					project.EntityBits = newBits;
+					changed = true;
+				}
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Maximum number of live entities the scene can hold.\n"
+					"Trades against the per-slot version count EnTT uses\n"
+					"to detect stale handles to recycled IDs.\n"
+					"\n"
+					"Compile-time setting — the engine must be rebuilt for\n"
+					"the change to take effect. Click \"Rebuild Engine\" below\n"
+					"to do that automatically.");
+			}
+
+			// Drift indicator + Rebuild Engine button.
+			// `GetCompiledEntityBits()` returns the bit width baked into the
+			// engine DLL the editor is currently running against. When the
+			// user moves the dropdown, project.EntityBits changes immediately
+			// but the engine DLL doesn't — that's the drift state, and the
+			// only path to resolving it is rebuilding the engine.
+			const int compiledBits = Index::GetCompiledEntityBits();
+			ImGui::Spacing();
+			if (compiledBits != project.EntityBits) {
+				ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.20f, 1.0f),
+					"Compiled: %d bits   Pending: %d bits",
+					compiledBits, project.EntityBits);
+				ImGui::Spacing();
+				if (ImGui::Button("Rebuild Engine")) {
+					ImGui::OpenPopup("Rebuild Engine?");
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip(
+						"Closes the editor and reopens it after the engine has\n"
+						"been rebuilt with the new entityBits setting.\n"
+						"\n"
+						"A separate \"Rebuilding Engine\" window will appear\n"
+						"with progress. Don't close it.");
+				}
+			}
+			else {
+				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
+			}
+
+			// Confirmation modal. The rebuild itself runs in a transient
+			// cmd.exe spawned with a generated batch script — neither the
+			// editor nor the launcher can do the build in-process because
+			// both link Index-Engine.dll and MSBuild would fail with LNK1104
+			// on the locked binary. cmd.exe doesn't load the engine, so it
+			// can freely overwrite the .dll / .exe / .lib outputs. The
+			// console window doubles as the progress UI: stage labels echo,
+			// MSBuild output streams live, and `pause` on failure lets the
+			// user read the error before the window closes.
+			//
+			// Fast path: the only build artefact that depends on
+			// `entityBits` is the generated header at
+			// Index-Engine/src/Generated/IndexEntityBitsConfig.h
+			// (#undef/#define INDEX_ENTITY_BITS). We write it directly
+			// from the editor before spawning the build, so the script
+			// no longer needs to invoke premake — MSBuild's incremental
+			// tracker sees the header's mtime change and recompiles
+			// only the TUs that include it (everything that transitively
+			// includes <entt/entt.hpp> via pch.hpp, in lockstep across
+			// Index-Engine, Index-Editor, Index-Runtime, Index-Launcher,
+			// and any native packages with the Generated dir on their
+			// include path). Premake's matching writer is
+			// WriteIndexEntityBitsConfigHeader in the root premake5.lua;
+			// the two paths converge on the same header content.
+			ImGuiUtils::CenterNextModal();
+			if (ImGui::BeginPopupModal("Rebuild Engine?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+				ImGui::TextWrapped(
+					"Rebuild the engine with entityBits = %d?\n\n"
+					"The editor will close and a console window will open showing the build "
+					"progress. The editor reopens automatically when the build finishes. "
+					"Don't close the console window.",
+					project.EntityBits);
+				ImGui::Spacing();
+				if (ImGui::Button("Rebuild", ImVec2(120.0f, 0.0f))) {
+					project.Save();
+
+					// Index-Editor.exe lives at:
+					//   <repoRoot>/bin/<config>-windows-x86_64/Index-Editor/Index-Editor.exe
+					// Engine root is therefore three parents up from the exe dir.
+					const std::filesystem::path editorExeDir = Path::ExecutableDir();
+					const std::filesystem::path engineRoot =
+						editorExeDir.parent_path().parent_path().parent_path();
+					const std::string msbuildPath = IndexProject::GetMSBuildPath();
+					const std::filesystem::path slnPath = engineRoot / "Index.sln";
+					const std::filesystem::path editorExe = editorExeDir / "Index-Editor.exe";
+					const std::string config = IndexProject::GetActiveBuildConfiguration();
+					const std::string projectRootDir = project.RootDirectory;
+					const int newEntityBits = project.EntityBits;
+
+					// Editor PID for the spawned script's wait loop. The
+					// old flow used a hardcoded `timeout /t 3` and just
+					// hoped the editor had exited; polling tasklist is
+					// deterministic and starts MSBuild as soon as the
+					// process is actually gone.
+				#ifdef IDX_PLATFORM_WINDOWS
+					const unsigned long editorPid = ::GetCurrentProcessId();
+				#else
+					const unsigned long editorPid = 0; // Windows-only flow today; placeholder for clarity.
+				#endif
+
+					// Write the generated header that the EnTT patch
+					// reads to override INDEX_ENTITY_BITS. Doing this
+					// from C++ (rather than letting premake do it via a
+					// regen) is what unlocks the fast rebuild path:
+					// MSBuild incremental sees only this file change
+					// and rebuilds the dependent TUs. Premake's writer
+					// (WriteIndexEntityBitsConfigHeader) emits the same
+					// content for the regen path.
+					const std::filesystem::path generatedDir = engineRoot
+						/ "Index-Engine" / "src" / "Generated";
+					const std::filesystem::path headerPath = generatedDir
+						/ "IndexEntityBitsConfig.h";
+					bool headerWritten = false;
+					{
+						std::error_code dirEc;
+						std::filesystem::create_directories(generatedDir, dirEc);
+						if (!dirEc) {
+							std::ofstream headerOut(headerPath,
+								std::ios::binary | std::ios::trunc);
+							if (headerOut) {
+								headerOut <<
+									"// Auto-generated by the editor's Rebuild Engine flow.\n"
+									"// Matches premake's WriteIndexEntityBitsConfigHeader().\n"
+									"// Do not edit by hand.\n"
+									"#pragma once\n"
+									"#undef  INDEX_ENTITY_BITS\n"
+									"#define INDEX_ENTITY_BITS " << newEntityBits << "\n";
+								headerWritten = static_cast<bool>(headerOut);
+							}
+						}
+						if (!headerWritten) {
+							IDX_ERROR_TAG("Editor",
+								"Failed to write {}; engine rebuild aborted.",
+								headerPath.string());
+						}
+					}
+
+					// Emit the rebuild script. The PID-wait loop replaces
+					// the hardcoded 3-second timeout from the old flow
+					// — it polls tasklist until the editor process is
+					// actually gone (with a 30-second safety cap), so
+					// the build starts the moment MSBuild can write to
+					// the engine DLL. Premake is no longer invoked here
+					// (the header write above did the only thing premake
+					// was doing for this code path). `MSBuild Index.sln`
+					// is kept (not narrowed to the four main C++
+					// projects) because user-authored packages also
+					// include entt and need to recompile in lockstep —
+					// MSBuild's incremental tracker handles the
+					// "C# project doesn't see the header → skip" case
+					// naturally.
+					if (headerWritten) {
+						std::ostringstream bat;
+						bat <<
+							"@echo off\r\n"
+							"setlocal\r\n"
+							"title Rebuilding Index Engine (entityBits=" << newEntityBits << ")\r\n"
+							"echo.\r\n"
+							"echo ====================================================\r\n"
+							"echo   Rebuilding Index Engine  (entityBits=" << newEntityBits << ")\r\n"
+							"echo ====================================================\r\n"
+							"echo.\r\n"
+							"echo Waiting for editor (PID " << editorPid << ") to exit...\r\n"
+							"set /a WAIT_ELAPSED=0\r\n"
+							":wait_loop\r\n"
+							"tasklist /fi \"PID eq " << editorPid << "\" 2>nul | findstr /i \"" << editorPid << "\" >nul\r\n"
+							"if errorlevel 1 goto wait_done\r\n"
+							"set /a WAIT_ELAPSED+=1\r\n"
+							"if %WAIT_ELAPSED% geq 30 (\r\n"
+							"  echo Warning: editor still alive after 30 seconds, proceeding anyway.\r\n"
+							"  goto wait_done\r\n"
+							")\r\n"
+							"timeout /t 1 /nobreak >nul\r\n"
+							"goto wait_loop\r\n"
+							":wait_done\r\n"
+							"echo.\r\n"
+							"echo [1/2] Building solution (this is the long step)...\r\n"
+							"echo.\r\n"
+							"pushd \"" << engineRoot.string() << "\"\r\n"
+							"\"" << msbuildPath << "\" \"" << slnPath.string() << "\""
+							" /p:Configuration=" << config <<
+							" /p:Platform=x64 /m /v:minimal /nologo\r\n"
+							"if errorlevel 1 (\r\n"
+							"  echo.\r\n"
+							"  echo *** MSBuild FAILED. Scroll up for compile errors. ***\r\n"
+							"  echo.\r\n"
+							"  pause\r\n"
+							"  exit /b 1\r\n"
+							")\r\n"
+							"popd\r\n"
+							"echo.\r\n"
+							"echo [2/2] Relaunching editor...\r\n"
+							"echo.\r\n"
+							"start \"\" \"" << editorExe.string() << "\" --project=\"" << projectRootDir << "\"\r\n"
+							"endlocal\r\n"
+							"exit /b 0\r\n";
+
+						std::error_code mkdirEc;
+						const std::filesystem::path batDir = engineRoot / "bin-int";
+						std::filesystem::create_directories(batDir, mkdirEc);
+						const std::filesystem::path batPath = batDir / "engine-rebuild.bat";
+						std::ofstream batFile(batPath, std::ios::binary | std::ios::trunc);
+						batFile << bat.str();
+						batFile.close();
+
+						const bool spawned = Process::LaunchDetached(
+							{ "cmd.exe", "/c", batPath.string() }, engineRoot);
+						ImGui::CloseCurrentPopup();
+						if (spawned) {
+							// Clean shutdown — releases the engine DLL
+							// file lock so MSBuild can overwrite the
+							// rebuilt binary. The PID-wait loop in the
+							// spawned script polls for our exit before
+							// running MSBuild.
+							Application::GetInstance()->Quit();
+						}
+						else {
+							IDX_ERROR_TAG("Editor",
+								"Failed to spawn cmd.exe for engine rebuild (script at {})",
+								batPath.string());
+						}
+					}
+					else {
+						// Header write failed (already logged above);
+						// don't spawn the build because it would compile
+						// against the stale value. Leave the modal open
+						// so the user can retry / cancel.
+					}
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::EndPopup();
+			}
+
+			ImGui::Unindent(8);
+		}
+	}
+
+	// Editor — editor-only workflow toggles. Asset Browser duplicate
+	// suffix, entity-name suffix, asset serialization format, and the
+	// script auto-recompile pair. None of these affect the shipped game's
+	// runtime — they shape how the editor edits this project.
+	void ImGuiEditorLayer::RenderSettings_Editor(IndexProject& project, bool& changed) {
 		// "Show file extensions" and the Auto-Save section moved to
 		// Edit -> Preferences (user-scoped now). Asset duplicate-suffix
 		// stays here — it's about the asset files we author into this
@@ -2485,44 +2742,66 @@ namespace Index {
 				"Asset-1",
 				"Asset_1",
 			};
-			int assetSuffixIndex = static_cast<int>(project->EditorAssetDuplicateSuffix);
+			int assetSuffixIndex = static_cast<int>(project.EditorAssetDuplicateSuffix);
 			if (assetSuffixIndex < 0 || assetSuffixIndex >= IM_ARRAYSIZE(k_AssetSuffixLabels)) {
 				assetSuffixIndex = static_cast<int>(IndexProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
 			}
 			ImGui::SetNextItemWidth(180.0f);
 			if (ImGui::Combo("Duplicate suffix##AssetDuplicateSuffix", &assetSuffixIndex, k_AssetSuffixLabels, IM_ARRAYSIZE(k_AssetSuffixLabels))) {
-				project->EditorAssetDuplicateSuffix =
+				project.EditorAssetDuplicateSuffix =
 					static_cast<IndexProject::EditorEntityNameSuffixStyle>(assetSuffixIndex);
 				changed = true;
 			}
 			ImGui::Unindent(8);
 		}
 
-		// Graphics — runtime rendering API selector. The engine renders
-		// through WebGPU (Dawn); the choice exposed here is which native
-		// API Dawn routes through at adapter-request time
-		// (Auto/Vulkan/D3D11/D3D12/OpenGL). The selection is applied at
-		// engine startup, so it takes effect on the next editor / game
-		// launch. NOTE: this value is persisted to index-project.json
-		// but not yet plumbed into WebGPUApi.cpp::RequestAdapterSync —
-		// wiring it through is a separate change.
+		if (ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+			changed |= ImGui::Checkbox("Ensure unique editor-created names", &project.EditorEnsureUniqueEntityNames);
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"When on, entities created through editor UI actions,\n"
+					"shortcuts, paste, duplicate, and asset drops get a\n"
+					"non-conflicting name. Runtime/script-created entities\n"
+					"skip this editor-only pass.");
+			}
+
+			constexpr const char* k_StyleLabels[] = {
+				"Entity 1",
+				"Entity (1)",
+				"Entity-1",
+				"Entity_1",
+			};
+			int suffixIndex = static_cast<int>(project.EditorEntityNameSuffix);
+			if (suffixIndex < 0 || suffixIndex >= IM_ARRAYSIZE(k_StyleLabels)) {
+				suffixIndex = static_cast<int>(IndexProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
+			}
+			ImGui::SetNextItemWidth(180.0f);
+			if (ImGui::Combo("Duplicate suffix##EntityNameSuffix", &suffixIndex, k_StyleLabels, IM_ARRAYSIZE(k_StyleLabels))) {
+				project.EditorEntityNameSuffix =
+					static_cast<IndexProject::EditorEntityNameSuffixStyle>(suffixIndex);
+				changed = true;
+			}
+			ImGui::Unindent(8);
+		}
+
 		if (ImGui::CollapsingHeader("Serialization", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			constexpr const char* k_FormatLabels[] = { "JSON", "Binary" };
-			int formatIndex = project->AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary ? 1 : 0;
+			int formatIndex = project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary ? 1 : 0;
 			ImGui::SetNextItemWidth(180.0f);
 			if (ImGui::Combo("Asset format", &formatIndex, k_FormatLabels, IM_ARRAYSIZE(k_FormatLabels))) {
 				const auto nextFormat = formatIndex == 1
 					? IndexProject::ProjectAssetSerializationFormat::Binary
 					: IndexProject::ProjectAssetSerializationFormat::Json;
-				if (nextFormat != project->AssetSerializationFormat) {
-					project->AssetSerializationFormat = nextFormat;
+				if (nextFormat != project.AssetSerializationFormat) {
+					project.AssetSerializationFormat = nextFormat;
 					const SceneSerializationFormat sceneFormat = ToSceneSerializationFormat(nextFormat);
-					const int converted = ConvertSerializedAssetsInDirectory(project->AssetsDirectory, sceneFormat);
+					const int converted = ConvertSerializedAssetsInDirectory(project.AssetsDirectory, sceneFormat);
 					if (Scene* activeScene = SceneManager::Get().GetActiveScene()) {
 						if (activeScene->IsDirty()) {
 							SceneSerializer::SaveToFile(*activeScene,
-								project->GetSceneFilePath(activeScene->GetName()),
+								project.GetSceneFilePath(activeScene->GetName()),
 								sceneFormat);
 						}
 					}
@@ -2546,8 +2825,8 @@ namespace Index {
 
 		if (ImGui::CollapsingHeader("Scripting", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Auto-recompile on file changes", &project->AutoRecompileScripts);
-			changed |= ImGui::Checkbox("Recompile before Play Mode", &project->RecompileScriptsOnPlay);
+			changed |= ImGui::Checkbox("Auto-recompile on file changes", &project.AutoRecompileScripts);
+			changed |= ImGui::Checkbox("Recompile before Play Mode", &project.RecompileScriptsOnPlay);
 			Scene* activeScene = SceneManager::Get().GetActiveScene();
 			ScriptSystem* scriptSys = (activeScene && activeScene->HasSystem<ScriptSystem>())
 				? activeScene->GetSystem<ScriptSystem>()
@@ -2568,148 +2847,15 @@ namespace Index {
 			}
 			ImGui::Unindent(8);
 		}
+	}
 
-		if (ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Ensure unique editor-created names", &project->EditorEnsureUniqueEntityNames);
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"When on, entities created through editor UI actions,\n"
-					"shortcuts, paste, duplicate, and asset drops get a\n"
-					"non-conflicting name. Runtime/script-created entities\n"
-					"skip this editor-only pass.");
-			}
-
-			constexpr const char* k_StyleLabels[] = {
-				"Entity 1",
-				"Entity (1)",
-				"Entity-1",
-				"Entity_1",
-			};
-			int suffixIndex = static_cast<int>(project->EditorEntityNameSuffix);
-			if (suffixIndex < 0 || suffixIndex >= IM_ARRAYSIZE(k_StyleLabels)) {
-				suffixIndex = static_cast<int>(IndexProject::EditorEntityNameSuffixStyle::ParenthesizedNumber);
-			}
-			ImGui::SetNextItemWidth(180.0f);
-			if (ImGui::Combo("Duplicate suffix##EntityNameSuffix", &suffixIndex, k_StyleLabels, IM_ARRAYSIZE(k_StyleLabels))) {
-				project->EditorEntityNameSuffix =
-					static_cast<IndexProject::EditorEntityNameSuffixStyle>(suffixIndex);
-				changed = true;
-			}
-			ImGui::Unindent(8);
-		}
-
-		if (ImGui::CollapsingHeader("Graphics", ImGuiTreeNodeFlags_DefaultOpen)) {
-			ImGui::Indent(8);
-
-			ImGui::SetNextItemWidth(220.0f);
-			if (ImGui::BeginCombo("Rendering API", RenderBackendLabel(project->ActiveRenderBackend))) {
-				for (const RenderBackendOption& option : k_RenderBackendOptions) {
-					const bool selected = option.Backend == project->ActiveRenderBackend;
-					const bool supported = IsRenderBackendSupportedOnHost(option.Backend);
-					if (!supported) ImGui::BeginDisabled();
-					if (ImGui::Selectable(option.Label, selected)) {
-						if (supported && option.Backend != project->ActiveRenderBackend) {
-							s_PendingRenderBackend = option.Backend;
-							s_RenderBackendChangePopup = true;
-						}
-					}
-					if (!supported) ImGui::EndDisabled();
-					if (!supported && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-						ImGui::SetTooltip("%s", RenderBackendUnsupportedReason(option.Backend));
-					}
-					if (selected) {
-						ImGui::SetItemDefaultFocus();
-					}
-				}
-				ImGui::EndCombo();
-			}
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip(
-					"Which native API Dawn (WebGPU) uses at runtime. The\n"
-					"choice is applied when the engine requests its GPU\n"
-					"adapter at startup, so the change only takes effect\n"
-					"after restarting the editor / built game.\n"
-					"\n"
-					"  • Auto: Dawn picks the most capable backend for\n"
-					"    the host platform (D3D12 on Windows, Metal on\n"
-					"    macOS, Vulkan on Linux).\n"
-					"  • Vulkan / D3D11 / D3D12 / OpenGL: explicit backend.\n"
-					"    Selecting one not supported by the host platform\n"
-					"    (e.g. D3D12 on Linux) makes adapter-request fail\n"
-					"    at startup; the log line says exactly which\n"
-					"    backend was requested.");
-			}
-
-			constexpr const char* k_DefaultFontPickerKey = "ProjectSettings.DefaultFont";
-			if (auto pending = ReferencePicker::ConsumeSelection(k_DefaultFontPickerKey); pending) {
-				uint64_t pickedId = ParsePickerAssetId(*pending);
-				project->DefaultFontAssetId = pickedId != 0 ? pickedId : k_DefaultFontAssetId;
-				changed = true;
-			}
-
-			bool fontMissing = false;
-			std::string fontSecondary;
-			std::string fontDisplay = ReferencePicker::ResolveAssetDisplay(
-				project->DefaultFontAssetId, AssetKind::Font, fontMissing, &fontSecondary);
-			ImGui::Spacing();
-			ImGui::TextUnformatted("Default Font");
-			ImGui::SameLine(130.0f);
-			ImGui::PushID("ProjectDefaultFont");
-			if (ImGui::Button(fontDisplay.c_str(), ImVec2(260.0f, 0.0f))) {
-				ReferencePicker::OpenForFieldKey(k_DefaultFontPickerKey, "Select Default Font",
-					ReferencePicker::CollectAssetsByKind(AssetKind::Font),
-					ReferencePicker::Style::Plain);
-			}
-			if (ImGui::IsItemHovered() && !fontSecondary.empty()) {
-				ImGui::SetTooltip("%s", fontSecondary.c_str());
-			}
-			ImGui::PopID();
-			ImGui::SameLine();
-			if (ImGui::Button("Reset##ProjectDefaultFont")) {
-				project->DefaultFontAssetId = k_DefaultFontAssetId;
-				changed = true;
-			}
-
-			ImGui::Unindent(8);
-		}
-
-		// Global Systems — managed (C#) GameSystems registered at the
-		// project scope (run for every loaded scene). Editor-side
-		// configuration, not a runtime knob: the toggle list drives
-		// ScriptEngine::InitializeGlobalSystems on edit so the editor's
-		// next play-mode session uses the new set without a restart.
-		if (s_RenderBackendChangePopup) {
-			ImGui::OpenPopup("Restart Renderer?");
-			s_RenderBackendChangePopup = false;
-		}
-		ImGuiUtils::CenterNextModal();
-		if (ImGui::BeginPopupModal("Restart Renderer?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui::TextWrapped(
-				"Changing the rendering API from %s to %s requires the renderer to be reinitialized.",
-				RenderBackendLabel(project->ActiveRenderBackend),
-				RenderBackendLabel(s_PendingRenderBackend));
-			ImGui::Spacing();
-			if (ImGui::Button("Restart Now", ImVec2(120.0f, 0.0f))) {
-				project->ActiveRenderBackend = s_PendingRenderBackend;
-				project->Save();
-				ImGui::CloseCurrentPopup();
-				Application::Reload();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Save For Later", ImVec2(120.0f, 0.0f))) {
-				project->ActiveRenderBackend = s_PendingRenderBackend;
-				changed = true;
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(90.0f, 0.0f))) {
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-		}
-
-		bool globalSystemsChanged = false;
+	// Systems — managed (C#) GameSystems registered at the project scope
+	// (run for every loaded scene). The toggle list drives
+	// ScriptEngine::InitializeGlobalSystems on edit so the editor's next
+	// play-mode session uses the new set without a restart. The caller is
+	// responsible for the shutdown/reinit handshake when outGlobalSystemsChanged
+	// flips to true.
+	void ImGuiEditorLayer::RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalSystemsChanged) {
 		if (ImGui::CollapsingHeader("Global Systems", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			ImGui::SetNextItemWidth(-1);
@@ -2738,24 +2884,24 @@ namespace Index {
 					}
 				}
 
-				auto it = std::find_if(project->GlobalSystems.begin(), project->GlobalSystems.end(),
+				auto it = std::find_if(project.GlobalSystems.begin(), project.GlobalSystems.end(),
 					[&](const IndexProject::GlobalSystemRegistration& registration) {
 						return registration.ClassName == scriptEntry.ClassName;
 					});
-				bool active = it != project->GlobalSystems.end() ? it->Active : false;
+				bool active = it != project.GlobalSystems.end() ? it->Active : false;
 				if (ImGui::Checkbox(scriptEntry.ClassName.c_str(), &active)) {
-					if (it == project->GlobalSystems.end()) {
-						project->GlobalSystems.push_back({ scriptEntry.ClassName, active });
+					if (it == project.GlobalSystems.end()) {
+						project.GlobalSystems.push_back({ scriptEntry.ClassName, active });
 					}
 					else {
 						it->Active = active;
 					}
 					changed = true;
-					globalSystemsChanged = true;
+					outGlobalSystemsChanged = true;
 				}
 			}
 
-			for (auto& registration : project->GlobalSystems) {
+			for (auto& registration : project.GlobalSystems) {
 				if (discoveredGlobalSystems.contains(registration.ClassName)) {
 					continue;
 				}
@@ -2764,30 +2910,12 @@ namespace Index {
 				if (ImGui::Checkbox(label.c_str(), &active)) {
 					registration.Active = active;
 					changed = true;
-					globalSystemsChanged = true;
+					outGlobalSystemsChanged = true;
 				}
 			}
 
 			ImGui::Unindent(8);
 		}
-
-		if (changed) {
-			project->Save();
-			if (globalSystemsChanged) {
-				std::vector<std::string> activeGlobalSystems;
-				for (const auto& registration : project->GlobalSystems) {
-					if (registration.Active && !registration.ClassName.empty()) {
-						activeGlobalSystems.push_back(registration.ClassName);
-					}
-				}
-				ScriptEngine::ShutdownGlobalSystems();
-				ScriptEngine::InitializeGlobalSystems(activeGlobalSystems);
-			}
-		}
-
-		ReferencePicker::RenderPopup();
-
-		ImGui::End();
 	}
 
 	// Splash preview — replays the runtime's splash timeline as a

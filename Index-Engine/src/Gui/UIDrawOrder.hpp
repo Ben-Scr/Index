@@ -5,6 +5,8 @@
 #include "Scene/EntityHandle.hpp"
 
 #include <entt/entt.hpp>
+#include <algorithm>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -46,22 +48,63 @@ namespace Index::UIDrawOrder {
 	// uses the same list to pick the front-most Interactable rect under the
 	// cursor — the renderer's z-stack and the hit-test stack must agree, so
 	// both go through this single helper.
+	//
+	// Root discovery walks UP from each RectTransform2D entity rather than
+	// iterating the whole registry. Cost is O(uiCount × averageDepth) —
+	// independent of non-UI entity count, so a scene with 100k gameplay
+	// entities + a small HUD pays only for the HUD entities.
 	inline void Build(entt::registry& registry,
 		std::vector<std::pair<EntityHandle, int>>& outOrder)
 	{
-		std::vector<EntityHandle> roots;
-		roots.reserve(32);
-		auto allView = registry.view<entt::entity>(entt::exclude<DisabledTag>);
-		for (auto entity : allView) {
-			const HierarchyComponent* hc = registry.try_get<HierarchyComponent>(entity);
-			const bool isRoot = !hc || hc->Parent == entt::null;
-			if (!isRoot) continue;
-			roots.push_back(entity);
+		// Fast path: no UI at all means no draw order. view<T>::size() on
+		// a single-component view is O(1).
+		auto uiView = registry.view<RectTransform2DComponent>();
+		if (uiView.size() == 0) return;
+
+		// Walk up from each UI entity to its hierarchy root, deduplicating
+		// via an unordered_set so multiple UI children of the same root
+		// don't enqueue it twice. Skips entities whose ancestor chain
+		// contains a DisabledTag — Collect would prune them anyway, so the
+		// roots derived from them produce no output and discarding them
+		// here avoids walking the dead subtree.
+		std::unordered_set<EntityHandle> rootSet;
+		rootSet.reserve(32);
+
+		for (auto entity : uiView) {
+			if (registry.all_of<DisabledTag>(entity)) continue;
+
+			EntityHandle cur = entity;
+			bool ancestorDisabled = false;
+			// Depth guard against pathological / cyclic parent chains.
+			// Real hierarchies are nowhere near this; the bound just
+			// stops a corrupt scene file from hanging the render thread.
+			for (int hop = 0; hop < 4096; ++hop) {
+				const HierarchyComponent* hc = registry.try_get<HierarchyComponent>(cur);
+				if (!hc || hc->Parent == entt::null) break;
+				if (!registry.valid(hc->Parent)) break;
+				if (registry.all_of<DisabledTag>(hc->Parent)) {
+					ancestorDisabled = true;
+					break;
+				}
+				cur = hc->Parent;
+			}
+			if (!ancestorDisabled) rootSet.insert(cur);
 		}
-		// EnTT iterates dense storage newest-first. Reverse so the oldest
-		// root walks first and gets the lowest DrawIndex — matches the
-		// "newer-on-top" mental model the rest of the engine uses.
-		std::reverse(roots.begin(), roots.end());
+
+		if (rootSet.empty()) return;
+
+		// Sort roots by EnTT dense-storage index to preserve the
+		// pre-refactor z-order convention: older entities paint behind
+		// newer ones. sparse_set::index is O(1). The previous code
+		// achieved the same order via reverse-iterate-then-reverse on
+		// the entt::entity view; sorting by ascending dense index here
+		// is equivalent and skips the all-entity walk.
+		const auto& entityStorage = registry.storage<entt::entity>();
+		std::vector<EntityHandle> roots(rootSet.begin(), rootSet.end());
+		std::sort(roots.begin(), roots.end(),
+			[&](EntityHandle a, EntityHandle b) {
+				return entityStorage.index(a) < entityStorage.index(b);
+			});
 
 		int counter = 0;
 		for (EntityHandle entity : roots) {

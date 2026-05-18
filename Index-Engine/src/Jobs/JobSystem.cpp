@@ -179,6 +179,17 @@ namespace Index {
 		IDX_CORE_INFO_TAG("JobSystem", "Stopped");
 	}
 
+	int JobSystem::Reconfigure(int workerCount) {
+		// Shutdown is a no-op when the pool isn't running, so this also
+		// works as a deferred-init path: Reconfigure-before-Initialize
+		// simply spins up the pool with the requested count.
+		Shutdown();
+		JobSystemSpec spec;
+		spec.WorkerCount = workerCount;
+		Initialize(spec);
+		return GetWorkerCount();
+	}
+
 	bool JobSystem::IsInitialized() {
 		return s_State.load(std::memory_order_acquire) == PoolState::Running;
 	}

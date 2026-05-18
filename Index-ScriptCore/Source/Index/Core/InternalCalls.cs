@@ -33,6 +33,8 @@ internal static unsafe class InternalCalls
     internal static void Application_SetVsyncEnabled(bool enabled) => NativeCallbacks.Bindings.Application_SetVsyncEnabled(enabled ? 1 : 0);
     internal static bool Application_GetRunInBackground() => NativeCallbacks.Bindings.Application_GetRunInBackground() != 0;
     internal static void Application_SetRunInBackground(bool enabled) => NativeCallbacks.Bindings.Application_SetRunInBackground(enabled ? 1 : 0);
+    internal static int Application_GetProcessorCount() => NativeCallbacks.Bindings.Application_GetProcessorCount();
+    internal static int JobSystem_Reconfigure(int workerCount) => NativeCallbacks.Bindings.JobSystem_Reconfigure(workerCount);
 
     // ── Window ──────────────────────────────────────────────────────
 

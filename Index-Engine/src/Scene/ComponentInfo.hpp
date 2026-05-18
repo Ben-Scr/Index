@@ -79,6 +79,14 @@ namespace Index {
 		// registry, or registry slot 0 reserved as a null guard).
 		uint32_t typeIdU32 = 0;
 
+		// EnTT type hash for this component, auto-wired by ComponentRegistry::Register
+		// to `entt::type_hash<T>::value()`. Powers the `registry.storage(id)` runtime
+		// lookup used by the per-component query fast path — Scene_QueryEntities can
+		// iterate the component's own sparse_set instead of walking every entity in
+		// the registry. The native side already does this for typed views; this field
+		// extends the same O(component count) iteration to the by-name script bindings.
+		entt::id_type storageHash = 0;
+
 		// memcpy-from-bytes emplacer. ECB playback writes a raw component payload into
 		// the entity's storage in one call — no per-property P/Invoke, no JSON, no
 		// generic field walker. Auto-wired by ComponentRegistry::Register for any

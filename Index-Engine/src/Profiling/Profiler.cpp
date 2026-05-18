@@ -148,7 +148,45 @@ namespace Index {
 			"Playing Sources",
 
 			// GPU category
-			"GPU"
+			"GPU",
+
+			// Frame Breakdown — finer-grained CPU scopes for localizing
+			// uninstrumented work. Each push site uses a unique name so
+			// the per-module sample-rate gate doesn't drop concurrent
+			// pushes within the same frame.
+			"UpdateScenes",
+			"OnPreRenderScenes",
+			"Renderer2D.Begin",
+			"GuiRenderer.Begin",
+			"GizmoRenderer.Begin",
+			"Renderer2D.End",
+			"GuiRenderer.End",
+			"GizmoRenderer.End",
+			"Layer.OnUpdate",
+			"Layer.OnPreRender",
+			"Layer.OnPostRender",
+			"SwapBuffers",
+
+			// Gated-path probes — non-zero values here mean a system that
+			// "early-exits when idle" is in fact running every frame. The
+			// 100k-empty-entity diagnosis hinges on these reading ~0.0
+			// (gates working) vs. non-zero (gate defeated, real culprit).
+			"Editor.HierarchyRebuild",
+			"TransformHierarchy",
+			"UILayout",
+			"UIEvent.Update",
+			"ParticleUpdate",
+			"UIFocus",
+			"ManagedGameSystem",
+
+			// UIEventSystem.Update bisection sub-scopes — Update is 7+ ms
+			// even with 0 widgets in the registry, so we slice the body
+			// into broad sections to localize which block iterates over
+			// something that isn't actually empty.
+			"UIEvent.RefResolve",
+			"UIEvent.HitTest",
+			"UIEvent.Visuals",
+			"UIEvent.Widgets"
 		};
 		for (const char* name : names) {
 			auto m = std::make_unique<ProfilerModule>();

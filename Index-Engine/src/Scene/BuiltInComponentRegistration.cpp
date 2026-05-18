@@ -607,7 +607,10 @@ namespace Index {
 			ppProps.push_back(Properties::MakeWith<bool>("CG_Enabled", "Enabled",
 				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Enabled; },
 				[](Entity& e, bool v) { e.GetComponent<PP>().ColorGrading.Enabled = v; },
-				Properties::Meta::Header("Color Grading")));
+				Properties::Meta::Header("Color Grading").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().ColorGrading = PP::ColorGradingSettings{};
+					})));
 			ppProps.push_back(Properties::MakeWith<float>("CG_Exposure", "Exposure",
 				[](const Entity& e) { return e.GetComponent<PP>().ColorGrading.Exposure; },
 				[](Entity& e, float v) { e.GetComponent<PP>().ColorGrading.Exposure = v; },
@@ -637,7 +640,10 @@ namespace Index {
 			ppProps.push_back(Properties::MakeWith<bool>("VG_Enabled", "Enabled",
 				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Enabled; },
 				[](Entity& e, bool v) { e.GetComponent<PP>().Vignette.Enabled = v; },
-				Properties::Meta::Header("Vignette")));
+				Properties::Meta::Header("Vignette").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().Vignette = PP::VignetteSettings{};
+					})));
 			ppProps.push_back(Properties::MakeWith<Color>("VG_Color", "Color",
 				[](const Entity& e) { return e.GetComponent<PP>().Vignette.Color; },
 				[](Entity& e, const Color& c) { e.GetComponent<PP>().Vignette.Color = c; },
@@ -663,7 +669,10 @@ namespace Index {
 			ppProps.push_back(Properties::MakeWith<bool>("CA_Enabled", "Enabled",
 				[](const Entity& e) { return e.GetComponent<PP>().ChromaticAberration.Enabled; },
 				[](Entity& e, bool v) { e.GetComponent<PP>().ChromaticAberration.Enabled = v; },
-				Properties::Meta::Header("Chromatic Aberration")));
+				Properties::Meta::Header("Chromatic Aberration").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().ChromaticAberration = PP::ChromaticAberrationSettings{};
+					})));
 			ppProps.push_back(Properties::MakeWith<float>("CA_Intensity", "Intensity",
 				[](const Entity& e) { return e.GetComponent<PP>().ChromaticAberration.Intensity; },
 				[](Entity& e, float v) { e.GetComponent<PP>().ChromaticAberration.Intensity = v; },
@@ -673,7 +682,10 @@ namespace Index {
 			ppProps.push_back(Properties::MakeWith<bool>("GR_Enabled", "Enabled",
 				[](const Entity& e) { return e.GetComponent<PP>().Grain.Enabled; },
 				[](Entity& e, bool v) { e.GetComponent<PP>().Grain.Enabled = v; },
-				Properties::Meta::Header("Grain")));
+				Properties::Meta::Header("Grain").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().Grain = PP::GrainSettings{};
+					})));
 			ppProps.push_back(Properties::MakeWith<float>("GR_Intensity", "Intensity",
 				[](const Entity& e) { return e.GetComponent<PP>().Grain.Intensity; },
 				[](Entity& e, float v) { e.GetComponent<PP>().Grain.Intensity = v; },
@@ -691,7 +703,16 @@ namespace Index {
 			ppProps.push_back(Properties::MakeWith<bool>("BL_Enabled", "Enabled",
 				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Enabled; },
 				[](Entity& e, bool v) { e.GetComponent<PP>().Bloom.Enabled = v; },
-				Properties::Meta::Header("Bloom")));
+				Properties::Meta::Header("Bloom").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().Bloom = PP::BloomSettings{};
+					})));
+			ppProps.push_back(Properties::MakeWith<int32_t>("BL_Taps", "Taps",
+				[](const Entity& e) { return static_cast<int32_t>(e.GetComponent<PP>().Bloom.Taps); },
+				[](Entity& e, int32_t v) {
+					e.GetComponent<PP>().Bloom.Taps = std::max(7, std::min(500, v));
+				},
+				PropertyMetadata{ blEnabled }.WithClamp(7.0, 500.0).WithDragSpeed(1.0f)));
 			ppProps.push_back(Properties::MakeWith<float>("BL_Threshold", "Threshold",
 				[](const Entity& e) { return e.GetComponent<PP>().Bloom.Threshold; },
 				[](Entity& e, float v) { e.GetComponent<PP>().Bloom.Threshold = v; },
@@ -713,7 +734,10 @@ namespace Index {
 			ppProps.push_back(Properties::MakeWith<bool>("LD_Enabled", "Enabled",
 				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Enabled; },
 				[](Entity& e, bool v) { e.GetComponent<PP>().LensDistortion.Enabled = v; },
-				Properties::Meta::Header("Lens Distortion")));
+				Properties::Meta::Header("Lens Distortion").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().LensDistortion = PP::LensDistortionSettings{};
+					})));
 			ppProps.push_back(Properties::MakeWith<float>("LD_Intensity", "Intensity",
 				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Intensity; },
 				[](Entity& e, float v) { e.GetComponent<PP>().LensDistortion.Intensity = v; },
@@ -726,6 +750,54 @@ namespace Index {
 				[](const Entity& e) { return e.GetComponent<PP>().LensDistortion.Center; },
 				[](Entity& e, const Vec2& v) { e.GetComponent<PP>().LensDistortion.Center = v; },
 				ldEnabled));
+
+			// Pixelated
+			PropertyMetadata pxEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.Pixelated.Enabled; });
+			PropertyMetadata pxPaletteEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.Pixelated.Enabled && p.Pixelated.QuantizeColor; });
+			ppProps.push_back(Properties::MakeWith<bool>("PX_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().Pixelated.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().Pixelated.Enabled = v; },
+				Properties::Meta::Header("Pixelated").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().Pixelated = PP::PixelatedSettings{};
+					})));
+			ppProps.push_back(Properties::MakeWith<float>("PX_BlockSize", "Block Size",
+				[](const Entity& e) { return e.GetComponent<PP>().Pixelated.BlockSize; },
+				[](Entity& e, float v) { e.GetComponent<PP>().Pixelated.BlockSize = v; },
+				PropertyMetadata{ pxEnabled }.WithClamp(1.0, 64.0).WithDragSpeed(0.1f)));
+			ppProps.push_back(Properties::MakeWith<bool>("PX_QuantizeColor", "Quantize Color",
+				[](const Entity& e) { return e.GetComponent<PP>().Pixelated.QuantizeColor; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().Pixelated.QuantizeColor = v; },
+				pxEnabled));
+			ppProps.push_back(Properties::MakeWith<int32_t>("PX_PaletteSteps", "Palette Steps",
+				[](const Entity& e) { return static_cast<int32_t>(e.GetComponent<PP>().Pixelated.PaletteSteps); },
+				[](Entity& e, int32_t v) {
+					e.GetComponent<PP>().Pixelated.PaletteSteps = std::max(2, std::min(256, v));
+				},
+				PropertyMetadata{ pxPaletteEnabled }.WithClamp(2.0, 256.0).WithDragSpeed(1.0f)));
+
+			// Gaussian Blur
+			PropertyMetadata gbEnabled = Properties::Meta::EnabledIf<PP>(
+				[](const PP& p) { return p.GaussianBlur.Enabled; });
+			ppProps.push_back(Properties::MakeWith<bool>("GB_Enabled", "Enabled",
+				[](const Entity& e) { return e.GetComponent<PP>().GaussianBlur.Enabled; },
+				[](Entity& e, bool v) { e.GetComponent<PP>().GaussianBlur.Enabled = v; },
+				Properties::Meta::Header("Gaussian Blur").WithResetSection(
+					[](Entity& e) {
+						e.GetComponent<PP>().GaussianBlur = PP::GaussianBlurSettings{};
+					})));
+			ppProps.push_back(Properties::MakeWith<int32_t>("GB_Taps", "Taps",
+				[](const Entity& e) { return static_cast<int32_t>(e.GetComponent<PP>().GaussianBlur.Taps); },
+				[](Entity& e, int32_t v) {
+					e.GetComponent<PP>().GaussianBlur.Taps = std::max(7, std::min(500, v));
+				},
+				PropertyMetadata{ gbEnabled }.WithClamp(7.0, 500.0).WithDragSpeed(1.0f)));
+			ppProps.push_back(Properties::MakeWith<float>("GB_Radius", "Radius",
+				[](const Entity& e) { return e.GetComponent<PP>().GaussianBlur.Radius; },
+				[](Entity& e, float v) { e.GetComponent<PP>().GaussianBlur.Radius = v; },
+				PropertyMetadata{ gbEnabled }.WithClamp(0.0, 1.0).WithDragSpeed(0.005f)));
 
 			ComponentInfo ppInfo{ "Post Processing", "Rendering", ComponentCategory::Component };
 			ppInfo.serializedName = "PostProcessing2D";
@@ -772,6 +844,7 @@ namespace Index {
 				bl.AddMember("threshold", Json::Value(p.Bloom.Threshold));
 				bl.AddMember("intensity", Json::Value(p.Bloom.Intensity));
 				bl.AddMember("scatter",   Json::Value(p.Bloom.Scatter));
+				bl.AddMember("taps",      Json::Value(p.Bloom.Taps));
 				bl.AddMember("tint",      UIColorToJson(p.Bloom.Tint));
 				v.AddMember("bloom", std::move(bl));
 
@@ -783,11 +856,48 @@ namespace Index {
 				ld.AddMember("centerY",   Json::Value(p.LensDistortion.Center.y));
 				v.AddMember("lensDistortion", std::move(ld));
 
+				Json::Value px = Json::Value::MakeObject();
+				px.AddMember("enabled",       Json::Value(p.Pixelated.Enabled));
+				px.AddMember("blockSize",     Json::Value(p.Pixelated.BlockSize));
+				px.AddMember("paletteSteps",  Json::Value(p.Pixelated.PaletteSteps));
+				px.AddMember("quantizeColor", Json::Value(p.Pixelated.QuantizeColor));
+				v.AddMember("pixelated", std::move(px));
+
+				Json::Value gb = Json::Value::MakeObject();
+				gb.AddMember("enabled", Json::Value(p.GaussianBlur.Enabled));
+				gb.AddMember("radius",  Json::Value(p.GaussianBlur.Radius));
+				gb.AddMember("taps",    Json::Value(p.GaussianBlur.Taps));
+				v.AddMember("gaussianBlur", std::move(gb));
+
 				return v;
 			};
 
 			ppInfo.deserialize = [](Entity e, const Json::Value& v) {
 				auto& p = e.GetComponent<PP>();
+
+				// Reset signal: SceneSerializer::ResetComponent calls us with
+				// an empty JSON object to mean "revert to defaults". The
+				// hardcoded whitelist in SceneSerializerDeserialize.cpp's
+				// DeserializeComponent doesn't include this component, so
+				// without the check below the per-key FindMember calls would
+				// all return null and nothing would actually reset. Detect
+				// the empty-object case here and default-construct the whole
+				// component before falling through to the (now no-op) patch
+				// path. Non-empty inputs (real save files / prefab overrides)
+				// keep the existing partial-deserialize semantics.
+				const bool isEmptyReset = v.IsObject()
+					&& !v.FindMember("colorGrading")
+					&& !v.FindMember("vignette")
+					&& !v.FindMember("chromaticAberration")
+					&& !v.FindMember("grain")
+					&& !v.FindMember("bloom")
+					&& !v.FindMember("lensDistortion")
+					&& !v.FindMember("pixelated")
+					&& !v.FindMember("gaussianBlur");
+				if (isEmptyReset) {
+					p = PP{};
+					return;
+				}
 
 				if (const Json::Value* cg = v.FindMember("colorGrading")) {
 					if (const Json::Value* m = cg->FindMember("enabled"))     p.ColorGrading.Enabled     = m->AsBoolOr(p.ColorGrading.Enabled);
@@ -826,6 +936,17 @@ namespace Index {
 					if (const Json::Value* m = bl->FindMember("threshold")) p.Bloom.Threshold = static_cast<float>(m->AsDoubleOr(p.Bloom.Threshold));
 					if (const Json::Value* m = bl->FindMember("intensity")) p.Bloom.Intensity = static_cast<float>(m->AsDoubleOr(p.Bloom.Intensity));
 					if (const Json::Value* m = bl->FindMember("scatter"))   p.Bloom.Scatter   = static_cast<float>(m->AsDoubleOr(p.Bloom.Scatter));
+					if (const Json::Value* m = bl->FindMember("taps")) {
+						p.Bloom.Taps = std::max(7, std::min(500, m->AsIntOr(p.Bloom.Taps)));
+					}
+					// Legacy migration: pre-slider scenes wrote a "quality"
+					// enum int (0/1/2 = Low/Medium/High = 11/21/33 taps).
+					// Only consumed when "taps" is absent so newer saves
+					// always take precedence.
+					else if (const Json::Value* m = bl->FindMember("quality")) {
+						const int q = m->AsIntOr(1);
+						p.Bloom.Taps = (q == 0) ? 11 : (q == 2) ? 33 : 21;
+					}
 					if (const Json::Value* m = bl->FindMember("tint"))      p.Bloom.Tint      = UIColorFromJson(*m, p.Bloom.Tint);
 				}
 
@@ -835,6 +956,26 @@ namespace Index {
 					if (const Json::Value* m = ld->FindMember("scale"))     p.LensDistortion.Scale     = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Scale));
 					if (const Json::Value* m = ld->FindMember("centerX"))   p.LensDistortion.Center.x  = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Center.x));
 					if (const Json::Value* m = ld->FindMember("centerY"))   p.LensDistortion.Center.y  = static_cast<float>(m->AsDoubleOr(p.LensDistortion.Center.y));
+				}
+
+				if (const Json::Value* px = v.FindMember("pixelated")) {
+					if (const Json::Value* m = px->FindMember("enabled"))       p.Pixelated.Enabled       = m->AsBoolOr(p.Pixelated.Enabled);
+					if (const Json::Value* m = px->FindMember("blockSize"))     p.Pixelated.BlockSize     = static_cast<float>(m->AsDoubleOr(p.Pixelated.BlockSize));
+					if (const Json::Value* m = px->FindMember("paletteSteps"))  p.Pixelated.PaletteSteps  = m->AsIntOr(p.Pixelated.PaletteSteps);
+					if (const Json::Value* m = px->FindMember("quantizeColor")) p.Pixelated.QuantizeColor = m->AsBoolOr(p.Pixelated.QuantizeColor);
+				}
+
+				if (const Json::Value* gb = v.FindMember("gaussianBlur")) {
+					if (const Json::Value* m = gb->FindMember("enabled")) p.GaussianBlur.Enabled = m->AsBoolOr(p.GaussianBlur.Enabled);
+					if (const Json::Value* m = gb->FindMember("radius"))  p.GaussianBlur.Radius  = static_cast<float>(m->AsDoubleOr(p.GaussianBlur.Radius));
+					if (const Json::Value* m = gb->FindMember("taps")) {
+						p.GaussianBlur.Taps = std::max(7, std::min(500, m->AsIntOr(p.GaussianBlur.Taps)));
+					}
+					// Legacy migration from the pre-slider quality enum.
+					else if (const Json::Value* m = gb->FindMember("quality")) {
+						const int q = m->AsIntOr(1);
+						p.GaussianBlur.Taps = (q == 0) ? 11 : (q == 2) ? 33 : 21;
+					}
 				}
 			};
 

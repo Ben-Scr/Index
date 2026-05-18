@@ -60,6 +60,14 @@ namespace Index {
 		// that ImGuiContextLayer::OnAttach finalised post-ScaleAllSizes.
 		static void ApplyIndexThemeColors();
 
+		// Apply the editor font size from EditorPreferences to
+		// ImGui::GetStyle().FontSizeBase (× DPI scale captured at attach
+		// time). Called from EditorPreferences::Load() once prefs are
+		// parsed, and from EditorPreferences::SetEditorFontSize() each
+		// time the user moves the size slider. Safe to call mid-frame —
+		// uses ImGui's `_NextFrameFontSizeBase` hand-off field.
+		static void ApplyEditorFontSize();
+
 	private:
 		// Belt-and-suspenders save. ImGui auto-saves internally on its
 		// own dirty-timer schedule, but specific change types (mid-
@@ -74,6 +82,11 @@ namespace Index {
 		std::string m_IniFilePath;
 		bool m_IsInitialized = false;
 		std::chrono::steady_clock::time_point m_LastSaveTime{};
+		// Monitor content scale captured during OnAttach. Static so the
+		// static ApplyEditorFontSize() can read it without needing a
+		// live instance pointer — there's only ever one ImGuiContextLayer
+		// per process anyway.
+		static float s_DpiScale;
 	};
 
 }

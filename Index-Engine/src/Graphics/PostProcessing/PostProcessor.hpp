@@ -37,6 +37,7 @@
 namespace Index {
 
 	class Framebuffer;
+	struct PostProcessing2DComponent;
 
 	class INDEX_API PostProcessor {
 	public:
@@ -72,6 +73,25 @@ namespace Index {
 			uint32_t dstWidth,
 			uint32_t dstHeight);
 
+		// Top-level entry: read `settings`, dispatch to the matching effect
+		// pass (or `Blit` if no effects are enabled / settings is null).
+		// Renderer2D calls this once per scene render after the sprite pass
+		// has written the intermediate FBO.
+		//
+		// Phase C1 implements only Vignette. Other Enabled effects in
+		// `settings` are silently ignored (a one-time warning is emitted at
+		// Initialize); subsequent sub-phases (C2-C5 + D) wire them in.
+		//
+		// `settings` may be nullptr — happens when the active camera entity
+		// has no PostProcessing2DComponent. In that case the call collapses
+		// to a passthrough Blit.
+		void Run(const Framebuffer& src,
+			wgpu::TextureView dstView,
+			wgpu::TextureFormat dstFormat,
+			uint32_t dstWidth,
+			uint32_t dstHeight,
+			const PostProcessing2DComponent* settings);
+
 		// Impl is forward-declared with its full definition living in
 		// PostProcessor.cpp. The struct is `public` only so the .cpp's
 		// anonymous-namespace helpers (pipeline cache builders) can take
@@ -81,12 +101,25 @@ namespace Index {
 	private:
 		std::unique_ptr<Impl> m_Impl;
 
-		// The blit shader handle — owned here rather than in the pImpl so
-		// the destruction order is well-defined (Shader's dtor frees the
+		// Per-effect shader handles — owned here rather than in the pImpl
+		// so the destruction order is well-defined (Shader's dtor frees the
 		// wgpu::ShaderModule pool slot; the pImpl's pipelines captured the
 		// module by value during creation, so destroying the Shader after
 		// the pipelines is safe).
 		std::unique_ptr<Shader> m_BlitShader;
+		std::unique_ptr<Shader> m_VignetteShader;
+		std::unique_ptr<Shader> m_ChromaticShader;
+		std::unique_ptr<Shader> m_GrainShader;
+		std::unique_ptr<Shader> m_LensDistortionShader;
+		std::unique_ptr<Shader> m_ColorGradingShader;
+		// Bloom is a 4-pass pipeline (threshold extract -> separable
+		// Gaussian H -> separable Gaussian V -> composite scene+bloom).
+		// Each step has its own shader so the WGSL stays focused; the
+		// orchestration lives in PostProcessor::RunBloomPass.
+		std::unique_ptr<Shader> m_BloomThresholdShader;
+		std::unique_ptr<Shader> m_BloomBlurShader;
+		std::unique_ptr<Shader> m_BloomCompositeShader;
+		std::unique_ptr<Shader> m_PixelatedShader;
 	};
 
 } // namespace Index

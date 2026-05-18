@@ -3,8 +3,14 @@
 #include "Collections/Vec2.hpp"
 #include "Math/Trigonometry.hpp"
 #include "Scene/EntityHandle.hpp"
-#include <box2d/types.h>
 #include <glm/glm.hpp>
+
+// Box2D's b2Rot is only used by the GetB2Rotation() return type below.
+// Forward-declaring it keeps every non-physics consumer of this header
+// (renderer, gizmos, UI, scripts) from pulling Box2D's headers into
+// their include graph. The definition is reached in Transform2DComponent
+// .cpp via <box2d/types.h>.
+struct b2Rot;
 
 namespace Index {
 	class Scene;

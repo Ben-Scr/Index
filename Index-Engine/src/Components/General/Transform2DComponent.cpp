@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Scene/Scene.hpp"
+#include <box2d/types.h>
 
 namespace Index {
 

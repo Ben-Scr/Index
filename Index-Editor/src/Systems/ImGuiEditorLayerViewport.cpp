@@ -189,6 +189,7 @@ namespace Index {
 		switch (drawMode) {
 		case EditorViewDrawMode::Triangle:
 			runWireframePass();
+			runOverlayRender();
 			break;
 		case EditorViewDrawMode::Mixed:
 			runFilledPass();

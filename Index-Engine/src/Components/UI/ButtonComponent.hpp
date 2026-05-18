@@ -6,8 +6,6 @@
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
-
 namespace Index {
 
 	// Marker + visual-state preset for a clickable UI button. Pairs with
@@ -24,14 +22,14 @@ namespace Index {
 		// Optional explicit target graphic — the entity whose
 		// ImageComponent (or TextRendererComponent) gets retinted /
 		// sprite-swapped when the button changes state. When unset
-		// (entt::null) UIEventSystem auto-resolves: it prefers an
+		// (kNullEntity) UIEventSystem auto-resolves: it prefers an
 		// ImageComponent on the button entity itself, falls back to
 		// a TextRendererComponent on the button entity, and finally
 		// gives up. Setting TargetGraphic to a child entity is the
 		// "I want a label-only button whose visual lives elsewhere"
 		// case, e.g. a panel that has both a background image and a
 		// child text and you want the text colour to react.
-		EntityHandle TargetGraphic = entt::null;
+		EntityHandle TargetGraphic = kNullEntity;
 
 		// How the button visually transitions between input states.
 		// Defaults to ColorTint (existing behaviour). See

@@ -12,7 +12,7 @@
 - **Configs:** Debug, Release, Dist. All x64.
 - **Output:** `bin/{config}-windows-x64/{project}/`
 - **C++ Standard:** C++20 (Box2D and Axiom-Physics use C++23)
-- **New package:** `python scripts/NewPackage.py <PackageName>` scaffolds a package under `packages/<PackageName>/` with a starter `index-package.lua`.
+- **New package:** `python scripts/packages/NewPackage.py <PackageName>` scaffolds a package under `packages/<PackageName>/` with a starter `index-package.lua`.
 
 ## Projects
 

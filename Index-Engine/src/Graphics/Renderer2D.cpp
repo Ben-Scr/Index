@@ -4,6 +4,7 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/Camera2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Log.hpp"
@@ -18,6 +19,7 @@
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
+#include "Profiling/Profiler.hpp"
 #ifdef INDEX_PROFILER_ENABLED
 #include "Profiling/GpuTimer.hpp"
 #endif
@@ -727,6 +729,10 @@ namespace Index {
 		auto finishTiming = [&]() {
 			m_RenderLoopDuration = std::chrono::duration<float, std::milli>(
 				std::chrono::steady_clock::now() - renderStart).count();
+			// Publish to the "Rendering" profiler bucket so it stops being
+			// permanently 0 and the "Others" residual (Frame - Rendering -
+			// Scripts - Physics - VSync) reflects only un-instrumented work.
+			Profiler::PushSample("Rendering", m_RenderLoopDuration);
 			};
 
 		const size_t n = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch);
@@ -931,19 +937,33 @@ namespace Index {
 
 		pass.End();
 
-		// If we redirected through the intermediate HDR FBO, blit it back
-		// to the caller's view now (passthrough for Phase B — future
-		// phases drop effect passes between these two steps and ping-pong
-		// between FBO_A / FBO_B). RestoreBoundTarget puts the caller's
-		// bind state back so subsequent renderers in the same frame
-		// (editor's UI / gizmo passes after Renderer2D) keep writing to
-		// the right surface.
+		// If we redirected through the intermediate HDR FBO, run the
+		// PostProcessor stage (effect passes + final composite back to
+		// caller). The settings come from a PostProcessing2DComponent on
+		// the active main camera entity — if the component is absent or
+		// no effects are enabled, Run() collapses to the passthrough Blit
+		// (visually identical to the legacy direct-to-caller path).
+		// RestoreBoundTarget puts the caller's bind state back so
+		// subsequent renderers in the same frame (editor's UI / gizmo
+		// passes after Renderer2D) keep writing to the right surface.
 		if (usePostProcess) {
-			m_PostProcessor.Blit(m_SceneFbo,
+			const PostProcessing2DComponent* ppSettings = nullptr;
+			if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
+				if (Scene* camScene = mainCam->GetOwnerScene()) {
+					const EntityHandle camEnt = mainCam->GetOwnerEntity();
+					if (camEnt != entt::null
+						&& camScene->HasComponent<PostProcessing2DComponent>(camEnt))
+					{
+						ppSettings = &camScene->GetComponent<PostProcessing2DComponent>(camEnt);
+					}
+				}
+			}
+			m_PostProcessor.Run(m_SceneFbo,
 				callerInfo.ColorView,
 				callerInfo.ColorFormat,
 				callerInfo.Width,
-				callerInfo.Height);
+				callerInfo.Height,
+				ppSettings);
 			WebGPUBackend::RestoreBoundTarget(callerSnap);
 		}
 

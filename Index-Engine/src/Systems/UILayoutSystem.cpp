@@ -16,6 +16,7 @@
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
 #include "Math/Trigonometry.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
@@ -717,31 +718,45 @@ namespace Index {
 			rectView.get<RectTransform2DComponent>(entity).ResolvedValid = false;
 		}
 
-		// Walk roots (entities with no HierarchyComponent::Parent) and
-		// recurse into each subtree. Entities without a HierarchyComponent
-		// are also roots — but those without a RectTransform are skipped
-		// by ResolveHierarchy itself.
+		// Walk UI entities (RectTransform2DComponent) and recurse into each
+		// subtree from the topmost UI-bearing ancestor. The previous
+		// implementation iterated `view<entt::entity>()` and filtered to
+		// roots — fine when entity counts were small, but at 1M empty
+		// entities the outer loop ran 1M iterations to find a handful of
+		// UI roots, dominating the frame at ~14ms. Iterating the rect view
+		// makes this O(#UI entities) instead of O(#total entities).
+		//
+		// "UI root" here means: no UI ancestor. A UI element parented
+		// under a non-UI entity is treated as a screen-space root, which
+		// matches the previous behaviour — ResolveHierarchy on such a
+		// chain would have descended with window-space parameters anyway
+		// because the non-UI parent contributed no rect.
 		//
 		// We don't filter on DisabledTag here: a disabled root's children
 		// might still be enabled (DisabledTag doesn't propagate) and they
 		// need their parent's resolved rect to compute correctly.
-		auto allEntities = registry.view<entt::entity>();
+		auto uiView = registry.view<RectTransform2DComponent>();
+		auto isUIRoot = [&](EntityHandle entity) {
+			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+			if (!hierarchy || hierarchy->Parent == entt::null) return true;
+			return !registry.all_of<RectTransform2DComponent>(hierarchy->Parent);
+		};
 
 		// First pass: bottom-up ContentSizeFitter resolution. Updates
 		// SizeDelta on fitter entities so the next pass's ResolveRect
 		// reflects fitted dimensions, and any parent layout-group sees
 		// the fitted child size when computing its own layout.
-		for (auto entity : allEntities) {
-			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
-			const bool isRoot = !hierarchy || hierarchy->Parent == entt::null;
-			if (!isRoot) continue;
+		for (auto entity : uiView) {
+			if (!isUIRoot(entity)) continue;
 			FitContentSize(registry, entity);
 		}
 
-		for (auto entity : allEntities) {
-			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
-			const bool isRoot = !hierarchy || hierarchy->Parent == entt::null;
-			if (!isRoot) continue;
+		const Vec2 windowCenter{
+			(windowMin.x + windowMax.x) * 0.5f,
+			(windowMin.y + windowMax.y) * 0.5f
+		};
+		for (auto entity : uiView) {
+			if (!isUIRoot(entity)) continue;
 
 			// Roots get the window centre as their "parent pivot" so root
 			// rotation rotates around the screen centre — matches the
@@ -750,10 +765,6 @@ namespace Index {
 			// project's reference-resolution scale propagates through every
 			// rect's worldScale chain (consumed by ResolveRect for SizeDelta /
 			// AnchoredPosition and by text rendering for font sizing).
-			const Vec2 windowCenter{
-				(windowMin.x + windowMax.x) * 0.5f,
-				(windowMin.y + windowMax.y) * 0.5f
-			};
 			ResolveHierarchy(registry, entity, windowMin, windowMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
 		}
 	}
@@ -766,6 +777,9 @@ namespace Index {
 		// try_get<RectTransform> probe at 100k entities dominated the
 		// frame).
 		if (scene.GetRegistry().view<RectTransform2DComponent>().size() == 0) return;
+		// Scope after the gate — non-zero readings prove the gate fired and
+		// ComputeUILayout actually ran. Stays 0.0 in scenes with no UI.
+		INDEX_PROFILE_SCOPE("UILayout");
 		ComputeUILayout(scene);
 	}
 

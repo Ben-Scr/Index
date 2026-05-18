@@ -30,7 +30,25 @@ public static class Window
     public static int Width => InternalCalls.Window_GetWidth();
     public static int Height => InternalCalls.Window_GetHeight();
 
-    public static Vector2 Size => throw new NotImplementedException();
+    // Cached so the steady-state getter doesn't pay two native calls per
+    // read. Seeded on first access (one-time cost), then refreshed in
+    // InvokeResize before subscribers run so OnResize handlers see the
+    // new size.
+    private static Vector2 s_Size;
+    private static bool s_SizeCached;
+
+    public static Vector2 Size
+    {
+        get
+        {
+            if (!s_SizeCached)
+            {
+                s_Size = new Vector2(InternalCalls.Window_GetWidth(), InternalCalls.Window_GetHeight());
+                s_SizeCached = true;
+            }
+            return s_Size;
+        }
+    }
 
     public static string Title
     {
@@ -82,6 +100,8 @@ public static class Window
 
     internal static void InvokeResize()
     {
+        s_Size = new Vector2(InternalCalls.Window_GetWidth(), InternalCalls.Window_GetHeight());
+        s_SizeCached = true;
         OnResize?.Invoke();
     }
 }

@@ -120,6 +120,44 @@ namespace Index {
 					{
 						{ "Playing Sources", "Playing Audio Sources", "" },
 					}
+				},
+				{
+					"Frame Breakdown",
+					{
+						{ "Layer.OnUpdate",      "Layers Update",       "ms" },
+						{ "UpdateScenes",        "Scene Updates",       "ms" },
+						{ "OnPreRenderScenes",   "Scene PreRender",     "ms" },
+						{ "Layer.OnPreRender",   "Layers PreRender",    "ms" },
+						{ "Renderer2D.Begin",    "Renderer2D Begin",    "ms" },
+						{ "GuiRenderer.Begin",   "GuiRenderer Begin",   "ms" },
+						{ "GizmoRenderer.Begin", "GizmoRenderer Begin", "ms" },
+						{ "Renderer2D.End",      "Renderer2D End",      "ms" },
+						{ "GuiRenderer.End",     "GuiRenderer End",     "ms" },
+						{ "GizmoRenderer.End",   "GizmoRenderer End",   "ms" },
+						{ "Layer.OnPostRender",  "Layers PostRender",   "ms" },
+						{ "SwapBuffers",         "Swap Buffers",        "ms" },
+					}
+				},
+				{
+					// Diagnostic probes that sit *after* the early-exit of
+					// systems that "shouldn't run when idle". A non-zero
+					// reading here means the gate is firing every frame —
+					// the panel turns the suspicion into a single-glance
+					// answer instead of a bisection hunt.
+					"Gate Diagnostics",
+					{
+						{ "Editor.HierarchyRebuild", "Editor Hierarchy Rebuild", "ms" },
+						{ "TransformHierarchy",      "Transform Hierarchy",      "ms" },
+						{ "UILayout",                "UI Layout",                "ms" },
+						{ "UIEvent.Update",          "UI Event Update",          "ms" },
+						{ "ParticleUpdate",          "Particle Update",          "ms" },
+						{ "UIFocus",                 "UI Focus",                 "ms" },
+						{ "ManagedGameSystem",       "Managed GameSystem",       "ms" },
+						{ "UIEvent.RefResolve",      "  UIEvent: RefResolve",    "ms" },
+						{ "UIEvent.HitTest",         "  UIEvent: HitTest",       "ms" },
+						{ "UIEvent.Visuals",         "  UIEvent: Visuals",       "ms" },
+						{ "UIEvent.Widgets",         "  UIEvent: Widgets",       "ms" },
+					}
 				}
 			};
 			return kLayout;

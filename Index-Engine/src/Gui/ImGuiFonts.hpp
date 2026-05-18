@@ -11,8 +11,9 @@ namespace Index {
 
 	inline constexpr float k_IndexImGuiFontSize = 15.0f;
 
-	inline ImFont* LoadIndexImGuiFont(ImGuiIO& io, float dpiScale = 1.0f) {
-		const float fontSize = k_IndexImGuiFontSize * dpiScale;
+	inline ImFont* LoadIndexImGuiFont(ImGuiIO& io, float dpiScale = 1.0f,
+									  float baseSize = k_IndexImGuiFontSize) {
+		const float fontSize = baseSize * dpiScale;
 
 		ImFontConfig fontCfg;
 		fontCfg.SizePixels = fontSize;

@@ -24,7 +24,10 @@ project "Box2D"
     }
 
     filter "system:windows"
-        buildoptions { "/FS" }
+        -- See Index-Engine/premake5.lua for the rationale on
+        -- MultiProcessorCompile + /Zc:preprocessor.
+        flags { "MultiProcessorCompile" }
+        buildoptions { "/FS", "/Zc:preprocessor" }
         systemversion "latest"
 
     filter "configurations:Debug"

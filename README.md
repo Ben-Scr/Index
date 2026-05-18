@@ -110,7 +110,7 @@ Core consumers should include `Index/Core.hpp` or the legacy lean `Index.hpp`. A
 ### Scaffolding a new package
 
 ```bash
-python scripts/NewPackage.py <PackageName>
+python scripts/packages/NewPackage.py <PackageName>
 ```
 
 Creates `packages/<PackageName>/` with a starter `index-package.lua` manifest. Re-run premake afterward to pick it up.

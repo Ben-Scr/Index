@@ -134,6 +134,12 @@ project "Index-Engine"
 
     UseIndexEngineModuleDependencies()
     defines(GetIndexModuleDefines())
+    -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h
+    -- to override INDEX_ENTITY_BITS without a premake regen. Every C++
+    -- project that compiles entt-using code needs this folder on its
+    -- include path so the EnTT patch's `#include "IndexEntityBitsConfig.h"`
+    -- resolves. See WriteIndexEntityBitsConfigHeader() in root premake5.lua.
+    includedirs { IndexEntityBitsConfigIncludeDir }
 
     local function AddPrivateIncludes(filePatterns, includePaths)
         for _, pattern in ipairs(filePatterns) do
@@ -238,11 +244,17 @@ project "Index-Engine"
     end
 
     filter "system:windows"
-        -- /FS is required when MSBuild's parallel compilation (/MP) hands out the
-        -- same vc143.pdb to multiple CL.EXE workers — without it, concurrent PDB
-        -- writes raise C1041. /MP itself is enabled by passing "-m" to MSBuild
-        -- from our automation paths; /FS makes that path safe.
-        buildoptions { "/utf-8", "/FS" }
+        -- MultiProcessorCompile emits <MultiProcessorCompilation>true</...>
+        -- into the .vcxproj, so MSBuild + the VS IDE pick up /MP without
+        -- needing the team's "-m" command-line wrapper. /FS keeps the
+        -- concurrent PDB writes safe (C1041 without it).
+        --
+        -- /Zc:preprocessor selects MSVC's standards-conformant preprocessor.
+        -- Required by some EnTT and magic_enum constexpr paths and required
+        -- by Tracy v0.11+; settling on it engine-wide keeps every TU
+        -- consistent.
+        flags { "MultiProcessorCompile" }
+        buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
 

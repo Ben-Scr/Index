@@ -1,5 +1,5 @@
 # BootstrapCMake.ps1 - Download + extract the portable Kitware CMake ZIP
-# into vendor\cmake\. Called by scripts\BootstrapCMake.bat. Kept as a
+# into vendor\cmake\. Called by scripts\dawn\BootstrapCMake.bat. Kept as a
 # separate PowerShell file because embedding multi-line PowerShell inside
 # a .bat (^ line-continuations + single-quoted strings + parens) confused
 # cmd.exe's block parser, which silently corrupted SetupDawn.bat's control

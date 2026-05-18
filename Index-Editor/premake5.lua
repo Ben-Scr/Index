@@ -34,6 +34,11 @@ project "Index-Editor"
     defines(GetIndexModuleDefines())
     defines { "IDX_IMPORT_DLL" }
     includedirs { "src" }
+    -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h
+    -- to override INDEX_ENTITY_BITS without a premake regen. The EnTT
+    -- patch picks it up via `#include "IndexEntityBitsConfig.h"`. See
+    -- WriteIndexEntityBitsConfigHeader() in the root premake5.lua.
+    includedirs { IndexEntityBitsConfigIncludeDir }
 
     -- Precompile the engine's pch.hpp once per editor build instead of
     -- re-parsing it in every TU. EditorPch.cpp is a one-line stub that just
@@ -51,6 +56,9 @@ project "Index-Editor"
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
 
     filter "system:windows"
+        -- See Index-Engine/premake5.lua for the rationale on
+        -- MultiProcessorCompile + /Zc:preprocessor.
+        --
         -- /Zm2000 raises the MSVC compiler's heap reservation to the maximum.
         -- Required for ComponentInspectors.cpp's Properties::Make<EnumType>/
         -- MakeWith<T> template forest. Even after tightening
@@ -59,7 +67,8 @@ project "Index-Editor"
         -- PreferredToolArchitecture=x64), the editor's lack of a real PCH
         -- means every TU reparses Index-Engine/src/pch.hpp's full STL +
         -- magic_enum + ImGui surface area, exhausting compiler heap (C1060).
-        buildoptions { "/utf-8", "/FS", "/Zm2000" }
+        flags { "MultiProcessorCompile" }
+        buildoptions { "/utf-8", "/FS", "/Zm2000", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
         postbuildcommands {

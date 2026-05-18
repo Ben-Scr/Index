@@ -137,7 +137,11 @@ namespace Index {
 			}
 			m_LastFrameTime = Clock::now();
 
-			while (m_Window && !m_Window->ShouldClose() && !m_ShouldQuit) {
+			// Headless (no m_Window): the loop exits on RequestQuit / Quit alone,
+			// since there's no WindowClose event to listen for. The window-close
+			// check is short-circuited when m_Window is null so the same loop
+			// drives both modes.
+			while (!m_ShouldQuit && !(m_Window && m_Window->ShouldClose())) {
 				const float targetFps = Max(GetTargetFramerate(), 0.0f);
 				DurationChrono targetFrameTime{};
 				if (targetFps > 0.0f) {
@@ -151,7 +155,11 @@ namespace Index {
 					: now;
 
 				// CPU idle for runtime fps cap. Relies on 1ms timer res from timeBeginPeriod in Initialize().
-				if (m_Configuration.UseTargetFrameRateForMainLoop && targetFps > 0.0f && (!m_Window->IsVsync() || IsEnginePaused()))
+				// The "no vsync OR paused" predicate becomes "always (when capping)" in headless mode
+				// because there's no swap-chain vsync to defer to — the explicit null guard keeps the
+				// short-circuit safe for callers that flipped EnableWindow=false without using the
+				// Headless() factory (which also clears UseTargetFrameRateForMainLoop).
+				if (m_Configuration.UseTargetFrameRateForMainLoop && targetFps > 0.0f && (!m_Window || !m_Window->IsVsync() || IsEnginePaused()))
 				{
 					auto const nextFrameTime = m_LastFrameTime + targetFrameTime;
 
@@ -177,12 +185,20 @@ namespace Index {
 
 					m_Time.Update(deltaTime);
 
-					// Snapshot prev-state BEFORE polling so GetKeyDown/Up reflect events from this frame.
-					m_Input.Update();
-					glfwPollEvents();
-					// PostPoll AFTER glfwPollEvents so derived state (axis) sees this
-					// frame's keys, not last frame's.
-					m_Input.PostPoll();
+					// Skip the entire input tick in headless mode: PollGamepads
+					// (called from Input::Update) hits glfwGetGamepadState, which
+					// crashes when GLFW wasn't initialised. Key / mouse / axis
+					// state stays at its zero-initialised defaults, so any script
+					// that reads Input.GetKey(...) just sees "nothing pressed" —
+					// the right answer for a headless run.
+					if (m_Window) {
+						// Snapshot prev-state BEFORE polling so GetKeyDown/Up reflect events from this frame.
+						m_Input.Update();
+						glfwPollEvents();
+						// PostPoll AFTER glfwPollEvents so derived state (axis) sees this
+						// frame's keys, not last frame's.
+						m_Input.PostPoll();
+					}
 					// Do NOT TryCompleteQuitRequest here — it must run AFTER
 					// BeginFrame's OnPreRender pass so layers (e.g. the
 					// editor's dirty-scene save-before-quit dialog) get to
@@ -337,7 +353,11 @@ namespace Index {
 		// (e.g. parallel asset scans) is available. The pool itself is
 		// cheap to spin up — milliseconds — and other shutdown paths
 		// rely on it still being alive when they tear down.
-		JobSystem::Initialize();
+		// Worker count comes from ApplicationConfig (default -1 = auto,
+		// matching the previous hardcoded behavior). Game code can
+		// override via IDX_GAME's config; scripts can override at boot
+		// via JobSystem.Configure on the C# side.
+		JobSystem::Initialize(JobSystemSpec{ m_Configuration.JobSystemWorkerCount });
 		IDX_INFO_TAG("JobSystem", "Initialization took " + StringHelper::ToString(timer));
 
 		timer.Reset();
@@ -351,16 +371,39 @@ namespace Index {
 		});
 		IDX_INFO_TAG("FrameArenas", "Initialization took " + StringHelper::ToString(timer));
 
-		timer.Reset();
-		Window::Initialize();
-		m_Window = std::make_unique<Window>(m_Configuration.WindowSpecification);
-		m_Window->SetVsync(m_Configuration.Vsync);
-		m_Window->SetEventCallback([this](IndexEvent& e) { DispatchEvent(e); });
-		IDX_INFO_TAG("Window", "Initialization took " + StringHelper::ToString(timer));
+		if (m_Configuration.EnableWindow) {
+			timer.Reset();
+			Window::Initialize();
+			m_Window = std::make_unique<Window>(m_Configuration.WindowSpecification);
+			m_Window->SetVsync(m_Configuration.Vsync);
+			m_Window->SetEventCallback([this](IndexEvent& e) { DispatchEvent(e); });
+			IDX_INFO_TAG("Window", "Initialization took " + StringHelper::ToString(timer));
 
-		timer.Reset();
-		RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
-		IDX_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
+			timer.Reset();
+			RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
+			IDX_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
+		}
+		else {
+			// Headless mode: force off every subsystem that needs a window
+			// or a GL context, even if the user explicitly enabled them.
+			// Each override logs a warning so the silent demotion is visible
+			// in the log. ApplicationConfig::Headless() already clears these,
+			// but a caller who flipped EnableWindow=false on a default-
+			// constructed config still gets a working build.
+			auto disable = [](bool& flag, const char* name) {
+				if (flag) {
+					IDX_WARN_TAG("Application", "{} disabled because EnableWindow=false (headless mode).", name);
+					flag = false;
+				}
+			};
+			disable(m_Configuration.EnableRenderer2D,     "EnableRenderer2D");
+			disable(m_Configuration.EnableGuiRenderer,    "EnableGuiRenderer");
+			disable(m_Configuration.EnableGizmoRenderer,  "EnableGizmoRenderer");
+			disable(m_Configuration.EnableTextureManager, "EnableTextureManager");
+			disable(m_Configuration.EnableShaderManager,  "EnableShaderManager");
+			disable(m_Configuration.SetWindowIcon,        "SetWindowIcon");
+			IDX_INFO_TAG("Application", "Running headless (EnableWindow=false): no window, no graphics backend.");
+		}
 
 		// TextureManager must come before Renderer2D: Renderer2D::Initialize
 		// hard-asserts that the default Square texture is registered (it's
@@ -481,8 +524,10 @@ namespace Index {
 		// frame via Window::SetCursorOverUI; loading them here once
 		// avoids re-decoding the texture per swap. Cursor support runs
 		// in both editor and shipped runtime so authored projects get
-		// the same look in either host.
-		{
+		// the same look in either host. Skipped entirely when headless
+		// (no window to apply the cursor to, no TextureManager to load
+		// the image through).
+		if (m_Window) {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			auto applyCursor = [&](const std::string& projectPath, void (Window::*setter)(const Texture2D*))
 			{
@@ -506,7 +551,7 @@ namespace Index {
 			}
 		}
 
-		if (m_Configuration.SetWindowIcon) {
+		if (m_Configuration.SetWindowIcon && m_Window) {
 			m_Window->SetWindowIconFromResource();
 
 			// AppIconPath is the icon for the SHIPPED game's window (and
@@ -620,6 +665,7 @@ namespace Index {
 			Update();
 
 			{
+				INDEX_PROFILE_SCOPE("Layer.OnUpdate");
 				// Dispatch guard defers PopLayer/PopOverlay to scope exit so popped
 				// siblings stay live for the rest of this iteration.
 				LayerDispatchGuard updateGuard(m_LayerStack);
@@ -635,27 +681,40 @@ namespace Index {
 			// because both depend on the active scene actually existing.
 			TickDeferredStartupScenes();
 
-			if (gameplayActive && m_SceneManager) m_SceneManager->UpdateScenes();
+			if (gameplayActive && m_SceneManager) {
+				INDEX_PROFILE_SCOPE("UpdateScenes");
+				m_SceneManager->UpdateScenes();
+			}
 
 			// Sync Transform2D into physics every frame (editor + play).
 			if (m_PhysicsSystem2D) m_PhysicsSystem2D->Update();
 
-			if (m_SceneManager) m_SceneManager->OnPreRenderScenes();
+			if (m_SceneManager) {
+				INDEX_PROFILE_SCOPE("OnPreRenderScenes");
+				m_SceneManager->OnPreRenderScenes();
+			}
 			{
+				INDEX_PROFILE_SCOPE("Layer.OnPreRender");
 				LayerDispatchGuard preRenderGuard(m_LayerStack);
 				for (Layer* layer : SnapshotLayerOrder()) {
 					INDEX_TRY_CATCH_LOG(layer->OnPreRender(*this));
 				}
 			}
 
-			if (m_Renderer2D)
+			if (m_Renderer2D) {
+				INDEX_PROFILE_SCOPE("Renderer2D.Begin");
 				INDEX_TRY_CATCH_LOG(m_Renderer2D->BeginFrame());
+			}
 
-			if (m_GuiRenderer)
+			if (m_GuiRenderer) {
+				INDEX_PROFILE_SCOPE("GuiRenderer.Begin");
 				INDEX_TRY_CATCH_LOG(m_GuiRenderer->BeginFrame(*m_SceneManager));
+			}
 
-			if (m_GizmoRenderer2D)
+			if (m_GizmoRenderer2D) {
+				INDEX_PROFILE_SCOPE("GizmoRenderer.Begin");
 				INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->BeginFrame());
+			}
 		}
 		else {
 			OnPaused();
@@ -781,17 +840,25 @@ namespace Index {
 	void Application::EndFixedFrame() { }
 
 	void Application::RenderPipelineOnly() {
-		if (m_Renderer2D)
+		if (m_Renderer2D) {
+			INDEX_PROFILE_SCOPE("Renderer2D.End");
 			INDEX_TRY_CATCH_LOG(m_Renderer2D->EndFrame());
+		}
 
-		LayerDispatchGuard postRenderGuard(m_LayerStack);
-		for (Layer* layer : SnapshotLayerOrder()) {
-			INDEX_TRY_CATCH_LOG(layer->OnPostRender(*this));
-		} 
-		 
-		if (m_GuiRenderer)
+		{
+			INDEX_PROFILE_SCOPE("Layer.OnPostRender");
+			LayerDispatchGuard postRenderGuard(m_LayerStack);
+			for (Layer* layer : SnapshotLayerOrder()) {
+				INDEX_TRY_CATCH_LOG(layer->OnPostRender(*this));
+			}
+		}
+
+		if (m_GuiRenderer) {
+			INDEX_PROFILE_SCOPE("GuiRenderer.End");
 			INDEX_TRY_CATCH_LOG(m_GuiRenderer->EndFrame());
+		}
 		if (m_GizmoRenderer2D) {
+			INDEX_PROFILE_SCOPE("GizmoRenderer.End");
 			// Explicit gizmo pass — used to be a hidden draw inside EndFrame.
 			// Now declared as its own step in the render pipeline.
 			if (Gizmo::GetShowInRuntime()) {
@@ -806,7 +873,10 @@ namespace Index {
 			INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->EndFrame());
 		}
 
-		if (m_Window) m_Window->SwapBuffers();
+		if (m_Window) {
+			INDEX_PROFILE_SCOPE("SwapBuffers");
+			m_Window->SwapBuffers();
+		}
 	}
 
 	void Application::RenderOnceForRefresh() {

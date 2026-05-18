@@ -54,6 +54,14 @@ namespace Index {
 		float ViewportHeight() const { return m_Viewport ? static_cast<float>(m_Viewport->GetHeight()) : 0.0f; }
 
 		bool IsValid() const { return m_OwnerScene != nullptr; }
+
+		// Owning scene + entity. Used by Renderer2D to look up sibling
+		// components on the camera entity (e.g. PostProcessing2DComponent)
+		// at render time. Returns nullptr / entt::null when the camera
+		// hasn't been Initialized yet or has been Destroyed.
+		Scene* GetOwnerScene() const { return m_OwnerScene; }
+		EntityHandle GetOwnerEntity() const { return m_OwnerEntity; }
+
 	private:
 		void SetViewport(Viewport* viewport) { m_Viewport = viewport; }
 		void UpdateProj();

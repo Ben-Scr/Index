@@ -535,7 +535,6 @@ namespace Index {
 		RenderLogPanel();
 		RenderBuildPanel();
 		RenderBuildProfilesPanel();
-		RenderPlayerSettingsPanel();
 		RenderProjectSettingsPanel();
 		RenderPackageManagerPanel();
 		m_EditorPreferencesPanel.Render(&m_ShowEditorPreferences);

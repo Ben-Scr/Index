@@ -23,6 +23,8 @@ project "Index-Launcher"
     defines(GetIndexModuleDefines())
     defines { "IDX_IMPORT_DLL" }
     includedirs { "src" }
+    -- See WriteIndexEntityBitsConfigHeader() in the root premake5.lua.
+    includedirs { IndexEntityBitsConfigIncludeDir }
 
     -- The ImGui WebGPU backend lives inside Index-Engine.dll so the
     -- launcher and engine share one wgpu::Device. The launcher just
@@ -33,7 +35,10 @@ project "Index-Launcher"
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
 
     filter "system:windows"
-        buildoptions { "/utf-8", "/FS" }
+        -- See Index-Engine/premake5.lua for the rationale on
+        -- MultiProcessorCompile + /Zc:preprocessor.
+        flags { "MultiProcessorCompile" }
+        buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
 

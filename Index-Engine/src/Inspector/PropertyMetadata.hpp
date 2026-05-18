@@ -70,6 +70,16 @@ namespace Index {
 		// gate works for native components and C# script fields.
 		std::function<bool(const Entity&)> EnabledIfFn;
 
+		// Optional "reset this section to defaults" callback. When set on
+		// a descriptor that carries HeaderContent, the inspector renders
+		// a right-click context menu on the CollapsingHeader with a
+		// "Reset to defaults" option that invokes this callback per
+		// selected entity. Use this for grouped settings like the
+		// PostProcessing component's per-effect sections, where the user
+		// wants to revert just one effect group's parameters without
+		// nuking the whole component.
+		std::function<void(Entity&)> ResetSectionFn;
+
 		// === Builder methods ===
 		// Each returns *this so authors can chain.
 
@@ -108,6 +118,10 @@ namespace Index {
 		}
 		PropertyMetadata& WithEnabledIf(std::function<bool(const Entity&)> pred) {
 			EnabledIfFn = std::move(pred);
+			return *this;
+		}
+		PropertyMetadata& WithResetSection(std::function<void(Entity&)> reset) {
+			ResetSectionFn = std::move(reset);
 			return *this;
 		}
 	};

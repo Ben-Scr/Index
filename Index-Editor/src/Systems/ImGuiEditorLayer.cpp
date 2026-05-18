@@ -560,9 +560,16 @@ namespace Index {
 			auto isStale = [&selectionScene](EntityHandle h) {
 				return h == entt::null || !selectionScene.IsValid(h);
 			};
+			const std::size_t before = m_SelectedEntities.size();
 			m_SelectedEntities.erase(
 				std::remove_if(m_SelectedEntities.begin(), m_SelectedEntities.end(), isStale),
 				m_SelectedEntities.end());
+			// Only resync the parallel set + bump the selection version when
+			// the sweep actually removed something — otherwise we'd invalidate
+			// the inspector's cached state every single frame for no reason.
+			if (m_SelectedEntities.size() != before) {
+				RebuildSelectionSet();
+			}
 		}
 		UpdateEditorCameraFocus(dt);
 		const bool hasShortcutFocus = HasEntityShortcutFocus();
@@ -872,17 +879,12 @@ namespace Index {
 			if (ImGui::MenuItem("Build Profiles…", nullptr, false, hasProject)) {
 				m_ShowBuildProfilesPanel = true;
 			}
-			// Project Settings ⇒ editor-side preferences (Asset Browser
-			// pane, Auto-Save cadence, etc.) that govern how the editor
-			// behaves in this project, NOT what gets shipped in the
-			// build. Runtime / shipped-game settings (resolution, splash,
-			// icon, cursors, …) live under Player Settings just below
-			// so the two intents don't cross-contaminate one panel.
+			// Unified Project Settings window. Side-tab nav covers six
+			// categories — Display, Graphics, Branding, Build, Editor,
+			// Systems — that together replace the old Project/Player
+			// Settings split.
 			if (ImGui::MenuItem("Project Settings", nullptr, false, hasProject)) {
 				m_ShowProjectSettings = true;
-			}
-			if (ImGui::MenuItem("Player Settings", nullptr, false, hasProject)) {
-				m_ShowPlayerSettings = true;
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Package Manager", nullptr, false, hasProject)) {
@@ -1140,6 +1142,8 @@ namespace Index {
 
 		m_SelectedEntity = entt::null;
 		m_SelectedEntities.clear();
+		m_SelectedEntitySet.clear();
+		++m_SelectionVersion;
 		m_LastEntitySelectionIndex = -1;
 		m_IsSceneNodeSelected = false;
 		m_RenamingEntity = entt::null;
@@ -1183,6 +1187,8 @@ namespace Index {
 		m_SelectedEntity = entt::null;
 		m_PressedEntity = entt::null;
 		m_SelectedEntities.clear();
+		m_SelectedEntitySet.clear();
+		++m_SelectionVersion;
 		m_LastEntitySelectionIndex = -1;
 		m_RenamingEntity = entt::null;
 		m_EntityRenameFrameCounter = 0;
@@ -1194,9 +1200,12 @@ namespace Index {
 		ResetEditorFocusCycle();
 		m_SelectedEntity = entity;
 		m_SelectedEntities.clear();
+		m_SelectedEntitySet.clear();
 		if (entity != entt::null) {
 			m_SelectedEntities.push_back(entity);
+			m_SelectedEntitySet.insert(entity);
 		}
+		++m_SelectionVersion;
 		m_LastEntitySelectionIndex = -1;
 		m_IsSceneNodeSelected = false;
 		if (entity != entt::null) {
@@ -1212,21 +1221,42 @@ namespace Index {
 		m_SelectedEntity = entt::null;
 		m_PressedEntity = entt::null;
 		m_SelectedEntities.clear();
+		m_SelectedEntitySet.clear();
+		++m_SelectionVersion;
 		m_LastEntitySelectionIndex = -1;
 		m_RenamingEntity = entt::null;
 		m_EntityRenameFrameCounter = 0;
 		m_IsSceneNodeSelected = false;
 	}
 
+	void ImGuiEditorLayer::RebuildSelectionSet() {
+		m_SelectedEntitySet.clear();
+		m_SelectedEntitySet.reserve(m_SelectedEntities.size());
+		for (EntityHandle e : m_SelectedEntities) {
+			if (e != entt::null) m_SelectedEntitySet.insert(e);
+		}
+		++m_SelectionVersion;
+	}
+
 	bool ImGuiEditorLayer::IsEntitySelected(EntityHandle entity) const {
-		return std::find(m_SelectedEntities.begin(), m_SelectedEntities.end(), entity) != m_SelectedEntities.end();
+		// O(1) hash lookup. Used per visible row in the hierarchy panel —
+		// a linear scan over a 25k-entry vector here was the dominant
+		// cost when the user had a large multi-selection.
+		return m_SelectedEntitySet.find(entity) != m_SelectedEntitySet.end();
 	}
 
 	std::vector<EntityHandle> ImGuiEditorLayer::GetSelectedEntities(const Scene& scene) const {
+		// Dedup via a local hash set rather than std::find — this is called
+		// many times per frame (every shortcut handler, the inspector,
+		// hierarchy context menus). With N=25k the old std::find pass was
+		// O(N²) per call and dwarfed everything else in the frame.
 		std::vector<EntityHandle> entities;
+		entities.reserve(m_SelectedEntities.size());
+		std::unordered_set<EntityHandle> seen;
+		seen.reserve(m_SelectedEntities.size());
 		for (EntityHandle entity : m_SelectedEntities) {
-			if (entity != entt::null && scene.IsValid(entity)
-				&& std::find(entities.begin(), entities.end(), entity) == entities.end()) {
+			if (entity == entt::null || !scene.IsValid(entity)) continue;
+			if (seen.insert(entity).second) {
 				entities.push_back(entity);
 			}
 		}
@@ -1242,29 +1272,41 @@ namespace Index {
 		ResetEditorFocusCycle();
 		m_SelectedEntity = entity;
 		m_SelectedEntities.clear();
+		m_SelectedEntitySet.clear();
 		if (entity != entt::null) {
 			m_SelectedEntities.push_back(entity);
+			m_SelectedEntitySet.insert(entity);
 			m_AssetBrowser.ClearSelection();
 		}
+		++m_SelectionVersion;
 		m_LastEntitySelectionIndex = index;
 		m_IsSceneNodeSelected = false;
 	}
 
 	void ImGuiEditorLayer::ToggleEntitySelection(EntityHandle entity, int index) {
 		ResetEditorFocusCycle();
-		auto it = std::find(m_SelectedEntities.begin(), m_SelectedEntities.end(), entity);
-		if (it != m_SelectedEntities.end()) {
-			m_SelectedEntities.erase(it);
+		// O(1) membership check via the parallel hash set. The vector erase
+		// is still O(N) but only runs on user toggle (not per-frame), so it's
+		// not on the hot path.
+		auto setIt = m_SelectedEntitySet.find(entity);
+		if (setIt != m_SelectedEntitySet.end()) {
+			m_SelectedEntitySet.erase(setIt);
+			auto it = std::find(m_SelectedEntities.begin(), m_SelectedEntities.end(), entity);
+			if (it != m_SelectedEntities.end()) {
+				m_SelectedEntities.erase(it);
+			}
 			if (m_SelectedEntity == entity) {
 				m_SelectedEntity = m_SelectedEntities.empty() ? entt::null : m_SelectedEntities.back();
 			}
 		}
 		else if (entity != entt::null) {
 			m_SelectedEntities.push_back(entity);
+			m_SelectedEntitySet.insert(entity);
 			m_SelectedEntity = entity;
 			m_AssetBrowser.ClearSelection();
 		}
 
+		++m_SelectionVersion;
 		m_LastEntitySelectionIndex = index;
 		m_IsSceneNodeSelected = false;
 	}
@@ -1312,10 +1354,93 @@ namespace Index {
 		for (int i = first; i <= last; ++i) {
 			m_SelectedEntities.push_back(order[static_cast<std::size_t>(i)]);
 		}
+		RebuildSelectionSet();
 		m_SelectedEntity = order[static_cast<std::size_t>(index)];
 		m_LastEntitySelectionIndex = index;
 		m_IsSceneNodeSelected = false;
 		m_AssetBrowser.ClearSelection();
+	}
+
+	void ImGuiEditorLayer::RecomputeInspectorSelectionCache(Scene& scene) {
+		// One-shot rebuild of every per-selection derived fact the inspector
+		// needs. Runs once per selection mutation (the per-frame inspector
+		// check is just a version compare). Without this, the inspector did
+		// a fresh O(N×M) sweep over (selection × components) every frame,
+		// which is what produced the FPS collapse at large selections.
+		m_InspectorCache.Handles = GetSelectedEntities(scene);
+		m_InspectorCache.CommonComponentTypes.clear();
+		m_InspectorCache.PartialComponents.clear();
+
+		if (m_InspectorCache.Handles.empty()) {
+			m_InspectorCache.NameUniform = true;
+			m_InspectorCache.FirstName.clear();
+			m_InspectorCache.EnabledUniform = true;
+			m_InspectorCache.EnabledFirst = true;
+			m_InspectorCache.StaticUniform = true;
+			m_InspectorCache.StaticFirst = false;
+			return;
+		}
+
+		std::vector<Entity> entities;
+		entities.reserve(m_InspectorCache.Handles.size());
+		for (EntityHandle h : m_InspectorCache.Handles) {
+			entities.push_back(scene.GetEntity(h));
+		}
+
+		{
+			Entity& first = entities[0];
+			m_InspectorCache.FirstName = first.HasComponent<NameComponent>()
+				? first.GetComponent<NameComponent>().Name
+				: std::string("Entity");
+			m_InspectorCache.NameUniform = true;
+			const std::string_view firstView = m_InspectorCache.FirstName;
+			for (std::size_t i = 1; i < entities.size(); ++i) {
+				Entity& e = entities[i];
+				const std::string_view name = e.HasComponent<NameComponent>()
+					? std::string_view(e.GetComponent<NameComponent>().Name)
+					: std::string_view("Entity");
+				if (name != firstView) { m_InspectorCache.NameUniform = false; break; }
+			}
+		}
+
+		{
+			auto enabledOf = [](Entity& e) {
+				return !e.HasComponent<DisabledTag>() || e.HasComponent<InheritedDisabledTag>();
+			};
+			auto staticOf = [](Entity& e) { return e.HasComponent<StaticTag>(); };
+
+			m_InspectorCache.EnabledFirst = enabledOf(entities[0]);
+			m_InspectorCache.StaticFirst = staticOf(entities[0]);
+			m_InspectorCache.EnabledUniform = true;
+			m_InspectorCache.StaticUniform = true;
+			for (std::size_t i = 1; i < entities.size(); ++i) {
+				if (m_InspectorCache.EnabledUniform && enabledOf(entities[i]) != m_InspectorCache.EnabledFirst) {
+					m_InspectorCache.EnabledUniform = false;
+				}
+				if (m_InspectorCache.StaticUniform && staticOf(entities[i]) != m_InspectorCache.StaticFirst) {
+					m_InspectorCache.StaticUniform = false;
+				}
+				if (!m_InspectorCache.EnabledUniform && !m_InspectorCache.StaticUniform) break;
+			}
+		}
+
+		const auto& registry = SceneManager::Get().GetComponentRegistry();
+		registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
+			if (info.category != ComponentCategory::Component) return;
+			if (info.displayName == "Name") return;
+
+			std::size_t haveCount = 0;
+			for (const Entity& e : entities) {
+				if (info.has(e)) ++haveCount;
+			}
+			if (haveCount == 0) return;
+			if (haveCount < entities.size()) {
+				m_InspectorCache.PartialComponents.push_back(info.displayName);
+			}
+			else {
+				m_InspectorCache.CommonComponentTypes.insert(typeId);
+			}
+		});
 	}
 
 	void ImGuiEditorLayer::ResetEditorFocusCycle() {
@@ -1487,6 +1612,7 @@ namespace Index {
 		if (!createdEntities.empty()) {
 			EnsureEditorUniqueEntityNames(scene, createdEntities);
 			m_SelectedEntities = createdEntities;
+			RebuildSelectionSet();
 			m_SelectedEntity = createdEntities.back();
 			m_LastEntitySelectionIndex = -1;
 			m_IsSceneNodeSelected = false;
@@ -1646,6 +1772,7 @@ namespace Index {
 		if (!createdEntities.empty()) {
 			EnsureEditorUniqueEntityNames(scene, createdEntities);
 			m_SelectedEntities = createdEntities;
+			RebuildSelectionSet();
 			m_SelectedEntity = createdEntities.back();
 			m_LastEntitySelectionIndex = -1;
 			m_IsSceneNodeSelected = false;
@@ -2593,6 +2720,7 @@ namespace Index {
 					|| m_EntityOrder.size() != registryCount;
 
 				if (needsRebuild) {
+					INDEX_PROFILE_SCOPE("Editor.HierarchyRebuild");
 					// Sync m_EntityOrder with the registry without ever blanket-
 					// resetting it: the user's drag-reorder lives inside this
 					// vector, so dropping it on size change (e.g. one entity
@@ -3373,9 +3501,18 @@ namespace Index {
 	void ImGuiEditorLayer::RenderInspectorPanel(Scene& scene) {
 		ImGui::Begin("Inspector");
 
-		// Materialize the selection set (filters dropped entities). When N == 0
-		// fall through to the asset / scene-systems panels exactly like before.
-		std::vector<EntityHandle> selectedHandles = GetSelectedEntities(scene);
+		// Cache-driven selection materialization. The cache also stores the
+		// common-component intersection + name/Enabled/Static uniformity so
+		// the body below doesn't have to re-derive them every frame. Without
+		// this, the inspector ran several O(N) and O(N×M) loops per frame
+		// over (selection × components), which dominated frame time at
+		// 25k+ selected entities. Version bumps live with the selection
+		// mutators and with the inspector's own add/remove paths below.
+		if (m_InspectorCache.Version != m_SelectionVersion) {
+			RecomputeInspectorSelectionCache(scene);
+			m_InspectorCache.Version = m_SelectionVersion;
+		}
+		const std::vector<EntityHandle>& selectedHandles = m_InspectorCache.Handles;
 		if (selectedHandles.empty()) {
 			m_SelectedEntity = entt::null;
 			if (m_IsSceneNodeSelected) {
@@ -3423,17 +3560,10 @@ namespace Index {
 		// Editable Name. With multi-select, mixed names display "—" via the
 		// hint and edits propagate to all entities (creating NameComponent
 		// when missing; removing NameComponent for an empty name).
-		bool nameUniform = true;
-		std::string firstName = entity.HasComponent<NameComponent>()
-			? entity.GetComponent<NameComponent>().Name : std::string("Entity");
-		for (std::size_t i = 1; i < selectedEntities.size(); ++i) {
-			std::string n = selectedEntities[i].HasComponent<NameComponent>()
-				? selectedEntities[i].GetComponent<NameComponent>().Name : std::string("Entity");
-			if (n != firstName) { nameUniform = false; break; }
-		}
+		const bool nameUniform = m_InspectorCache.NameUniform;
 		char nameBuf[256]{};
 		if (nameUniform) {
-			std::snprintf(nameBuf, sizeof(nameBuf), "%s", firstName.c_str());
+			std::snprintf(nameBuf, sizeof(nameBuf), "%s", m_InspectorCache.FirstName.c_str());
 		}
 		ImGui::SetNextItemWidth(-1);
 		const bool nameSubmitted = nameUniform

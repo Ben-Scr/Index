@@ -12,7 +12,7 @@ REM ============================================================================
 
 setlocal
 
-pushd "%~dp0\.."
+pushd "%~dp0\..\.."
 
 set "VENDOR_CMAKE_DIR=vendor\cmake"
 set "CMAKE_VER=3.30.5"

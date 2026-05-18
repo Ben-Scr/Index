@@ -29,6 +29,7 @@
 #include "Graphics/Text/TextRenderer.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/UIDrawOrder.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Scene/Scene.hpp"
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptEngine.hpp"
@@ -1011,6 +1012,11 @@ namespace Index {
 	} // namespace
 
 	void UIEventSystem::Update(Scene& scene) {
+		// Scope wraps the whole body so the panel can show whether the six
+		// per-widget view constructions below (Slider, Scrollbar, ScrollRect,
+		// Toggle, InputField, Dropdown, ...) add up to real cost at 100k
+		// entities even when none of those component pools have entries.
+		INDEX_PROFILE_SCOPE("UIEvent.Update");
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		Input& input = app->GetInput();
@@ -1044,6 +1050,17 @@ namespace Index {
 
 		auto& registry = scene.GetRegistry();
 
+		// Lifted to function scope so the trailing dropdown sync in Group 4
+		// (section 9, "── 9. Dropdowns: open/close, sync label") can read
+		// them. Group 2 ("HitTest") originally owned these — bisecting
+		// Update into RefResolve / HitTest / Visuals / Widgets blocks split
+		// the producer (HitTest) from a consumer (Widgets section 9), so we
+		// hoist instead of moving section 9.
+		auto dropdownView = registry.view<RectTransform2DComponent, DropdownComponent>(entt::exclude<DisabledTag>);
+		bool popupConsumes = false;
+
+		{
+		INDEX_PROFILE_SCOPE("UIEvent.RefResolve");
 		// ── 0. Auto-resolve cross-entity references each frame ──────
 		// Cross-entity refs aren't serialized — they're resolved by
 		// finding the first child of the right shape. This survives
@@ -1147,7 +1164,10 @@ namespace Index {
 					registry, entity, "Label", childHasText);
 			}
 		}
+		} // end UIEvent.RefResolve scope
 
+		{
+		INDEX_PROFILE_SCOPE("UIEvent.HitTest");
 		// ── 1. Resolve dropdown popup hits FIRST ─────────────────────
 		// Open dropdowns extend a popup below their button. When the
 		// cursor is inside any popup row, that hit consumes the click —
@@ -1160,7 +1180,8 @@ namespace Index {
 		};
 		DropdownHit dropdownHit;
 
-		auto dropdownView = registry.view<RectTransform2DComponent, DropdownComponent>(entt::exclude<DisabledTag>);
+		// dropdownView is hoisted to function scope above so Widgets section 9
+		// can reuse it after this Group 2 block ends.
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
 			dd.SelectionChangedThisFrame = false;
 			if (!dd.SelectionObserved) {
@@ -1197,7 +1218,7 @@ namespace Index {
 		// panel layered over widgets actually shields them from input
 		// instead of the registry-iteration-order entity winning.
 		EntityHandle hovered = entt::null;
-		const bool popupConsumes = dropdownHit.Entity != entt::null;
+		popupConsumes = dropdownHit.Entity != entt::null;
 
 		auto hitView = registry.view<RectTransform2DComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 		if (!popupConsumes) {
@@ -1299,18 +1320,29 @@ namespace Index {
 			}
 
 			if (mouseUpThisFrame) {
-				if (interact.IsHovered) {
+				// OnMouseUp pairs with OnMouseDown: it fires on whichever
+				// entity received the press, regardless of where the cursor
+				// is now. This matters for drag-style widgets (joysticks,
+				// sliders, scrubbers) whose cursor may be clamped or dragged
+				// outside the rect before release; without pairing they
+				// never see "let go".
+				//
+				// OnClicked is the hover-gated completion event — same
+				// semantics as before: press AND release on the same hovered
+				// entity. The registry.valid + all_of guard protects against
+				// handle reuse / mid-press destruction (a mouse-down on
+				// entity X followed by X being destroyed before the matching
+				// mouse-up would otherwise leave a stale handle whose
+				// integer value can be reused by a freshly-created entity,
+				// firing a phantom event on something the user never pressed).
+				const bool isPressEntity =
+					(m_PressedEntity == entity)
+					&& registry.valid(m_PressedEntity)
+					&& registry.all_of<InteractableComponent>(m_PressedEntity);
+
+				if (isPressEntity) {
 					interact.IsMouseUp = true;
-					// Revalidate m_PressedEntity before consulting it — a
-					// mouse-down on entity X followed by X being destroyed
-					// (or losing its InteractableComponent) before the matching
-					// mouse-up would otherwise leave a stale handle whose
-					// integer value can be reused by a freshly-created entity,
-					// firing a phantom click on something the user never
-					// pressed.
-					if (m_PressedEntity == entity
-						&& registry.valid(m_PressedEntity)
-						&& registry.all_of<InteractableComponent>(m_PressedEntity)) {
+					if (interact.IsHovered) {
 						interact.IsClicked = true;
 						// Inspector-bound OnClick handlers fire on the
 						// rising edge — same frame the engine detects the
@@ -1363,6 +1395,11 @@ namespace Index {
 				if (interact.Interactable) {
 					interact.IsClicked   = true;
 					interact.IsMouseDown = true;
+					// IsMouseUp pairs 1:1 with IsMouseDown for mouse input;
+					// keyboard / controller activate collapses press-and-
+					// release into one tick, so stamp the up-edge here too
+					// to keep the pair invariant for focus-driven activation.
+					interact.IsMouseUp   = true;
 					interact.IsPressed   = true;
 					// Mirror the mouse-driven dispatch above so a
 					// keyboard / controller activation also fires the
@@ -1434,7 +1471,10 @@ namespace Index {
 				}
 			}
 		}
+		} // end UIEvent.HitTest scope
 
+		{
+		INDEX_PROFILE_SCOPE("UIEvent.Visuals");
 		// ── 5. Widget visual state (color tint OR sprite swap) ──────
 		// Each widget's TransitionMode picks between the two paths:
 		// ColorTint writes per-state Color, SpriteSwap rewrites the
@@ -1515,7 +1555,10 @@ namespace Index {
 					slider.NormalSprite, slider.HoveredSprite, slider.PressedSprite, slider.DisabledSprite, slider.FocusedSprite);
 			}
 		}
+		} // end UIEvent.Visuals scope
 
+		{
+		INDEX_PROFILE_SCOPE("UIEvent.Widgets");
 		// ── 6. Sliders ───────────────────────────────────────────────
 		// The default preset puts the InteractableComponent on the handle
 		// child, so the draggable surface is the thumb. We prefer the
@@ -2524,6 +2567,7 @@ namespace Index {
 		// etc.). Doing this at the tail of Update means engine-detected
 		// transitions reach script handlers the same frame they happen.
 		ScriptEngine::RaiseUiEventDispatch();
+		} // end UIEvent.Widgets scope
 	}
 
 	void UIEventSystem::OnPreRender(Scene& scene) {

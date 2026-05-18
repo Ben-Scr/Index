@@ -5,8 +5,6 @@
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
-
 namespace Index {
 
 	// Circular slider — a ring-shaped value control. Same value semantics
@@ -62,11 +60,11 @@ namespace Index {
 
 		// Optional child whose RectTransform2D::AnchoredPosition gets
 		// rewritten each frame to sit on the ring at the current Value
-		// angle, like the linear Slider's HandleEntity. entt::null skips
+		// angle, like the linear Slider's HandleEntity. kNullEntity skips
 		// the auto-positioning. The handle's hit-test is independent —
 		// give it its own InteractableComponent if you want clicking the
 		// thumb to start a drag, else the user drags by clicking the ring.
-		EntityHandle HandleEntity = entt::null;
+		EntityHandle HandleEntity = kNullEntity;
 
 		// Set by UIEventSystem on the frame Value changed (drag,
 		// programmatic write, inspector edit). Cleared at the start of

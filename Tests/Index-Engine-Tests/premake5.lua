@@ -37,7 +37,10 @@ project "Index-Engine-Tests"
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
 
     filter "system:windows"
-        buildoptions { "/utf-8", "/FS" }
+        -- See Index-Engine/premake5.lua for the rationale on
+        -- MultiProcessorCompile + /Zc:preprocessor.
+        flags { "MultiProcessorCompile" }
+        buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
         postbuildcommands {

@@ -6,6 +6,7 @@
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
+#include "Profiling/Profiler.hpp"
 
 #include <entt/entt.hpp>
 
@@ -26,6 +27,7 @@ namespace Index {
 		// Application::GetInstance()->GetTime().GetDeltaTime() per call.
 		Application* app = Application::GetInstance();
 		if (!app) return; // matches the null-check in Awake — paired symmetry.
+		INDEX_PROFILE_SCOPE("ParticleUpdate");
 		const float dt = app->GetTime().GetDeltaTime();
 		for (const auto& [ent, particleSystem] : scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>).each())
 			particleSystem.Update(dt);

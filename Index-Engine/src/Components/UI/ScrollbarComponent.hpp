@@ -5,8 +5,6 @@
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
-
 namespace Index {
 
 	// Direction the scrollbar's value axis runs along. The handle slides
@@ -56,7 +54,7 @@ namespace Index {
 		// Value is never changed by input. Programmatic writes still work.
 		bool IsReadOnly = false;
 
-		EntityHandle HandleEntity = entt::null;
+		EntityHandle HandleEntity = kNullEntity;
 
 		// Set by UIEventSystem on the frame Value changed (drag, page-click,
 		// programmatic write). Cleared at the start of the next tick so

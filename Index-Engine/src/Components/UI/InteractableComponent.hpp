@@ -19,9 +19,14 @@ namespace Index {
 	//                    the original press was on this same entity. This
 	//                    is the "real" click event — same semantics as
 	//                    button widgets in every UI lib.
-	//   IsMouseUp      — left button went UP this frame while hovering,
-	//                    regardless of where the press started. Pairs
-	//                    with IsMouseDown for drag-style interactions.
+	//   IsMouseUp      — left button went UP this frame on the entity that
+	//                    received the matching IsMouseDown, regardless of
+	//                    where the cursor is now. Pairs 1:1 with IsMouseDown
+	//                    so drag-style widgets (joysticks, scrubbers)
+	//                    reliably see "let go" even if the cursor left the
+	//                    rect. For the hover-gated completion event (press
+	//                    AND release while still over the widget), use
+	//                    IsClicked instead.
 	//   IsPressed      — sticky: true between mouse-down and mouse-up if
 	//                    the press started on this entity. Lets sliders /
 	//                    drags track without re-checking every frame.

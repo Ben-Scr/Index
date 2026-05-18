@@ -405,7 +405,7 @@ namespace Index {
 	}
 
 	// ── New-Package wizard ──────────────────────────────────────────────────────
-	// UI front-end over scripts/NewPackage.py. Uses --no-premake — post-install automation regens.
+	// UI front-end over scripts/packages/NewPackage.py. Uses --no-premake — post-install automation regens.
 	void PackageManagerPanel::RenderNewPackageWindow() {
 		if (!m_ShowNewPackageWindow) return;
 
@@ -414,7 +414,7 @@ namespace Index {
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking)) {
 
 			ImGui::TextWrapped("Scaffolds a new Index package — manifest, source stubs, and "
-				"(optionally) the project allow-list entry. Backed by scripts/NewPackage.py.");
+				"(optionally) the project allow-list entry. Backed by scripts/packages/NewPackage.py.");
 			ImGui::Spacing();
 
 			ImGui::TextUnformatted("Name");
@@ -505,14 +505,14 @@ namespace Index {
 
 		const std::string engineRoot = IndexProject::GetEngineRootDir();
 		if (engineRoot.empty()) {
-			m_NewPackageError = "Engine root not resolved; cannot locate scripts/NewPackage.py.";
+			m_NewPackageError = "Engine root not resolved; cannot locate scripts/packages/NewPackage.py.";
 			return;
 		}
 
 		const std::filesystem::path scriptPath =
-			std::filesystem::path(engineRoot) / "scripts" / "NewPackage.py";
+			std::filesystem::path(engineRoot) / "scripts" / "packages" / "NewPackage.py";
 		if (!std::filesystem::exists(scriptPath)) {
-			m_NewPackageError = "scripts/NewPackage.py not found at: " + scriptPath.generic_string();
+			m_NewPackageError = "scripts/packages/NewPackage.py not found at: " + scriptPath.generic_string();
 			return;
 		}
 

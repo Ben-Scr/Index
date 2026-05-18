@@ -15,7 +15,7 @@ and our trimming is wasted.
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DAWN_DIR = REPO_ROOT / "External" / "dawn"
 TOOLS_DIR = DAWN_DIR / "tools"
 FETCHER = TOOLS_DIR / "fetch_dawn_dependencies.py"

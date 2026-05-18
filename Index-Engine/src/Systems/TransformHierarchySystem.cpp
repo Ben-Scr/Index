@@ -9,6 +9,7 @@
 #include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Components/Physics/FastBody2DComponent.hpp"
 #include "Components/Tags.hpp"
+#include "Profiling/Profiler.hpp"
 
 namespace Index {
 	namespace {
@@ -100,6 +101,12 @@ namespace Index {
 			if (!scene.HasDirtyTransforms() && !forceBodyHierarchy) {
 				return;
 			}
+
+			// Scope sits *after* the early-exit so a non-zero "TransformHierarchy"
+			// reading in the panel means the gate is being defeated — i.e. some
+			// caller is marking transforms dirty every frame. With 100k empty
+			// entities and no scripts touching transforms, this should read ~0.0.
+			INDEX_PROFILE_SCOPE("TransformHierarchy");
 
 			std::vector<EntityHandle> dirtyTransforms = scene.ConsumeDirtyTransformEntities();
 

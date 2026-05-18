@@ -1,8 +1,8 @@
 -- Dawn (Google's WebGPU implementation) wiring.
 --
 -- Stage 1 of the WebGPU port (see Index-Engine/src/Graphics/Backend/WebGPUApi.cpp
--- for context). Dawn is built out-of-band by scripts/SetupDawn.bat or
--- scripts/SetupDawn.sh as a monolithic static library — premake does NOT compile
+-- for context). Dawn is built out-of-band by scripts/dawn/SetupDawn.bat or
+-- scripts/dawn/SetupDawn.sh as a monolithic static library — premake does NOT compile
 -- Dawn here. Dawn has hundreds of source files with CMake-driven codegen
 -- (.h files emitted from .json descriptions of the WebGPU API surface); trying
 -- to mirror that into premake would be a porting tax we'd pay every Dawn

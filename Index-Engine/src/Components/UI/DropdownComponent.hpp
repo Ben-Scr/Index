@@ -6,7 +6,6 @@
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
 
-#include <entt/entt.hpp>
 #include <string>
 #include <vector>
 
@@ -49,9 +48,9 @@ namespace Index {
 		bool IsReadOnly = false;
 
 		// Child entity whose TextRendererComponent shows the current
-		// selection on the dropdown button. entt::null disables the
+		// selection on the dropdown button. kNullEntity disables the
 		// auto-write (game code can drive it manually then).
-		EntityHandle LabelEntity = entt::null;
+		EntityHandle LabelEntity = kNullEntity;
 
 		// Visual tuning for the popup option list (drawn by UIRenderer).
 		float OptionRowHeight = 28.0f;

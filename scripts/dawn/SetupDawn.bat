@@ -12,12 +12,12 @@ REM   * Git (with HTTPS access to dawn.googlesource.com)
 REM   * Visual Studio 2022 (any edition with C++ workload)
 REM   * Python 3 (Dawn's CMake invokes Python for code generation)
 REM   * CMake -- either at vendor\cmake\bin\cmake.exe (vendored portable;
-REM     run scripts\BootstrapCMake.bat to fetch it) or on PATH.
+REM     run scripts\dawn\BootstrapCMake.bat to fetch it) or on PATH.
 REM ============================================================================
 
 setlocal EnableDelayedExpansion
 
-pushd "%~dp0\.."
+pushd "%~dp0\..\.."
 
 set "DAWN_DIR=External\dawn"
 set "DAWN_BUILD_DIR=%DAWN_DIR%\build"
@@ -45,7 +45,7 @@ if not defined CMAKE_EXE (
 )
 if not defined CMAKE_EXE (
     echo [ERROR] CMake not found at %VENDOR_CMAKE_EXE% nor on PATH.
-    echo         Run scripts\BootstrapCMake.bat to vendor a portable copy,
+    echo         Run scripts\dawn\BootstrapCMake.bat to vendor a portable copy,
     echo         or install CMake yourself.
     goto :error
 )
@@ -80,9 +80,9 @@ REM re-pull glfw3 / googletest / google_benchmark.
 echo [2/5] Fetching Dawn third-party deps ^(trimmed list^)...
 where python >nul 2>nul
 if not errorlevel 1 (
-    python "scripts\FetchDawnDepsMinimal.py"
+    python "scripts\dawn\FetchDawnDepsMinimal.py"
 ) else (
-    py "scripts\FetchDawnDepsMinimal.py"
+    py "scripts\dawn\FetchDawnDepsMinimal.py"
 )
 if errorlevel 1 (
     echo [ERROR] Dep fetch failed.
