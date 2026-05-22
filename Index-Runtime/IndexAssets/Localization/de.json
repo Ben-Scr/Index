@@ -26,7 +26,7 @@
     "launcher.action.create_new_project": "Neues Projekt erstellen",
     "launcher.action.add_existing_project": "Vorhandenes Projekt hinzufügen",
     "launcher.action.settings": "Einstellungen",
-    "launcher.action.open_selected": "Öffnen",
+    "launcher.action.open_selected": "Im Editor Öffnen",
     "launcher.action.rename_selected": "Umbenennen",
     "launcher.action.delete_selected": "Löschen",
 

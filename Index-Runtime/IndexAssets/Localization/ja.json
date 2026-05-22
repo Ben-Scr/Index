@@ -26,7 +26,7 @@
     "launcher.action.create_new_project": "新規プロジェクトを作成",
     "launcher.action.add_existing_project": "既存のプロジェクトを追加",
     "launcher.action.settings": "設定",
-    "launcher.action.open_selected": "開く",
+    "launcher.action.open_selected": "エディタで開く",
     "launcher.action.rename_selected": "名前を変更",
     "launcher.action.delete_selected": "削除",
 

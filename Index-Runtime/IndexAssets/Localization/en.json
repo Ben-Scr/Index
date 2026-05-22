@@ -25,7 +25,7 @@
     "launcher.action.create_new_project": "Create New Project",
     "launcher.action.add_existing_project": "Add Existing Project",
     "launcher.action.settings": "Settings",
-    "launcher.action.open_selected": "Open",
+    "launcher.action.open_selected": "Open In Editor",
     "launcher.action.execute_selected": "Execute",
     "launcher.action.rename_selected": "Rename",
     "launcher.action.delete_selected": "Delete",

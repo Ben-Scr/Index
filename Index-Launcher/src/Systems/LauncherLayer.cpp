@@ -954,11 +954,11 @@ namespace Index {
 			ImGui::SetCursorScreenPos(ImVec2(
 				cursorPos.x + rowWidth - buttonWidth - 4,
 				cursorPos.y + (rowHeight - ImGui::GetFrameHeight()) * 0.5f));
-			if (ImGui::Button(IDX_TR("launcher.list.open").c_str(), ImVec2(buttonWidth, 0))) {
+			/*if (ImGui::Button(IDX_TR("launcher.list.open").c_str(), ImVec2(buttonWidth, 0))) {
 				Timer timer;
 				OpenProject(entry);
 				IDX_INFO_TAG("Project", "Opening Took: " + StringHelper::ToString(timer));
-			}
+			}*/
 
 			// Advance cursor past the row
 			ImGui::SetCursorScreenPos(ImVec2(cursorPos.x, cursorPos.y + rowHeight));
