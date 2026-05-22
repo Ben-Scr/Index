@@ -3,10 +3,12 @@
 #include "Core/Log.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
+#include "Core/Application.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SpecialFolder.hpp"
+#include "Scripting/ScriptSystem.hpp"
 
 #include <imgui.h>
 
@@ -36,13 +38,19 @@ namespace Index {
 			uint64_t EditorFontAssetId = k_DefaultFontAssetId;
 			int EditorFontZoomPercent = EditorPreferences::k_DefaultEditorFontZoomPercent;
 
+			bool RunInBackground = true;
 			bool ShowFileExtensions = false;
+			bool AutoRecompileScripts = true;
+			bool RecompileScriptsOnPlay = false;
+			bool ExitPlayModeOnRecompilation = true;
 			bool AutoSaveScenes = false;
 			float AutoSaveIntervalSeconds = 120.0f;
 			bool AutoSavePrefabs = true;
 
 			bool Loaded = false;
 			bool FreshlyCreated = false;
+			bool HasAppliedTheme = false;
+			EditorThemeMode LastAppliedTheme = EditorThemeMode::SystemDefault;
 		};
 
 		State& S() {
@@ -113,15 +121,18 @@ namespace Index {
 #endif
 
 		// Resolve SystemDefault → Dark/Light. ApplyTheme calls this once
-		// per invocation; switching the Windows theme mid-session won't
-		// auto-update the editor until the user revisits the prefs panel
-		// (we could hook WM_SETTINGCHANGE, but the cost/benefit isn't
-		// worth it for a setting users rarely flip).
+		// per invocation; ApplySystemThemeIfNeeded polls this so the
+		// editor follows Windows app-theme changes while set to Auto.
 		EditorThemeMode ResolveTheme(EditorThemeMode mode) {
 			if (mode == EditorThemeMode::SystemDefault) {
 				return IsSystemDarkMode_Win32() ? EditorThemeMode::Dark : EditorThemeMode::Light;
 			}
 			return mode;
+		}
+
+		void MarkThemeApplied(EditorThemeMode resolved) {
+			S().HasAppliedTheme = true;
+			S().LastAppliedTheme = resolved;
 		}
 
 		void SeedCustomColorsFromCurrent() {
@@ -165,6 +176,8 @@ namespace Index {
 			// without clobbering an existing pref set.
 			s.FreshlyCreated = true;
 			Save();
+			Application::SetRunInBackground(s.RunInBackground);
+			ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
 			return;
 		}
 
@@ -207,6 +220,18 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("ShowFileExtensions")) {
 			s.ShowFileExtensions = v->AsBoolOr(false);
 		}
+		if (const Json::Value* v = root.FindMember("RunInBackground")) {
+			s.RunInBackground = v->AsBoolOr(true);
+		}
+		if (const Json::Value* v = root.FindMember("AutoRecompileScripts")) {
+			s.AutoRecompileScripts = v->AsBoolOr(true);
+		}
+		if (const Json::Value* v = root.FindMember("RecompileScriptsOnPlay")) {
+			s.RecompileScriptsOnPlay = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("ExitPlayModeOnRecompilation")) {
+			s.ExitPlayModeOnRecompilation = v->AsBoolOr(true);
+		}
 		if (const Json::Value* v = root.FindMember("AutoSaveScenes")) {
 			s.AutoSaveScenes = v->AsBoolOr(false);
 		}
@@ -244,6 +269,8 @@ namespace Index {
 		// calls Load), so the style object is live and FontSizeBase
 		// takes effect on the very next frame.
 		ImGuiContextLayer::ApplyEditorFontSize();
+		Application::SetRunInBackground(s.RunInBackground);
+		ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
 	}
 
 	bool EditorPreferences::WasFreshlyCreated() {
@@ -260,7 +287,11 @@ namespace Index {
 		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(s.Theme))));
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
 		root.AddMember("EditorFontZoomPercent", Json::Value(s.EditorFontZoomPercent));
+		root.AddMember("RunInBackground", Json::Value(s.RunInBackground));
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
+		root.AddMember("AutoRecompileScripts", Json::Value(s.AutoRecompileScripts));
+		root.AddMember("RecompileScriptsOnPlay", Json::Value(s.RecompileScriptsOnPlay));
+		root.AddMember("ExitPlayModeOnRecompilation", Json::Value(s.ExitPlayModeOnRecompilation));
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
 		root.AddMember("AutoSavePrefabs", Json::Value(s.AutoSavePrefabs));
@@ -293,6 +324,7 @@ namespace Index {
 				// variant; the user opting in to Light is explicitly asking
 				// for the stock palette.
 				ImGui::StyleColorsLight();
+				MarkThemeApplied(resolved);
 				return;
 			case EditorThemeMode::Dark:
 			case EditorThemeMode::SystemDefault: // already resolved above
@@ -300,6 +332,7 @@ namespace Index {
 				// startup ApplyIndexTheme (post ScaleAllSizes) is preserved.
 				// Light → Dark thus keeps the DPI-scaled metrics.
 				ImGuiContextLayer::ApplyIndexThemeColors();
+				MarkThemeApplied(resolved);
 				return;
 			case EditorThemeMode::Custom: {
 				if (!S().CustomColorsSeeded) {
@@ -307,9 +340,24 @@ namespace Index {
 				}
 				ImGuiStyle& style = ImGui::GetStyle();
 				std::memcpy(style.Colors, S().CustomColors, sizeof(ImVec4) * ImGuiCol_COUNT);
+				MarkThemeApplied(resolved);
 				return;
 			}
 		}
+	}
+
+	void EditorPreferences::ApplySystemThemeIfNeeded() {
+		State& s = S();
+		if (s.Theme != EditorThemeMode::SystemDefault) {
+			return;
+		}
+
+		const EditorThemeMode resolved = ResolveTheme(s.Theme);
+		if (s.HasAppliedTheme && s.LastAppliedTheme == resolved) {
+			return;
+		}
+
+		ApplyTheme();
 	}
 
 	EditorThemeMode EditorPreferences::GetResolvedThemeMode() {
@@ -375,6 +423,17 @@ namespace Index {
 		ImGuiContextLayer::ApplyEditorFontSize();
 	}
 
+	bool EditorPreferences::GetRunInBackground() {
+		return S().RunInBackground;
+	}
+
+	void EditorPreferences::SetRunInBackground(bool value) {
+		if (S().RunInBackground == value) return;
+		S().RunInBackground = value;
+		Application::SetRunInBackground(value);
+		Save();
+	}
+
 	bool EditorPreferences::GetShowFileExtensions() {
 		return S().ShowFileExtensions;
 	}
@@ -382,6 +441,37 @@ namespace Index {
 	void EditorPreferences::SetShowFileExtensions(bool value) {
 		if (S().ShowFileExtensions == value) return;
 		S().ShowFileExtensions = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetAutoRecompileScripts() {
+		return S().AutoRecompileScripts;
+	}
+
+	void EditorPreferences::SetAutoRecompileScripts(bool value) {
+		if (S().AutoRecompileScripts == value) return;
+		S().AutoRecompileScripts = value;
+		ScriptSystem::SetAutoRecompileEnabled(value);
+		Save();
+	}
+
+	bool EditorPreferences::GetRecompileScriptsOnPlay() {
+		return S().RecompileScriptsOnPlay;
+	}
+
+	void EditorPreferences::SetRecompileScriptsOnPlay(bool value) {
+		if (S().RecompileScriptsOnPlay == value) return;
+		S().RecompileScriptsOnPlay = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetExitPlayModeOnRecompilation() {
+		return S().ExitPlayModeOnRecompilation;
+	}
+
+	void EditorPreferences::SetExitPlayModeOnRecompilation(bool value) {
+		if (S().ExitPlayModeOnRecompilation == value) return;
+		S().ExitPlayModeOnRecompilation = value;
 		Save();
 	}
 

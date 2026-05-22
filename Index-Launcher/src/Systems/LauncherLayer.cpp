@@ -5,6 +5,7 @@
 #include "Core/Application.hpp"
 #include <Core/Version.hpp>
 #include <Core/Log.hpp>
+#include "Gui/CustomTitlebar.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Localization/Localization.hpp"
 #include "Serialization/Path.hpp"
@@ -17,6 +18,7 @@
 #include "Utils/StringHelper.hpp"
 #include <imgui.h>
 #include <filesystem>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include <sstream>
@@ -25,6 +27,7 @@
 #include <algorithm>
 #include <limits>
 #include <system_error>
+#include <vector>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #include <shellapi.h>
@@ -336,6 +339,10 @@ namespace Index {
 		ImGui::GetIO().FontGlobalScale = GetEffectiveFontScale();
 		Localization::Poll();
 		PollCreateProjectTask();
+		// Drawn before the main panel so the panel can offset itself by
+		// the titlebar row height; titlebar publishes its drag region +
+		// non-client button rects to the Win32 hit-test layer here.
+		LauncherUI::RenderTitlebar();
 		RenderLauncherPanel();
 	}
 
@@ -411,7 +418,8 @@ namespace Index {
 		m_CreateTask.InitialBuildSucceeded = true;
 	}
 
-	void LauncherLayer::StartCreateProjectAsync(const std::string& name, const std::string& location) {
+	void LauncherLayer::StartCreateProjectAsync(const std::string& name, const std::string& location,
+		const std::string& directoryName) {
 		ResetCreateProjectTask();
 
 		m_CreateError.clear();
@@ -425,7 +433,7 @@ namespace Index {
 			m_CreateTask.Running = true;
 		}
 
-		m_CreateTask.Worker = std::thread([this, name, location]() {
+		m_CreateTask.Worker = std::thread([this, name, location, directoryName]() {
 			auto updateProgress = [this](float progress, std::string_view stage) {
 				std::scoped_lock lock(m_CreateTask.Mutex);
 				m_CreateTask.Progress = progress;
@@ -433,7 +441,7 @@ namespace Index {
 			};
 
 			try {
-				const std::string fullPath = Path::Combine(location, name);
+				const std::string fullPath = Path::Combine(location, directoryName.empty() ? name : directoryName);
 				if (std::filesystem::exists(fullPath)) {
 					std::scoped_lock lock(m_CreateTask.Mutex);
 					m_CreateTask.Error = "Directory already exists: " + fullPath;
@@ -445,7 +453,7 @@ namespace Index {
 				}
 
 				updateProgress(0.05f, "Creating project...");
-				IndexProject project = IndexProject::Create(name, location, updateProgress);
+				IndexProject project = IndexProject::Create(name, location, directoryName, updateProgress);
 
 				// Project-local packages affect the engine solution, so we regenerate. If
 				// the project has no packages, regen is still cheap and keeps the solution
@@ -572,19 +580,26 @@ namespace Index {
 		PollOpenProjectTask();
 
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
-		ImGui::SetNextWindowPos(viewport->Pos);
-		ImGui::SetNextWindowSize(viewport->Size);
+		// Offset the panel below the custom titlebar (0 when disabled).
+		// The titlebar window pinned at viewport->Pos owns the top rows;
+		// the panel takes the remaining client area.
+		const float titlebarH = LauncherUI::GetTitlebarRowHeight();
+		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + titlebarH));
+		ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y - titlebarH));
 
 		ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
 			| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
 
 		ImGui::Begin("##Launcher", nullptr, flags);
 
-		ImGui::TextUnformatted(IDX_TR("launcher.title").c_str());
-		ImGui::SameLine();
-		ImGui::TextDisabled("%s", IDX_VERSION);
-		ImGui::Separator();
-		ImGui::Spacing();
+		// Title text moved into the custom titlebar when it's active.
+		if (titlebarH <= 0.0f) {
+			ImGui::TextUnformatted(IDX_TR("launcher.title").c_str());
+			ImGui::SameLine();
+			ImGui::TextDisabled("%s", IDX_VERSION);
+			ImGui::Separator();
+			ImGui::Spacing();
+		}
 
 		// Snapshot async open-task state for the floating progress strip.
 		// Reading under lock so the worker thread's writes are observed
@@ -1239,7 +1254,8 @@ namespace Index {
 			ImGui::InputText("##ProjLocation", m_NewProjectLocation, sizeof(m_NewProjectLocation));
 
 			ImGui::Spacing();
-			std::string preview = Path::Combine(m_NewProjectLocation, m_NewProjectName);
+			const std::string directoryName = ApplyDirectoryNameConvention(m_NewProjectName, m_DirectoryNameConvention);
+			std::string preview = Path::Combine(m_NewProjectLocation, directoryName);
 			const std::string previewText = Localization::Format("launcher.create.path_preview", preview);
 			ImGui::TextDisabled("%s", previewText.c_str());
 
@@ -1260,12 +1276,16 @@ namespace Index {
 			ImGui::Separator();
 			ImGui::Spacing();
 
-			bool canCreate = IndexProject::IsValidProjectName(m_NewProjectName) && !m_IsCreating;
+			bool canCreate = IndexProject::IsValidProjectName(m_NewProjectName)
+				&& IndexProject::IsValidProjectName(directoryName)
+				&& !m_IsCreating;
 			if (!canCreate) ImGui::BeginDisabled();
 
 			if (ImGui::Button(IDX_TR("launcher.create.create_button").c_str(), ImVec2(120, 0))) {
 				Timer timer;
-				StartCreateProjectAsync(std::string(m_NewProjectName), std::string(m_NewProjectLocation));
+				StartCreateProjectAsync(std::string(m_NewProjectName),
+					std::string(m_NewProjectLocation),
+					directoryName);
 				IDX_INFO_TAG("Project", "Queued async project creation in {}", StringHelper::ToString(timer));
 			}
 
@@ -1715,6 +1735,96 @@ namespace Index {
 			"Index", "launcher_settings.json");
 	}
 
+	const char* LauncherLayer::DirectoryNameConventionLabel(DirectoryNameConvention convention) {
+		switch (convention) {
+		case DirectoryNameConvention::None:           return "None";
+		case DirectoryNameConvention::TitleCase:      return "TitleCase";
+		case DirectoryNameConvention::TitleDashCase:  return "Title-Case";
+		case DirectoryNameConvention::TitleCamelCase: return "titleCase";
+		case DirectoryNameConvention::TitleSnakeCase: return "title_case";
+		case DirectoryNameConvention::TitleKebabCase: return "title-case";
+		}
+		return "TitleCase";
+	}
+
+	std::string LauncherLayer::ApplyDirectoryNameConvention(std::string_view name,
+		DirectoryNameConvention convention)
+	{
+		if (convention == DirectoryNameConvention::None) {
+			return std::string(name);
+		}
+
+		std::vector<std::string> words;
+		std::string current;
+		char previous = '\0';
+		for (char raw : name) {
+			const unsigned char c = static_cast<unsigned char>(raw);
+			if (!std::isalnum(c)) {
+				if (!current.empty()) {
+					words.push_back(current);
+					current.clear();
+				}
+				previous = '\0';
+				continue;
+			}
+
+			const bool splitCamel = !current.empty()
+				&& std::islower(static_cast<unsigned char>(previous))
+				&& std::isupper(c);
+			if (splitCamel) {
+				words.push_back(current);
+				current.clear();
+			}
+			current.push_back(raw);
+			previous = raw;
+		}
+		if (!current.empty()) {
+			words.push_back(current);
+		}
+
+		auto titleWord = [](std::string word) {
+			if (word.empty()) return word;
+			for (char& ch : word) {
+				ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+			}
+			word[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(word[0])));
+			return word;
+		};
+		auto lowerWord = [](std::string word) {
+			for (char& ch : word) {
+				ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+			}
+			return word;
+		};
+
+		std::string result;
+		const char separator =
+			(convention == DirectoryNameConvention::TitleDashCase) ? '-' :
+			(convention == DirectoryNameConvention::TitleSnakeCase) ? '_' :
+			(convention == DirectoryNameConvention::TitleKebabCase) ? '-' : '\0';
+
+		for (std::size_t i = 0; i < words.size(); ++i) {
+			std::string word;
+			if (convention == DirectoryNameConvention::TitleCamelCase) {
+				word = (i == 0) ? lowerWord(words[i]) : titleWord(words[i]);
+			}
+			else if (convention == DirectoryNameConvention::TitleSnakeCase
+				|| convention == DirectoryNameConvention::TitleKebabCase) {
+				word = lowerWord(words[i]);
+			}
+			else {
+				word = titleWord(words[i]);
+			}
+
+			if (!result.empty() && separator != '\0') {
+				result.push_back(separator);
+			}
+			result += word;
+		}
+
+		return result;
+	}
+
 	void LauncherLayer::LoadLauncherSettings() {
 		const std::string path = GetSettingsPath();
 		if (!File::Exists(path)) return;
@@ -1751,6 +1861,12 @@ namespace Index {
 				m_ThemeSetting = static_cast<ThemeSetting>(setting);
 			}
 		}
+		if (const Json::Value* v = root.FindMember("directoryNameConvention")) {
+			int convention = v->AsIntOr(static_cast<int>(DirectoryNameConvention::TitleCase));
+			if (convention >= 0 && convention <= static_cast<int>(DirectoryNameConvention::TitleKebabCase)) {
+				m_DirectoryNameConvention = static_cast<DirectoryNameConvention>(convention);
+			}
+		}
 		if (const Json::Value* v = root.FindMember("languageAuto")) {
 			m_LanguageAuto = v->AsBoolOr(false);
 		}
@@ -1768,6 +1884,7 @@ namespace Index {
 		root.AddMember("sortReverse", Json::Value(m_SortReverse));
 		root.AddMember("fontScale", Json::Value(static_cast<int>(m_FontScale)));
 		root.AddMember("themeSetting", Json::Value(static_cast<int>(m_ThemeSetting)));
+		root.AddMember("directoryNameConvention", Json::Value(static_cast<int>(m_DirectoryNameConvention)));
 		root.AddMember("languageAuto", Json::Value(m_LanguageAuto));
 		if (!File::WriteAllText(path, Json::Stringify(root, true))) {
 			IDX_CORE_WARN_TAG("Launcher", "Failed to write launcher settings to '{}'", path);

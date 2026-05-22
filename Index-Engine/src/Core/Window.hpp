@@ -1,4 +1,5 @@
 #pragma once
+#include "Collections/Color.hpp"
 #include "Collections/Vec2.hpp"
 #include "Collections/Viewport.hpp"
 #include "Core/Export.hpp"
@@ -36,6 +37,16 @@ namespace Index {
 		void SetWindowMoveable(bool enabled) { glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, enabled ? GLFW_TRUE : GLFW_FALSE); }
 		void SetPosition(Vec2Int pos) { glfwSetWindowPos(m_GLFWwindow, pos.x, pos.y); }
 		void SetSize(Vec2Int size) { glfwSetWindowSize(m_GLFWwindow, size.x, size.y); }
+
+		// Resize limits — components <= 0 are treated as "no constraint"
+		// (passed to GLFW as GLFW_DONT_CARE). Re-applies the full (min,max)
+		// pair via glfwSetWindowSizeLimits each call. The cached members
+		// keep the most recent values so GetMinSize/GetMaxSize don't have
+		// to query GLFW (GLFW has no public getter for the limits).
+		void SetMinSize(Vec2Int size);
+		void SetMaxSize(Vec2Int size);
+		Vec2Int GetMinSize() const { return m_MinSize; }
+		Vec2Int GetMaxSize() const { return m_MaxSize; }
 		void SetCursorPosition(Vec2 position) { glfwSetCursorPos(m_GLFWwindow, (double)position.x, (double)position.y); }
 
 		void SetCursorLocked(bool enabled);
@@ -93,6 +104,30 @@ namespace Index {
 		bool IsDecorated() const;
 		bool IsResizeable() const;
 
+		// True when the window was created with WindowSpecification::
+		// CustomTitlebar = true and the engine owns the decoration via
+		// the Win32Titlebar WndProc subclass.
+		bool IsCustomTitlebarEnabled() const { return m_CustomTitlebar; }
+		// Logical-pixel height of the custom titlebar row, as configured
+		// via WindowSpecification or SetTitlebarHeight. Used by titlebar
+		// layers to size their ImGui row + by other panels to offset
+		// content below it.
+		int GetTitlebarHeight() const;
+		void SetTitlebarHeight(int logicalPx);
+
+		// Titlebar color overrides — alpha = 0 means "no override; use the
+		// ImGui theme's default for this slot." The titlebar draw code
+		// reads these each frame; calling Set* at runtime takes effect on
+		// the next frame.
+		Color GetTitlebarColor() const { return m_TitlebarColor; }
+		void  SetTitlebarColor(Color color) { m_TitlebarColor = color; }
+		Color GetTitlebarTextColor() const { return m_TitlebarTextColor; }
+		void  SetTitlebarTextColor(Color color) { m_TitlebarTextColor = color; }
+		Color GetTitlebarActiveColor() const { return m_TitlebarActiveColor; }
+		void  SetTitlebarActiveColor(Color color) { m_TitlebarActiveColor = color; }
+		Color GetTitlebarInactiveColor() const { return m_TitlebarInactiveColor; }
+		void  SetTitlebarInactiveColor(Color color) { m_TitlebarInactiveColor = color; }
+
 		static bool IsVsync() { return s_IsVsync; }
 
 		// Info: If reset equals true the window will automatically be restored if it's already maximized
@@ -132,6 +167,17 @@ namespace Index {
 			s_UIRegion = UIRegion{ x, y, w, h };
 		}
 		static void ClearUIRegion() { s_UIRegion = UIRegion{}; }
+
+		// Custom titlebar hit-region publish API. The application-side
+		// titlebar layer (editor / launcher / runtime default) calls
+		// these once per frame so the Win32 WndProc knows which window-
+		// local pixels are draggable (caption) vs which are interactive
+		// widgets (non-client overrides like menu items + buttons). All
+		// coordinates are in window-local pixels, origin top-left. No-op
+		// on non-Windows platforms.
+		static void SetTitlebarCaptionRect(int x, int y, int w, int h);
+		static void AddTitlebarNonClientRect(int x, int y, int w, int h);
+		static void ResetTitlebarNonClientRects();
 
 	private:
 		void Create(const WindowSpecification& props);
@@ -185,6 +231,13 @@ namespace Index {
 
 		Vec2Int m_RestoreSize;
 		Vec2Int m_RestorePos;
+		Vec2Int m_MinSize;
+		Vec2Int m_MaxSize;
+		bool m_CustomTitlebar = false;
+		Color m_TitlebarColor         { 0.0f, 0.0f, 0.0f, 0.0f };
+		Color m_TitlebarTextColor     { 0.0f, 0.0f, 0.0f, 0.0f };
+		Color m_TitlebarActiveColor   { 0.0f, 0.0f, 0.0f, 0.0f };
+		Color m_TitlebarInactiveColor { 0.0f, 0.0f, 0.0f, 0.0f };
 
 		static const GLFWvidmode* k_Videomode;
 

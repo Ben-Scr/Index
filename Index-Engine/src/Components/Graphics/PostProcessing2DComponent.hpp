@@ -57,15 +57,15 @@ namespace Index {
 
 		struct BloomSettings {
 			bool  Enabled   { false };
-			float Threshold { 1.0f };  // luminance, >= 0
-			float Intensity { 0.5f };  // 0..10
-			float Scatter   { 0.7f };  // 0..1, blur spread
+			float Threshold { 0.9f };  // luminance, >= 0
+			float Intensity { 5.0f };  // 0..10
+			float Scatter   { 0.0f };  // 0..1, blur spread
 			// Per-direction Gaussian tap count. Range 7..500 — drives
-			// the separable blur's loop count. 7 is fast/grainy, 21 is
-			// a balanced default, 500 is "throw a GPU at it" smooth.
+			// the separable blur's loop count. 7 is fast/grainy, 80 is
+			// the default smooth bloom kernel, 500 is "throw a GPU at it" smooth.
 			// Cost scales linearly with Taps (separable blur), so going
 			// from 21 -> 101 is ~5x the bloom shader cost.
-			int   Taps      { 21 };
+			int   Taps      { 80 };
 			Color Tint      { 1.0f, 1.0f, 1.0f, 1.0f };
 		};
 
@@ -98,11 +98,11 @@ namespace Index {
 		// version, where Bloom adds a halo on top.
 		struct GaussianBlurSettings {
 			bool  Enabled { false };
-			float Radius  { 0.5f }; // 0..1, scales blur extent
+			float Radius  { 0.0f }; // 0..1, scales blur extent
 			// Per-direction Gaussian tap count. Same semantics as
 			// BloomSettings::Taps — 7..500, higher = smoother but more
 			// fragment work.
-			int   Taps    { 21 };
+			int   Taps    { 50 };
 		};
 
 		ColorGradingSettings        ColorGrading{};

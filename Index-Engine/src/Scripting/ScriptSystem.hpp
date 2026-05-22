@@ -38,6 +38,8 @@ namespace Index {
 		/// Suppress file watcher polling (e.g. while a script is being created/renamed)
 		void SetRecompileSuppressed(bool suppressed) { m_SuppressRecompile = suppressed; }
 		bool IsRecompileSuppressed() const { return m_SuppressRecompile; }
+		static void SetAutoRecompileEnabled(bool enabled) { m_AutoRecompileEnabled = enabled; }
+		static bool IsAutoRecompileEnabled() { return m_AutoRecompileEnabled; }
 
 		bool RequestRebuildAndReloadAll();
 		bool IsRebuilding() const;
@@ -64,6 +66,7 @@ namespace Index {
 		void TeardownNativeScripts(Scene& scene);
 
 		static inline bool m_SuppressRecompile = false;
+		static inline bool m_AutoRecompileEnabled = true;
 
 		static inline std::string m_CoreAssemblyPath;
 		static inline std::string m_UserAssemblyPath;

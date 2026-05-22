@@ -5,8 +5,10 @@
 #include "Graphics/TextureHandle.hpp"
 #include "Collections/Color.hpp"
 #include "Scene/EntityHandle.hpp"
+#include <cstddef>
 #include <variant>
 #include <span>
+#include <vector>
 
 namespace Index {
 	class Scene;
@@ -83,6 +85,10 @@ namespace Index {
 		UUID GetTextureAssetId() const { return m_TextureAssetId; }
 		void Emit(size_t count);
 		void AddBurst(const Burst& burst) { m_Bursts.push_back(burst); }
+		void RemoveBurst(size_t index) { if (index < m_Bursts.size()) m_Bursts.erase(m_Bursts.begin() + static_cast<std::ptrdiff_t>(index)); }
+		void ClearBursts() { m_Bursts.clear(); }
+		std::span<Burst> GetBursts() noexcept { return m_Bursts; }
+		std::span<const Burst> GetBursts() const noexcept { return m_Bursts; }
 		std::span<const Particle> GetParticles() const noexcept { return m_Particles; }
 		bool IsPlaying() const { return m_IsEmitting; }
 		Transform2DComponent& GetTransform2D();

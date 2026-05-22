@@ -1156,7 +1156,6 @@ namespace Index {
 				cameraValue.AddMember("clearB", Value(clearColor.b));
 				cameraValue.AddMember("clearA", Value(clearColor.a));
 				cameraValue.AddMember("postProcessing", Value(camera.IsPostProcessingEnabled()));
-				cameraValue.AddMember("occlusionCulling", Value(camera.IsOcclusionCullingEnabled()));
 				entityValue.AddMember("Camera2D", std::move(cameraValue));
 			}
 
@@ -1250,6 +1249,15 @@ namespace Index {
 				if (textureAssetId != 0) {
 					particleValue.AddMember("textureAsset", Value(std::to_string(textureAssetId)));
 				}
+
+				Value burstsValue = Value::MakeArray();
+				for (const auto& burst : particleSystem.GetBursts()) {
+					Value burstValue = Value::MakeObject();
+					burstValue.AddMember("count", Value(static_cast<int64_t>(burst.Count)));
+					burstValue.AddMember("interval", Value(burst.Interval));
+					burstsValue.Append(std::move(burstValue));
+				}
+				particleValue.AddMember("bursts", std::move(burstsValue));
 
 				entityValue.AddMember("ParticleSystem2D", std::move(particleValue));
 			}
@@ -1462,10 +1470,18 @@ namespace Index {
 	}
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path) {
-		return SaveToFile(scene, path, GetProjectSerializationFormat());
+		return SaveToFile(scene, path, GetProjectSerializationFormat(), true);
 	}
 
 	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format) {
+		return SaveToFile(scene, path, format, true);
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, bool logSuccess) {
+		return SaveToFile(scene, path, GetProjectSerializationFormat(), logSuccess);
+	}
+
+	bool SceneSerializer::SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format, bool logSuccess) {
 		try {
 			const std::filesystem::path parentDir = std::filesystem::path(path).parent_path();
 			if (!parentDir.empty() && !std::filesystem::exists(parentDir)) {
@@ -1480,7 +1496,9 @@ namespace Index {
 			// Only clear the dirty flag once persistence is confirmed; otherwise a failed
 			// write would silently desync the editor's "saved" state from the disk file.
 			scene.ClearDirty();
-			IDX_CORE_INFO_TAG("SceneSerializer", "Saved scene: {}", scene.GetName());
+			if (logSuccess) {
+				IDX_CORE_INFO_TAG("SceneSerializer", "Saved scene: {}", scene.GetName());
+			}
 			return true;
 		}
 		catch (const std::exception& exception) {

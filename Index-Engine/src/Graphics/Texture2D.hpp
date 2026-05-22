@@ -49,14 +49,9 @@ namespace Index {
 
 		std::unique_ptr<ImageData> GetImageData() const;
 
-		// CPU-side image decode helper. Goes straight from disk → RGBA8
-		// pixels in an ImageData, never touching the GPU — for callers
-		// that need raw pixels and don't want to pay GPU-readback cost
-		// (icon ICO encoder, mip pre-processors, tool code). The live
-		// Texture2D::GetImageData() path requires async wgpu::Queue
-		// readback that hasn't been wired yet, so any tool path that
-		// asked for it back via the instance silently failed; this
-		// static reads the file again via stb_image instead.
+		// CPU-side image decode helper. Goes straight from disk to RGBA8
+		// pixels in an ImageData, never touching the GPU. Texture2D::GetImageData()
+		// uses this path for file-backed textures.
 		// Returns nullptr if stb_image can't decode the file.
 		static std::unique_ptr<ImageData> DecodeFileToCpu(const char* path,
 			bool flipVertical = false);
@@ -93,6 +88,7 @@ namespace Index {
 		Wrap   m_WrapV = Wrap::Clamp;
 		bool   m_HasMips = true;
 		bool   m_FlippedY = false;
+		std::string m_SourcePath;
 		void ApplySamplerParams() const;
 	};
 

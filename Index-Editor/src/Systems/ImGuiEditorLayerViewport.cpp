@@ -44,7 +44,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 
 namespace Index {
 	namespace {
@@ -62,17 +61,14 @@ namespace Index {
 			{ "9:16", 9.0f / 16.0f }
 		}};
 
-		AABB UnboundedViewportAABB() {
-			constexpr float limit = std::numeric_limits<float>::infinity();
-			return AABB{ Vec2{ -limit, -limit }, Vec2{ limit, limit } };
-		}
 	}
 
 	void ImGuiEditorLayer::RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB,
 		bool withGizmos, bool sharedGizmosOnly, const Color& clearColor,
 		bool onlyPassedScene, bool uiInWorldSpace,
-		EditorViewDrawMode drawMode)
+		EditorViewDrawMode drawMode,
+		GizmoLayerMask gizmoLayerMask)
 	{
 		auto* app = Application::GetInstance();
 		if (!app) return;
@@ -164,7 +160,7 @@ namespace Index {
 			}
 
 			if (withGizmos && Gizmo::IsEnabled()) {
-				const GizmoLayerMask layerMask = sharedGizmosOnly ? GizmoLayerMask::Shared : GizmoLayerMask::All;
+				const GizmoLayerMask layerMask = sharedGizmosOnly ? GizmoLayerMask::Shared : gizmoLayerMask;
 				GizmoRenderer2D::RenderWithVP(vp, layerMask);
 			}
 		};
@@ -216,7 +212,7 @@ namespace Index {
 		}
 	}
 
-	void ImGuiEditorLayer::DrawEditorComponentGizmos(Scene& scene) {
+	void ImGuiEditorLayer::DrawEditorComponentGizmos(Scene& scene, bool componentGizmosEnabled) {
 		if (m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) {
 			return;
 		}
@@ -236,7 +232,7 @@ namespace Index {
 
 		Gizmo::SetLayer(GizmoLayer::EditorOnly);
 
-		if (hasTransform) {
+		if (componentGizmosEnabled && hasTransform) {
 			auto& transform = scene.GetComponent<Transform2DComponent>(m_SelectedEntity);
 			const float rotationDegrees = transform.GetRotationDegrees();
 	
@@ -412,7 +408,7 @@ namespace Index {
 			// handles are draggable; the InvisibleButton overlays + drag
 			// math live in RenderEditorView, where mouse state and the
 			// FBO's screen rect are in scope.
-			if (scene.HasComponent<TextRendererComponent>(m_SelectedEntity)) {
+			if (componentGizmosEnabled && scene.HasComponent<TextRendererComponent>(m_SelectedEntity)) {
 				const auto& text = scene.GetComponent<TextRendererComponent>(m_SelectedEntity);
 
 				// Margin is in pixel units (FontSize domain). Convert to
@@ -481,15 +477,17 @@ namespace Index {
 		// hardcoded branches above); the hook exists so packages — Tilemap2D,
 		// future tools — can paint their own selection helper without the
 		// editor having to learn about package-side types.
-		if (auto* app = Application::GetInstance()) {
-			if (auto* sm = app->GetSceneManager()) {
-				Entity selected = scene.GetEntity(m_SelectedEntity);
-				sm->GetComponentRegistry().ForEachComponentInfo(
-					[&](const std::type_index&, const ComponentInfo& info) {
-						if (info.drawEditorGizmo && info.has && info.has(selected)) {
-							info.drawEditorGizmo(selected);
-						}
-					});
+		if (componentGizmosEnabled) {
+			if (auto* app = Application::GetInstance()) {
+				if (auto* sm = app->GetSceneManager()) {
+					Entity selected = scene.GetEntity(m_SelectedEntity);
+					sm->GetComponentRegistry().ForEachComponentInfo(
+						[&](const std::type_index&, const ComponentInfo& info) {
+							if (info.drawEditorGizmo && info.has && info.has(selected)) {
+								info.drawEditorGizmo(selected);
+							}
+						});
+				}
 			}
 		}
 
@@ -662,9 +660,7 @@ namespace Index {
 				glm::mat4 vp = m_EditorCamera.GetViewProjectionMatrix();
 				AABB viewAABB = m_EditorCamera.GetViewportAABB();
 				Gizmo::SetViewportAABBOverride(viewAABB);
-				if (m_ShowGizmos) {
-					DrawEditorComponentGizmos(*renderScene);
-				}
+				DrawEditorComponentGizmos(*renderScene, m_ShowGizmos);
 
 				static const Color k_EditorClearColor(0.18f, 0.18f, 0.20f, 1.0f);
 				const Color k_PrefabClearColor(k_PrefabEditClearR, k_PrefabEditClearG, k_PrefabEditClearB, 1.0f);
@@ -672,7 +668,9 @@ namespace Index {
 				// uiInWorldSpace=true: UI joins sprites and gizmos in
 				// the editor camera's world space so the user can pan
 				// and zoom around the UI like any scene object.
-				RenderSceneIntoFBO(m_EditorViewFBO, *renderScene, vp, viewAABB, m_ShowGizmos, false, clearColor, IsInPrefabEditMode(), true, m_EditorViewDrawMode);
+				RenderSceneIntoFBO(m_EditorViewFBO, *renderScene, vp, viewAABB,
+					true, false, clearColor, IsInPrefabEditMode(), true, m_EditorViewDrawMode,
+					m_ShowGizmos ? GizmoLayerMask::All : GizmoLayerMask::EditorOnly);
 				Gizmo::ClearViewportAABBOverride();
 
 				// FBO color textures use the renderer's native top-left
@@ -837,6 +835,7 @@ namespace Index {
 					}
 				}
 
+				if (m_ShowGizmos) {
 				const float iconSize = 24.0f;
 				const float halfIcon = iconSize * 0.5f;
 				auto camView = renderScene->GetRegistry().view<Camera2DComponent, Transform2DComponent>();
@@ -867,6 +866,7 @@ namespace Index {
 						ImVec2(iconPos.x + iconSize, iconPos.y + iconSize),
 						ImVec2(0, 1), ImVec2(1, 0));
 				}
+				}
 
 				// ── Text margin draggable handles ─────────────────────
 				// Layered on top of the FBO image as InvisibleButtons.
@@ -876,6 +876,7 @@ namespace Index {
 				// updates, so the picking rect always lines up with what
 				// the user sees painted.
 				if (m_SelectedEntity != entt::null
+					&& m_ShowGizmos
 					&& renderScene->IsValid(m_SelectedEntity)
 					&& renderScene->HasComponent<TextRendererComponent>(m_SelectedEntity)
 					&& renderScene->HasComponent<RectTransform2DComponent>(m_SelectedEntity))
@@ -1210,9 +1211,7 @@ namespace Index {
 				savedViewport->SetSize(fbW, fbH);
 				gameCam->UpdateViewport();
 				glm::mat4 vp = gameCam->GetViewProjectionMatrix();
-				AABB viewAABB = gameCam->IsOcclusionCullingEnabled()
-					? gameCam->GetViewportAABB()
-					: UnboundedViewportAABB();
+				AABB viewAABB = gameCam->GetViewportAABB();
 				const auto now = std::chrono::steady_clock::now();
 				float targetFps = 0.0f;
 				const bool appVsyncEnabled = Window::IsVsync();

@@ -14,6 +14,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -57,6 +58,12 @@ namespace Index {
 			}
 			return "100%";
 		}
+
+		std::string LowerCopy(std::string value) {
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return value;
+		}
 	}
 
 	void EditorPreferencesPanel::Initialize() {
@@ -89,7 +96,21 @@ namespace Index {
 			return;
 		}
 
-		if (ImGui::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None)) {
+		ImGui::SetNextItemWidth(-1.0f);
+		ImGui::InputTextWithHint("##EditorPrefsSearch", "Search preferences...",
+			m_SearchBuffer, sizeof(m_SearchBuffer));
+		ImGui::Spacing();
+
+		if (IsPreferenceSearchActive()) {
+			ImGui::BeginChild("##EditorPrefsSearchResults", ImVec2(0, 0), false,
+				ImGuiWindowFlags_AlwaysVerticalScrollbar);
+			RenderAppearanceTab();
+			RenderScriptingTab();
+			RenderLayoutsTab();
+			RenderBehaviorTab();
+			ImGui::EndChild();
+		}
+		else if (ImGui::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None)) {
 			if (ImGui::BeginTabItem("Appearance")) {
 				RenderAppearanceTab();
 				ImGui::EndTabItem();
@@ -122,8 +143,26 @@ namespace Index {
 		ImGui::End();
 	}
 
+	bool EditorPreferencesPanel::IsPreferenceSearchActive() const {
+		return m_SearchBuffer[0] != '\0';
+	}
+
+	bool EditorPreferencesPanel::PreferenceSectionVisible(const char* section, const char* keywords) const {
+		if (!IsPreferenceSearchActive()) return true;
+		const std::string filter = LowerCopy(m_SearchBuffer);
+		std::string haystack = LowerCopy(section ? section : "");
+		haystack += ' ';
+		haystack += LowerCopy(keywords ? keywords : "");
+		return haystack.find(filter) != std::string::npos;
+	}
+
 	void EditorPreferencesPanel::RenderAppearanceTab() {
+		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto dark light custom color colors palette");
+		const bool showFont = PreferenceSectionVisible("Editor Font", "appearance editor font typeface google sans size zoom");
+		if (!showTheme && !showFont) return;
+
 		// ── Theme ───────────────────────────────────────────────────
+		if (showTheme) {
 		ImGui::TextUnformatted("Theme");
 		ImGui::Separator();
 
@@ -205,6 +244,9 @@ namespace Index {
 		ImGui::Spacing();
 
 		// ── Editor Font ────────────────────────────────────────────
+		}
+
+		if (showFont) {
 		ImGui::TextUnformatted("Editor Font");
 		ImGui::Separator();
 
@@ -269,6 +311,7 @@ namespace Index {
 				EditorPreferences::k_DefaultEditorFontZoomPercent);
 		}
 		ImGui::PopID();
+		}
 	}
 
 	void EditorPreferencesPanel::RenderFontRestartModal() {
@@ -297,6 +340,11 @@ namespace Index {
 	}
 
 	void EditorPreferencesPanel::RenderScriptingTab() {
+		const bool showExternalEditor = PreferenceSectionVisible("External Script Editor", "scripting script editor external ide code visual studio rider");
+		const bool showCompilation = PreferenceSectionVisible("Script Compilation", "scripting recompile recompilation auto file changes play mode exit compile");
+		if (!showExternalEditor && !showCompilation) return;
+
+		if (showExternalEditor) {
 		ImGui::TextUnformatted("External Script Editor");
 		ImGui::Separator();
 
@@ -306,8 +354,8 @@ namespace Index {
 			if (ImGui::Button("Re-detect")) {
 				ExternalEditor::DetectEditors();
 			}
-			return;
 		}
+		else {
 
 		const int selected = ExternalEditor::GetSelectedIndex();
 		const char* preview = (selected >= 0 && selected < static_cast<int>(editors.size()))
@@ -330,9 +378,34 @@ namespace Index {
 			ExternalEditor::DetectEditors();
 		}
 		ImGui::TextDisabled("The editor used when opening .cs / .cpp / .hpp script files.");
+		}
+		}
+
+		if (showCompilation) {
+			if (showExternalEditor) ImGui::Spacing();
+			ImGui::TextUnformatted("Script Compilation");
+			ImGui::Separator();
+
+			bool autoRecompile = EditorPreferences::GetAutoRecompileScripts();
+			if (ImGui::Checkbox("Auto-recompile on file changes", &autoRecompile)) {
+				EditorPreferences::SetAutoRecompileScripts(autoRecompile);
+			}
+
+			bool recompileOnPlay = EditorPreferences::GetRecompileScriptsOnPlay();
+			if (ImGui::Checkbox("Recompile before Play Mode", &recompileOnPlay)) {
+				EditorPreferences::SetRecompileScriptsOnPlay(recompileOnPlay);
+			}
+
+			bool exitOnRecompile = EditorPreferences::GetExitPlayModeOnRecompilation();
+			if (ImGui::Checkbox("Exit Play Mode on Recompilation", &exitOnRecompile)) {
+				EditorPreferences::SetExitPlayModeOnRecompilation(exitOnRecompile);
+			}
+		}
 	}
 
 	void EditorPreferencesPanel::RenderLayoutsTab() {
+		if (!PreferenceSectionVisible("Layout Presets", "layout layouts preset save load reset delete")) return;
+
 		ImGui::TextUnformatted("Layout Presets");
 		ImGui::Separator();
 
@@ -385,7 +458,25 @@ namespace Index {
 	}
 
 	void EditorPreferencesPanel::RenderBehaviorTab() {
+		const bool showApplication = PreferenceSectionVisible("Application", "behavior run in background window focus pause editor");
+		const bool showAssetBrowser = PreferenceSectionVisible("Asset Browser", "behavior asset browser file extensions extension rename");
+		const bool showAutoSave = PreferenceSectionVisible("Auto-Save", "behavior auto save autosave scene prefab interval");
+		if (!showApplication && !showAssetBrowser && !showAutoSave) return;
+
+		if (showApplication) {
+			ImGui::TextUnformatted("Application");
+			ImGui::Separator();
+
+			bool runInBackground = EditorPreferences::GetRunInBackground();
+			if (ImGui::Checkbox("Run in background", &runInBackground)) {
+				EditorPreferences::SetRunInBackground(runInBackground);
+			}
+
+			ImGui::Spacing();
+		}
+
 		// ── Asset Browser ─────────────────────────────────────────
+		if (showAssetBrowser) {
 		ImGui::TextUnformatted("Asset Browser");
 		ImGui::Separator();
 
@@ -405,6 +496,8 @@ namespace Index {
 		ImGui::Spacing();
 
 		// ── Auto-Save ──────────────────────────────────────────────
+		}
+		if (showAutoSave) {
 		ImGui::TextUnformatted("Auto-Save");
 		ImGui::Separator();
 
@@ -439,6 +532,7 @@ namespace Index {
 				"the active inspector / hierarchy widget — no Ctrl+S needed.\n"
 				"Drags and text-input debounce naturally; the save fires once\n"
 				"per edit on release. Skipped during Play mode.");
+		}
 		}
 	}
 

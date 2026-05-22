@@ -65,10 +65,9 @@ namespace Index {
 		// True if `name` is in the active project's Packages allow-list.
 		bool IsPackageInstalled(const std::string& name) const;
 
-		// After a successful Index-package install or removal, regenerate the engine
-		// solution + rebuild on a worker thread so the UI keeps responding while
-		// MSBuild churns. Caller doesn't block; progress is rendered at the top of
-		// the panel and the result is collected into the status strip on completion.
+		// After a successful Index-package install or removal, refresh editor-side
+		// package state without touching the engine solution. The project allow-list
+		// and Packages/IndexPackages.props are updated by IndexPackageInstaller.
 		void StartPostInstallAutomation();
 
 		// Per-frame poll for the async automate worker; pulls completed results.

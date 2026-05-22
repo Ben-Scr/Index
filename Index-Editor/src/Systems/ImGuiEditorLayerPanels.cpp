@@ -481,8 +481,8 @@ namespace Index {
 
 		// Identifier of an existing RT_ICON / RT_GROUP_ICON resource. Win32
 		// names a resource either by a numeric ordinal (the high 16 bits of
-		// the LPSTR are zero) or by a string. We capture both forms so we
-		// can hand the original LPSTR-encoded name back to UpdateResource.
+		// the LPSTR are zero) or by a string. Numeric icon ids are reserved
+		// when choosing new ids; string names are kept for diagnostics.
 		struct ExistingResName {
 			bool IsNumeric = false;
 			WORD NumericId = 0;
@@ -490,11 +490,9 @@ namespace Index {
 		};
 
 		// Enumerate every resource of `resType` that the .exe at `exePath`
-		// already carries. Used so EmbedIconIntoExecutable can DELETE the
-		// runtime's pristine icon (whatever name `Index-Runtime/icon.rc`
-		// happened to compile it under) before adding our own — leaving a
-		// stale RT_GROUP_ICON alongside ours risks Explorer picking the
-		// wrong one. Returns empty vector and sets error string on failure.
+		// already carries. Used so EmbedIconIntoExecutable can avoid numeric
+		// RT_ICON id collisions when adding the build-specific icon set.
+		// Returns empty vector and sets error string on failure.
 		std::vector<ExistingResName> EnumerateExistingResources(
 			const std::string& exePath, WORD resType, std::string& outError)
 		{
@@ -545,13 +543,10 @@ namespace Index {
 		// or built from a PNG by BuildIcoBytesFromImage). Returns an empty
 		// string on success or a human-readable error description on failure.
 		// The runtime exe is compiled with `1 ICON "icon.ico"`
-		// (Index-Runtime/icon.rc), so we overwrite group ID 1 — Explorer /
-		// taskbar / Alt+Tab pick the new icon up immediately because we use
-		// the same resource name. Pre-existing RT_GROUP_ICON / RT_ICON
-		// resources under any OTHER name (e.g. older `IDI_ICON1` builds where
-		// rc.exe with no `#define` compiled the symbol as a STRING-named
-		// resource) are deleted as part of the same update so Explorer can't
-		// fall through to a stale group and render the default Index icon.
+		// (Index-Runtime/icon.rc), so we overwrite group ID 1. We leave any
+		// other icon resources in place instead of deleting and adding icons in
+		// the same update transaction; that pattern can fail with
+		// UpdateResource(RT_ICON) error 1359 on some freshly copied exes.
 		// Wraps EmbedIconIntoExecutableOnce with a small retry loop.
 		// Error 1359 (ERROR_INTERNAL_ERROR) and the kernel-level "another
 		// process has the file open" failures from BeginUpdateResource
@@ -637,16 +632,10 @@ namespace Index {
 			std::memcpy(entries.data(), icoBytes.data() + sizeof(IconDir),
 				entries.size() * sizeof(IcoEntry));
 
-			// Snapshot pre-existing icon resource names BEFORE opening the
-			// update handle (LoadLibraryEx + UpdateResource on the same
-			// file have to be sequential). Whatever names rc.exe compiled
-			// `Index-Runtime/icon.rc` under, we delete them in the update
-			// pass below — without that, Explorer is free to pick a stale
-			// group instead of the one we add at numeric ID 1.
+			// Snapshot pre-existing icon ids BEFORE opening the update handle
+			// (LoadLibraryEx + UpdateResource on the same file have to be
+			// sequential). We only need these to choose fresh RT_ICON ids.
 			std::string enumErr;
-			std::vector<ExistingResName> existingGroups =
-				EnumerateExistingResources(exePath, 14 /*RT_GROUP_ICON*/, enumErr);
-			if (!enumErr.empty()) return enumErr;
 			std::vector<ExistingResName> existingIcons =
 				EnumerateExistingResources(exePath, 3 /*RT_ICON*/, enumErr);
 			if (!enumErr.empty()) return enumErr;
@@ -657,28 +646,14 @@ namespace Index {
 					std::to_string(::GetLastError()) + ")";
 			}
 
-			// Delete every pre-existing RT_GROUP_ICON / RT_ICON. Win32 spec:
-			// passing lpData=NULL, cbData=0 to UpdateResource removes that
-			// resource from the in-progress update. Failing to delete one
-			// (returns FALSE) is non-fatal — log nothing and keep going so a
-			// single oddity can't sabotage the entire embed.
-			auto deleteRes = [&](WORD resType, const ExistingResName& r) {
-				LPSTR name = r.IsNumeric
-					? MAKEINTRESOURCEA(r.NumericId)
-					: const_cast<LPSTR>(r.StringName.c_str());
-				::UpdateResourceA(hUpdate, MAKEINTRESOURCEA(resType), name,
-					MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL),
-					nullptr, 0);
-			};
-			for (const auto& r : existingGroups) deleteRes(14, r);
-			for (const auto& r : existingIcons)  deleteRes(3, r);
-
-			// Write each RT_ICON. We pick fresh IDs (101..N) — the runtime's
-			// icon.rc compiled into RT_ICON IDs that we don't read back, so
-			// using a high base avoids any overlap with the existing entries
-			// we're about to abandon. The RT_GROUP_ICON we write next ties
-			// these IDs together for the Win32 loader.
-			constexpr WORD k_BaseIconId = 101;
+			// Write each RT_ICON under a numeric id that is not already present.
+			// Avoiding the delete pass keeps the resource update simple and has
+			// proven more reliable on freshly copied release exes.
+			std::unordered_set<WORD> usedIconIds;
+			for (const ExistingResName& r : existingIcons) {
+				if (r.IsNumeric) usedIconIds.insert(r.NumericId);
+			}
+			std::uint32_t nextIconId = 256;
 			std::vector<GroupEntry> groupEntries(dir.Count);
 			for (std::size_t i = 0; i < entries.size(); ++i) {
 				const IcoEntry& e = entries[i];
@@ -686,7 +661,17 @@ namespace Index {
 					::EndUpdateResourceA(hUpdate, TRUE);
 					return "ico entry out of bounds";
 				}
-				const WORD iconId = static_cast<WORD>(k_BaseIconId + i);
+				while (nextIconId <= 0xFFFFu
+					&& usedIconIds.find(static_cast<WORD>(nextIconId)) != usedIconIds.end())
+				{
+					++nextIconId;
+				}
+				if (nextIconId > 0xFFFFu) {
+					::EndUpdateResourceA(hUpdate, TRUE);
+					return "too many icon resources";
+				}
+				const WORD iconId = static_cast<WORD>(nextIconId++);
+				usedIconIds.insert(iconId);
 				// Bypass RT_ICON / RT_GROUP_ICON macros — those expand
 				// through MAKEINTRESOURCE which is the WIDE (LPWSTR) form
 				// when UNICODE is defined (the default for VS projects),
@@ -718,9 +703,8 @@ namespace Index {
 				groupEntries.data(),
 				groupEntries.size() * sizeof(GroupEntry));
 
-			// Group ID 1 matches Index-Runtime/icon.rc — overwriting at the
-			// same ID swaps Explorer's icon for the new one without leaving
-			// the old group alongside. RT_GROUP_ICON's numeric ID is 14.
+			// Group ID 1 matches Index-Runtime/icon.rc. Overwriting that group
+			// makes the runtime point at the fresh icon resources above.
 			if (!::UpdateResourceA(hUpdate,
 				MAKEINTRESOURCEA(14),
 				MAKEINTRESOURCEA(1),
@@ -826,7 +810,7 @@ namespace Index {
 
 		constexpr SettingsIndexEntry k_SettingsIndex[] = {
 			// Display (RenderSettings_Display)
-			{ ImGuiEditorLayer::SettingsCategory::Display,  "Window",          "width height fullscreen resizable resolution window size" },
+			{ ImGuiEditorLayer::SettingsCategory::Display,  "Window",          "width height fullscreen resizable resolution window size run background" },
 			{ ImGuiEditorLayer::SettingsCategory::Display,  "UI Scaling",      "ui scaling reference resolution canvas scaler match width height layout" },
 
 			// Graphics (RenderSettings_Graphics)
@@ -2027,8 +2011,23 @@ namespace Index {
 				if (project.BuildWidth < 320) project.BuildWidth = 320;
 				if (project.BuildHeight < 240) project.BuildHeight = 240;
 				ImGui::Spacing();
+				ImGui::TextDisabled("Resize Limits (0 = unbounded)");
+				changed |= ImGui::InputInt("Min Width",  &project.BuildMinWidth);
+				changed |= ImGui::InputInt("Min Height", &project.BuildMinHeight);
+				changed |= ImGui::InputInt("Max Width",  &project.BuildMaxWidth);
+				changed |= ImGui::InputInt("Max Height", &project.BuildMaxHeight);
+				if (project.BuildMinWidth  < 0) project.BuildMinWidth  = 0;
+				if (project.BuildMinHeight < 0) project.BuildMinHeight = 0;
+				if (project.BuildMaxWidth  < 0) project.BuildMaxWidth  = 0;
+				if (project.BuildMaxHeight < 0) project.BuildMaxHeight = 0;
+				if (project.BuildMaxWidth  > 0 && project.BuildMinWidth  > project.BuildMaxWidth)
+					ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Min Width > Max Width");
+				if (project.BuildMaxHeight > 0 && project.BuildMinHeight > project.BuildMaxHeight)
+					ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Min Height > Max Height");
+				ImGui::Spacing();
 				changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
 				changed |= ImGui::Checkbox("Resizable", &project.BuildResizable);
+				changed |= ImGui::Checkbox("Run in background", &project.BuildRunInBackground);
 				ImGui::Unindent(8);
 			}
 		}
@@ -3098,8 +3097,6 @@ namespace Index {
 		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
 		if (ImGui::CollapsingHeader("Scripting", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
-			changed |= ImGui::Checkbox("Auto-recompile on file changes", &project.AutoRecompileScripts);
-			changed |= ImGui::Checkbox("Recompile before Play Mode", &project.RecompileScriptsOnPlay);
 			Scene* activeScene = SceneManager::Get().GetActiveScene();
 			ScriptSystem* scriptSys = (activeScene && activeScene->HasSystem<ScriptSystem>())
 				? activeScene->GetSystem<ScriptSystem>()

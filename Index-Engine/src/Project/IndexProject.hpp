@@ -40,8 +40,15 @@ namespace Index {
 		// Build settings
 		int BuildWidth = 1920;
 		int BuildHeight = 1080;
+		// Optional resize limits for the shipped runtime window. 0 = no
+		// limit (translated to GLFW_DONT_CARE when applied to GLFW).
+		int BuildMinWidth = 0;
+		int BuildMinHeight = 0;
+		int BuildMaxWidth = 0;
+		int BuildMaxHeight = 0;
 		bool BuildFullscreen = true;
 		bool BuildResizable = true;
+		bool BuildRunInBackground = true;
 
 		// Optional override for the produced .exe filename. Empty = use the
 		// project Name (the historical behaviour). Stored without an
@@ -161,6 +168,10 @@ namespace Index {
 			bool AutoSaveScenesPresent = false;
 			float AutoSaveIntervalSeconds = 120.0f;
 			bool AutoSaveIntervalSecondsPresent = false;
+			bool AutoRecompileScripts = true;
+			bool AutoRecompileScriptsPresent = false;
+			bool RecompileScriptsOnPlay = false;
+			bool RecompileScriptsOnPlayPresent = false;
 		} LegacyEditorPrefs;
 
 		// Custom cursor images. Both are project-relative paths (same
@@ -333,6 +344,8 @@ namespace Index {
 
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
 			const CreateProgressCallback& progressCallback = {});
+		static IndexProject Create(const std::string& name, const std::string& parentDir,
+			const std::string& directoryName, const CreateProgressCallback& progressCallback = {});
 		static IndexProject Load(const std::string& rootDir);
 		static bool Validate(const std::string& rootDir);
 		static bool IsValidProjectName(const std::string& name);

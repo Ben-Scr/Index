@@ -5,7 +5,7 @@
 #include <limits>
 
 namespace Index {
-    // Stable GUID assigned to the engine-shipped DefaultSans-Regular.ttf so
+    // Stable GUID assigned to the engine-shipped GoogleSans-Regular.ttf so
     // scenes can serialize a reference to it without writing the .ttf into
     // every project. Top-byte 0xAB tags engine-shipped built-ins (see
     // AssetRegistry::RegisterBuiltInAsset). Lives in this lightweight

@@ -105,6 +105,19 @@ namespace Index::PropertyDrawer {
 			}
 		}
 
+		const Scene* ResolveHierarchyPayloadScene(const HierarchyDragData& data) {
+			const Scene* resolved = nullptr;
+			const uint64_t sourceSceneId = data.SourceSceneId;
+			if (sourceSceneId != 0) {
+				SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+					if (!resolved && static_cast<uint64_t>(scene.GetSceneId()) == sourceSceneId) {
+						resolved = &scene;
+					}
+				});
+			}
+			return resolved ? resolved : SceneManager::Get().GetActiveScene();
+		}
+
 		// Write a value to every entity in the span via the descriptor.
 		void WriteAll(std::span<const Entity> entities, const PropertyDescriptor& d,
 			const PropertyValue& value)
@@ -427,7 +440,15 @@ namespace Index::PropertyDrawer {
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
-			const bool any = ImGuiUtils::MultiEdit::MultiItemRow(static_cast<int>(N), [&](int c) -> bool {
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const float fullWidth = ImGui::GetContentRegionAvail().x;
+			const float componentSpacing = style.ItemInnerSpacing.x;
+			const float componentWidth = std::max(1.0f,
+				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
+			const float buttonWidth = std::min(22.0f, std::max(16.0f, componentWidth * 0.22f));
+			bool any = false;
+			for (int c = 0; c < static_cast<int>(N); ++c) {
+				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
 				// C7: capture pre-edit value, only write on actual delta so
 				// the (possibly "-" mixed) sampled primary value isn't
@@ -436,12 +457,28 @@ namespace Index::PropertyDrawer {
 				const float pre = values[c];
 				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
-				const bool committed = ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
-				const bool changed = committed && channel != pre;
-				if (changed) WriteFloatChannel(entities, d, static_cast<std::size_t>(c), channel);
+				bool channelChanged = false;
+				if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
+					channel -= speed;
+					channelChanged = true;
+				}
+				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				const float inputWidth = std::max(1.0f,
+					componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f);
+				ImGui::SetNextItemWidth(inputWidth);
+				channelChanged |= ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
+				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
+					channel += speed;
+					channelChanged = true;
+				}
+				const bool changed = channelChanged && channel != pre;
+				if (changed) {
+					WriteFloatChannel(entities, d, static_cast<std::size_t>(c), channel);
+					any = true;
+				}
 				ImGui::PopID();
-				return changed;
-			});
+			}
 			ImGui::PopID();
 			return any;
 		}
@@ -454,18 +491,42 @@ namespace Index::PropertyDrawer {
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
-			const bool any = ImGuiUtils::MultiEdit::MultiItemRow(static_cast<int>(N), [&](int c) -> bool {
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const float fullWidth = ImGui::GetContentRegionAvail().x;
+			const float componentSpacing = style.ItemInnerSpacing.x;
+			const float componentWidth = std::max(1.0f,
+				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
+			const float buttonWidth = std::min(22.0f, std::max(16.0f, componentWidth * 0.22f));
+			bool any = false;
+			for (int c = 0; c < static_cast<int>(N); ++c) {
+				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
 				// C7: same per-channel delta gate as DrawFloatVec.
 				const int pre = values[c];
 				int channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%d";
-				const bool committed = ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
-				const bool changed = committed && channel != pre;
-				if (changed) WriteIntChannel(entities, d, static_cast<std::size_t>(c), channel);
+				bool channelChanged = false;
+				if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
+					channel -= std::max(1, static_cast<int>(speed));
+					channelChanged = true;
+				}
+				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				const float inputWidth = std::max(1.0f,
+					componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f);
+				ImGui::SetNextItemWidth(inputWidth);
+				channelChanged |= ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
+				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
+					channel += std::max(1, static_cast<int>(speed));
+					channelChanged = true;
+				}
+				const bool changed = channelChanged && channel != pre;
+				if (changed) {
+					WriteIntChannel(entities, d, static_cast<std::size_t>(c), channel);
+					any = true;
+				}
 				ImGui::PopID();
-				return changed;
-			});
+			}
 			ImGui::PopID();
 			return any;
 		}
@@ -742,7 +803,7 @@ namespace Index::PropertyDrawer {
 						if (payload->DataSize == sizeof(HierarchyDragData)) {
 							const auto* data = static_cast<const HierarchyDragData*>(payload->Data);
 							const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
-							const Scene* scene = SceneManager::Get().GetActiveScene();
+							const Scene* scene = ResolveHierarchyPayloadScene(*data);
 							if (scene && scene->IsValid(handle)) {
 								// Persistent UUID — see ReferencePicker::CollectEntities for why.
 								outValue.UIntValue = scene->GetEntityPersistentID(handle);
@@ -807,7 +868,7 @@ namespace Index::PropertyDrawer {
 						if (payload->DataSize == sizeof(HierarchyDragData)) {
 							const auto* data = static_cast<const HierarchyDragData*>(payload->Data);
 							const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
-							const Scene* scene = SceneManager::Get().GetActiveScene();
+							const Scene* scene = ResolveHierarchyPayloadScene(*data);
 							if (scene && scene->IsValid(handle)) {
 								const ComponentInfo* info = nullptr;
 								SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(

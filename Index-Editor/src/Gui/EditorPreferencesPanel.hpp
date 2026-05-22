@@ -30,6 +30,8 @@ namespace Index {
 
 		void RenderFontRestartModal();
 		void RenderLayoutModals();
+		bool IsPreferenceSearchActive() const;
+		bool PreferenceSectionVisible(const char* section, const char* keywords) const;
 
 		// Layout preset modal state. Lives on the panel (not as TU-static)
 		// so the modals can OpenPopup at the same id-stack scope as the
@@ -43,6 +45,7 @@ namespace Index {
 		// Raised after the editor font asset changes. The typeface is
 		// loaded during ImGui setup, so the user chooses when to reload.
 		bool m_OpenFontRestartRequest = false;
+		char m_SearchBuffer[256]{};
 
 		// True the frame the panel becomes visible. Used to refresh
 		// detection of external script editors so plugging in a new IDE

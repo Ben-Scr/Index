@@ -47,9 +47,8 @@
 //     uploads are correct for now; revisit when actual scenes start
 //     needing minification quality.
 //   * sRGB. Deferred.
-//   * GetImageData. wgpu::Queue::OnSubmittedWorkDone + buffer readback is
-//     async; the only inline caller (editor thumbnail preview) is fine
-//     without it for now and returns nullptr.
+//   * GPU readback. GetImageData re-decodes file-backed textures from disk;
+//     generated GPU-only textures still need a dedicated readback path.
 // =============================================================================
 
 namespace Index {
@@ -221,11 +220,13 @@ namespace Index {
 		, m_WrapV(other.m_WrapV)
 		, m_HasMips(other.m_HasMips)
 		, m_FlippedY(other.m_FlippedY)
+		, m_SourcePath(std::move(other.m_SourcePath))
 	{
 		other.m_Tex = 0;
 		other.m_Width = 0;
 		other.m_Height = 0;
 		other.m_Channels = 0;
+		other.m_SourcePath.clear();
 	}
 
 	Texture2D& Texture2D::operator=(Texture2D&& other) noexcept {
@@ -240,10 +241,12 @@ namespace Index {
 		m_WrapV    = other.m_WrapV;
 		m_HasMips  = other.m_HasMips;
 		m_FlippedY = other.m_FlippedY;
+		m_SourcePath = std::move(other.m_SourcePath);
 		other.m_Tex = 0;
 		other.m_Width = 0;
 		other.m_Height = 0;
 		other.m_Channels = 0;
+		other.m_SourcePath.clear();
 		return *this;
 	}
 
@@ -255,6 +258,7 @@ namespace Index {
 		m_Width = 0;
 		m_Height = 0;
 		m_Channels = 0;
+		m_SourcePath.clear();
 	}
 
 	bool Texture2D::Load(const char* path, bool generateMipmaps, bool srgb, bool flipVertical) {
@@ -347,6 +351,7 @@ namespace Index {
 		m_Height   = h;
 		m_Channels = n;
 		m_HasMips  = generateMipmaps;
+		m_SourcePath = path ? path : "";
 		return true;
 	}
 
@@ -396,10 +401,8 @@ namespace Index {
 	void Texture2D::ApplySamplerParams() const {}
 
 	std::unique_ptr<ImageData> Texture2D::GetImageData() const {
-		// Async-readback via Queue.OnSubmittedWorkDone + Buffer mapping is
-		// multi-frame; the inline editor thumbnail caller is fine without
-		// it for now. TODO.
-		return nullptr;
+		if (m_SourcePath.empty()) return nullptr;
+		return DecodeFileToCpu(m_SourcePath.c_str(), m_FlippedY);
 	}
 
 	std::unique_ptr<ImageData> Texture2D::DecodeFileToCpu(const char* path,

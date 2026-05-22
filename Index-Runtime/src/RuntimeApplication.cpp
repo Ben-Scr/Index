@@ -33,8 +33,14 @@ public:
 			config.WindowSpecification = WindowSpecification(
 				project->BuildWidth, project->BuildHeight, title,
 				project->BuildResizable, true, project->BuildFullscreen);
+			config.WindowSpecification.MinWidth  = project->BuildMinWidth;
+			config.WindowSpecification.MinHeight = project->BuildMinHeight;
+			config.WindowSpecification.MaxWidth  = project->BuildMaxWidth;
+			config.WindowSpecification.MaxHeight = project->BuildMaxHeight;
+			SetRunInBackground(project->BuildRunInBackground);
 		} else {
 			config.WindowSpecification = WindowSpecification(800, 800, title, true, true, false);
+			SetRunInBackground(false);
 		}
 		config.EnableAudio = true;
 		config.EnablePhysics2D = true;

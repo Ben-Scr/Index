@@ -39,10 +39,6 @@ namespace Index {
 		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
 		bool IsPostProcessingEnabled() const { return m_PostProcessingEnabled; }
 
-		void SetOcclusionCullingEnabled(bool enabled) { m_OcclusionCullingEnabled = enabled; }
-		bool IsOcclusionCullingEnabled() const { return m_OcclusionCullingEnabled; }
-
-
 		AABB GetViewportAABB() const { return m_WorldViewportAABB; }
 		Viewport* GetViewport() const { return m_Viewport; }
 		Vec2 WorldViewPort() const;
@@ -87,7 +83,6 @@ namespace Index {
 		float m_OrthographicSize{ 5.0f };
 		Color m_ClearColor{ 0.1f, 0.1f, 0.1f, 1.0f };
 		bool m_PostProcessingEnabled = true;
-		bool m_OcclusionCullingEnabled = true;
 		Viewport* m_Viewport = nullptr;
 
 		glm::mat4 m_ViewMat{};

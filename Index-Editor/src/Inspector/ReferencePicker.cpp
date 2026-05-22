@@ -138,7 +138,7 @@ namespace Index::ReferencePicker {
 			// registration so scenes referencing k_DefaultFontAssetId resolve).
 			const std::string fontDir = Path::ResolveIndexAssets("Fonts");
 			if (!fontDir.empty()) {
-				const std::string fontPath = Path::Combine(fontDir, "DefaultSans-Regular.ttf");
+				const std::string fontPath = Path::Combine(fontDir, "GoogleSans-Regular.ttf");
 				if (std::filesystem::exists(fontPath)) {
 					std::error_code ec;
 					std::string canonical = std::filesystem::weakly_canonical(
@@ -237,6 +237,8 @@ namespace Index::ReferencePicker {
 		entries.push_back({ "(None)", "", "(none)", "0", "__none__" });
 
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+			const std::string scenePrefix =
+				std::to_string(static_cast<uint64_t>(scene.GetSceneId())) + ":";
 			auto view = scene.GetRegistry().view<entt::entity>();
 			for (EntityHandle handle : view) {
 				if (!scene.IsValid(handle)) continue;
@@ -253,7 +255,7 @@ namespace Index::ReferencePicker {
 				entry.Secondary = scene.GetName();
 				entry.SearchKey = ToLowerCopy(entry.Label);
 				entry.Value = std::to_string(entityId);
-				entry.UniqueId = entry.Value;
+				entry.UniqueId = scenePrefix + entry.Value;
 				entries.push_back(std::move(entry));
 			}
 		});
@@ -284,6 +286,8 @@ namespace Index::ReferencePicker {
 		if (!info || !info->has) return entries;
 
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+			const std::string scenePrefix =
+				std::to_string(static_cast<uint64_t>(scene.GetSceneId())) + ":";
 			auto view = scene.GetRegistry().view<entt::entity>();
 			for (EntityHandle handle : view) {
 				if (!scene.IsValid(handle)) continue;
@@ -303,7 +307,7 @@ namespace Index::ReferencePicker {
 				entry.Label = entityName + " (" + componentDisplayName + ")";
 				entry.SearchKey = ToLowerCopy(entityName + " " + componentDisplayName);
 				entry.Value = std::to_string(entityId) + ":" + componentDisplayName;
-				entry.UniqueId = entry.Value;
+				entry.UniqueId = scenePrefix + entry.Value;
 				entries.push_back(std::move(entry));
 			}
 		});

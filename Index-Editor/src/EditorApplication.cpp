@@ -36,6 +36,13 @@ public:
 		if (ProjectManager::HasProject())
 			title += " - " + ProjectManager::GetCurrentProject()->Name;
 		config.WindowSpecification = WindowSpecification(0, 0, title, true, true, true, true);
+		config.WindowSpecification.MinWidth  = 1024;
+		config.WindowSpecification.MinHeight = 600;
+		// Custom titlebar — engine strips OS chrome and ImGuiEditorLayer
+		// draws its own (icon, project name, min/max/close). Menu bar
+		// stays attached to the dockspace below the titlebar.
+		config.WindowSpecification.CustomTitlebar = true;
+		config.WindowSpecification.TitlebarHeight = 32;
 		config.EnableAudio = true;
 		config.EnableGizmoRenderer = true;
 		// GuiRenderer is the screen-space UI pass for RectTransform2D

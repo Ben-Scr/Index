@@ -36,7 +36,7 @@ namespace Index {
         static Font* GetFont(const FontHandle& handle);
         static uint64_t GetFontAssetUUID(const FontHandle& handle);
 
-        // Returns a shared default font (the engine's bundled DefaultSans
+        // Returns a shared default font (the engine's bundled GoogleSans
         // bake at 32 px). Loaded lazily on first request. Used when a
         // TextRendererComponent has no font assigned so editor/runtime never
         // shows zero-size empty text.

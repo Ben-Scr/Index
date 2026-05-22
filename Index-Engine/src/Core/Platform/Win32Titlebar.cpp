@@ -1,0 +1,288 @@
+#include "pch.hpp"
+#include "Win32Titlebar.hpp"
+
+#ifdef IDX_PLATFORM_WINDOWS
+
+#include <GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+
+#include <windowsx.h>
+#include <dwmapi.h>
+
+namespace Index::Win32Titlebar {
+
+    namespace {
+
+        struct State {
+            WNDPROC OriginalWndProc = nullptr;
+            Window* Owner = nullptr;
+        };
+
+        // Per-HWND state. Single-threaded access — Win32 messages dispatch
+        // on the same thread that pumps glfwPollEvents, so no locking.
+        // Static-local pattern avoids order-of-init issues across TUs.
+        std::unordered_map<HWND, State>& StateMap() {
+            static std::unordered_map<HWND, State> s_Map;
+            return s_Map;
+        }
+
+        int g_TitlebarHeightLogical = 32;
+
+        struct Rect {
+            int X = 0, Y = 0, W = 0, H = 0;
+            bool Contains(int px, int py) const {
+                return px >= X && px < X + W && py >= Y && py < Y + H;
+            }
+            bool Empty() const { return W <= 0 || H <= 0; }
+        };
+
+        // Published by the titlebar layer each frame (window-local pixels).
+        // Empty until the layer publishes, so a CustomTitlebar=true window
+        // with no layer drawing has no drag region — safer than auto-
+        // designating "top N px" as caption when the app's UI might be
+        // drawing real widgets there.
+        Rect g_CaptionRect{};
+        std::vector<Rect> g_NonClientRects;
+
+        int DpiScale(int logical, UINT dpi) {
+            return MulDiv(logical, static_cast<int>(dpi), 96);
+        }
+
+        LRESULT CALLBACK TitlebarWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+            auto& map = StateMap();
+            auto it = map.find(hwnd);
+            if (it == map.end()) {
+                // State already torn down (Uninstall raced with a queued
+                // message). Defer to the default handler — better than a
+                // null-deref.
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            WNDPROC originalProc = it->second.OriginalWndProc;
+
+            switch (msg) {
+            case WM_NCCALCSIZE: {
+                if (wparam == TRUE) {
+                    // Strip the non-client area so we render edge-to-edge.
+                    // When maximized, Windows would extend the window past
+                    // the screen edges by the system frame size — inset
+                    // here to keep it within the monitor work area. The
+                    // resize handles + maximize-edge-bleed fix come in
+                    // Phase 2; this minimal version keeps the maximized
+                    // window inside the visible area.
+                    if (IsZoomed(hwnd)) {
+                        NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+                        const UINT dpi = GetDpiForWindow(hwnd);
+                        const int frameX = GetSystemMetricsForDpi(SM_CXFRAME, dpi);
+                        const int frameY = GetSystemMetricsForDpi(SM_CYFRAME, dpi);
+                        const int padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+                        params->rgrc[0].left   += frameX + padding;
+                        params->rgrc[0].top    += frameY + padding;
+                        params->rgrc[0].right  -= frameX + padding;
+                        params->rgrc[0].bottom -= frameY + padding;
+                    }
+                    return 0;
+                }
+                break;
+            }
+            case WM_NCHITTEST: {
+                // Order of precedence: 8-way resize border first (with
+                // corners taking precedence over edges), then caption
+                // (only inside the published caption rect, and only
+                // outside any registered non-client override).
+                const POINT cursor{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
+                RECT window;
+                GetWindowRect(hwnd, &window);
+                const int x = cursor.x - window.left;
+                const int y = cursor.y - window.top;
+                const int w = window.right - window.left;
+                const int h = window.bottom - window.top;
+                const UINT dpi = GetDpiForWindow(hwnd);
+                const int border = MulDiv(8, static_cast<int>(dpi), 96);
+                // WS_THICKFRAME tracks the GLFW_RESIZABLE attribute even
+                // after GLFW_DECORATED is turned off — querying it here
+                // means the hit-test naturally follows runtime resize-
+                // ability changes without extra plumbing.
+                const bool resizable = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0;
+                const bool maximized = IsZoomed(hwnd) != FALSE;
+
+                if (resizable && !maximized) {
+                    const bool onLeft   = x < border;
+                    const bool onRight  = x >= w - border;
+                    const bool onTop    = y < border;
+                    const bool onBottom = y >= h - border;
+                    if (onTop    && onLeft)  return HTTOPLEFT;
+                    if (onTop    && onRight) return HTTOPRIGHT;
+                    if (onBottom && onLeft)  return HTBOTTOMLEFT;
+                    if (onBottom && onRight) return HTBOTTOMRIGHT;
+                    if (onLeft)   return HTLEFT;
+                    if (onRight)  return HTRIGHT;
+                    if (onTop)    return HTTOP;
+                    if (onBottom) return HTBOTTOM;
+                }
+
+                if (!g_CaptionRect.Empty() && g_CaptionRect.Contains(x, y)) {
+                    for (const auto& r : g_NonClientRects) {
+                        if (r.Contains(x, y)) {
+                            return HTCLIENT;
+                        }
+                    }
+                    return HTCAPTION;
+                }
+                return HTCLIENT;
+            }
+            case WM_GETMINMAXINFO: {
+                // Without WS_CAPTION the default WM_GETMINMAXINFO can
+                // size a maximized window to the full monitor rect
+                // instead of the work area, which would cover the
+                // taskbar. Constrain to rcWork explicitly so maximize
+                // stops at the taskbar regardless of taskbar position
+                // (top/bottom/left/right docks).
+                HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                MONITORINFO mi{};
+                mi.cbSize = sizeof(mi);
+                if (GetMonitorInfoW(monitor, &mi)) {
+                    MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+                    mmi->ptMaxPosition.x = mi.rcWork.left   - mi.rcMonitor.left;
+                    mmi->ptMaxPosition.y = mi.rcWork.top    - mi.rcMonitor.top;
+                    mmi->ptMaxSize.x     = mi.rcWork.right  - mi.rcWork.left;
+                    mmi->ptMaxSize.y     = mi.rcWork.bottom - mi.rcWork.top;
+                }
+                return 0;
+            }
+            case WM_NCPAINT:
+                // We own all painting — never let the default frame paint.
+                return 0;
+            case WM_NCACTIVATE:
+                // Returning TRUE suppresses the inactive-frame repaint
+                // flicker that DWM otherwise does on focus change.
+                return TRUE;
+            case WM_DPICHANGED: {
+                // Windows hands us a suggested rect in lparam (in the new
+                // DPI's coordinates) so the window keeps an appropriate
+                // physical size across monitors. Honor it directly — the
+                // titlebar height is DPI-scaled at hit-test time, so the
+                // caller doesn't need to retransmit it after this point.
+                const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
+                if (suggested) {
+                    SetWindowPos(hwnd, nullptr,
+                        suggested->left, suggested->top,
+                        suggested->right - suggested->left,
+                        suggested->bottom - suggested->top,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                return 0;
+            }
+            case WM_SIZE: {
+                // Some Windows builds drop the extended-frame margins
+                // across minimize/restore — re-apply on SIZE_RESTORED
+                // so the drop shadow doesn't disappear. Cheap (a few
+                // microseconds) and idempotent.
+                if (wparam == SIZE_RESTORED) {
+                    MARGINS m{ 0, 0, 0, 1 };
+                    DwmExtendFrameIntoClientArea(hwnd, &m);
+                }
+                break;
+            }
+            default:
+                break;
+            }
+
+            return CallWindowProcW(originalProc, hwnd, msg, wparam, lparam);
+        }
+
+    }
+
+    void Install(GLFWwindow* window, Window* owner) {
+        if (!window) return;
+        HWND hwnd = glfwGetWin32Window(window);
+        if (!hwnd) return;
+
+        auto& map = StateMap();
+        if (map.find(hwnd) != map.end()) {
+            IDX_CORE_WARN_TAG("Win32Titlebar", "Install called twice for HWND {}", static_cast<void*>(hwnd));
+            return;
+        }
+
+        State state;
+        state.Owner = owner;
+        state.OriginalWndProc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&TitlebarWndProc)));
+        if (!state.OriginalWndProc) {
+            IDX_CORE_ERROR_TAG("Win32Titlebar",
+                "SetWindowLongPtrW failed (GetLastError={})", GetLastError());
+            return;
+        }
+        map.emplace(hwnd, state);
+
+        // {0,0,0,1} keeps DWM rendering the system drop shadow on a
+        // window with no OS frame. Standard "frameless window with
+        // shadow" recipe.
+        MARGINS margins{ 0, 0, 0, 1 };
+        DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+        // Without SWP_FRAMECHANGED, the WM_NCCALCSIZE strip doesn't
+        // apply until the first user-triggered resize — the window
+        // would show old non-client area for a frame.
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    void Uninstall(GLFWwindow* window) {
+        if (!window) return;
+        HWND hwnd = glfwGetWin32Window(window);
+        if (!hwnd) return;
+
+        auto& map = StateMap();
+        auto it = map.find(hwnd);
+        if (it == map.end()) return;
+
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(it->second.OriginalWndProc));
+        map.erase(it);
+    }
+
+    void SetTitlebarHeight(int logicalPx) {
+        g_TitlebarHeightLogical = logicalPx;
+    }
+
+    int GetTitlebarHeight() {
+        return g_TitlebarHeightLogical;
+    }
+
+    int GetTitlebarHeightPhysical(GLFWwindow* window) {
+        if (!window) return g_TitlebarHeightLogical;
+        HWND hwnd = glfwGetWin32Window(window);
+        if (!hwnd) return g_TitlebarHeightLogical;
+        const UINT dpi = GetDpiForWindow(hwnd);
+        return DpiScale(g_TitlebarHeightLogical, dpi);
+    }
+
+    void SetCaptionRect(int x, int y, int w, int h) {
+        g_CaptionRect = Rect{ x, y, w, h };
+    }
+
+    void AddNonClientRect(int x, int y, int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        g_NonClientRects.push_back(Rect{ x, y, w, h });
+    }
+
+    void ResetNonClientRects() {
+        g_NonClientRects.clear();
+    }
+
+    void SetDarkMode(GLFWwindow* window, bool enabled) {
+        if (!window) return;
+        HWND hwnd = glfwGetWin32Window(window);
+        if (!hwnd) return;
+        // Attribute 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win10 1809+).
+        // DwmSetWindowAttribute returns a failure HRESULT on older
+        // builds where the attribute is unknown but does not crash, so
+        // the call is safe to make unconditionally.
+        BOOL useDark = enabled ? TRUE : FALSE;
+        DwmSetWindowAttribute(hwnd, 20, &useDark, sizeof(useDark));
+    }
+
+}
+
+#endif

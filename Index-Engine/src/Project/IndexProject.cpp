@@ -538,8 +538,13 @@ endforeach()
 		root.AddMember("gameViewVsync", project.GameViewVsync);
 		root.AddMember("buildWidth", project.BuildWidth);
 		root.AddMember("buildHeight", project.BuildHeight);
+		root.AddMember("buildMinWidth", project.BuildMinWidth);
+		root.AddMember("buildMinHeight", project.BuildMinHeight);
+		root.AddMember("buildMaxWidth", project.BuildMaxWidth);
+		root.AddMember("buildMaxHeight", project.BuildMaxHeight);
 		root.AddMember("buildFullscreen", project.BuildFullscreen);
 		root.AddMember("buildResizable", project.BuildResizable);
+		root.AddMember("buildRunInBackground", project.BuildRunInBackground);
 		root.AddMember("uiReferenceWidth", project.UIReferenceWidth);
 		root.AddMember("uiReferenceHeight", project.UIReferenceHeight);
 		root.AddMember("uiScaleMatch", project.UIScaleMatch);
@@ -644,12 +649,6 @@ endforeach()
 		// longer emits them; legacy values present in pre-migration
 		// project files are loaded into LegacyEditorPrefs and dropped
 		// from disk on this Save.
-		if (!project.AutoRecompileScripts) {
-			root.AddMember("autoRecompileScripts", false);
-		}
-		if (project.RecompileScriptsOnPlay) {
-			root.AddMember("recompileScriptsOnPlay", true);
-		}
 		root.AddMember("assetSerializationFormat",
 			std::string(IndexProject::ProjectAssetSerializationFormatToString(project.AssetSerializationFormat)));
 
@@ -1153,6 +1152,21 @@ endforeach()
 				if (const Json::Value* resizableValue = root.FindMember("buildResizable")) {
 					project.BuildResizable = resizableValue->AsBoolOr(true);
 				}
+				if (const Json::Value* v = root.FindMember("buildMinWidth")) {
+					project.BuildMinWidth = std::max(0, v->AsIntOr(0));
+				}
+				if (const Json::Value* v = root.FindMember("buildMinHeight")) {
+					project.BuildMinHeight = std::max(0, v->AsIntOr(0));
+				}
+				if (const Json::Value* v = root.FindMember("buildMaxWidth")) {
+					project.BuildMaxWidth = std::max(0, v->AsIntOr(0));
+				}
+				if (const Json::Value* v = root.FindMember("buildMaxHeight")) {
+					project.BuildMaxHeight = std::max(0, v->AsIntOr(0));
+				}
+				if (const Json::Value* runInBackgroundValue = root.FindMember("buildRunInBackground")) {
+					project.BuildRunInBackground = runInBackgroundValue->AsBoolOr(true);
+				}
 				if (const Json::Value* uiRefWidthValue = root.FindMember("uiReferenceWidth")) {
 					project.UIReferenceWidth = std::max(1, uiRefWidthValue->AsIntOr(project.UIReferenceWidth));
 				}
@@ -1325,10 +1339,14 @@ endforeach()
 						static_cast<float>(v->AsDoubleOr(120.0));
 					project.LegacyEditorPrefs.AutoSaveIntervalSecondsPresent = true;
 				}
-				if (const Json::Value* v = root.FindMember("autoRecompileScripts"))
-					project.AutoRecompileScripts = v->AsBoolOr(true);
-				if (const Json::Value* v = root.FindMember("recompileScriptsOnPlay"))
-					project.RecompileScriptsOnPlay = v->AsBoolOr(false);
+				if (const Json::Value* v = root.FindMember("autoRecompileScripts")) {
+					project.LegacyEditorPrefs.AutoRecompileScripts = v->AsBoolOr(true);
+					project.LegacyEditorPrefs.AutoRecompileScriptsPresent = true;
+				}
+				if (const Json::Value* v = root.FindMember("recompileScriptsOnPlay")) {
+					project.LegacyEditorPrefs.RecompileScriptsOnPlay = v->AsBoolOr(false);
+					project.LegacyEditorPrefs.RecompileScriptsOnPlayPresent = true;
+				}
 				if (const Json::Value* v = root.FindMember("assetSerializationFormat"))
 					project.AssetSerializationFormat = IndexProject::ProjectAssetSerializationFormatFromString(
 						v->AsStringOr("Binary"));
@@ -1472,9 +1490,14 @@ endforeach()
 
 	IndexProject IndexProject::Create(const std::string& name, const std::string& parentDir,
 		const CreateProgressCallback& progressCallback) {
+		return Create(name, parentDir, name, progressCallback);
+	}
+
+	IndexProject IndexProject::Create(const std::string& name, const std::string& parentDir,
+		const std::string& directoryName, const CreateProgressCallback& progressCallback) {
 		IndexProject project;
 		project.Name = name;
-		project.RootDirectory = Path::Combine(parentDir, name);
+		project.RootDirectory = Path::Combine(parentDir, directoryName.empty() ? name : directoryName);
 		project.EngineVersion = IDX_VERSION;
 		ResolvePaths(project);
 

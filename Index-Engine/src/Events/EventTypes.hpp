@@ -14,6 +14,7 @@ namespace Index {
 		WindowLostFocus,
 		WindowMoved,
 		WindowMinimize,
+		WindowMaximize,
 
 		// Application events
 		AppTick,

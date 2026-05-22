@@ -405,7 +405,7 @@ namespace Index {
 	}
 
 	// ── New-Package wizard ──────────────────────────────────────────────────────
-	// UI front-end over scripts/packages/NewPackage.py. Uses --no-premake — post-install automation regens.
+	// UI front-end over scripts/packages/NewPackage.py. Uses --no-premake so project installs stay local.
 	void PackageManagerPanel::RenderNewPackageWindow() {
 		if (!m_ShowNewPackageWindow) return;
 
@@ -532,7 +532,7 @@ namespace Index {
 			scriptPath.generic_string(),
 			std::string(m_NewPackageNameBuffer),
 			"--layers", layersArg,
-			"--no-premake",   // we run regen+build via StartPostInstallAutomation below
+			"--no-premake",
 		};
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
@@ -569,10 +569,16 @@ namespace Index {
 
 		IDX_INFO_TAG("IndexPackages", "Created package '{}'.", m_NewPackageNameBuffer);
 
-		// Auto-regen+build only when a project is open — rebuilding the editor's own engine.dll is unsafe.
+		// Project-local package creation should update the project allow-list and props,
+		// but the editor must not regenerate the engine solution.
 		m_ManifestsDirty = true;
 		if (project) {
-			StartPostInstallAutomation();
+			auto installResult = IndexPackageInstaller::InstallToProject(*project, m_NewPackageNameBuffer);
+			m_StatusMessage = installResult.Message;
+			m_StatusIsError = !installResult.Success;
+			if (installResult.Success) {
+				StartPostInstallAutomation();
+			}
 		}
 		else {
 			m_StatusMessage = std::string("Package '") + m_NewPackageNameBuffer +
@@ -1014,13 +1020,10 @@ namespace Index {
 		if (!m_AutomationTask) return;
 		if (m_AutomationTask->Running.load(std::memory_order_acquire)) return;
 
-		// Snapshot the project root so the worker doesn't need to touch ProjectManager.
-		const std::string projectRoot = project->RootDirectory;
-
 		// Reset task state.
 		{
 			std::scoped_lock lock(m_AutomationTask->Mutex);
-			m_AutomationTask->Stage = "Preparing...";
+			m_AutomationTask->Stage = "Refreshing package state...";
 			m_AutomationTask->Progress = 0.05f;
 			m_AutomationTask->Finished = false;
 			m_AutomationTask->Success = false;
@@ -1035,53 +1038,19 @@ namespace Index {
 
 		// shared_ptr keeps state alive if panel shuts down mid-flight.
 		auto state = m_AutomationTask;
-		m_AutomationWorker = std::thread([state, projectRoot]() {
+		m_AutomationWorker = std::thread([state]() {
 			auto setStage = [&state](const std::string& stage, float progress) {
 				std::scoped_lock lock(state->Mutex);
 				state->Stage = stage;
 				state->Progress = progress;
 			};
 
-			setStage("Regenerating engine solution...", 0.10f);
-			IndexProject::RegenerateResult regen = IndexProject::RegenerateSolutionForProject(projectRoot);
-			const bool regenRanAndFailed = !regen.Succeeded && regen.ExitCode != -1;
-			if (regenRanAndFailed) {
-				std::scoped_lock lock(state->Mutex);
-				state->Stage = "Solution regen failed";
-				state->Progress = 1.0f;
-				state->Success = false;
-				state->Error = "Solution regeneration failed (premake exit code " +
-					std::to_string(regen.ExitCode) + ").";
-				state->Finished = true;
-				state->Running.store(false, std::memory_order_release);
-				return;
-			}
-
-			// Don't rebuild the engine — the editor has Index-Engine.dll loaded. Local packages only.
-			const std::vector<std::string> packageNames =
-				IndexProject::EnumerateProjectLocalPackages(projectRoot);
-			std::vector<std::string> targets;
-			targets.reserve(packageNames.size() * 2);
-			for (const std::string& pkg : packageNames) {
-				targets.push_back("Pkg." + pkg + ".Native");
-				targets.push_back("Pkg." + pkg);
-			}
-
-			setStage(targets.empty()
-				? "No package projects to build; skipping MSBuild."
-				: "Building project-local packages...", 0.40f);
-			IndexProject::BuildResult build = IndexProject::BuildSolutionTargets(targets);
+			setStage("Refreshing package host...", 0.55f);
 			{
 				std::scoped_lock lock(state->Mutex);
 				state->Progress = 1.0f;
-				state->Success = build.Succeeded;
-				if (!build.Succeeded) {
-					state->Stage = "Build failed";
-					state->Error = "MSBuild failed (exit code " + std::to_string(build.ExitCode) + ").";
-				}
-				else {
-					state->Stage = "Done";
-				}
+				state->Success = true;
+				state->Stage = "Done";
 				state->Finished = true;
 			}
 			state->Running.store(false, std::memory_order_release);
@@ -1114,50 +1083,15 @@ namespace Index {
 		}
 
 		if (success) {
-			// Verify the expected package DLLs landed where IndexPackages.props
-			// points. If they're missing, the namespace won't resolve in the
-			// user's IDE — diagnose loudly so the user knows to check the
-			// build output (rather than re-clicking Install and getting the
-			// same silent failure).
-			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-				const std::string engineRoot = IndexProject::GetEngineRootDir();
-				if (!engineRoot.empty()) {
-					const std::string config =
-#if defined(IDX_DEBUG)
-						"Debug";
-#elif defined(IDX_RELEASE)
-						"Release";
-#else
-						"Dist";
-#endif
-					for (const std::string& pkg : project->Packages) {
-						const std::string dllRel = "bin/" + config + "-windows-x86_64/Pkg." +
-							pkg + "/Pkg." + pkg + ".dll";
-						std::filesystem::path dllPath = std::filesystem::path(engineRoot) / dllRel;
-						std::error_code ec;
-						if (std::filesystem::exists(dllPath, ec) && !ec) {
-							IDX_INFO_TAG("IndexPackages", "Built package DLL present: {}", dllPath.generic_string());
-						} else {
-							IDX_WARN_TAG("IndexPackages",
-								"Expected package DLL missing after install: {} — "
-								"the C# namespace won't resolve until this file exists. "
-								"Check that package '{}' declares a 'csharp' layer in "
-								"its index-package.lua and that MSBuild produced the project.",
-								dllPath.generic_string(), pkg);
-						}
-					}
-				}
-			}
-
 			// Hot-load new package DLLs so their components appear in the Add Component popup without a restart.
 			const size_t newlyLoaded = PackageHost::LoadInstalled();
 			if (newlyLoaded > 0) {
 				m_StatusMessage = "Package operation complete; loaded " +
-					std::to_string(newlyLoaded) + " new package(s) — components are available now. " +
+					std::to_string(newlyLoaded) + " new package(s); components are available now. " +
 					"If your C# IDE still shows the namespace as unresolved, reload the .csproj.";
 			}
 			else {
-				m_StatusMessage = "Package operation complete; engine solution rebuilt. "
+				m_StatusMessage = "Package operation complete; project package references refreshed. "
 					"If a newly-added namespace doesn't resolve in your C# IDE, reload the .csproj.";
 			}
 			m_StatusIsError = false;

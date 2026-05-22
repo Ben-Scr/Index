@@ -30,6 +30,7 @@
 #include "Utils/Process.hpp"
 #include "Packages/NuGetSource.hpp"
 #include "Packages/GitHubSource.hpp"
+#include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Scripting/ScriptEngine.hpp"
@@ -58,6 +59,8 @@ namespace Index {
 	void ImGuiEditorLayer::OnPreRender(Application& app) {
 		INDEX_PROFILE_SCOPE("Editor PreRender");
 		(void)app;
+
+		EditorPreferences::ApplySystemThemeIfNeeded();
 
 		// Drain prefab-edit-mode entry BEFORE the active-scene early-return.
 		// The previous order gated prefab opening on an active scene being
@@ -346,6 +349,12 @@ namespace Index {
 			}
 		}
 
+		// Drawn before the dockspace so the dockspace can offset itself
+		// by the titlebar row height. The titlebar publishes its drag
+		// region + button non-client rects to the Win32 hit-test layer
+		// here. No-op when CustomTitlebar is disabled in the window
+		// spec — the editor still works with the native OS chrome.
+		RenderCustomTitlebar();
 		RenderDockspaceRoot();
 
 		// Block menu-bar interaction while a project build is in flight —
@@ -524,6 +533,17 @@ namespace Index {
 			auto* scriptSys = scene.GetSystem<ScriptSystem>();
 				if (scriptSys)
 					scriptSys->SetRecompileSuppressed(m_AssetBrowser.IsCreatingScript());
+		}
+
+		if (Application::GetIsPlaying()
+			&& EditorPreferences::GetExitPlayModeOnRecompilation()
+			&& scene.HasSystem<ScriptSystem>())
+		{
+			if (auto* scriptSys = scene.GetSystem<ScriptSystem>();
+				scriptSys && scriptSys->IsRebuilding())
+			{
+				RestoreEditorSceneAfterPlaymode();
+			}
 		}
 
 		PollPendingPlayModeRequest(scene);

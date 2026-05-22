@@ -59,7 +59,7 @@ namespace Index {
 		if (fontDir.empty()) {
 			fontDir = Path::Combine(Path::ExecutableDir(), "IndexAssets", "Fonts");
 		}
-		const std::string defaultFontPath = Path::Combine(fontDir, "DefaultSans-Regular.ttf");
+		const std::string defaultFontPath = Path::Combine(fontDir, "GoogleSans-Regular.ttf");
 		if (std::filesystem::exists(defaultFontPath)) {
 			std::error_code ec;
 			const std::string canonical = std::filesystem::weakly_canonical(

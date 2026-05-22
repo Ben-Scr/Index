@@ -404,8 +404,16 @@ namespace Index {
 				if (lp.AutoSaveIntervalSecondsPresent) {
 					EditorPreferences::SetAutoSaveIntervalSeconds(lp.AutoSaveIntervalSeconds);
 				}
+				if (lp.AutoRecompileScriptsPresent) {
+					EditorPreferences::SetAutoRecompileScripts(lp.AutoRecompileScripts);
+				}
+				if (lp.RecompileScriptsOnPlayPresent) {
+					EditorPreferences::SetRecompileScriptsOnPlay(lp.RecompileScriptsOnPlay);
+				}
 			}
 		}
+		Application::SetRunInBackground(EditorPreferences::GetRunInBackground());
+		ScriptSystem::SetAutoRecompileEnabled(EditorPreferences::GetAutoRecompileScripts());
 
 		ClearLogEntries();
 		m_LogDispatchState = std::make_shared<LogDispatchState>();
@@ -779,9 +787,8 @@ namespace Index {
 		if (scenePath.empty()) {
 			return;
 		}
-		if (SceneSerializer::SaveToFile(*active, scenePath)) {
+		if (SceneSerializer::SaveToFile(*active, scenePath, false)) {
 			active->ClearDirty();
-			IDX_INFO_TAG("Editor", "Auto-saved scene '{}'.", active->GetName());
 		}
 	}
 
@@ -832,8 +839,12 @@ namespace Index {
 
 	void ImGuiEditorLayer::RenderDockspaceRoot() {
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
-		ImGui::SetNextWindowPos(viewport->Pos);
-		ImGui::SetNextWindowSize(viewport->Size);
+		// Offset below the custom titlebar row (0 when disabled). The
+		// titlebar window pinned at viewport->Pos owns the top rows;
+		// the dockspace takes the remaining client area.
+		const float titlebarH = GetCustomTitlebarHeight();
+		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + titlebarH));
+		ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y - titlebarH));
 		ImGui::SetNextWindowViewport(viewport->ID);
 
 		ImGuiWindowFlags flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
@@ -971,7 +982,7 @@ namespace Index {
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 
 		ScriptSystem* scriptSys = scene.HasSystem<ScriptSystem>() ? scene.GetSystem<ScriptSystem>() : nullptr;
-		if (scriptSys && project && project->RecompileScriptsOnPlay) {
+		if (scriptSys && EditorPreferences::GetRecompileScriptsOnPlay()) {
 			const bool rebuildStarted = scriptSys->RequestRebuildAndReloadAll();
 			if (rebuildStarted || scriptSys->IsRebuilding()) {
 				m_PlayModeRecompilePending = true;

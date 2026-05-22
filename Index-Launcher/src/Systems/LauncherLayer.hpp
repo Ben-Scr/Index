@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -107,6 +108,15 @@ namespace Index {
 			Light = 2,
 		};
 
+		enum class DirectoryNameConvention : uint8_t {
+			None = 0,
+			TitleCase,
+			TitleDashCase,
+			TitleCamelCase,
+			TitleSnakeCase,
+			TitleKebabCase,
+		};
+
 		void RenderLauncherPanel();
 		void RenderProjectList();
 		void RenderCreateProjectPopup();
@@ -130,7 +140,8 @@ namespace Index {
 		void BrowseForDefaultProjectsLocation();
 		void RequestProjectDelete(const LauncherProjectEntry& entry);
 		bool DeleteProjectFromDisk(const LauncherProjectEntry& entry);
-		void StartCreateProjectAsync(const std::string& name, const std::string& location);
+		void StartCreateProjectAsync(const std::string& name, const std::string& location,
+			const std::string& directoryName);
 		void PollCreateProjectTask();
 		void ResetCreateProjectTask(bool clearWorker = true);
 		void OpenProjectWorkerBody(const LauncherProjectEntry& entry);
@@ -142,6 +153,9 @@ namespace Index {
 		void LoadLauncherSettings();
 		void SaveLauncherSettings() const;
 		static std::string GetSettingsPath();
+		static const char* DirectoryNameConventionLabel(DirectoryNameConvention convention);
+		static std::string ApplyDirectoryNameConvention(std::string_view name,
+			DirectoryNameConvention convention);
 		float GetEffectiveFontScale() const;
 		bool IsEffectiveThemeDark() const;
 		void ApplyLauncherThemeIfNeeded();
@@ -157,6 +171,7 @@ namespace Index {
 
 		FontScale m_FontScale = FontScale::Auto;
 		ThemeSetting m_ThemeSetting = ThemeSetting::Auto;
+		DirectoryNameConvention m_DirectoryNameConvention = DirectoryNameConvention::TitleCase;
 		std::optional<bool> m_LastAppliedDarkTheme;
 
 		// "Auto" language mode: the launcher resolves the active language to

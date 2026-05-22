@@ -533,7 +533,7 @@ namespace Index {
 			if (!s_LoggedMissingFont) {
 				s_LoggedMissingFont = true;
 				IDX_CORE_WARN_TAG("TextRenderer",
-					"No font available — assign one in the inspector or ensure IndexAssets/Fonts/DefaultSans-Regular.ttf is shipped next to the executable.");
+					"No font available — assign one in the inspector or ensure IndexAssets/Fonts/GoogleSans-Regular.ttf is shipped next to the executable.");
 			}
 		}
 		return fallback;

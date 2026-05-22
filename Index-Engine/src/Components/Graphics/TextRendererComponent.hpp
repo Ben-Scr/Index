@@ -54,7 +54,7 @@ namespace Index {
         // FontHandle is resolved by TextRenderer at draw time so scene
         // serialization stays asset-stable across atlas re-bakes.
         //
-        // Defaults to the engine-shipped DefaultSans-Regular.ttf's stable
+        // Defaults to the engine-shipped GoogleSans-Regular.ttf's stable
         // GUID rather than UUID()'s random default — without this, a
         // freshly-added TextRenderer rolls a random 64-bit number that
         // resolves to nothing, and the inspector flags it as "(Missing

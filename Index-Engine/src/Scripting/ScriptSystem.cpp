@@ -1645,10 +1645,8 @@ namespace Index {
 			return;
 		}
 
-		const IndexProject* project = ProjectManager::GetCurrentProject();
-		const bool autoRecompile = project ? project->AutoRecompileScripts : true;
 		// Skip file watcher polling while a script is being created/renamed
-		if (!m_SuppressRecompile && autoRecompile) {
+		if (!m_SuppressRecompile && m_AutoRecompileEnabled) {
 			m_ScriptWatcher.Poll(1.0f);
 			m_NativeWatcher.Poll(1.0f);
 		}

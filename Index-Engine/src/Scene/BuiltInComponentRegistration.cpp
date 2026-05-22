@@ -252,7 +252,13 @@ namespace Index {
 			return Properties::MakeTextureRef(name, displayName,
 				[getHandle](const Entity& e) -> uint64_t {
 					const auto& component = e.GetComponent<T>();
-					if constexpr (requires { component.TextureAssetId; }) {
+					if constexpr (requires { component.GetTextureAssetId(); }) {
+						const uint64_t assetId = static_cast<uint64_t>(component.GetTextureAssetId());
+						if (assetId != 0) {
+							return assetId;
+						}
+					}
+					else if constexpr (requires { component.TextureAssetId; }) {
 						const uint64_t assetId = static_cast<uint64_t>(component.TextureAssetId);
 						if (assetId != 0) {
 							return assetId;
@@ -403,14 +409,12 @@ namespace Index {
 					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().GetZoom(); },
 					[](Entity& e, float v) {
 						e.GetComponent<Camera2DComponent>().SetZoom(v);
-					},
-					Properties::Meta::Clamp(0.01, 100.0, 0.01f)),
+					}),
 				Properties::MakeWith<float>("OrthographicSize", "Orthographic Size",
 					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().GetOrthographicSize(); },
 					[](Entity& e, float v) {
 						e.GetComponent<Camera2DComponent>().SetOrthographicSize(v);
-					},
-					Properties::Meta::Clamp(0.05, 1000.0, 0.05f)),
+					}),
 				Properties::MakeWith<Color>("ClearColor", "Clear Color",
 					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().GetClearColor(); },
 					[](Entity& e, const Color& c) {
@@ -420,11 +424,6 @@ namespace Index {
 					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().IsPostProcessingEnabled(); },
 					[](Entity& e, bool v) {
 						e.GetComponent<Camera2DComponent>().SetPostProcessingEnabled(v);
-					}),
-				Properties::MakeWith<bool>("OcclusionCulling", "Occlusion Culling",
-					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().IsOcclusionCullingEnabled(); },
-					[](Entity& e, bool v) {
-						e.GetComponent<Camera2DComponent>().SetOcclusionCullingEnabled(v);
 					}),
 			});
 
@@ -448,6 +447,11 @@ namespace Index {
 		std::vector<PropertyDescriptor> particleProperties;
 		particleProperties.push_back(Properties::Make("PlayOnAwake", "Play On Awake",
 			&PSC::PlayOnAwake));
+		particleProperties.push_back(MakeTextureRefDirect<PSC>("Texture", "Texture",
+			[](const PSC& ps) { return ps.GetTextureHandle(); },
+			[](PSC& ps, TextureHandle h, UUID assetId) {
+				ps.SetTexture(h, assetId);
+			}));
 		particleProperties.push_back(Properties::MakeWith<float>("LifeTime", "Life Time",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.LifeTime; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.LifeTime = v; },

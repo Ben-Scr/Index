@@ -36,9 +36,11 @@ namespace Index {
 		static void Save();
 
 		// Push the active theme into the ImGui style. Re-resolves
-		// SystemDefault each call so a Windows theme change picked up
-		// between sessions is honored on next Load.
+		// SystemDefault each call so a Windows theme change is honored.
 		static void ApplyTheme();
+		// Lightweight per-frame hook for SystemDefault. No-ops unless the
+		// OS-resolved theme changed since the last applied editor theme.
+		static void ApplySystemThemeIfNeeded();
 		static EditorThemeMode GetResolvedThemeMode();
 		static EditorThemeMode GetResolvedThemeMode(EditorThemeMode mode);
 
@@ -73,8 +75,18 @@ namespace Index {
 		static constexpr int k_DefaultEditorFontZoomPercent = 100;
 
 		// ── Behavior (migrated from IndexProject) ─────────────────
+		static bool GetRunInBackground();
+		static void SetRunInBackground(bool value);
+
 		static bool GetShowFileExtensions();
 		static void SetShowFileExtensions(bool value);
+
+		static bool GetAutoRecompileScripts();
+		static void SetAutoRecompileScripts(bool value);
+		static bool GetRecompileScriptsOnPlay();
+		static void SetRecompileScriptsOnPlay(bool value);
+		static bool GetExitPlayModeOnRecompilation();
+		static void SetExitPlayModeOnRecompilation(bool value);
 
 		static bool GetAutoSaveScenes();
 		static void SetAutoSaveScenes(bool value);

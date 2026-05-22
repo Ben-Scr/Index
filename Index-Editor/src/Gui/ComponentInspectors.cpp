@@ -363,13 +363,56 @@ namespace Index {
 
 		// Texture preview is only meaningful with one entity selected.
 		if (entities.size() == 1) {
-			const auto& ps = entities[0].GetComponent<ParticleSystem2DComponent>();
+			Entity entity = entities[0];
+			auto& ps = const_cast<Entity&>(entity).GetComponent<ParticleSystem2DComponent>();
 			TextureHandle previewHandle = ps.GetTextureHandle();
 			if (!previewHandle.IsValid()) {
 				previewHandle = TextureManager::GetDefaultTexture(DefaultTexture::Square);
 			}
 			if (Texture2D* texture = TextureManager::GetTexture(previewHandle)) {
 				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texture->GetWidth(), texture->GetHeight());
+			}
+
+			ImGui::Spacing();
+			ImGui::TextUnformatted("Bursts");
+			ImGui::Separator();
+
+			auto bursts = ps.GetBursts();
+			int removeIndex = -1;
+			for (std::size_t i = 0; i < bursts.size(); ++i) {
+				ImGui::PushID(static_cast<int>(i));
+				std::string label = "Burst " + std::to_string(i + 1);
+				const bool open = ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+				ImGui::SameLine();
+				if (ImGui::SmallButton("-")) {
+					removeIndex = static_cast<int>(i);
+				}
+				if (open) {
+					int count = static_cast<int>(bursts[i].Count);
+					ImGui::SetNextItemWidth(120.0f);
+					if (ImGui::InputInt("Count", &count, 1, 10)) {
+						bursts[i].Count = static_cast<uint32_t>(std::max(0, count));
+						ImGuiUtils::MarkSelectionDirty(entities);
+					}
+					float interval = bursts[i].Interval;
+					ImGui::SetNextItemWidth(120.0f);
+					if (ImGui::InputFloat("Interval", &interval, 0.1f, 1.0f, "%.3f")) {
+						bursts[i].Interval = std::max(0.0f, interval);
+						ImGuiUtils::MarkSelectionDirty(entities);
+					}
+					ImGui::TreePop();
+				}
+				ImGui::PopID();
+			}
+
+			if (removeIndex >= 0) {
+				ps.RemoveBurst(static_cast<std::size_t>(removeIndex));
+				ImGuiUtils::MarkSelectionDirty(entities);
+			}
+
+			if (ImGui::Button("+ Add Burst")) {
+				ps.AddBurst(ParticleSystem2DComponent::Burst{});
+				ImGuiUtils::MarkSelectionDirty(entities);
 			}
 		}
 	}
@@ -674,10 +717,23 @@ namespace Index {
 			return resolved;
 		}
 
+		const Scene* ResolveHierarchyPayloadScene(const HierarchyDragData& data) {
+			const Scene* resolved = nullptr;
+			const uint64_t sourceSceneId = data.SourceSceneId;
+			if (sourceSceneId != 0) {
+				SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
+					if (!resolved && static_cast<uint64_t>(scene.GetSceneId()) == sourceSceneId) {
+						resolved = &scene;
+					}
+				});
+			}
+			return resolved ? resolved : SceneManager::Get().GetActiveScene();
+		}
+
 		// Wraps the BeginDragDropTarget pattern so the entity-binding rows
 		// can accept hierarchy drops without duplicating the boilerplate.
 		// Decodes the HIERARCHY_ENTITY payload, resolves the live handle
-		// against the active scene, and converts to the persistent UUID
+		// against the scene that produced the drag, and converts to the persistent UUID
 		// the binding stores. Returns the UUID on a successful drop, or
 		// std::nullopt if no payload arrived this frame. Mirrors the
 		// pattern in PropertyDrawer::DrawEntityRef.
@@ -688,7 +744,7 @@ namespace Index {
 				if (payload->DataSize == sizeof(HierarchyDragData)) {
 					const auto* data = static_cast<const HierarchyDragData*>(payload->Data);
 					const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
-					const Scene* scene = SceneManager::Get().GetActiveScene();
+					const Scene* scene = ResolveHierarchyPayloadScene(*data);
 					if (scene && scene->IsValid(handle)) {
 						const uint64_t uuid = scene->GetEntityPersistentID(handle);
 						if (uuid != 0) result = uuid;

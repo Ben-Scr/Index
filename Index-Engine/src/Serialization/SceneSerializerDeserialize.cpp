@@ -1257,7 +1257,6 @@ namespace Index {
 				GetFloatMember(*cameraValue, "clearB", 0.1f),
 				GetFloatMember(*cameraValue, "clearA", 1.0f)));
 			camera.SetPostProcessingEnabled(GetBoolMember(*cameraValue, "postProcessing", true));
-			camera.SetOcclusionCullingEnabled(GetBoolMember(*cameraValue, "occlusionCulling", true));
 		}
 
 		if (const Value* bodyValue = GetObjectMember(entityValue, "FastBody2D")) {
@@ -1856,7 +1855,6 @@ namespace Index {
 				GetFloatMember(componentValue, "clearB", 0.1f),
 				GetFloatMember(componentValue, "clearA", 1.0f)));
 			camera.SetPostProcessingEnabled(GetBoolMember(componentValue, "postProcessing", true));
-			camera.SetOcclusionCullingEnabled(GetBoolMember(componentValue, "occlusionCulling", true));
 			return true;
 		}
 
@@ -1964,6 +1962,23 @@ namespace Index {
 				Wrap::Clamp,
 				&textureAssetId);
 			particleSystem.SetTexture(textureHandle, textureAssetId);
+
+			particleSystem.ClearBursts();
+			if (const Json::Value* burstsValue = componentValue.FindMember("bursts");
+				burstsValue && burstsValue->IsArray())
+			{
+				for (const Json::Value& burstValue : burstsValue->GetArray()) {
+					if (!burstValue.IsObject()) {
+						continue;
+					}
+					ParticleSystem2DComponent::Burst burst;
+					burst.Count = static_cast<uint32_t>(
+						GetUInt64Member(burstValue, "count", burst.Count));
+					burst.Interval = GetFloatMember(burstValue, "interval", burst.Interval);
+					burst.TimeUntilNext = 0.0f;
+					particleSystem.AddBurst(burst);
+				}
+			}
 			return true;
 		}
 

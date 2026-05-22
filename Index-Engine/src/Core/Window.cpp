@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Window.hpp"
 #include "Application.hpp"
+#include "Core/Platform/Win32Titlebar.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Events/WindowEvents.hpp"
@@ -138,6 +139,12 @@ namespace Index {
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 		glfwWindowHint(GLFW_SAMPLES, 8);
 
+		// Custom titlebar: create the window hidden so the OS chrome
+		// doesn't flash for one frame before our WndProc subclass strips
+		// it. ShowWindow happens after Win32Titlebar::Install below.
+		if (props.CustomTitlebar) {
+			glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+		}
 
 		s_MainViewport = std::make_unique<Viewport>(
 			props.Fullscreen ? k_Videomode->width : props.Width,
@@ -154,8 +161,40 @@ namespace Index {
 		m_GLFWwindow = glfwCreateWindow(s_MainViewport->GetWidth(), s_MainViewport->GetHeight(), props.Title.c_str(), nullptr, nullptr);
 		IDX_ASSERT(m_GLFWwindow, IndexErrorCode::Undefined, "Failed to create window!");
 
+		m_MinSize = { props.MinWidth, props.MinHeight };
+		m_MaxSize = { props.MaxWidth, props.MaxHeight };
+		glfwSetWindowSizeLimits(m_GLFWwindow,
+			props.MinWidth  > 0 ? props.MinWidth  : GLFW_DONT_CARE,
+			props.MinHeight > 0 ? props.MinHeight : GLFW_DONT_CARE,
+			props.MaxWidth  > 0 ? props.MaxWidth  : GLFW_DONT_CARE,
+			props.MaxHeight > 0 ? props.MaxHeight : GLFW_DONT_CARE);
+
 		SetDecorated(props.Decorated);
 		SetResizeable(props.Resizeable);
+
+		// CustomTitlebar overrides decoration: the OS chrome must be
+		// off before Win32Titlebar::Install subclasses the WndProc.
+		m_TitlebarColor         = props.TitlebarColor;
+		m_TitlebarTextColor     = props.TitlebarTextColor;
+		m_TitlebarActiveColor   = props.TitlebarActiveColor;
+		m_TitlebarInactiveColor = props.TitlebarInactiveColor;
+		if (props.CustomTitlebar) {
+			glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, GLFW_FALSE);
+#ifdef IDX_PLATFORM_WINDOWS
+			Win32Titlebar::SetTitlebarHeight(props.TitlebarHeight);
+			Win32Titlebar::Install(m_GLFWwindow, this);
+			Win32Titlebar::SetDarkMode(m_GLFWwindow, props.TitlebarDarkMode);
+#endif
+			glfwShowWindow(m_GLFWwindow);
+			m_CustomTitlebar = true;
+		}
+#ifdef IDX_PLATFORM_WINDOWS
+		else if (props.TitlebarDarkMode) {
+			// Honor TitlebarDarkMode even when the native chrome is kept
+			// — tints the OS caption dark via DWMWA_USE_IMMERSIVE_DARK_MODE.
+			Win32Titlebar::SetDarkMode(m_GLFWwindow, true);
+		}
+#endif
 
 		if (props.Fullscreen && !props.Windowed)
 			SetFullScreen(true);
@@ -229,6 +268,16 @@ namespace Index {
 		}
 		glfwSetWindowUserPointer(m_GLFWwindow, nullptr);
 		m_EventCallback = {};
+#ifdef IDX_PLATFORM_WINDOWS
+		// Restore the original WndProc BEFORE GLFW destroys the HWND.
+		// Otherwise the OS can dispatch a teardown message into our
+		// subclass after the per-HWND state map entry is gone — and
+		// also leaks the entry across editor Reload cycles.
+		if (m_CustomTitlebar) {
+			Win32Titlebar::Uninstall(m_GLFWwindow);
+			m_CustomTitlebar = false;
+		}
+#endif
 		glfwDestroyWindow(m_GLFWwindow);
 		m_GLFWwindow = nullptr;
 		if (s_ActiveWindow == this) {
@@ -422,6 +471,24 @@ namespace Index {
 		glfwSetWindowAttrib(m_GLFWwindow, GLFW_RESIZABLE, enabled ? GLFW_TRUE : GLFW_FALSE);
 	}
 
+	void Window::SetMinSize(Vec2Int size) {
+		m_MinSize = { size.x > 0 ? size.x : 0, size.y > 0 ? size.y : 0 };
+		glfwSetWindowSizeLimits(m_GLFWwindow,
+			m_MinSize.x > 0 ? m_MinSize.x : GLFW_DONT_CARE,
+			m_MinSize.y > 0 ? m_MinSize.y : GLFW_DONT_CARE,
+			m_MaxSize.x > 0 ? m_MaxSize.x : GLFW_DONT_CARE,
+			m_MaxSize.y > 0 ? m_MaxSize.y : GLFW_DONT_CARE);
+	}
+
+	void Window::SetMaxSize(Vec2Int size) {
+		m_MaxSize = { size.x > 0 ? size.x : 0, size.y > 0 ? size.y : 0 };
+		glfwSetWindowSizeLimits(m_GLFWwindow,
+			m_MinSize.x > 0 ? m_MinSize.x : GLFW_DONT_CARE,
+			m_MinSize.y > 0 ? m_MinSize.y : GLFW_DONT_CARE,
+			m_MaxSize.x > 0 ? m_MaxSize.x : GLFW_DONT_CARE,
+			m_MaxSize.y > 0 ? m_MaxSize.y : GLFW_DONT_CARE);
+	}
+
 	void Window::SetCursorLocked(bool enabled) {
 		SetCursorMode(enabled ? 1 : 0);
 	}
@@ -462,6 +529,9 @@ namespace Index {
 			if (!imgData || !imgData->Pixels) {
 				IDX_WARN_TAG("Window", "Cannot set cursor image from invalid texture data");
 				return nullptr;
+			}
+			if (tex2D->IsFlippedY()) {
+				imgData->FlipVerticalRGBA();
 			}
 			GLFWimage img;
 			img.width = imgData->Width;
@@ -534,7 +604,9 @@ namespace Index {
 		IDX_ASSERT(w > 0 && h > 0, IndexErrorCode::InvalidValue, "Icon size must be > 0");
 		IDX_ASSERT(imgData->Pixels != nullptr, IndexErrorCode::NullReference, "Icon pixels null");
 
-		imgData->FlipVerticalRGBA();
+		if (tex2D->IsFlippedY()) {
+			imgData->FlipVerticalRGBA();
+		}
 
 		GLFWimage img;
 		img.width = imgData->Width;
@@ -700,5 +772,33 @@ namespace Index {
 
 		s_MainViewport->SetWidth(width);
 		s_MainViewport->SetHeight(height);
+	}
+
+	void Window::SetTitlebarCaptionRect(int x, int y, int w, int h) {
+		Win32Titlebar::SetCaptionRect(x, y, w, h);
+	}
+
+	void Window::AddTitlebarNonClientRect(int x, int y, int w, int h) {
+		Win32Titlebar::AddNonClientRect(x, y, w, h);
+	}
+
+	void Window::ResetTitlebarNonClientRects() {
+		Win32Titlebar::ResetNonClientRects();
+	}
+
+	int Window::GetTitlebarHeight() const {
+#ifdef IDX_PLATFORM_WINDOWS
+		return Win32Titlebar::GetTitlebarHeight();
+#else
+		return 0;
+#endif
+	}
+
+	void Window::SetTitlebarHeight(int logicalPx) {
+#ifdef IDX_PLATFORM_WINDOWS
+		Win32Titlebar::SetTitlebarHeight(logicalPx);
+#else
+		(void)logicalPx;
+#endif
 	}
 }

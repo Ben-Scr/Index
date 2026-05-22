@@ -28,7 +28,9 @@ namespace Index {
 		static bool DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source = {});
 
 		static bool SaveToFile(Scene& scene, const std::string& path);
+		static bool SaveToFile(Scene& scene, const std::string& path, bool logSuccess);
 		static bool SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format);
+		static bool SaveToFile(Scene& scene, const std::string& path, SceneSerializationFormat format, bool logSuccess);
 		static bool LoadFromFile(Scene& scene, const std::string& path);
 
 		// Prefab support: save/load single entities

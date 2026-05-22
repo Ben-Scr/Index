@@ -18,6 +18,7 @@
 #include "Packages/PackageManager.hpp"
 #include "Editor/EditorCamera.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Graphics/Gizmo.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureHandle.hpp"
 #include "Serialization/FileWatcher.hpp"
@@ -87,6 +88,17 @@ namespace Index {
 
 		void RenderDockspaceRoot();
 		void RenderMainMenu(Scene& scene);
+		// Custom OS-titlebar replacement row drawn above the dockspace
+		// when WindowSpecification::CustomTitlebar is enabled. Owns app
+		// icon, project name, and the min/max/close buttons. The menu
+		// bar stays attached to the dockspace below — fewer moving parts
+		// than threading menus through this row. Implementation lives
+		// in Gui/CustomTitlebar.cpp.
+		void RenderCustomTitlebar();
+		// Logical-pixel height of the row above the dockspace. Returns 0
+		// when custom titlebar is disabled. RenderDockspaceRoot offsets
+		// by this value so the dockspace doesn't overlap the titlebar.
+		float GetCustomTitlebarHeight() const;
 		void RenderToolbar();
 		void RenderEntitiesPanel();
 		void RenderInspectorPanel(Scene& scene);
@@ -238,7 +250,7 @@ namespace Index {
 		Scene* GetContextScene() const;
 
 		bool HasEntityShortcutFocus() const;
-		void DrawEditorComponentGizmos(Scene& scene);
+		void DrawEditorComponentGizmos(Scene& scene, bool componentGizmosEnabled);
 		const Texture2D* GetPreviewTexture(const std::filesystem::path& path);
 		void TrimPreviewTextureCache();
 		void ClearPreviewTextureCache();
@@ -259,7 +271,8 @@ namespace Index {
 			const Color& clearColor = Color::Background(),
 			bool onlyPassedScene = false,
 			bool uiInWorldSpace = false,
-			EditorViewDrawMode drawMode = EditorViewDrawMode::Default);
+			EditorViewDrawMode drawMode = EditorViewDrawMode::Default,
+			GizmoLayerMask gizmoLayerMask = GizmoLayerMask::All);
 
 		EntityHandle m_ParticlePreviewEntity = entt::null;
 		std::uint64_t m_ParticlePreviewSceneId = 0;
