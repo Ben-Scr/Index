@@ -95,6 +95,14 @@ internal unsafe struct ManagedCallbacksStruct
     // Routed from Application::DispatchEvent on WindowResizeEvent.
     public delegate* unmanaged<void> RaiseWindowResize;
     public delegate* unmanaged<uint, void> RaiseEnterChar;
+
+    // ── Play-mode lifecycle (appended for binary compat) ──
+    // Invoked by the editor when stopping play mode, BEFORE the
+    // pre-play scene snapshot is restored. Sweeps every static event
+    // in the managed surface for subscribers whose method lives in the
+    // user assembly and removes them, so a play-mode `Log.LogMessage +=`
+    // doesn't keep firing in edit mode against a destroyed Entity.
+    public delegate* unmanaged<void> OnPlayModeExited;
 }
 
 /// <summary>
@@ -183,6 +191,9 @@ internal static class ScriptHostBridge
             // ── Window events (appended for binary compat) ──
             managedCallbacks->RaiseWindowResize = &ScriptInstanceManager.RaiseWindowResize;
             managedCallbacks->RaiseEnterChar = &ScriptInstanceManager.RaiseEnterChar;
+
+            // ── Play-mode lifecycle (appended for binary compat) ──
+            managedCallbacks->OnPlayModeExited = &ScriptInstanceManager.OnPlayModeExited;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

@@ -22,7 +22,11 @@ public static class Input
     public static int MouseCount => 8;
 
     /// <summary>
-    /// Returns the current mouse position in screen coordinates.
+    /// Returns the current mouse position in viewport pixels. (0,0) is the
+    /// top-left of the visible game viewport — the Game View panel in the
+    /// editor, the OS window in a shipped build. Coordinates outside the
+    /// viewport go negative or exceed the viewport size; callers that
+    /// require an in-bounds value should clamp.
     /// </summary>
     public static Vector2 MousePosition
     {

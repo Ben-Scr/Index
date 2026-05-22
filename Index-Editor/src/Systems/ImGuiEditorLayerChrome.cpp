@@ -257,12 +257,14 @@ namespace Index {
 		// at the top of OnPreRender — see comment there.)
 
 		// Ctrl+S: routes to whatever the editor is currently editing.
-		// Priority: full prefab-edit mode > asset-side prefab inspector > active scene.
-		// All three paths are blocked during play mode so a stray Ctrl+S doesn't
-		// persist transient play-mode state. Pass `repeat=false` so holding the
-		// key down doesn't re-fire Save every frame (which would hammer disk +
-		// scene serialization at the OS key-repeat rate).
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && !Application::GetIsPlaying() && m_BuildState == 0) {
+		// Priority: full prefab-edit mode > asset-side prefab inspector > all dirty scenes.
+		// Scene save is blocked during play mode so a stray Ctrl+S doesn't
+		// persist transient play-mode state; prefab saves stay enabled in
+		// play mode because the detached prefab scene is independent of the
+		// running play scene and is real authoring work. Pass `repeat=false`
+		// so holding the key down doesn't re-fire Save every frame (which
+		// would hammer disk + scene serialization at the OS key-repeat rate).
+		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && m_BuildState == 0) {
 			if (IsInPrefabEditMode()) {
 				// Full prefab-edit mode: save the detached scene back to its
 				// .prefab without exiting edit mode. Without this branch,
@@ -273,14 +275,33 @@ namespace Index {
 			else if (m_PrefabInspector.IsOpen() && m_PrefabInspector.HasUnsavedChanges()) {
 				m_PrefabInspector.Save();
 			}
-			else {
-				Scene* active = SceneManager::Get().GetActiveScene();
+			else if (!Application::GetIsPlaying()) {
+				// Save every dirty loaded scene — the Entities panel shows
+				// the "*" dirty marker on each, so the user reads Ctrl+S as
+				// "persist what's visibly dirty" regardless of which scene
+				// SceneManager considers active. Without the loop, a Ctrl+S
+				// while editing an additive scene would silently no-op (or,
+				// worse, save the unrelated top scene) and the user's edits
+				// would sit in memory until they happened to make that
+				// scene active.
 				IndexProject* project = ProjectManager::GetCurrentProject();
-				if (active && project) {
-					std::string scenePath = project->GetSceneFilePath(active->GetName());
-					SceneSerializer::SaveToFile(*active, scenePath);
-					project->LastOpenedScene = active->GetName();
-					project->Save();
+				if (project) {
+					bool savedAny = false;
+					for (auto& weakScene : SceneManager::Get().GetLoadedScenes()) {
+						auto scene = weakScene.lock();
+						if (!scene || !scene->IsDirty()) continue;
+						std::string scenePath = project->GetSceneFilePath(scene->GetName());
+						if (SceneSerializer::SaveToFile(*scene, scenePath)) {
+							savedAny = true;
+						}
+					}
+					if (savedAny) {
+						Scene* active = SceneManager::Get().GetActiveScene();
+						if (active) {
+							project->LastOpenedScene = active->GetName();
+						}
+						project->Save();
+					}
 				}
 			}
 		}
@@ -375,21 +396,24 @@ namespace Index {
 			ImGui::EndPopup();
 		}
 
-		// Prefab-EDIT discard modal — fired when the user clicks "< Back"
-		// in the hierarchy toolbar while the prefab edit scene has
-		// unsaved changes. Distinct from the asset-inspector save prompt
-		// below: that one fires on .prefab→.prefab selection change in
-		// the asset browser; this one fires on full-edit-mode exit.
+		// Prefab-EDIT discard modal — fired when the user clicks the "<"
+		// back button in the hierarchy toolbar while the prefab edit
+		// scene has unsaved changes. Distinct from the asset-inspector
+		// save prompt below: that one fires on .prefab→.prefab selection
+		// change in the asset browser; this one fires on full-edit-mode exit.
 		if (m_ShowPrefabEditDiscardPrompt) {
-			ImGui::OpenPopup("Discard Prefab Edits?");
+			ImGui::OpenPopup("Unsaved Prefab Changes");
 			m_ShowPrefabEditDiscardPrompt = false;
 		}
 		ImGuiUtils::CenterNextModal();
-		if (ImGui::BeginPopupModal("Discard Prefab Edits?", nullptr,
+		if (ImGui::BeginPopupModal("Unsaved Prefab Changes", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
-			std::string editPrefabName = std::filesystem::path(m_PrefabEditPath).filename().string();
+			// Stem (no .prefab extension) keeps the message consistent
+			// with the centered title in the prefab toolbar — both refer
+			// to the same prefab by the same name.
+			std::string editPrefabName = std::filesystem::path(m_PrefabEditPath).stem().string();
 			if (editPrefabName.empty()) editPrefabName = "the prefab";
-			ImGui::Text("Save changes to %s before closing?", editPrefabName.c_str());
+			ImGui::Text("Save unsaved changes to %s?", editPrefabName.c_str());
 			ImGui::Spacing();
 
 			if (ImGui::Button("Save", ImVec2(100, 0))) {
@@ -525,18 +549,22 @@ namespace Index {
 		// the real active scene so the user can still preview play.
 		Scene* contextScene = GetContextScene();
 		RenderInspectorPanel(contextScene ? *contextScene : scene);
+		// Propagate transforms for every scene the editor is rendering this
+		// frame. Loaded scenes always need it (Game View, optional viewport
+		// previews, play-mode physics/script reads); the detached prefab
+		// scene additionally needs it whenever prefab edit mode is active —
+		// it's separate from SceneManager, so the ForeachLoadedScene walk
+		// would otherwise skip it.
+		SceneManager::Get().ForeachLoadedScene([](Scene& s) {
+			TransformHierarchySystem::Propagate(s);
+			});
 		if (IsInPrefabEditMode() && m_PrefabEditScene) {
 			TransformHierarchySystem::Propagate(*m_PrefabEditScene);
-		}
-		else {
-			SceneManager::Get().ForeachLoadedScene([](Scene& s) {
-				TransformHierarchySystem::Propagate(s);
-				});
 		}
 		// Tick the editor-only particle preview before both viewports
 		// render. Decoupling the tick from RenderEditorView lets the
 		// simulation keep advancing when the user switches to the Game
-		// View tab — the in-viewport Play / Pause / Stop overlay (and
+		// View tab — the in-viewport Play / Pause / Restart / Stop overlay (and
 		// entering play mode) are the only things that gate it.
 		TickParticlePreview(contextScene ? *contextScene : scene);
 		RenderEditorView(contextScene ? *contextScene : scene);

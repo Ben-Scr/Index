@@ -23,6 +23,9 @@
     "launcher.action.create_new_project": "新規プロジェクトを作成",
     "launcher.action.add_existing_project": "既存のプロジェクトを追加",
     "launcher.action.settings": "設定",
+    "launcher.action.open_selected": "開く",
+    "launcher.action.rename_selected": "名前を変更",
+    "launcher.action.delete_selected": "削除",
 
     "launcher.list.empty.title": "プロジェクトがありません",
     "launcher.list.empty.subtitle": "新規プロジェクトを作成するか、既存のプロジェクトを追加してください。",
@@ -31,8 +34,15 @@
 
     "launcher.context.info": "情報",
     "launcher.context.open_in_explorer": "エクスプローラーで開く",
+    "launcher.context.copy_path": "パスをコピー",
+    "launcher.context.rename": "名前を変更...",
     "launcher.context.remove_from_list": "リストから削除",
     "launcher.context.delete_project": "プロジェクトを削除...",
+
+    "launcher.rename.title": "プロジェクト名の変更",
+    "launcher.rename.new_name": "新しい名前:",
+    "launcher.rename.save": "保存",
+    "launcher.rename.cancel": "キャンセル",
 
     "launcher.delete.title": "プロジェクトを削除しますか?",
     "launcher.delete.message": "プロジェクト '{0}' を削除しますか?",
@@ -47,6 +57,7 @@
     "launcher.delete_final.confirm": "完全に削除",
 
     "launcher.create.title": "新規プロジェクトを作成",
+    "launcher.create.default_project_name": "新しいゲーム",
     "launcher.create.project_name": "プロジェクト名:",
     "launcher.create.location": "場所:",
     "launcher.create.path_preview": "パス: {0}",
@@ -61,15 +72,20 @@
     "launcher.settings.current": "現在: {0}",
     "launcher.settings.engine_default_suffix": "  (エンジン標準)",
     "launcher.settings.language": "言語",
+    "launcher.settings.language.auto_format": "自動 ({0})",
     "launcher.settings.language.not_installed_suffix": " (未インストール)",
     "launcher.settings.language.downloading": "{0} をダウンロード中…",
     "launcher.settings.language.download_failed": "ダウンロードに失敗しました: {0}",
     "launcher.settings.language.restart_required": "CJK文字を表示するにはランチャーを再起動してください。",
     "launcher.settings.language.restart_now": "今すぐ再起動",
+    "launcher.settings.font_scale": "フォントサイズ",
+    "launcher.settings.font_scale.auto_format": "自動 ({0}%)",
     "launcher.settings.browse": "参照...",
     "launcher.settings.save": "保存",
     "launcher.settings.cancel": "キャンセル",
 
+    "launcher.error.title": "エラー",
+    "launcher.error.ok": "OK",
     "launcher.error.project_already_open": "プロジェクトは既に開いています",
 
     "launcher.info.title": "プロジェクト情報",

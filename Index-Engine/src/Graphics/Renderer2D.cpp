@@ -293,6 +293,11 @@ namespace Index {
 				&& std::isfinite(bounds.Max.y);
 		}
 
+		AABB UnboundedViewportAABB() {
+			constexpr float limit = std::numeric_limits<float>::infinity();
+			return AABB{ Vec2{ -limit, -limit }, Vec2{ limit, limit } };
+		}
+
 		int32_t CellCoord(float value, float cellSize) {
 			const float scaled = value / cellSize;
 			if (scaled <= static_cast<float>(std::numeric_limits<int32_t>::min())) {
@@ -1081,7 +1086,9 @@ namespace Index {
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 
 		const glm::mat4 vp = cam->GetViewProjectionMatrix();
-		const AABB viewAABB = cam->GetViewportAABB();
+		const AABB viewAABB = cam->IsOcclusionCullingEnabled()
+			? cam->GetViewportAABB()
+			: UnboundedViewportAABB();
 		m_SceneProvider([&](Scene& scene) {
 			RenderSceneWithVP(scene, vp, viewAABB);
 		});
@@ -1182,6 +1189,11 @@ namespace Index {
 		if (usePostProcess) {
 			if (IndexProject* proj = ProjectManager::GetCurrentProject()) {
 				usePostProcess = proj->EnablePostProcessing;
+			}
+		}
+		if (usePostProcess) {
+			if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
+				usePostProcess = mainCam->IsPostProcessingEnabled();
 			}
 		}
 		if (usePostProcess) {

@@ -63,6 +63,7 @@ namespace Index {
 
 		struct CircleParams { float Radius = 1.f; bool IsOnCircle = false; };
 		struct SquareParams { Vec2 HalfExtends{ 1.f,1.f }; };
+		struct EdgeParams { float Length = 1.f; };
 
 		struct RandomColorParams { Color From{ 1.f,1.f,1.f,1.f }; Color To{ 1.f,1.f,1.f,0.f }; };
 		struct RandomScaleParams { Vec2 From{ 1.f,1.f }; Vec2 To{ 1.f,1.f }; };
@@ -70,9 +71,10 @@ namespace Index {
 
 		enum class ShapeType {
 			Circle,
-			Square
+			Square,
+			Edge
 		};
-		using ShapeParams = std::variant<CircleParams, SquareParams>;
+		using ShapeParams = std::variant<CircleParams, SquareParams, EdgeParams>;
 
 
 		ParticleSystem2DComponent() = default;
@@ -93,8 +95,10 @@ namespace Index {
 		// Info: Disables both emitting and simulating
 		void Pause() { m_IsEmitting = false; m_IsSimulating = false; }
 
-		// Info: Disables emitting but keeps simulating
-		void Stop() { m_IsEmitting = false; }
+		// Info: Stops the preview/runtime simulation and clears live particles.
+		void Stop() { m_IsEmitting = false; m_IsSimulating = false; ResetSimulation(); }
+
+		void Restart() { ResetSimulation(); Play(); }
 
 		void SetIsSimulating(bool enabled) { m_IsSimulating = enabled; }
 		void SetIsEmitting(bool enabled) { m_IsEmitting = enabled; }
@@ -129,6 +133,7 @@ namespace Index {
 		void Update();
 		void Update(float deltaTime);
 		const Transform2DComponent* TryGetEmitterTransform() const;
+		void ResetSimulation();
 		std::vector<Particle> m_Particles;
 		std::vector<Burst> m_Bursts;
 

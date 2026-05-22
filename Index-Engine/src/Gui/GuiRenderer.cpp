@@ -707,7 +707,21 @@ namespace Index {
 
 		// ── 4. Dropdown popups ───────────────────────────────────────
 		Application* app = Application::GetInstance();
-		const Vec2 mouseRaw = app ? app->GetInput().GetMousePosition() : Vec2{ 0, 0 };
+		Vec2 mouseRaw = app ? app->GetInput().GetMousePosition() : Vec2{ 0, 0 };
+		// Mirror UIEventSystem's mouse remap: when the editor publishes a
+		// UIRegion (Game View FBO inside an ImGui panel), Input still
+		// reports OS-window-space coords. The hover/press visual we
+		// compute below must use panel-local coords or the highlight
+		// floats off to the side of where the user actually points.
+		// Standalone runtime leaves UIRegion inactive ⇒ offset is zero
+		// ⇒ behaviour is unchanged.
+		{
+			const Window::UIRegion uiRegion = Window::GetUIRegion();
+			if (uiRegion.IsActive()) {
+				mouseRaw.x -= static_cast<float>(uiRegion.OffsetX);
+				mouseRaw.y -= static_cast<float>(uiRegion.OffsetY);
+			}
+		}
 		const Vec2 mouseUi{ mouseRaw.x - halfW, halfH - mouseRaw.y };
 		const bool mouseHeld = app && app->GetInput().GetMouse(MouseButton::Left);
 

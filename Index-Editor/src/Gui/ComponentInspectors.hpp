@@ -13,11 +13,11 @@ namespace Index {
 	// physics read-outs. Each one calls PropertyDrawer::DrawAll(...) first
 	// and then appends those extras.
 	void DrawSpriteRendererInspector(std::span<const Entity> entities);
+	void DrawTransform2DInspector(std::span<const Entity> entities);
 	void DrawCamera2DInspector(std::span<const Entity> entities);
 	void DrawFastBody2DInspector(std::span<const Entity> entities);
 
-	// Custom-only inspector — variant types (CircleParams/SquareParams) and
-	// per-shape conditional UI don't map to declarative properties.
+	// Hybrid inspector: declarative particle fields plus a texture preview.
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities);
 
 	// Custom-only inspector — Unity-style RectTransform layout: stacked

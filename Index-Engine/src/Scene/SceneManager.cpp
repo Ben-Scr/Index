@@ -536,6 +536,39 @@ namespace Index {
 		return true;
 	}
 
+	bool SceneManager::MoveLoadedScene(const std::string& name, size_t newIndex) {
+		auto it = FindLoadedSceneIterator(name);
+		if (it == m_LoadedScenes.end()) {
+			IDX_CORE_WARN_TAG("SceneManager", "MoveLoadedScene: scene '{}' is not loaded", name);
+			return false;
+		}
+		if (m_LoadedScenes.empty()) {
+			return false;
+		}
+
+		const size_t oldIndex = static_cast<size_t>(std::distance(m_LoadedScenes.begin(), it));
+		// `newIndex` is the position the user wants the scene to occupy in
+		// the final list, so the upper bound is size-1 (the last valid slot).
+		const size_t finalIndex = std::min(newIndex, m_LoadedScenes.size() - 1);
+		if (oldIndex == finalIndex) {
+			return false;
+		}
+
+		// Lift the shared_ptr out before erasing so the scene stays alive
+		// through the gap between erase + insert. After the erase the list
+		// has one fewer element, but inserting at `finalIndex` still lands
+		// the scene at that index in the resulting list regardless of
+		// direction (forward or backward move) — the erase pulls every
+		// element after the source up by one, which is exactly the
+		// adjustment needed when moving forward; moving backward leaves
+		// the target slot untouched.
+		std::shared_ptr<Scene> scene = std::move(*it);
+		m_LoadedScenes.erase(it);
+		const size_t insertIndex = std::min(finalIndex, m_LoadedScenes.size());
+		m_LoadedScenes.insert(m_LoadedScenes.begin() + static_cast<std::ptrdiff_t>(insertIndex), std::move(scene));
+		return true;
+	}
+
 	bool SceneManager::HasSceneDefinition(const std::string& name) const {
 		return m_SceneDefinitions.find(name) != m_SceneDefinitions.end();
 	}

@@ -12,6 +12,12 @@
 #include <cmath>
 
 namespace Index {
+	namespace {
+		Vec2 DirectionOrUp(const Vec2& direction) {
+			return LengthSquared(direction) > 0.0001f ? Normalized(direction) : Up();
+		}
+	}
+
 	Transform2DComponent& ParticleSystem2DComponent::GetTransform2D() {
 		Transform2DComponent* transform = const_cast<Transform2DComponent*>(TryGetEmitterTransform());
 		IDX_ASSERT(transform != nullptr, IndexErrorCode::InvalidHandle, "Particle system emitter transform is no longer available");
@@ -35,6 +41,14 @@ namespace Index {
 		}
 
 		return &m_EmitterScene->GetComponent<Transform2DComponent>(m_EmitterEntity);
+	}
+
+	void ParticleSystem2DComponent::ResetSimulation() {
+		m_Particles.clear();
+		m_EmitAccumulator = 0.0f;
+		for (auto& burst : m_Bursts) {
+			burst.TimeUntilNext = 0.0f;
+		}
 	}
 
 	void ParticleSystem2DComponent::Update() {
@@ -105,23 +119,38 @@ namespace Index {
 			Vec2 position{ 0 };
 			Vec2 scale{ ParticleSettings.Scale, ParticleSettings.Scale };
 			float rot{ 0.f };
-			Vec2 velocity = ParticleSettings.MoveDirection * ParticleSettings.Speed;
+			Vec2 velocityDirection = DirectionOrUp(ParticleSettings.MoveDirection);
+			Vec2 velocity = velocityDirection * ParticleSettings.Speed;
 
 			std::visit([&](auto const& s) {
 				using T = std::decay_t<decltype(s)>;
 				if constexpr (std::is_same_v<T, CircleParams>) {
 					position = s.IsOnCircle ? RandomOnCircle(s.Radius) : RandomInCircle(s.Radius);
-					const float angle = Random::NextFloat(0.0f, TwoPi<float>());
-					velocity = Vec2{ std::cos(angle), std::sin(angle) } * ParticleSettings.Speed;
+					velocityDirection = DirectionOrUp(position);
+					velocity = velocityDirection * ParticleSettings.Speed;
 				}
 				else if constexpr (std::is_same_v<T, SquareParams>) {
 					position = Vec2(Random::NextFloat(-s.HalfExtends.x, s.HalfExtends.x), Random::NextFloat(-s.HalfExtends.y, s.HalfExtends.y));
+				}
+				else if constexpr (std::is_same_v<T, EdgeParams>) {
+					const float halfLength = s.Length * 0.5f;
+					position = Vec2(Random::NextFloat(-halfLength, halfLength), 0.0f);
+					velocityDirection = DirectionOrUp(ParticleSettings.MoveDirection);
+					velocity = velocityDirection * ParticleSettings.Speed;
 				}
 				}, Shape);
 
 			if (EmissionSettings.EmissionSpace == Space::World) {
 				if (const Transform2DComponent* emitterTransform = TryGetEmitterTransform()) {
-					position = emitterTransform->TransformPoint(position);
+					const Vec2 worldPosition = emitterTransform->TransformPoint(position);
+					if (std::holds_alternative<CircleParams>(Shape)) {
+						velocityDirection = DirectionOrUp(worldPosition - emitterTransform->Position);
+					}
+					else {
+						velocityDirection = DirectionOrUp(Rotated(velocityDirection, emitterTransform->Rotation));
+					}
+					position = worldPosition;
+					velocity = velocityDirection * ParticleSettings.Speed;
 				}
 			}
 

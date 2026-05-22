@@ -392,12 +392,13 @@ namespace Index {
 		// next frame and the WebGPU backend re-uploads the texture
 		// through its ImGuiBackendFlags_RendererHasTextures path. No
 		// atlas mutation, no ImFont* invalidation, safe to call mid-
-		// frame from the prefs panel slider. `_NextFrameFontSizeBase`
+		// frame from the prefs panel. `_NextFrameFontSizeBase`
 		// is the documented hack (see ImGui demo's FontSizeBase
 		// DragFloat handler) for the mid-frame case.
 		ImGuiContext* ctx = ImGui::GetCurrentContext();
 		if (ctx == nullptr) return;
-		const float scaled = EditorPreferences::GetEditorFontSize() * s_DpiScale;
+		const float zoom = static_cast<float>(EditorPreferences::GetEditorFontZoomPercent()) / 100.0f;
+		const float scaled = k_IndexImGuiFontSize * zoom * s_DpiScale;
 		ImGuiStyle& style = ImGui::GetStyle();
 		style.FontSizeBase = scaled;
 		style._NextFrameFontSizeBase = scaled;
@@ -689,6 +690,7 @@ namespace Index {
 		const ImVec4 surfaceAct= ImVec4(0.28f, 0.28f, 0.33f, 1.00f);
 		const ImVec4 border    = ImVec4(0.24f, 0.24f, 0.28f, 0.65f);
 		const ImVec4 accent    = ImVec4(0.33f, 0.53f, 0.84f, 1.00f);
+		const ImVec4 neutralMark = ImVec4(0.725f, 0.725f, 0.725f, 1.00f);
 		const ImVec4 text      = ImVec4(0.88f, 0.88f, 0.90f, 1.00f);
 		const ImVec4 textDim   = ImVec4(0.50f, 0.50f, 0.54f, 1.00f);
 
@@ -737,14 +739,14 @@ namespace Index {
 		c[ImGuiCol_Tab]                  = ImVec4(0.15f, 0.15f, 0.18f, 1.00f);
 		c[ImGuiCol_TabHovered]           = surfaceHi;
 		c[ImGuiCol_TabSelected]          = ImVec4(0.20f, 0.20f, 0.24f, 1.00f);
-		c[ImGuiCol_TabSelectedOverline]  = accent;
+		c[ImGuiCol_TabSelectedOverline]  = neutralMark;
 		c[ImGuiCol_TabDimmed]            = ImVec4(0.12f, 0.12f, 0.14f, 1.00f);
 		c[ImGuiCol_TabDimmedSelected]    = ImVec4(0.17f, 0.17f, 0.20f, 1.00f);
 
 		c[ImGuiCol_DockingPreview]       = ImVec4(accent.x, accent.y, accent.z, 0.40f);
 		c[ImGuiCol_DockingEmptyBg]       = ImVec4(0.10f, 0.10f, 0.10f, 1.00f);
 
-		c[ImGuiCol_CheckMark]            = accent;
+		c[ImGuiCol_CheckMark]            = neutralMark;
 		c[ImGuiCol_SliderGrab]           = ImVec4(0.40f, 0.40f, 0.46f, 1.00f);
 		c[ImGuiCol_SliderGrabActive]     = ImVec4(0.50f, 0.50f, 0.56f, 1.00f);
 

@@ -416,20 +416,30 @@ namespace Index {
 					[](Entity& e, const Color& c) {
 						e.GetComponent<Camera2DComponent>().SetClearColor(c);
 					}),
+				Properties::MakeWith<bool>("PostProcessing", "Post Processing",
+					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().IsPostProcessingEnabled(); },
+					[](Entity& e, bool v) {
+						e.GetComponent<Camera2DComponent>().SetPostProcessingEnabled(v);
+					}),
+				Properties::MakeWith<bool>("OcclusionCulling", "Occlusion Culling",
+					[](const Entity& e) { return e.GetComponent<Camera2DComponent>().IsOcclusionCullingEnabled(); },
+					[](Entity& e, bool v) {
+						e.GetComponent<Camera2DComponent>().SetOcclusionCullingEnabled(v);
+					}),
 			});
 
 		// Particle System 2D — fully declarative now via the unified API.
-		// Shape is a variant (Circle vs Square) driven by
-		// Properties::MakeVariantWith over the std::variant<CircleParams,
-		// SquareParams> field; "Gravity Value" uses Meta::EnabledIf so
-		// it greys out when UseGravity is false. The Play / Pause button
-		// + texture preview live in the editor-only inspector extension
-		// (DrawParticleSystem2DInspector renders those after the
-		// auto-drawer fallback handles every property below).
+		// Shape is a variant (Circle vs Square vs Edge) driven by
+		// Properties::MakeVariantWith over the ShapeParams std::variant;
+		// "Gravity Value" uses Meta::EnabledIf so it greys out when
+		// UseGravity is false. The viewport Play / Pause / Restart / Stop
+		// buttons live in RenderEditorView, while the texture preview lives
+		// in the editor-only inspector extension.
 		using PSC = ParticleSystem2DComponent;
 		using ShapeType = PSC::ShapeType;
 		using CircleParams = PSC::CircleParams;
 		using SquareParams = PSC::SquareParams;
+		using EdgeParams = PSC::EdgeParams;
 
 		PropertyMetadata gravityEnabledMeta = Properties::Meta::EnabledIf<PSC>(
 			[](const PSC& ps) { return ps.ParticleSettings.UseGravity; })
@@ -441,15 +451,19 @@ namespace Index {
 		particleProperties.push_back(Properties::MakeWith<float>("LifeTime", "Life Time",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.LifeTime; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.LifeTime = v; },
-			Properties::Meta::Clamp(0.01, 600.0, 0.05f)));
+			Properties::Meta::DragSpeed(0.05f)));
 		particleProperties.push_back(Properties::MakeWith<float>("Scale", "Scale",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.Scale; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.Scale = v; },
-			Properties::Meta::Clamp(0.0, 100.0, 0.05f)));
+			Properties::Meta::DragSpeed(0.05f)));
 		particleProperties.push_back(Properties::MakeWith<float>("Speed", "Speed",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.Speed; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.Speed = v; },
 			Properties::Meta::DragSpeed(0.1f)));
+		particleProperties.push_back(Properties::MakeWith<Vec2>("MoveDirection", "Move Direction",
+			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.MoveDirection; },
+			[](Entity& e, const Vec2& v) { e.GetComponent<PSC>().ParticleSettings.MoveDirection = v; },
+			Properties::Meta::DragSpeed(0.05f)));
 		particleProperties.push_back(Properties::MakeWith<bool>("Gravity", "Use Gravity",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.UseGravity; },
 			[](Entity& e, bool v) { e.GetComponent<PSC>().ParticleSettings.UseGravity = v; }));
@@ -464,19 +478,21 @@ namespace Index {
 			[](const Entity& e) { return e.GetComponent<PSC>().EmissionSettings.EmitOverTime; },
 			[](Entity& e, uint16_t v) { e.GetComponent<PSC>().EmissionSettings.EmitOverTime = v; },
 			Properties::Meta::Clamp(0.0, 65535.0, 1.0f).WithHeader("Emission")));
-		// Variant: Shape Type → Circle / Square branches.
+		// Variant: Shape Type -> Circle / Square / Edge branches.
 		particleProperties.push_back(Properties::MakeVariantWith<ShapeType>("ShapeType", "Shape Type",
 			[](const Entity& e) -> ShapeType {
 				return std::visit([](auto&& s) -> ShapeType {
 					using T = std::decay_t<decltype(s)>;
 					if constexpr (std::is_same_v<T, CircleParams>) return ShapeType::Circle;
-					else                                            return ShapeType::Square;
+					else if constexpr (std::is_same_v<T, SquareParams>) return ShapeType::Square;
+					else return ShapeType::Edge;
 				}, e.GetComponent<PSC>().Shape);
 			},
 			[](Entity& e, ShapeType v) {
 				auto& ps = e.GetComponent<PSC>();
 				if (v == ShapeType::Circle) ps.Shape = CircleParams{ 1.0f, false };
-				else                        ps.Shape = SquareParams{ Vec2{ 1.0f, 1.0f } };
+				else if (v == ShapeType::Square) ps.Shape = SquareParams{ Vec2{ 1.0f, 1.0f } };
+				else ps.Shape = EdgeParams{ 1.0f };
 			},
 			{
 				Properties::Branch(ShapeType::Circle, {
@@ -487,7 +503,7 @@ namespace Index {
 						[](Entity& e, float v) {
 							std::get<CircleParams>(e.GetComponent<PSC>().Shape).Radius = v;
 						},
-						Properties::Meta::Clamp(0.0, 1000.0, 0.05f)),
+						Properties::Meta::DragSpeed(0.05f)),
 					Properties::MakeWith<bool>("OnCircleEdge", "On Circle Edge",
 						[](const Entity& e) {
 							return std::get<CircleParams>(e.GetComponent<PSC>().Shape).IsOnCircle;
@@ -506,6 +522,16 @@ namespace Index {
 						},
 						Properties::Meta::Clamp(0.0, 10000.0, 0.05f)),
 				}),
+				Properties::Branch(ShapeType::Edge, {
+					Properties::MakeWith<float>("Length", "Length",
+						[](const Entity& e) {
+							return std::get<EdgeParams>(e.GetComponent<PSC>().Shape).Length;
+						},
+						[](Entity& e, float v) {
+							std::get<EdgeParams>(e.GetComponent<PSC>().Shape).Length = v;
+						},
+						Properties::Meta::DragSpeed(0.05f)),
+				}),
 			}));
 		particleProperties.push_back(Properties::MakeWith<Color>("Color", "Color",
 			[](const Entity& e) { return e.GetComponent<PSC>().RenderingSettings.Color; },
@@ -516,7 +542,7 @@ namespace Index {
 			[](Entity& e, int32_t v) {
 				e.GetComponent<PSC>().RenderingSettings.MaxParticles = static_cast<uint32_t>(std::max(1, v));
 			},
-			Properties::Meta::Clamp(1.0, 10000.0, 1.0f)));
+			Properties::Meta::DragSpeed(1.0f)));
 		particleProperties.push_back(Properties::MakeWith<int16_t>("SortingOrder", "Sorting Order",
 			[](const Entity& e) { return e.GetComponent<PSC>().RenderingSettings.SortingOrder; },
 			[](Entity& e, int16_t v) { e.GetComponent<PSC>().RenderingSettings.SortingOrder = v; }));

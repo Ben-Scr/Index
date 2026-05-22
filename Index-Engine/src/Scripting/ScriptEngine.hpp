@@ -77,6 +77,15 @@ namespace Index {
 		// framebuffer-size callback.
 		static void RaiseWindowResize();
 
+		// Editor-only signal — invoked by ImGuiEditorLayer when leaving
+		// play mode, before the pre-play scene snapshot is restored.
+		// Routes into ScriptInstanceManager.OnPlayModeExited, which
+		// strips every static-event subscriber whose backing method
+		// lives in the user assembly and logs a warning naming the
+		// count. Safe to call from native runtime builds too — when
+		// the script engine isn't initialized the call is a no-op.
+		static void OnPlayModeExited();
+
 		static uint32_t CreateGameSystemInstance(const std::string& className, const std::string& sceneName);
 		static void DestroyGameSystemInstance(uint32_t handle);
 		static void InvokeGameSystemStart(uint32_t handle);

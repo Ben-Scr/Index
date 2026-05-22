@@ -1256,6 +1256,8 @@ namespace Index {
 				GetFloatMember(*cameraValue, "clearG", 0.1f),
 				GetFloatMember(*cameraValue, "clearB", 0.1f),
 				GetFloatMember(*cameraValue, "clearA", 1.0f)));
+			camera.SetPostProcessingEnabled(GetBoolMember(*cameraValue, "postProcessing", true));
+			camera.SetOcclusionCullingEnabled(GetBoolMember(*cameraValue, "occlusionCulling", true));
 		}
 
 		if (const Value* bodyValue = GetObjectMember(entityValue, "FastBody2D")) {
@@ -1311,17 +1313,23 @@ namespace Index {
 			particleSystem.EmissionSettings.EmissionSpace = static_cast<ParticleSystem2DComponent::Space>(
 				GetIntMember(*particleValue, "emissionSpace", static_cast<int>(ParticleSystem2DComponent::Space::World)));
 
-			if (GetIntMember(*particleValue, "shapeType", 0) == 0) {
+			const int shapeType = GetIntMember(*particleValue, "shapeType", 0);
+			if (shapeType == 0) {
 				ParticleSystem2DComponent::CircleParams circle;
 				circle.Radius = GetFloatMember(*particleValue, "radius", 1.0f);
 				circle.IsOnCircle = GetBoolMember(*particleValue, "isOnCircle", false);
 				particleSystem.Shape = circle;
 			}
-			else {
+			else if (shapeType == 1) {
 				ParticleSystem2DComponent::SquareParams square;
 				square.HalfExtends.x = GetFloatMember(*particleValue, "halfExtendsX", 1.0f);
 				square.HalfExtends.y = GetFloatMember(*particleValue, "halfExtendsY", 1.0f);
 				particleSystem.Shape = square;
+			}
+			else {
+				ParticleSystem2DComponent::EdgeParams edge;
+				edge.Length = GetFloatMember(*particleValue, "edgeLength", 1.0f);
+				particleSystem.Shape = edge;
 			}
 
 			particleSystem.RenderingSettings.MaxParticles =
@@ -1847,6 +1855,8 @@ namespace Index {
 				GetFloatMember(componentValue, "clearG", 0.1f),
 				GetFloatMember(componentValue, "clearB", 0.1f),
 				GetFloatMember(componentValue, "clearA", 1.0f)));
+			camera.SetPostProcessingEnabled(GetBoolMember(componentValue, "postProcessing", true));
+			camera.SetOcclusionCullingEnabled(GetBoolMember(componentValue, "occlusionCulling", true));
 			return true;
 		}
 
@@ -1914,17 +1924,23 @@ namespace Index {
 			particleSystem.EmissionSettings.EmissionSpace = static_cast<ParticleSystem2DComponent::Space>(
 				GetIntMember(componentValue, "emissionSpace", static_cast<int>(ParticleSystem2DComponent::Space::World)));
 
-			if (GetIntMember(componentValue, "shapeType", 0) == 0) {
+			const int shapeType = GetIntMember(componentValue, "shapeType", 0);
+			if (shapeType == 0) {
 				ParticleSystem2DComponent::CircleParams circle;
 				circle.Radius = GetFloatMember(componentValue, "radius", 1.0f);
 				circle.IsOnCircle = GetBoolMember(componentValue, "isOnCircle", false);
 				particleSystem.Shape = circle;
 			}
-			else {
+			else if (shapeType == 1) {
 				ParticleSystem2DComponent::SquareParams square;
 				square.HalfExtends.x = GetFloatMember(componentValue, "halfExtendsX", 1.0f);
 				square.HalfExtends.y = GetFloatMember(componentValue, "halfExtendsY", 1.0f);
 				particleSystem.Shape = square;
+			}
+			else {
+				ParticleSystem2DComponent::EdgeParams edge;
+				edge.Length = GetFloatMember(componentValue, "edgeLength", 1.0f);
+				particleSystem.Shape = edge;
 			}
 
 			particleSystem.RenderingSettings.MaxParticles =

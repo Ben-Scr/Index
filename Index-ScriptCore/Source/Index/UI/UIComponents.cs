@@ -1,5 +1,6 @@
 using Index;
 using Index.Interop;
+using static System.Net.Mime.MediaTypeNames;
 
 namespace Index.UI;
 
@@ -1100,6 +1101,17 @@ public class Dropdown : Component
         foreach (string opt in options)
         {
             AddOption(opt ?? "");
+        }
+    }
+    public void SetOptions<T>(bool ignoreEvent = true) where T : Enum
+    {
+        ClearOptions();
+
+        string[] options = Enum.GetNames(typeof(T));
+
+        for (int i = 0; i < options.Length; i++)
+        {
+            InternalCalls.Dropdown_AddOption(RequireComponent<Dropdown>(), options[i] ?? "");
         }
     }
 

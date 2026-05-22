@@ -95,6 +95,7 @@ namespace Index {
 		const InspectorBinding bindings[] = {
 			// Hybrid: properties + extras (texture preview, runtime read-outs).
 			Bind<SpriteRendererComponent>(DrawSpriteRendererInspector),
+			Bind<Transform2DComponent>(DrawTransform2DInspector),
 			Bind<Camera2DComponent>(DrawCamera2DInspector),
 			Bind<FastBody2DComponent>(DrawFastBody2DInspector),
 

@@ -48,6 +48,7 @@
 #include <iterator>
 #include <limits>
 #include <sstream>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1154,6 +1155,8 @@ namespace Index {
 				cameraValue.AddMember("clearG", Value(clearColor.g));
 				cameraValue.AddMember("clearB", Value(clearColor.b));
 				cameraValue.AddMember("clearA", Value(clearColor.a));
+				cameraValue.AddMember("postProcessing", Value(camera.IsPostProcessingEnabled()));
+				cameraValue.AddMember("occlusionCulling", Value(camera.IsOcclusionCullingEnabled()));
 				entityValue.AddMember("Camera2D", std::move(cameraValue));
 			}
 
@@ -1185,8 +1188,12 @@ namespace Index {
 			if (registry.all_of<ParticleSystem2DComponent>(entity)) {
 				auto& particleSystem = registry.get<ParticleSystem2DComponent>(entity);
 				Value particleValue = Value::MakeObject();
-				const int shapeType =
-					std::holds_alternative<ParticleSystem2DComponent::CircleParams>(particleSystem.Shape) ? 0 : 1;
+				const int shapeType = std::visit([](auto&& shape) -> int {
+					using T = std::decay_t<decltype(shape)>;
+					if constexpr (std::is_same_v<T, ParticleSystem2DComponent::CircleParams>) return 0;
+					else if constexpr (std::is_same_v<T, ParticleSystem2DComponent::SquareParams>) return 1;
+					else return 2;
+				}, particleSystem.Shape);
 
 				particleValue.AddMember("playOnAwake", Value(particleSystem.PlayOnAwake));
 				particleValue.AddMember("lifetime", Value(particleSystem.ParticleSettings.LifeTime));
@@ -1213,9 +1220,15 @@ namespace Index {
 					particleValue.AddMember("isOnCircle", Value(circle.IsOnCircle));
 				}
 				else {
-					const auto& square = std::get<ParticleSystem2DComponent::SquareParams>(particleSystem.Shape);
-					particleValue.AddMember("halfExtendsX", Value(square.HalfExtends.x));
-					particleValue.AddMember("halfExtendsY", Value(square.HalfExtends.y));
+					if (shapeType == 1) {
+						const auto& square = std::get<ParticleSystem2DComponent::SquareParams>(particleSystem.Shape);
+						particleValue.AddMember("halfExtendsX", Value(square.HalfExtends.x));
+						particleValue.AddMember("halfExtendsY", Value(square.HalfExtends.y));
+					}
+					else {
+						const auto& edge = std::get<ParticleSystem2DComponent::EdgeParams>(particleSystem.Shape);
+						particleValue.AddMember("edgeLength", Value(edge.Length));
+					}
 				}
 
 				particleValue.AddMember("maxParticles", Value(static_cast<int64_t>(particleSystem.RenderingSettings.MaxParticles)));

@@ -74,6 +74,16 @@ namespace Index {
 
 		bool SetActiveScene(const std::string& name);
 
+		// Reorders a loaded scene to a new position in the loaded-scenes list.
+		// `newIndex` is clamped to [0, GetLoadedSceneCount() - 1]. Returns
+		// true on a real reorder (false if the scene isn't loaded or the
+		// move is a no-op). The order affects: Entities-panel display order,
+		// Update / FixedUpdate / OnPreRender iteration order, and the
+		// fallback active-scene pick in RefreshActiveScene. Does NOT change
+		// which scene is active — m_ActiveScene tracks a pointer, not an
+		// index, so a reorder leaves the active selection intact.
+		bool MoveLoadedScene(const std::string& name, size_t newIndex);
+
 		bool HasSceneDefinition(const std::string& name) const;
 		bool IsSceneLoaded(const std::string& name) const;
 

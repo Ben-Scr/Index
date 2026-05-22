@@ -23,6 +23,9 @@
     "launcher.action.create_new_project": "Create New Project",
     "launcher.action.add_existing_project": "Add Existing Project",
     "launcher.action.settings": "Settings",
+    "launcher.action.open_selected": "Open",
+    "launcher.action.rename_selected": "Rename",
+    "launcher.action.delete_selected": "Delete",
 
     "launcher.list.empty.title": "No projects yet",
     "launcher.list.empty.subtitle": "Create a new project or add an existing one.",
@@ -31,8 +34,15 @@
 
     "launcher.context.info": "Info",
     "launcher.context.open_in_explorer": "Open in Explorer",
+    "launcher.context.copy_path": "Copy Path",
+    "launcher.context.rename": "Rename...",
     "launcher.context.remove_from_list": "Remove from List",
     "launcher.context.delete_project": "Delete Project...",
+
+    "launcher.rename.title": "Rename Project",
+    "launcher.rename.new_name": "New name:",
+    "launcher.rename.save": "Save",
+    "launcher.rename.cancel": "Cancel",
 
     "launcher.delete.title": "Delete Project?",
     "launcher.delete.message": "Delete project '{0}'?",
@@ -47,6 +57,7 @@
     "launcher.delete_final.confirm": "Permanently Delete",
 
     "launcher.create.title": "Create New Project",
+    "launcher.create.default_project_name": "New Game",
     "launcher.create.project_name": "Project Name:",
     "launcher.create.location": "Location:",
     "launcher.create.path_preview": "Path: {0}",
@@ -61,15 +72,24 @@
     "launcher.settings.current": "Current: {0}",
     "launcher.settings.engine_default_suffix": "  (engine default)",
     "launcher.settings.language": "Language",
+    "launcher.settings.language.auto_format": "Auto ({0})",
     "launcher.settings.language.not_installed_suffix": " (not installed)",
     "launcher.settings.language.downloading": "Downloading {0}…",
     "launcher.settings.language.download_failed": "Download failed: {0}",
     "launcher.settings.language.restart_required": "Restart the launcher to render CJK characters.",
     "launcher.settings.language.restart_now": "Restart now",
+    "launcher.settings.theme": "Theme",
+    "launcher.settings.theme.auto_format": "Auto ({0})",
+    "launcher.settings.theme.dark": "Dark",
+    "launcher.settings.theme.light": "Light",
+    "launcher.settings.font_scale": "Font size",
+    "launcher.settings.font_scale.auto_format": "Auto ({0}%)",
     "launcher.settings.browse": "Browse...",
     "launcher.settings.save": "Save",
     "launcher.settings.cancel": "Cancel",
 
+    "launcher.error.title": "Error",
+    "launcher.error.ok": "OK",
     "launcher.error.project_already_open": "Project already open",
 
     "launcher.info.title": "Project Info",

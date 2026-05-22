@@ -52,6 +52,18 @@ namespace Index {
 		INDEX_API const std::vector<LanguageInfo>& GetAvailableLanguages();
 		INDEX_API const std::string& GetCurrentLanguage();
 
+		// Best installed match for the operating system's UI language —
+		// e.g. "de" on a German Windows install, "en" otherwise. Probes
+		// the OS via GetUserDefaultLocaleName (Windows) or $LANG /
+		// $LC_MESSAGES (POSIX), normalises to the bare language tag
+		// (strips region/encoding), and returns it only if an Installed
+		// entry exists for that code. Falls back to "en" so callers can
+		// pass the result straight into SetLanguage without a null check.
+		// The display name of that language can be looked up via
+		// GetAvailableLanguages() — used by the launcher's "Auto (Deutsch)"
+		// combo label.
+		INDEX_API std::string GetSystemLanguage();
+
 		// If the language is `Installed`, swaps the active table immediately.
 		// If `Available`, queues a download and applies the switch once the
 		// download completes (callers see the dropdown update next frame as

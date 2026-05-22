@@ -1,6 +1,7 @@
 #include "EditorPreferencesPanel.hpp"
 
 #include "Assets/AssetKind.hpp"
+#include "Core/Application.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Editor/ExternalEditorInfo.hpp"
@@ -36,10 +37,25 @@ namespace Index {
 			switch (mode) {
 				case EditorThemeMode::Dark:          return "Dark";
 				case EditorThemeMode::Light:         return "Light";
-				case EditorThemeMode::SystemDefault: return "System Default";
+				case EditorThemeMode::SystemDefault:
+					return EditorPreferences::GetResolvedThemeMode(EditorThemeMode::SystemDefault) == EditorThemeMode::Light
+						? "Auto (Light)"
+						: "Auto (Dark)";
 				case EditorThemeMode::Custom:        return "Custom";
 			}
-			return "Dark";
+			return "Auto (Dark)";
+		}
+
+		const char* FontZoomLabel(int percent) {
+			switch (percent) {
+				case 75:  return "75%";
+				case 100: return "100%";
+				case 125: return "125%";
+				case 150: return "150%";
+				case 175: return "175%";
+				case 200: return "200%";
+			}
+			return "100%";
 		}
 	}
 
@@ -100,6 +116,7 @@ namespace Index {
 		// Layout modals are owned by this panel (not the menubar) so the
 		// OpenPopup / BeginPopupModal id-stack match. Render them at the
 		// panel's Begin/End scope, after the tab bar.
+		RenderFontRestartModal();
 		RenderLayoutModals();
 
 		ImGui::End();
@@ -114,9 +131,9 @@ namespace Index {
 		ImGui::SetNextItemWidth(220.0f);
 		if (ImGui::BeginCombo("##EditorThemeCombo", ThemeModeLabel(currentMode))) {
 			constexpr EditorThemeMode kModes[] = {
+				EditorThemeMode::SystemDefault,
 				EditorThemeMode::Dark,
 				EditorThemeMode::Light,
-				EditorThemeMode::SystemDefault,
 				EditorThemeMode::Custom,
 			};
 			for (EditorThemeMode mode : kModes) {
@@ -131,9 +148,9 @@ namespace Index {
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip(
+				"Auto: follow the Windows app theme.\n"
 				"Dark: Index's dark palette + sizing.\n"
 				"Light: stock ImGui light palette.\n"
-				"System Default: follow the Windows app theme.\n"
 				"Custom: enable the per-color editors below.");
 		}
 
@@ -194,7 +211,11 @@ namespace Index {
 		// Consume any selection raised on the previous frame.
 		if (auto pending = ReferencePicker::ConsumeSelection(k_FontPickerKey); pending) {
 			const uint64_t picked = ParseUInt64String(*pending);
+			const uint64_t before = EditorPreferences::GetEditorFontAssetId();
 			EditorPreferences::SetEditorFontAssetId(picked != 0 ? picked : k_DefaultFontAssetId);
+			if (EditorPreferences::GetEditorFontAssetId() != before) {
+				m_OpenFontRestartRequest = true;
+			}
 		}
 
 		bool fontMissing = false;
@@ -214,30 +235,65 @@ namespace Index {
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Reset##EditorFontReset")) {
+			const uint64_t before = EditorPreferences::GetEditorFontAssetId();
 			EditorPreferences::SetEditorFontAssetId(k_DefaultFontAssetId);
+			if (EditorPreferences::GetEditorFontAssetId() != before) {
+				m_OpenFontRestartRequest = true;
+			}
 		}
 		ImGui::PopID();
 		ImGui::TextDisabled("Takes effect after restarting the editor.");
 
 		ImGui::Spacing();
 
-		// Font size — applies live (deferred atlas rebuild on the next
-		// OnPreRender). No restart caveat.
-		ImGui::PushID("EditorFontSize");
-		int fontSize = static_cast<int>(EditorPreferences::GetEditorFontSize() + 0.5f);
+		ImGui::PushID("EditorFontZoom");
+		int fontZoom = EditorPreferences::GetEditorFontZoomPercent();
 		ImGui::SetNextItemWidth(280.0f);
-		if (ImGui::SliderInt("Font Size",
-				&fontSize,
-				static_cast<int>(EditorPreferences::k_MinEditorFontSize),
-				static_cast<int>(EditorPreferences::k_MaxEditorFontSize),
-				"%d px")) {
-			EditorPreferences::SetEditorFontSize(static_cast<float>(fontSize));
+		if (ImGui::BeginCombo("Font Size", FontZoomLabel(fontZoom))) {
+			for (int percent = EditorPreferences::k_MinEditorFontZoomPercent;
+				percent <= EditorPreferences::k_MaxEditorFontZoomPercent;
+				percent += EditorPreferences::k_EditorFontZoomStepPercent)
+			{
+				const bool selected = (fontZoom == percent);
+				if (ImGui::Selectable(FontZoomLabel(percent), selected)) {
+					EditorPreferences::SetEditorFontZoomPercent(percent);
+					fontZoom = percent;
+				}
+				if (selected) ImGui::SetItemDefaultFocus();
+			}
+			ImGui::EndCombo();
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Reset##EditorFontSizeReset")) {
-			EditorPreferences::SetEditorFontSize(k_IndexImGuiFontSize);
+		if (ImGui::Button("Reset##EditorFontZoomReset")) {
+			EditorPreferences::SetEditorFontZoomPercent(
+				EditorPreferences::k_DefaultEditorFontZoomPercent);
 		}
 		ImGui::PopID();
+	}
+
+	void EditorPreferencesPanel::RenderFontRestartModal() {
+		if (m_OpenFontRestartRequest) {
+			ImGui::OpenPopup("Restart Editor?");
+			m_OpenFontRestartRequest = false;
+		}
+
+		ImGuiUtils::CenterNextModal();
+		if (ImGui::BeginPopupModal("Restart Editor?", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+			ImGui::TextWrapped(
+				"The editor font will change after restarting the editor.\n\n"
+				"Restart now?");
+			ImGui::Spacing();
+			if (ImGui::Button("Restart Now", ImVec2(120.0f, 0.0f))) {
+				ImGui::CloseCurrentPopup();
+				Application::Reload();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Later", ImVec2(90.0f, 0.0f))) {
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 
 	void EditorPreferencesPanel::RenderScriptingTab() {

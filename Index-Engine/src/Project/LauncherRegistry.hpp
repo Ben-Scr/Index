@@ -16,6 +16,12 @@ namespace Index {
 		void AddProject(const std::string& name, const std::string& path);
 		void RemoveProject(const std::string& path);
 		void UpdateLastOpened(const std::string& path);
+		// Updates the display name of the registry entry identified by
+		// `path` and returns true on success. Does NOT modify the project's
+		// on-disk index-project.json — this is purely the launcher's label
+		// for the project. Returns false if no entry matches `path` or
+		// `newName` is empty.
+		bool RenameProject(const std::string& path, const std::string& newName);
 		void ValidateAll();
 
 	private:

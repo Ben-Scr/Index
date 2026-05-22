@@ -2,6 +2,8 @@
 
 #include "Core/Layer.hpp"
 
+#include <cstdint>
+
 namespace Index {
 
 	// Owns the ImGui context for an Index application. Push this Layer first (before
@@ -9,6 +11,11 @@ namespace Index {
 	// NewFrame / Render calls around all other Layers' UI work.
 	class ImGuiContextLayer : public Layer {
 	public:
+		enum class Theme : std::uint8_t {
+			Dark = 0,
+			Light = 1,
+		};
+
 		using Layer::Layer;
 
 		void OnAttach(Application& app) override;
@@ -16,8 +23,10 @@ namespace Index {
 		void OnPreRender(Application& app) override;
 		void OnPostRender(Application& app) override;
 
+		static Theme GetSystemTheme();
+		static void ApplyIndexTheme(Theme theme);
+
 	private:
-		static void ApplyIndexTheme();
 		bool m_IsInitialized = false;
 	};
 

@@ -74,6 +74,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <unordered_set>
 
 namespace Index {
@@ -788,10 +789,10 @@ namespace Index {
 		// Only relevant while a detached prefab scene is being edited.
 		if (!m_PrefabEditScene) return;
 		if (!EditorPreferences::GetAutoSavePrefabs()) return;
-		// Match the rest of the editor's save gates — play-mode edits
-		// (including prefab tweaks made mid-Play) are deliberately
-		// discarded on Stop, so auto-saving them would surprise the user.
-		if (Application::GetIsPlaying()) return;
+		// Prefab edits during play mode are persistent: the detached prefab
+		// scene is independent of the active play scene, so auto-saving is
+		// safe and matches the user's expectation that prefab work is real
+		// authoring work even when play mode happens to be running.
 
 		// Authoritative dirty bit lives on the detached scene; every
 		// component edit, add, remove, parent, and entity create/destroy
@@ -859,10 +860,26 @@ namespace Index {
 
 		if (ImGui::BeginMenu("Application")) {
 			if (ImGui::MenuItem("Save Scene", "Ctrl+S", false, !Application::GetIsPlaying())) {
+				// Mirror the Ctrl+S handler: save every dirty loaded scene,
+				// falling back to the active scene when nothing is dirty so
+				// the menu still has its "force-save current scene" behavior.
+				// Without the loop a menu save could silently skip an
+				// additive scene the user has been editing.
 				IndexProject* project = ProjectManager::GetCurrentProject();
 				if (project) {
-					std::string scenePath = project->GetSceneFilePath(scene.GetName());
-					SceneSerializer::SaveToFile(scene, scenePath);
+					bool savedAny = false;
+					for (auto& weakScene : SceneManager::Get().GetLoadedScenes()) {
+						auto loadedScene = weakScene.lock();
+						if (!loadedScene || !loadedScene->IsDirty()) continue;
+						std::string scenePath = project->GetSceneFilePath(loadedScene->GetName());
+						if (SceneSerializer::SaveToFile(*loadedScene, scenePath)) {
+							savedAny = true;
+						}
+					}
+					if (!savedAny) {
+						std::string scenePath = project->GetSceneFilePath(scene.GetName());
+						SceneSerializer::SaveToFile(scene, scenePath);
+					}
 					project->LastOpenedScene = scene.GetName();
 					project->Save();
 				}
@@ -1017,14 +1034,12 @@ namespace Index {
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
 
 		if (!isPlaying) {
-			// Play mode plays the active scene. Entering it while the editor
-			// is showing a detached prefab edit scene leaves the user with a
-			// disorienting view (prefab still showing, but game logic running
-			// against a scene they can't see). Refuse the action and surface
-			// the reason via tooltip — the user must commit / discard prefab
-			// edits first.
-			const bool blockedByPrefabEdit = IsInPrefabEditMode();
-			const bool playButtonDisabled = m_PlayModeRecompilePending || blockedByPrefabEdit;
+			// Play mode is allowed even while a prefab is open for editing:
+			// the prefab edit scene is detached from SceneManager so play
+			// runs against the active scene independently. The user keeps
+			// the editor viewport on the prefab and the Game View shows the
+			// running scene — both panels stay live.
+			const bool playButtonDisabled = m_PlayModeRecompilePending;
 			if (playButtonDisabled) {
 				ImGui::BeginDisabled();
 			}
@@ -1038,12 +1053,7 @@ namespace Index {
 				ImGui::EndDisabled();
 			}
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-				if (blockedByPrefabEdit) {
-					ImGui::SetTooltip("Exit prefab edit mode before entering play.");
-				}
-				else {
-					ImGui::SetTooltip("Play (Enter playmode)");
-				}
+				ImGui::SetTooltip("Play (Enter playmode)");
 			}
 		}
 		else {
@@ -1148,22 +1158,32 @@ namespace Index {
 		// entt id and dispatch a stale click against an unrelated restored entity.
 		m_PressedEntity = entt::null;
 
+		// Prefab-edit mode keeps its own selection & hierarchy state in the
+		// detached prefab scene, which play mode doesn't touch. Skip the
+		// selection clear + UUID restore dance; otherwise stopping play
+		// mode while a prefab is open would wipe the user's prefab
+		// selection and m_EntityOrder, surprising them.
+		const bool inPrefabEdit = IsInPrefabEditMode();
+
 		const bool wasSceneNodeSelected = m_IsSceneNodeSelected;
 		uint64_t selectedUUID = 0;
 		Scene* active = SceneManager::Get().GetActiveScene();
-		if (active && m_SelectedEntity != entt::null && active->IsValid(m_SelectedEntity)
+		if (!inPrefabEdit
+			&& active && m_SelectedEntity != entt::null && active->IsValid(m_SelectedEntity)
 			&& active->HasComponent<UUIDComponent>(m_SelectedEntity)) {
 			selectedUUID = static_cast<uint64_t>(active->GetComponent<UUIDComponent>(m_SelectedEntity).Id);
 		}
 
-		m_SelectedEntity = entt::null;
-		m_SelectedEntities.clear();
-		m_SelectedEntitySet.clear();
-		++m_SelectionVersion;
-		m_LastEntitySelectionIndex = -1;
-		m_IsSceneNodeSelected = false;
-		m_RenamingEntity = entt::null;
-		m_EntityOrder.clear(); m_EntityOrderDirty = true;
+		if (!inPrefabEdit) {
+			m_SelectedEntity = entt::null;
+			m_SelectedEntities.clear();
+			m_SelectedEntitySet.clear();
+			++m_SelectionVersion;
+			m_LastEntitySelectionIndex = -1;
+			m_IsSceneNodeSelected = false;
+			m_RenamingEntity = entt::null;
+			m_EntityOrder.clear(); m_EntityOrderDirty = true;
+		}
 		m_PlayModeRecompilePending = false;
 
 		ApplicationEditorAccess::SetPlaymodePaused(false);
@@ -1175,6 +1195,24 @@ namespace Index {
 				SceneSerializer::LoadFromFile(*active, m_PlayModeScenePath);
 			}
 			m_PlayModeScenePath.clear();
+		}
+
+		// Sweep any static-event subscriber whose backing method lives in
+		// the user assembly. Runs AFTER the scene reload so every
+		// EntityScript.OnDisable has had its chance to `-=` first — a
+		// script that properly pairs `+=` in OnEnable with `-=` in
+		// OnDisable should leave zero leftovers and trigger no warning.
+		// Without this ordering the sweep fires before SceneSerializer::
+		// LoadFromFile tears down play-mode entities (which is what
+		// invokes the InvokeOnDisable thunks), so well-behaved scripts
+		// still got the warning. Anything still attached at this point
+		// is genuinely leaking — the managed side logs a "N registered
+		// event(s) still active" warning pointing the user at the
+		// OnEnable / OnDisable pattern.
+		ScriptEngine::OnPlayModeExited();
+
+		if (inPrefabEdit) {
+			return;
 		}
 
 		if (selectedUUID == 0) {
@@ -2182,6 +2220,23 @@ namespace Index {
 			return false;
 		}
 
+		// Prefab edit-mode invariant: prefab files are single-rooted —
+		// SceneSerializer::SaveEntityToFile only walks the prefab root's
+		// subtree, so any entity outside that subtree silently disappears on
+		// save. Refuse two operations that would break the invariant: (1)
+		// unparenting any child to root (would create a second root), and
+		// (2) moving the prefab root itself under another entity (would
+		// orphan its subtree). Together these keep every non-root entity
+		// inside the root's subtree at all times.
+		if (IsInPrefabEditMode() && m_PrefabEditScene && &scene == m_PrefabEditScene.get()) {
+			if (!parent.IsValid()) {
+				return false;
+			}
+			if (childHandle == m_PrefabEditRootEntity) {
+				return false;
+			}
+		}
+
 		Entity child = scene.GetEntity(childHandle);
 		if (parent.IsValid() && (parent.GetHandle() == childHandle || child.IsAncestorOf(parent))) {
 			return false;
@@ -2215,6 +2270,62 @@ namespace Index {
 		}
 
 		return true;
+	}
+
+	std::vector<EntityHandle> ImGuiEditorLayer::MigrateEntitiesToScene(Scene& sourceScene, Scene& targetScene,
+		const std::vector<EntityHandle>& sourceRoots, Entity targetParent) {
+		std::vector<EntityHandle> migratedRoots;
+		if (&sourceScene == &targetScene) {
+			IDX_CORE_WARN_TAG("Editor", "MigrateEntitiesToScene called with sourceScene == targetScene; ignoring");
+			return migratedRoots;
+		}
+		if (sourceRoots.empty()) return migratedRoots;
+
+		// Snapshot first, destroy after — destroying a parent before its
+		// children's snapshot finishes would dangle handles in the JSON
+		// references. The clipboard format serializes the full subtree per
+		// root so child entities don't need to be passed separately.
+		std::vector<Json::Value> snapshots;
+		std::vector<EntityHandle> consumed;
+		snapshots.reserve(sourceRoots.size());
+		consumed.reserve(sourceRoots.size());
+		for (EntityHandle root : sourceRoots) {
+			if (!sourceScene.IsValid(root)) continue;
+			Json::Value snapshot = SceneSerializer::SerializeEntityForClipboard(sourceScene, root);
+			if (!snapshot.IsObject()) continue;
+			snapshots.push_back(std::move(snapshot));
+			consumed.push_back(root);
+		}
+		if (snapshots.empty()) return migratedRoots;
+
+		migratedRoots.reserve(snapshots.size());
+		for (Json::Value& snapshot : snapshots) {
+			EntityHandle clone = SceneSerializer::DeserializeEntityFromValue(targetScene, snapshot);
+			if (clone == entt::null) continue;
+			if (targetParent.IsValid() && targetScene.IsValid(targetParent.GetHandle())) {
+				Entity cloneEntity = targetScene.GetEntity(clone);
+				cloneEntity.SetParent(targetParent);
+			}
+			migratedRoots.push_back(clone);
+		}
+
+		// Destroy originals only after every clone landed safely. If a
+		// deserialize aborted we still tear down the corresponding original
+		// because the user gesture was "move", not "copy" — leaving the
+		// original behind on a partial failure would silently duplicate the
+		// entity instead.
+		for (EntityHandle source : consumed) {
+			if (sourceScene.IsValid(source)) {
+				sourceScene.DestroyEntity(source);
+			}
+		}
+
+		if (!migratedRoots.empty()) {
+			EnsureEditorUniqueEntityNames(targetScene, migratedRoots);
+			sourceScene.MarkDirty();
+			targetScene.MarkDirty();
+		}
+		return migratedRoots;
 	}
 
 	std::vector<EntityHandle> ImGuiEditorLayer::ResolveDraggedHierarchyEntities(Scene& scene, EntityHandle primary) const {
@@ -2590,18 +2701,24 @@ namespace Index {
 			// flag (e.g. the breadcrumb) stays consistent.
 			m_PrefabEditDirty = m_PrefabEditScene->IsDirty();
 
-			const std::string prefabName = std::filesystem::path(m_PrefabEditPath).filename().string();
-			const std::string breadcrumb = m_PrefabEditDirty
-				? std::string("Editing: ") + prefabName + " *"
-				: std::string("Editing: ") + prefabName;
+			// Stem only (no .prefab extension) — toolbar context already
+			// makes "this is a prefab" obvious, so the extension would
+			// just be visual noise. Dirty asterisk is suppressed when
+			// auto-save is on because the user can't act on it: the next
+			// auto-save tick clears the dirty bit, so showing "*" would
+			// flicker for one frame on every edit.
+			const std::string prefabName = std::filesystem::path(m_PrefabEditPath).stem().string();
+			const bool showDirtyMark = m_PrefabEditDirty && !EditorPreferences::GetAutoSavePrefabs();
+			const std::string title = showDirtyMark ? (prefabName + " *") : prefabName;
 
-			if (ImGui::SmallButton("< Back")) {
-				// Dirty-aware back: prompt to save / discard / cancel
-				// when the prefab has unsaved changes; close cleanly
-				// otherwise. The discard prompt is rendered at the
-				// dockspace level (ImGuiEditorLayerChrome) so the modal
-				// renders on top of the hierarchy panel rather than
-				// trapped inside it.
+			// Back button: just "<". Dirty-aware — prompts to save /
+			// discard / cancel when the prefab has unsaved changes;
+			// closes cleanly otherwise. The discard prompt is rendered
+			// at the dockspace level (ImGuiEditorLayerChrome) so the
+			// modal lands on top of the hierarchy panel rather than
+			// trapped inside it.
+			const float backButtonStartX = ImGui::GetCursorPosX();
+			if (ImGui::SmallButton("<")) {
 				if (m_PrefabEditDirty) {
 					m_ShowPrefabEditDiscardPrompt = true;
 				}
@@ -2609,19 +2726,21 @@ namespace Index {
 					ClosePrefabEditing(false);
 				}
 			}
+
+			// Center the prefab name on the same line as the back button.
+			// SameLine + SetCursorPosX moves the cursor for the next item;
+			// we measure GetContentRegionAvail before the SameLine so the
+			// width reflects the entire row (including the button's slot)
+			// rather than just what's left after it.
+			const float rowEndX = backButtonStartX + ImGui::GetContentRegionAvail().x;
+			const float textWidth = ImGui::CalcTextSize(title.c_str()).x;
+			const float centerX = backButtonStartX + (rowEndX - backButtonStartX - textWidth) * 0.5f;
 			ImGui::SameLine();
-			// Save = persist to disk + propagate to live instances, BUT
-			// stay in prefab-edit mode so the user can keep iterating.
-			// Disabled when nothing has changed since the last save —
-			// avoids touching the file's mtime on a no-op save (which
-			// would otherwise confuse hot-reload watchers).
-			ImGui::BeginDisabled(!m_PrefabEditDirty);
-			if (ImGui::SmallButton("Save")) {
-				SavePrefabEditChanges();
-			}
-			ImGui::EndDisabled();
-			ImGui::SameLine();
-			ImGui::TextUnformatted(breadcrumb.c_str());
+			// Guard against very narrow panels where the back button would
+			// overlap the centered text; fall back to a normal SameLine gap.
+			const float minCenterX = ImGui::GetCursorPosX();
+			ImGui::SetCursorPosX(centerX > minCenterX ? centerX : minCenterX);
+			ImGui::TextUnformatted(title.c_str());
 			ImGui::Separator();
 		}
 
@@ -2657,77 +2776,217 @@ namespace Index {
 			}
 		}
 		std::string sceneToRemove;
+		// Deferred scene-reorder. The drop site can't call
+		// SceneManager::MoveLoadedScene mid-iteration because the snapshot
+		// vector (scenesToShow) and m_LoadedScenes are read by every
+		// subsequent loop body. We record the gesture and apply it after
+		// the loop completes — same pattern as sceneToRemove.
+		struct PendingSceneReorder {
+			std::string SourceName;
+			size_t TargetIndex;
+		};
+		std::optional<PendingSceneReorder> pendingSceneReorder;
 
-		for (Scene* scenePtrRaw : scenesToShow) {
+		for (size_t sceneIdx = 0; sceneIdx < scenesToShow.size(); ++sceneIdx) {
+			Scene* scenePtrRaw = scenesToShow[sceneIdx];
 			if (!scenePtrRaw) continue;
 			Scene& scene = *scenePtrRaw;
 
 			const uint64_t sceneIdValue = static_cast<uint64_t>(scene.GetSceneId());
 			ImGui::PushID(reinterpret_cast<const void*>(static_cast<uintptr_t>(sceneIdValue)));
 
-			ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow
-				| ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed;
-			const std::string fullSceneLabel = scene.IsDirty() ? scene.GetName() + " *" : scene.GetName();
-			bool sceneLabelTruncated = false;
-			const std::string sceneLabel = ImGuiUtils::Ellipsize(fullSceneLabel, ImGui::GetContentRegionAvail().x, &sceneLabelTruncated);
-			// Use stable str_id (not the label) so the fold state survives the
-			// dirty-asterisk toggle that flips on save. Label is supplied via fmt.
-			bool sceneOpen = ImGui::TreeNodeEx("##scene_node", sceneFlags, "%s", sceneLabel.c_str());
-			if (sceneLabelTruncated && ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("%s", fullSceneLabel.c_str());
-			}
-			// Any interaction with this scene's row marks it as the
-			// "create entity" target. Activation covers left-click,
-			// expand-toggle, and right-click — exactly the actions
-			// where the user is signalling "I'm working on this scene".
-			if (!IsInPrefabEditMode() && ImGui::IsItemActivated()) {
-				m_LastInteractedSceneName = scene.GetName();
-			}
-			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-				SelectSceneNode();
-			}
+			// Prefab-edit mode skips the scene-name tree node entirely. The
+			// detached prefab scene has no user-facing identity (it's named
+			// "##PrefabEdit"), the prefab toolbar above already shows the
+			// prefab name, and the scene-header drop target (which unparents
+			// onto root) would create a second root in a prefab that must
+			// stay single-rooted. Entities render directly under the toolbar.
+			bool sceneOpen = true;
+			if (!IsInPrefabEditMode()) {
+				ImGuiTreeNodeFlags sceneFlags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_OpenOnArrow
+					| ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed;
+				const std::string fullSceneLabel = scene.IsDirty() ? scene.GetName() + " *" : scene.GetName();
+				bool sceneLabelTruncated = false;
+				const std::string sceneLabel = ImGuiUtils::Ellipsize(fullSceneLabel, ImGui::GetContentRegionAvail().x, &sceneLabelTruncated);
+				// Use stable str_id (not the label) so the fold state survives the
+				// dirty-asterisk toggle that flips on save. Label is supplied via fmt.
+				sceneOpen = ImGui::TreeNodeEx("##scene_node", sceneFlags, "%s", sceneLabel.c_str());
+				if (sceneLabelTruncated && ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s", fullSceneLabel.c_str());
+				}
+				// Capture the header rect for the SCENE drag-drop zone
+				// indicator (top/bottom line drawn when reordering scenes).
+				// Done immediately after TreeNodeEx so subsequent ImGui
+				// calls don't shift the "last item" rect underneath us.
+				const ImVec2 sceneItemRectMin = ImGui::GetItemRectMin();
+				const ImVec2 sceneItemRectMax = ImGui::GetItemRectMax();
+				// Any interaction with this scene's row marks it as the
+				// "create entity" target. Activation covers left-click,
+				// expand-toggle, and right-click — exactly the actions
+				// where the user is signalling "I'm working on this scene".
+				if (ImGui::IsItemActivated()) {
+					m_LastInteractedSceneName = scene.GetName();
+				}
+				if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+					SelectSceneNode();
+				}
 
-			// Drop a dragged entity onto the scene header to unparent it
-			// (make it a root again). Multi-selection: every selected
-			// entity that has a parent is detached.
-			if (ImGui::BeginDragDropTarget()) {
-				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
-					auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
-					EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
-					std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
-					bool didMove = false;
-					for (EntityHandle h : draggedHandles) {
-						Entity draggedEntity = scene.GetEntity(h);
-						if (!draggedEntity.HasParent()) continue;
-						if (SetEntityParentPreservingWorld(scene, h, Entity::Null)) {
-							didMove = true;
+				// Drag source — the scene header itself is draggable so the
+				// user can reorder scenes within the panel. Only one scene
+				// loaded ⇒ no reorder is possible; suppress the source so a
+				// drag in that case doesn't spin up a useless tooltip.
+				if (scenesToShow.size() > 1 && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+					HierarchySceneDragData sceneDrag{ sceneIdValue };
+					ImGui::SetDragDropPayload("HIERARCHY_SCENE", &sceneDrag, sizeof(sceneDrag));
+					ImGui::Text("Move scene: %s", scene.GetName().c_str());
+					ImGui::EndDragDropSource();
+				}
+
+				// Drop target — three payload types overlap on the header:
+				//   • HIERARCHY_SCENE: reorder relative to this scene.
+				//     Top half ⇒ insert above; bottom half ⇒ insert below.
+				//   • HIERARCHY_ENTITY (same scene): unparent the dragged
+				//     entities (existing behavior).
+				//   • HIERARCHY_ENTITY (different scene): migrate the
+				//     entities into this scene at root level.
+				if (ImGui::BeginDragDropTarget()) {
+					// Visual indicator for an in-flight SCENE drag — thin
+					// line at the top or bottom edge of the header showing
+					// which slot will receive the move. Drawn before the
+					// AcceptDragDropPayload call so the indicator renders
+					// while the drag is still hovering (not just on drop).
+					const float mouseY = ImGui::GetMousePos().y;
+					const float headerMidY = (sceneItemRectMin.y + sceneItemRectMax.y) * 0.5f;
+					const bool sceneInTopZone = mouseY < headerMidY;
+					if (const ImGuiPayload* peek = ImGui::GetDragDropPayload()) {
+						if (peek->IsDataType("HIERARCHY_SCENE")) {
+							const float lineY = sceneInTopZone ? sceneItemRectMin.y : sceneItemRectMax.y;
+							const ImU32 color = ImGui::GetColorU32(ImGuiCol_DragDropTarget);
+							ImGui::GetWindowDrawList()->AddLine(
+								ImVec2(sceneItemRectMin.x, lineY),
+								ImVec2(sceneItemRectMax.x, lineY),
+								color, 2.0f);
 						}
 					}
-					if (didMove) {
-						// Force a re-DFS — reparenting changes nesting but
-						// not the registry count, so the size-mismatch
-						// fallback won't trigger.
-						m_EntityOrderDirty = true;
-						scene.MarkDirty();
-					}
-				}
-				ImGui::EndDragDropTarget();
-			}
 
-			// Right-click context menu on scene tree node. "Remove"
-			// only makes sense in scene-edit mode with more than one
-			// scene loaded; in prefab-edit mode the single tree-node
-			// here IS the prefab and isn't a SceneManager-tracked scene.
-			if (ImGui::BeginPopupContextItem()) {
-				const bool canRemove = !IsInPrefabEditMode() && scenesToShow.size() > 1;
-				if (canRemove) {
-					if (ImGui::MenuItem("Remove")) {
-						sceneToRemove = scene.GetName();
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_SCENE")) {
+						auto* dragData = static_cast<const HierarchySceneDragData*>(payload->Data);
+						if (dragData->SceneId != sceneIdValue) {
+							// Find the source scene's current index in
+							// scenesToShow so we can compute its target
+							// position in the post-erase list. scenesToShow
+							// mirrors m_LoadedScenes in order, so the
+							// index translates 1:1 to MoveLoadedScene.
+							size_t sourceIdx = SIZE_MAX;
+							std::string sourceName;
+							for (size_t i = 0; i < scenesToShow.size(); ++i) {
+								Scene* candidate = scenesToShow[i];
+								if (candidate && static_cast<uint64_t>(candidate->GetSceneId()) == dragData->SceneId) {
+									sourceIdx = i;
+									sourceName = candidate->GetName();
+									break;
+								}
+							}
+							if (sourceIdx != SIZE_MAX) {
+								// Final position of the source scene in the
+								// resulting list. When source < target,
+								// removing it shifts the target up by one
+								// — the formulas below collapse that
+								// adjustment so the user-visible "drop
+								// above B" lands the source immediately
+								// before B regardless of direction.
+								size_t finalIdx;
+								if (sceneInTopZone) {
+									finalIdx = (sourceIdx < sceneIdx) ? (sceneIdx - 1) : sceneIdx;
+								}
+								else {
+									finalIdx = (sourceIdx < sceneIdx) ? sceneIdx : (sceneIdx + 1);
+								}
+								pendingSceneReorder = PendingSceneReorder{ sourceName, finalIdx };
+							}
+						}
 					}
-				} else {
-					ImGui::MenuItem("Remove", nullptr, false, false);
+
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
+						auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
+						EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
+						const bool sameScene = dragData->SourceSceneId == sceneIdValue;
+						if (sameScene) {
+							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
+							bool didMove = false;
+							for (EntityHandle h : draggedHandles) {
+								Entity draggedEntity = scene.GetEntity(h);
+								if (!draggedEntity.HasParent()) continue;
+								if (SetEntityParentPreservingWorld(scene, h, Entity::Null)) {
+									didMove = true;
+								}
+							}
+							if (didMove) {
+								// Force a re-DFS — reparenting changes nesting but
+								// not the registry count, so the size-mismatch
+								// fallback won't trigger.
+								m_EntityOrderDirty = true;
+								scene.MarkDirty();
+							}
+						}
+						else {
+							// Cross-scene drag: locate the source scene by
+							// the SceneId carried in the payload, resolve
+							// the multi-selection against it, then migrate.
+							Scene* sourceScene = nullptr;
+							for (Scene* candidate : scenesToShow) {
+								if (candidate && static_cast<uint64_t>(candidate->GetSceneId()) == dragData->SourceSceneId) {
+									sourceScene = candidate;
+									break;
+								}
+							}
+							if (sourceScene && sourceScene != &scene) {
+								std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(*sourceScene, primaryDraggedHandle);
+								std::vector<EntityHandle> migrated = MigrateEntitiesToScene(*sourceScene, scene, draggedHandles, Entity::Null);
+								if (!migrated.empty()) {
+									// Selection lives across scenes but is
+									// keyed by raw entt handle — drop the
+									// source-scene selection so the post-
+									// migrate inspector reflects the new
+									// entities, not the stale originals.
+									ClearEntitySelection();
+									m_SelectedEntities = migrated;
+									RebuildSelectionSet();
+									m_SelectedEntity = migrated.back();
+									m_LastInteractedSceneName = scene.GetName();
+									m_EntityOrderDirty = true;
+								}
+							}
+						}
+					}
+					ImGui::EndDragDropTarget();
 				}
-				ImGui::EndPopup();
+
+				// Right-click context menu on scene tree node. "Remove"
+				// only makes sense with more than one scene loaded.
+				if (ImGui::BeginPopupContextItem()) {
+					const bool canRemove = scenesToShow.size() > 1;
+					if (canRemove) {
+						if (ImGui::MenuItem("Remove")) {
+							sceneToRemove = scene.GetName();
+						}
+					} else {
+						ImGui::MenuItem("Remove", nullptr, false, false);
+					}
+					// Manual reorder fallback for users without drag-and-drop
+					// muscle memory (and a keyboard-only accessibility path).
+					// Disabled at the boundaries.
+					ImGui::Separator();
+					const bool canMoveUp = sceneIdx > 0;
+					const bool canMoveDown = sceneIdx + 1 < scenesToShow.size();
+					if (ImGui::MenuItem("Move Up", nullptr, false, canMoveUp)) {
+						pendingSceneReorder = PendingSceneReorder{ scene.GetName(), sceneIdx - 1 };
+					}
+					if (ImGui::MenuItem("Move Down", nullptr, false, canMoveDown)) {
+						pendingSceneReorder = PendingSceneReorder{ scene.GetName(), sceneIdx + 1 };
+					}
+					ImGui::EndPopup();
+				}
 			}
 
 			if (sceneOpen) {
@@ -3029,7 +3288,36 @@ namespace Index {
 					else {
 						bool entityLabelTruncated = false;
 						const std::string entityLabel = ImGuiUtils::Ellipsize(entity.GetName(), ImGui::GetContentRegionAvail().x, &entityLabelTruncated);
+						// Rounded selection / hover fill. ImGui::Selectable hardcodes
+						// `RenderFrame(..., false, 0.0f)` (no rounding) for its highlight,
+						// so we suppress its square fill (transparent Header colors) and
+						// repaint a rounded one ourselves on a separate draw channel that
+						// lands BEHIND the text. Without ChannelsSplit the rect would
+						// cover the label since AddRectFilled draws on top of prior
+						// geometry in the same channel.
+						ImDrawList* rowDraw = ImGui::GetWindowDrawList();
+						rowDraw->ChannelsSplit(2);
+						rowDraw->ChannelsSetCurrent(1);
+						ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(0, 0, 0, 0));
+						ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(0, 0, 0, 0));
+						ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(0, 0, 0, 0));
 						ImGui::Selectable(entityLabel.c_str(), selected);
+						ImGui::PopStyleColor(3);
+						const bool rowHovered = ImGui::IsItemHovered();
+						const bool rowActive  = ImGui::IsItemActive();
+						rowDraw->ChannelsSetCurrent(0);
+						if (selected || rowHovered) {
+							const ImU32 col = ImGui::GetColorU32(
+								(rowActive && rowHovered) ? ImGuiCol_HeaderActive :
+								rowHovered                ? ImGuiCol_HeaderHovered :
+								                            ImGuiCol_Header);
+							rowDraw->AddRectFilled(
+								ImGui::GetItemRectMin(),
+								ImGui::GetItemRectMax(),
+								col,
+								ImGui::GetStyle().FrameRounding);
+						}
+						rowDraw->ChannelsMerge();
 						if (entityLabelTruncated && ImGui::IsItemHovered()) {
 							ImGui::SetTooltip("%s", entity.GetName().c_str());
 						}
@@ -3073,8 +3361,16 @@ namespace Index {
 					// drop time via ResolveDraggedHierarchyEntities so external
 					// drop targets that expect a single entity (PropertyDrawer,
 					// AssetBrowser→prefab) keep working unchanged.
+					// SourceSceneId lets a multi-scene drop target tell whether
+					// the gesture is a same-scene reorder or a cross-scene
+					// migration (the latter has to serialize + deserialize the
+					// entity into the target scene rather than reparent it).
 					if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-						HierarchyDragData dragData{ entityIdx, static_cast<uint32_t>(entityHandle) };
+						HierarchyDragData dragData{
+							entityIdx,
+							static_cast<uint32_t>(entityHandle),
+							static_cast<uint64_t>(scene.GetSceneId()),
+						};
 						ImGui::SetDragDropPayload("HIERARCHY_ENTITY", &dragData, sizeof(dragData));
 						const bool draggingMulti = IsEntitySelected(entityHandle) && m_SelectedEntities.size() > 1;
 						if (draggingMulti) {
@@ -3096,10 +3392,20 @@ namespace Index {
 					const float itemHeight = itemRectMax.y - itemRectMin.y;
 					const float zoneHeight = itemHeight * 0.25f;
 
+					// In prefab-edit mode, suppress the top/bottom sibling-
+					// insert zones on the prefab root entity. A sibling-of-
+					// root drop would create a second root (which the
+					// SetEntityParentPreservingWorld gate refuses anyway),
+					// but without disabling the zones the drop indicator
+					// would still flash and mislead the user into thinking
+					// the gesture worked. Center-zone reparent stays live.
+					const bool suppressSiblingZones = IsInPrefabEditMode()
+						&& entityHandle == m_PrefabEditRootEntity;
+
 					if (ImGui::BeginDragDropTarget()) {
 						const float mouseY = ImGui::GetMousePos().y;
-						const bool inTopZone = mouseY < itemRectMin.y + zoneHeight;
-						const bool inBottomZone = mouseY > itemRectMax.y - zoneHeight;
+						const bool inTopZone = !suppressSiblingZones && mouseY < itemRectMin.y + zoneHeight;
+						const bool inBottomZone = !suppressSiblingZones && mouseY > itemRectMax.y - zoneHeight;
 
 						// Insertion-point indicator. Drawn while a hierarchy drag
 						// is hovering the row — a thin colored line at the top
@@ -3119,6 +3425,71 @@ namespace Index {
 						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 							auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
 							EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
+							const uint64_t targetSceneIdValue = static_cast<uint64_t>(scene.GetSceneId());
+							const bool sameScene = dragData->SourceSceneId == targetSceneIdValue;
+							if (!sameScene) {
+								// Cross-scene drop on an entity row: migrate the
+								// dragged entities into `scene`, then either reparent
+								// under `entity` (middle zone) or sibling-insert next
+								// to `entity` (top/bottom zone). Migration happens
+								// first so the sibling-insert helpers can operate on
+								// handles that already live in the target scene.
+								Scene* sourceScene = nullptr;
+								for (Scene* candidate : scenesToShow) {
+									if (candidate && static_cast<uint64_t>(candidate->GetSceneId()) == dragData->SourceSceneId) {
+										sourceScene = candidate;
+										break;
+									}
+								}
+								if (sourceScene && sourceScene != &scene) {
+									std::vector<EntityHandle> sourceHandles = ResolveDraggedHierarchyEntities(*sourceScene, primaryDraggedHandle);
+									std::vector<EntityHandle> migrated = MigrateEntitiesToScene(*sourceScene, scene, sourceHandles, Entity::Null);
+									if (!migrated.empty()) {
+										// MoveSiblingNextTo's root-level repositionVec
+										// only finds entities already tracked in
+										// m_EntityOrder. Fresh-from-migrate handles
+										// aren't in that list until the next-frame
+										// rebuild, so we splice them in at the end
+										// here. Without this, sibling-insert silently
+										// no-ops and the entity ends up appended at
+										// the bottom of the next-frame rebuild
+										// instead of next to the anchor the user
+										// dropped onto.
+										for (EntityHandle h : migrated) {
+											m_EntityOrder.push_back(h);
+										}
+										if (inTopZone || inBottomZone) {
+											EntityHandle anchor = entityHandle;
+											if (inBottomZone) {
+												for (EntityHandle h : migrated) {
+													MoveSiblingNextTo(scene, h, anchor, /*insertAfter*/true);
+													anchor = h;
+												}
+											}
+											else {
+												for (auto it = migrated.rbegin(); it != migrated.rend(); ++it) {
+													MoveSiblingNextTo(scene, *it, anchor, /*insertAfter*/false);
+													anchor = *it;
+												}
+											}
+										}
+										else {
+											// Middle-zone reparent under `entity`.
+											for (EntityHandle h : migrated) {
+												SetEntityParentPreservingWorld(scene, h, entity);
+											}
+											m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+										}
+										ClearEntitySelection();
+										m_SelectedEntities = migrated;
+										RebuildSelectionSet();
+										m_SelectedEntity = migrated.back();
+										m_LastInteractedSceneName = scene.GetName();
+										m_EntityOrderDirty = true;
+									}
+								}
+							}
+							else {
 							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(scene, primaryDraggedHandle);
 							bool didMove = false;
 							if (inTopZone || inBottomZone) {
@@ -3178,6 +3549,7 @@ namespace Index {
 							}
 							if (didMove) {
 								scene.MarkDirty();
+							}
 							}
 						}
 						if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
@@ -3298,7 +3670,11 @@ namespace Index {
 
 				ImGui::PopStyleVar(); // ItemSpacing
 
-				ImGui::TreePop();
+				// TreePop matches the TreeNodeEx above, which prefab-edit
+				// mode skips — balance the call accordingly.
+				if (!IsInPrefabEditMode()) {
+					ImGui::TreePop();
+				}
 			}
 
 			ImGui::PopID();
@@ -3320,6 +3696,18 @@ namespace Index {
 			SceneManager::Get().UnloadScene(sceneToRemove);
 		}
 
+		// Deferred scene reorder (after iteration). Held until now because
+		// MoveLoadedScene mutates m_LoadedScenes — applying it mid-loop
+		// would invalidate the iteration state and could re-render a
+		// scene at its new position before its old slot finishes drawing.
+		if (pendingSceneReorder) {
+			SceneManager::Get().MoveLoadedScene(pendingSceneReorder->SourceName, pendingSceneReorder->TargetIndex);
+			// Force a hierarchy rebuild — m_EntityOrder is shared across
+			// every scene rendered by this panel, so reorder might
+			// surface a scene whose order vector is partially stale.
+			m_EntityOrderDirty = true;
+		}
+
 		// Drag-drop target: only present during an active drag so it doesn't block right-click menus
 		if (ImGui::GetDragDropPayload() != nullptr) {
 			ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -3330,11 +3718,45 @@ namespace Index {
 					// the panel detaches it (becomes a root again) AND moves
 					// it to the end of m_EntityOrder so it shows up at the
 					// bottom of the root list — matching the user's gesture.
+					// Disabled in prefab-edit mode: prefabs are single-rooted,
+					// so unparenting here would create a second root that gets
+					// silently dropped at save time.
+					if (!IsInPrefabEditMode())
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 						auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
 						EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
 						Scene* dropScene = GetContextScene();
 						if (dropScene) {
+							const uint64_t dropSceneIdValue = static_cast<uint64_t>(dropScene->GetSceneId());
+							const bool sameScene = dragData->SourceSceneId == dropSceneIdValue;
+							if (!sameScene) {
+								// Cross-scene drop on empty space: locate the
+								// source scene by payload SceneId, migrate the
+								// dragged entities into the context (last-
+								// interacted) scene as roots.
+								Scene* sourceScene = nullptr;
+								auto loadedScenes = SceneManager::Get().GetLoadedScenes();
+								for (auto& weakScene : loadedScenes) {
+									if (auto scenePtr = weakScene.lock();
+										scenePtr && static_cast<uint64_t>(scenePtr->GetSceneId()) == dragData->SourceSceneId) {
+										sourceScene = scenePtr.get();
+										break;
+									}
+								}
+								if (sourceScene && sourceScene != dropScene) {
+									std::vector<EntityHandle> sourceHandles = ResolveDraggedHierarchyEntities(*sourceScene, primaryDraggedHandle);
+									std::vector<EntityHandle> migrated = MigrateEntitiesToScene(*sourceScene, *dropScene, sourceHandles, Entity::Null);
+									if (!migrated.empty()) {
+										ClearEntitySelection();
+										m_SelectedEntities = migrated;
+										RebuildSelectionSet();
+										m_SelectedEntity = migrated.back();
+										m_LastInteractedSceneName = dropScene->GetName();
+										m_EntityOrderDirty = true;
+									}
+								}
+							}
+							else {
 							std::vector<EntityHandle> draggedHandles = ResolveDraggedHierarchyEntities(*dropScene, primaryDraggedHandle);
 							bool didMove = false;
 							for (EntityHandle h : draggedHandles) {
@@ -3361,6 +3783,7 @@ namespace Index {
 								// (entity was already at the bottom slot).
 								m_EntityOrderDirty = true;
 								dropScene->MarkDirty();
+							}
 							}
 						}
 					}

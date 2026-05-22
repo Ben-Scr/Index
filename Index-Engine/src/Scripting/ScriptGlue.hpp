@@ -1099,6 +1099,15 @@ namespace Index {
 		// GLFW callback delivered the new framebuffer size.
 		void        (*RaiseWindowResize)();
 		void        (*RaiseEnterChar)(uint32_t codepoint);
+
+		// ── Play-mode lifecycle (appended for binary compat) ──
+		// Editor calls this when stopping play mode, before the saved-
+		// scene snapshot is restored, so the managed side can strip any
+		// static-event subscribers that still point into the user
+		// assembly. Without it a stray play-mode `Log.LogMessage +=`
+		// keeps firing in edit mode and reaches through a destroyed
+		// EntityScript / Transform2D wrapper.
+		void        (*OnPlayModeExited)();
 	};
 
 } // namespace Index

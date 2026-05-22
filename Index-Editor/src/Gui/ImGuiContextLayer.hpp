@@ -63,8 +63,8 @@ namespace Index {
 		// Apply the editor font size from EditorPreferences to
 		// ImGui::GetStyle().FontSizeBase (× DPI scale captured at attach
 		// time). Called from EditorPreferences::Load() once prefs are
-		// parsed, and from EditorPreferences::SetEditorFontSize() each
-		// time the user moves the size slider. Safe to call mid-frame —
+		// parsed, and from EditorPreferences::SetEditorFontZoomPercent()
+		// each time the user changes the size combo. Safe to call mid-frame —
 		// uses ImGui's `_NextFrameFontSizeBase` hand-off field.
 		static void ApplyEditorFontSize();
 

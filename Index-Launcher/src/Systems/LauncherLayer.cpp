@@ -5,6 +5,7 @@
 #include "Core/Application.hpp"
 #include <Core/Version.hpp>
 #include <Core/Log.hpp>
+#include "Gui/ImGuiContextLayer.hpp"
 #include "Localization/Localization.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/Directory.hpp"
@@ -301,6 +302,16 @@ namespace Index {
 		m_Registry.Save();
 
 		LoadLauncherSettings();
+		ApplyLauncherThemeIfNeeded();
+
+		// "Auto" language mode: override Localization's persisted choice with
+		// the current OS language. Runs every startup so a user who changes
+		// their OS UI language sees the launcher follow without revisiting
+		// the settings popup. No-op when the user has explicitly picked a
+		// language (m_LanguageAuto == false).
+		if (m_LanguageAuto) {
+			Localization::SetLanguage(Localization::GetSystemLanguage());
+		}
 
 		// Default projects location falls back to the engine's default if
 		// the settings file hasn't been written yet — matches the prior
@@ -317,9 +328,52 @@ namespace Index {
 
 	void LauncherLayer::OnPreRender(Application& app) {
 		(void)app;
+		ApplyLauncherThemeIfNeeded();
+		// FontGlobalScale must be assigned before any ImGui::Begin/Text calls
+		// this frame — ImGuiContextLayer::OnPreRender already ran
+		// ImGui::NewFrame, so glyph metrics this layer queries (button sizes,
+		// text widths) will reflect the new scale immediately.
+		ImGui::GetIO().FontGlobalScale = GetEffectiveFontScale();
 		Localization::Poll();
 		PollCreateProjectTask();
 		RenderLauncherPanel();
+	}
+
+	float LauncherLayer::GetEffectiveFontScale() const {
+		switch (m_FontScale) {
+			case FontScale::Auto:   return 1.0f;
+			case FontScale::P75:    return 0.75f;
+			case FontScale::P100:   return 1.0f;
+			case FontScale::P125:   return 1.25f;
+			case FontScale::P150:   return 1.50f;
+			case FontScale::P175:   return 1.75f;
+			case FontScale::P200:   return 2.00f;
+		}
+		return 1.0f;
+	}
+
+	bool LauncherLayer::IsEffectiveThemeDark() const {
+		switch (m_ThemeSetting) {
+			case ThemeSetting::Auto:
+				return ImGuiContextLayer::GetSystemTheme() == ImGuiContextLayer::Theme::Dark;
+			case ThemeSetting::Dark:
+				return true;
+			case ThemeSetting::Light:
+				return false;
+		}
+		return true;
+	}
+
+	void LauncherLayer::ApplyLauncherThemeIfNeeded() {
+		const bool dark = IsEffectiveThemeDark();
+		if (m_LastAppliedDarkTheme.has_value() && *m_LastAppliedDarkTheme == dark) {
+			return;
+		}
+
+		ImGuiContextLayer::ApplyIndexTheme(dark
+			? ImGuiContextLayer::Theme::Dark
+			: ImGuiContextLayer::Theme::Light);
+		m_LastAppliedDarkTheme = dark;
 	}
 
 	void LauncherLayer::OnDetach(Application& app) {
@@ -548,7 +602,7 @@ namespace Index {
 		// Non-blocking progress card. The launcher used to draw a
 		// fullscreen overlay that blocked every other interaction for the
 		// duration of the open pipeline (potentially many seconds while
-		// MSBuild ran). Now the open task gets its own auto-sized window
+		// MSBuild ran). Now the open task gets its own status window
 		// — the user can keep browsing projects, edit settings, or start
 		// a second open (refused upstream) while the previous one is
 		// still spinning up.
@@ -572,7 +626,8 @@ namespace Index {
 
 			// Pin the progress card to the bottom-right of the launcher
 			// viewport so it never sits over a project row the user might
-			// want to click. Auto-size to its contents.
+			// want to click. Keep the width stable so changing status text
+			// doesn't make the window pulse.
 			const ImVec2 pad{ 16.0f, 16.0f };
 			const ImVec2 anchor{
 				viewport->Pos.x + viewport->Size.x - pad.x,
@@ -580,8 +635,8 @@ namespace Index {
 			};
 			ImGui::SetNextWindowPos(anchor, ImGuiCond_Always, ImVec2(1.0f, 1.0f));
 			ImGui::SetNextWindowBgAlpha(0.92f);
-			ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_AlwaysAutoResize
-				| ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse
+			ImGui::SetNextWindowSize(ImVec2(320.0f, 0.0f), ImGuiCond_Appearing);
+			ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse
 				| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing
 				| ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
 
@@ -674,7 +729,10 @@ namespace Index {
 			m_OpenCreatePopup = true;
 			m_CreateError.clear();
 			m_IsCreating = false;
-			m_NewProjectName[0] = '\0';
+			// Pre-fill the name field so a one-click "Create" works without
+			// the user typing — matches Unity Hub / Godot defaults.
+			std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
+				IDX_TR("launcher.create.default_project_name").c_str());
 			// Re-snap the location to whatever the user has set in
 			// settings — they may have changed it since OnAttach.
 			const std::string defaultLocation = m_DefaultProjectsLocation.empty()
@@ -696,20 +754,31 @@ namespace Index {
 			m_OpenSettingsPopup = true;
 		}
 
-		if (!m_BrowseError.empty()) {
-			ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_BrowseError.c_str());
+		// Selection-dependent buttons. Disabled (greyed) when no row is
+		// selected; the BeginDisabled / EndDisabled pair lets the buttons
+		// stay visible at full width so the layout doesn't reflow as the
+		// user selects/deselects a project.
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		const LauncherProjectEntry* selected = GetSelectedProject();
+		const bool hasSelection = (selected != nullptr);
+		if (!hasSelection) ImGui::BeginDisabled();
+
+		if (ImGui::Button(IDX_TR("launcher.action.open_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+			OpenProject(*selected);
+		}
+		ImGui::Spacing();
+		if (ImGui::Button(IDX_TR("launcher.action.rename_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+			RequestProjectRename(*selected);
+		}
+		ImGui::Spacing();
+		if (ImGui::Button(IDX_TR("launcher.action.delete_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+			RequestProjectDelete(*selected);
 		}
 
-		// L3: Show open error if any
-		if (!m_OpenError.empty()) {
-			ImGui::Spacing();
-			ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_OpenError.c_str());
-		}
-
-		if (!m_ProjectActionError.empty()) {
-			ImGui::Spacing();
-			ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_ProjectActionError.c_str());
-		}
+		if (!hasSelection) ImGui::EndDisabled();
 
 		ImGui::EndChild();
 
@@ -718,6 +787,8 @@ namespace Index {
 		RenderDeleteProjectPopups();
 		RenderSettingsPopup();
 		RenderProjectInfoPopup();
+		RenderErrorPopup();
+		RenderRenameProjectPopup();
 
 		ImGui::End();
 	}
@@ -748,8 +819,19 @@ namespace Index {
 			float buttonWidth = 60.0f;
 			float rowHeight = 68.0f;
 
-			// Draw an invisible item spanning the row for layout + right-click context
+			// Draw an invisible item spanning the row for layout + right-click context.
+			// Left-clicking it toggles selection (click again to deselect — matches
+			// most file explorers); right-click both selects and opens the context
+			// menu so the menu always acts on the row the user actually pointed at.
 			ImGui::InvisibleButton("##Row", ImVec2(rowWidth - buttonWidth - 8, rowHeight));
+			const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+			const bool rowRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+			if (rowClicked) {
+				m_SelectedProjectPath = (m_SelectedProjectPath == entry.Path) ? std::string{} : entry.Path;
+			}
+			if (rowRightClicked) {
+				m_SelectedProjectPath = entry.Path;
+			}
 
 			// Right-click context menu per item
 			if (ImGui::BeginPopupContextItem("##RowCtx")) {
@@ -764,6 +846,14 @@ namespace Index {
 					OpenProjectInExplorer(entry);
 				}
 
+				if (ImGui::MenuItem(IDX_TR("launcher.context.copy_path").c_str())) {
+					ImGui::SetClipboardText(entry.Path.c_str());
+				}
+
+				if (ImGui::MenuItem(IDX_TR("launcher.context.rename").c_str())) {
+					RequestProjectRename(entry);
+				}
+
 				if (ImGui::MenuItem(IDX_TR("launcher.context.remove_from_list").c_str())) {
 					removePath = entry.Path;
 				}
@@ -775,9 +865,18 @@ namespace Index {
 				ImGui::EndPopup();
 			}
 
-			// Draw hover/active highlight
-			bool hovered = ImGui::IsItemHovered();
-			if (hovered) {
+			// Draw hover/selected highlight. Selected rows use the active
+			// header colour so they stay visible even when the cursor moves
+			// off the row; hover stacks on top with the standard tint.
+			const bool selected = (m_SelectedProjectPath == entry.Path);
+			const bool hovered = ImGui::IsItemHovered();
+			if (selected) {
+				ImGui::GetWindowDrawList()->AddRectFilled(
+					cursorPos,
+					ImVec2(cursorPos.x + rowWidth, cursorPos.y + rowHeight),
+					ImGui::GetColorU32(ImGuiCol_HeaderActive));
+			}
+			else if (hovered) {
 				ImGui::GetWindowDrawList()->AddRectFilled(
 					cursorPos,
 					ImVec2(cursorPos.x + rowWidth, cursorPos.y + rowHeight),
@@ -825,13 +924,16 @@ namespace Index {
 		// Deferred removal to avoid modifying the list during iteration.
 		// Keying by path (not index) because the displayed order is a
 		// sorted *view* over the registry — the index in `sortedProjects`
-		// doesn't map back to the registry's underlying storage.
+		// doesn't map back to the registry's underlying storage. Goes
+		// through RemoveProjectFromList so the selection state is cleared
+		// alongside the registry entry.
 		if (!removePath.empty()) {
-			m_Registry.RemoveProject(removePath);
-			m_Registry.Save();
-			m_ProjectSizeTasks.erase(removePath);
-			m_CreatedAtCache.erase(removePath);
-			m_EngineVersionCache.erase(removePath);
+			for (const auto& e : m_Registry.GetProjects()) {
+				if (e.Path == removePath) {
+					RemoveProjectFromList(e);
+					break;
+				}
+			}
 		}
 	}
 
@@ -884,9 +986,105 @@ namespace Index {
 	void LauncherLayer::RequestProjectDelete(const LauncherProjectEntry& entry) {
 		m_PendingDeleteProject = entry;
 		m_DeleteError.clear();
-		m_ProjectActionError.clear();
 		m_OpenDeleteConfirmPopup = true;
 		m_OpenDeleteFinalConfirmPopup = false;
+	}
+
+	void LauncherLayer::RequestProjectRename(const LauncherProjectEntry& entry) {
+		m_PendingRenameProject = entry;
+		// Pre-fill the editable buffer with the current name so a user who
+		// just wants to tweak the casing or fix a typo doesn't have to retype.
+		std::snprintf(m_RenameBuffer, sizeof(m_RenameBuffer), "%s", entry.Name.c_str());
+		m_OpenRenamePopup = true;
+	}
+
+	void LauncherLayer::RemoveProjectFromList(const LauncherProjectEntry& entry) {
+		// Copy the path BEFORE mutating the registry — `entry` may reference
+		// a string that lives inside m_Registry's vector, and RemoveProject
+		// shuffles elements via std::remove_if (which would invalidate any
+		// reference back into the same vector).
+		const std::string path = entry.Path;
+		m_Registry.RemoveProject(path);
+		m_Registry.Save();
+		m_ProjectSizeTasks.erase(path);
+		m_CreatedAtCache.erase(path);
+		m_EngineVersionCache.erase(path);
+		if (m_SelectedProjectPath == path) {
+			m_SelectedProjectPath.clear();
+		}
+	}
+
+	const LauncherProjectEntry* LauncherLayer::GetSelectedProject() const {
+		if (m_SelectedProjectPath.empty()) return nullptr;
+		for (const auto& entry : m_Registry.GetProjects()) {
+			if (entry.Path == m_SelectedProjectPath) return &entry;
+		}
+		// Selected project was removed (e.g. by RefreshProjectsList dropping a
+		// missing one) — fall through to nullptr. Caller's nullptr check is
+		// the same path as "no selection", so the side buttons re-disable
+		// gracefully on the next frame.
+		return nullptr;
+	}
+
+	void LauncherLayer::RenderRenameProjectPopup() {
+		constexpr const char* k_RenameId = "###LauncherRenameProject";
+
+		if (m_OpenRenamePopup) {
+			ImGui::OpenPopup(k_RenameId);
+			m_OpenRenamePopup = false;
+		}
+
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+
+		const std::string title = IDX_TR("launcher.rename.title") + k_RenameId;
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+		if (!m_PendingRenameProject.has_value()) {
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+
+		ImGui::TextUnformatted(IDX_TR("launcher.rename.new_name").c_str());
+		ImGui::SetNextItemWidth(-1);
+		// Auto-focus on first frame so the user can immediately type without
+		// clicking into the field. EnterReturnsTrue lets the Enter key
+		// commit, matching the create-project flow.
+		if (ImGui::IsWindowAppearing()) {
+			ImGui::SetKeyboardFocusHere();
+		}
+		const bool submitted = ImGui::InputText("##RenameField", m_RenameBuffer,
+			sizeof(m_RenameBuffer), ImGuiInputTextFlags_EnterReturnsTrue);
+
+		const std::string trimmed = m_RenameBuffer;
+		const bool canCommit = IndexProject::IsValidProjectName(trimmed);
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		if (!canCommit) ImGui::BeginDisabled();
+		const bool okClicked = ImGui::Button(IDX_TR("launcher.rename.save").c_str(), ImVec2(120, 0));
+		if (!canCommit) ImGui::EndDisabled();
+
+		if ((okClicked || submitted) && canCommit) {
+			if (m_Registry.RenameProject(m_PendingRenameProject->Path, trimmed)) {
+				m_Registry.Save();
+			}
+			m_PendingRenameProject.reset();
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button(IDX_TR("launcher.rename.cancel").c_str(), ImVec2(120, 0))) {
+			m_PendingRenameProject.reset();
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::EndPopup();
 	}
 
 	void LauncherLayer::RenderDeleteProjectPopups() {
@@ -909,7 +1107,7 @@ namespace Index {
 		ImGui::SetNextWindowSize(ImVec2(480, 0), ImGuiCond_Appearing);
 
 		const std::string deleteTitle = IDX_TR("launcher.delete.title") + k_DeleteId;
-		if (ImGui::BeginPopupModal(deleteTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		if (ImGui::BeginPopupModal(deleteTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			if (!m_PendingDeleteProject.has_value()) {
 				ImGui::CloseCurrentPopup();
 				ImGui::EndPopup();
@@ -946,7 +1144,7 @@ namespace Index {
 		ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
 
 		const std::string deleteFinalTitle = IDX_TR("launcher.delete_final.title") + k_DeleteFinalId;
-		if (ImGui::BeginPopupModal(deleteFinalTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		if (ImGui::BeginPopupModal(deleteFinalTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			if (!m_PendingDeleteProject.has_value()) {
 				ImGui::CloseCurrentPopup();
 				ImGui::EndPopup();
@@ -1008,7 +1206,7 @@ namespace Index {
 		ImGui::SetNextWindowSize(ImVec2(450, 0), ImGuiCond_Appearing);
 
 		const std::string createTitle = IDX_TR("launcher.create.title") + k_CreateId;
-		if (ImGui::BeginPopupModal(createTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		if (ImGui::BeginPopupModal(createTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			float createProgress = 0.0f;
 			std::string createStage;
 			bool createTaskRunning = false;
@@ -1100,8 +1298,6 @@ namespace Index {
 			if (m_OpenTask.Running) return; // Worker already busy
 		}
 
-		m_OpenError.clear();
-
 #ifdef IDX_PLATFORM_WINDOWS
 		// Refuse to spawn a duplicate editor for the same project.
 		{
@@ -1112,7 +1308,7 @@ namespace Index {
 					DWORD exitCode = 0;
 					if (GetExitCodeProcess(hProc, &exitCode) && exitCode == STILL_ACTIVE) {
 						CloseHandle(hProc);
-						m_OpenError = IDX_TR("launcher.error.project_already_open");
+						ShowError(IDX_TR("launcher.error.project_already_open"));
 						return;
 					}
 					CloseHandle(hProc);
@@ -1299,51 +1495,53 @@ namespace Index {
 #endif
 		}
 		else {
-			m_OpenError = error.empty() ? "Failed to open project." : error;
+			const std::string msg = error.empty() ? std::string("Failed to open project.") : error;
 			m_IsOpening = false;
-			IDX_ERROR_TAG("Launcher", "Open project failed: {}", m_OpenError);
+			IDX_ERROR_TAG("Launcher", "Open project failed: {}", msg);
+			ShowError(msg);
 		}
 	}
 
 	void LauncherLayer::OpenProjectInExplorer(const LauncherProjectEntry& entry) {
-		m_ProjectActionError.clear();
-
 		std::error_code ec;
 		if (!std::filesystem::exists(entry.Path, ec) || ec) {
-			m_ProjectActionError = ec ? "Project folder could not be checked: " + ec.message() : "Project folder not found";
+			ShowError(ec ? "Project folder could not be checked: " + ec.message() : "Project folder not found");
 			return;
 		}
 
 #ifdef IDX_PLATFORM_WINDOWS
 		const std::wstring projectPath = Utf8ToWide(entry.Path);
 		if (projectPath.empty() && !entry.Path.empty()) {
-			m_ProjectActionError = "Project path is not valid UTF-8";
+			ShowError("Project path is not valid UTF-8");
 			return;
 		}
 
 		const HINSTANCE result = ShellExecuteW(nullptr, L"open", projectPath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 		const INT_PTR resultCode = reinterpret_cast<INT_PTR>(result);
 		if (resultCode <= 32) {
-			m_ProjectActionError = "Failed to open project in Explorer (code " + std::to_string(resultCode) + ")";
+			ShowError("Failed to open project in Explorer (code " + std::to_string(resultCode) + ")");
 		}
 #elif defined(IDX_PLATFORM_LINUX)
 		if (!Process::LaunchDetached({ "xdg-open", entry.Path })) {
-			m_ProjectActionError = "Failed to open project in file manager";
+			ShowError("Failed to open project in file manager");
 		}
 #else
-		m_ProjectActionError = "Open in Explorer is not supported on this platform";
+		ShowError("Open in Explorer is not supported on this platform");
 #endif
 	}
 
 	bool LauncherLayer::DeleteProjectFromDisk(const LauncherProjectEntry& entry) {
+		// m_DeleteError surfaces inside the (still-open) delete confirmation
+		// modal; ShowError() opens the generic OK dialog once that modal
+		// closes. Both are populated so the user can see the message in the
+		// confirm dialog AND get a follow-up acknowledgement.
 		auto fail = [this](std::string message) -> bool {
 			m_DeleteError = std::move(message);
-			m_ProjectActionError = m_DeleteError;
+			ShowError(m_DeleteError);
 			return false;
 		};
 
 		m_DeleteError.clear();
-		m_ProjectActionError.clear();
 
 		std::error_code ec;
 		std::filesystem::path projectPath = std::filesystem::weakly_canonical(entry.Path, ec);
@@ -1399,8 +1597,6 @@ namespace Index {
 	// ── Browse for Existing Project ─────────────────────────────────
 
 	void LauncherLayer::BrowseForExistingProject() {
-		m_BrowseError.clear();
-
 #ifdef IDX_PLATFORM_WINDOWS
 		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -1433,7 +1629,7 @@ namespace Index {
 							m_Registry.Save();
 						}
 						else {
-							m_BrowseError = "Not a valid Index project (missing index-project.json or Assets/)";
+							ShowError("Not a valid Index project (missing index-project.json or Assets/)");
 						}
 					}
 					result->Release();
@@ -1543,6 +1739,21 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("sortReverse")) {
 			m_SortReverse = v->AsBoolOr(false);
 		}
+		if (const Json::Value* v = root.FindMember("fontScale")) {
+			int scale = v->AsIntOr(static_cast<int>(FontScale::Auto));
+			if (scale >= 0 && scale <= static_cast<int>(FontScale::P200)) {
+				m_FontScale = static_cast<FontScale>(scale);
+			}
+		}
+		if (const Json::Value* v = root.FindMember("themeSetting")) {
+			int setting = v->AsIntOr(static_cast<int>(ThemeSetting::Auto));
+			if (setting >= 0 && setting <= static_cast<int>(ThemeSetting::Light)) {
+				m_ThemeSetting = static_cast<ThemeSetting>(setting);
+			}
+		}
+		if (const Json::Value* v = root.FindMember("languageAuto")) {
+			m_LanguageAuto = v->AsBoolOr(false);
+		}
 	}
 
 	void LauncherLayer::SaveLauncherSettings() const {
@@ -1555,9 +1766,51 @@ namespace Index {
 		root.AddMember("defaultProjectsLocation", m_DefaultProjectsLocation);
 		root.AddMember("sortMode", Json::Value(static_cast<int>(m_SortMode)));
 		root.AddMember("sortReverse", Json::Value(m_SortReverse));
+		root.AddMember("fontScale", Json::Value(static_cast<int>(m_FontScale)));
+		root.AddMember("themeSetting", Json::Value(static_cast<int>(m_ThemeSetting)));
+		root.AddMember("languageAuto", Json::Value(m_LanguageAuto));
 		if (!File::WriteAllText(path, Json::Stringify(root, true))) {
 			IDX_CORE_WARN_TAG("Launcher", "Failed to write launcher settings to '{}'", path);
 		}
+	}
+
+	void LauncherLayer::ShowError(std::string message) {
+		m_ErrorMessage = std::move(message);
+		m_OpenErrorPopup = true;
+	}
+
+	void LauncherLayer::RenderErrorPopup() {
+		constexpr const char* k_ErrorId = "###LauncherError";
+
+		if (m_OpenErrorPopup) {
+			ImGui::OpenPopup(k_ErrorId);
+			m_OpenErrorPopup = false;
+		}
+
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(480, 0), ImGuiCond_Appearing);
+
+		const std::string title = IDX_TR("launcher.error.title") + k_ErrorId;
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+		ImGui::TextWrapped("%s", m_ErrorMessage.c_str());
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		// Centre the OK button so the dialog feels balanced regardless of
+		// message length. Width matches the Save/Cancel buttons elsewhere
+		// in the launcher for visual consistency.
+		const float buttonW = 100.0f;
+		ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonW) * 0.5f);
+		if (ImGui::Button(IDX_TR("launcher.error.ok").c_str(), ImVec2(buttonW, 0))) {
+			m_ErrorMessage.clear();
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::EndPopup();
 	}
 
 	void LauncherLayer::RenderSettingsPopup() {
@@ -1574,10 +1827,9 @@ namespace Index {
 		}
 		ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
 		const std::string settingsTitle = IDX_TR("launcher.settings.title") + k_SettingsId;
-		if (!ImGui::BeginPopupModal(settingsTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		if (!ImGui::BeginPopupModal(settingsTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			return;
 		}
-
 		// The "effective" path — what `Create New Project` would use right
 		// now if the user clicked it. Falls back to the engine's bundled
 		// default when the user hasn't authored an override. Always
@@ -1634,24 +1886,52 @@ namespace Index {
 		const auto& languages = Localization::GetAvailableLanguages();
 		const std::string& currentCode = Localization::GetCurrentLanguage();
 		const std::string notInstalledSuffix = IDX_TR("launcher.settings.language.not_installed_suffix");
-		int activeIdx = 0;
-		for (size_t i = 0; i < languages.size(); ++i) {
-			if (languages[i].Code == currentCode) {
-				activeIdx = static_cast<int>(i);
-				break;
+
+		// Display name shown inside the "Auto (...)" label. Looks up the
+		// OS-resolved code in the available-languages list so the localised
+		// name appears (e.g. "Deutsch" rather than "de"); falls back to the
+		// raw tag if the OS reports a language we don't have a table for.
+		const std::string sysCode = Localization::GetSystemLanguage();
+		std::string sysDisplay = sysCode;
+		for (const auto& lang : languages) {
+			if (lang.Code == sysCode) { sysDisplay = lang.DisplayName; break; }
+		}
+		const std::string autoLabel = Localization::Format("launcher.settings.language.auto_format", sysDisplay);
+
+		std::string previewName;
+		if (m_LanguageAuto) {
+			previewName = autoLabel;
+		}
+		else {
+			for (const auto& lang : languages) {
+				if (lang.Code == currentCode) { previewName = lang.DisplayName; break; }
 			}
 		}
-		const char* previewName = languages.empty() ? "" : languages[activeIdx].DisplayName.c_str();
+
 		ImGui::SetNextItemWidth(-1.0f);
-		if (ImGui::BeginCombo("##LauncherLanguageCombo", previewName)) {
+		if (ImGui::BeginCombo("##LauncherLanguageCombo", previewName.c_str())) {
+			// Auto entry always at the top — matches the screenshot the user
+			// referenced and lets a returning user re-engage system-language
+			// tracking without hunting for a checkbox.
+			if (ImGui::Selectable(autoLabel.c_str(), m_LanguageAuto)) {
+				m_LanguageAuto = true;
+				Localization::SetLanguage(sysCode);
+				SaveLauncherSettings();
+			}
+			if (m_LanguageAuto) ImGui::SetItemDefaultFocus();
+
+			ImGui::Separator();
+
 			for (size_t i = 0; i < languages.size(); ++i) {
-				const bool selected = (static_cast<int>(i) == activeIdx);
+				const bool selected = !m_LanguageAuto && (languages[i].Code == currentCode);
 				std::string label = languages[i].DisplayName;
 				if (languages[i].Status != Localization::LanguageStatus::Installed) {
 					label += notInstalledSuffix;
 				}
 				if (ImGui::Selectable(label.c_str(), selected)) {
+					m_LanguageAuto = false;
 					Localization::SetLanguage(languages[i].Code);
+					SaveLauncherSettings();
 				}
 				if (selected) ImGui::SetItemDefaultFocus();
 			}
@@ -1675,6 +1955,114 @@ namespace Index {
 				const std::string msg = Localization::Format("launcher.settings.language.downloading", download->Code);
 				ImGui::TextDisabled("%s", msg.c_str());
 				ImGui::ProgressBar(download->Progress, ImVec2(-1.0f, 0));
+			}
+		}
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		ImGui::TextUnformatted(IDX_TR("launcher.settings.theme").c_str());
+		{
+			struct ThemeEntry {
+				ThemeSetting Value;
+				const char* LabelKey;
+			};
+			static constexpr ThemeEntry k_Entries[] = {
+				{ ThemeSetting::Auto,  nullptr },
+				{ ThemeSetting::Dark,  "launcher.settings.theme.dark" },
+				{ ThemeSetting::Light, "launcher.settings.theme.light" },
+			};
+
+			const std::string effectiveThemeName = IsEffectiveThemeDark()
+				? IDX_TR("launcher.settings.theme.dark")
+				: IDX_TR("launcher.settings.theme.light");
+
+			auto labelFor = [&](const ThemeEntry& e) -> std::string {
+				if (e.Value == ThemeSetting::Auto) {
+					return Localization::Format("launcher.settings.theme.auto_format", effectiveThemeName);
+				}
+				return IDX_TR(e.LabelKey);
+			};
+
+			std::string preview;
+			for (const auto& e : k_Entries) {
+				if (e.Value == m_ThemeSetting) {
+					preview = labelFor(e);
+					break;
+				}
+			}
+
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::BeginCombo("##LauncherThemeCombo", preview.c_str())) {
+				for (const auto& e : k_Entries) {
+					const bool selected = (e.Value == m_ThemeSetting);
+					const std::string label = labelFor(e);
+					if (ImGui::Selectable(label.c_str(), selected)) {
+						m_ThemeSetting = e.Value;
+						m_LastAppliedDarkTheme.reset();
+						SaveLauncherSettings();
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+		}
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		// Font scale picker. Persists immediately on selection — same pattern
+		// as the language combo above. FontGlobalScale is re-applied next
+		// frame in OnPreRender so the popup itself (and the whole launcher)
+		// rescales live.
+		ImGui::TextUnformatted(IDX_TR("launcher.settings.font_scale").c_str());
+		{
+			struct FontScaleEntry {
+				FontScale Value;
+				const char* Label;  // nullptr → use translated "Auto (xxx%)"
+			};
+			static constexpr FontScaleEntry k_Entries[] = {
+				{ FontScale::Auto, nullptr },
+				{ FontScale::P75,  "75%"   },
+				{ FontScale::P100, "100%"  },
+				{ FontScale::P125, "125%"  },
+				{ FontScale::P150, "150%"  },
+				{ FontScale::P175, "175%"  },
+				{ FontScale::P200, "200%"  },
+			};
+
+			// Auto always resolves to 100% today; format the {0} so future
+			// DPI-aware behaviour can change the displayed percentage without
+			// touching the translation files.
+			auto labelFor = [](const FontScaleEntry& e) -> std::string {
+				if (e.Value == FontScale::Auto) {
+					return Localization::Format("launcher.settings.font_scale.auto_format", 100);
+				}
+				return std::string(e.Label);
+			};
+
+			std::string preview;
+			for (const auto& e : k_Entries) {
+				if (e.Value == m_FontScale) {
+					preview = labelFor(e);
+					break;
+				}
+			}
+
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::BeginCombo("##LauncherFontScaleCombo", preview.c_str())) {
+				for (const auto& e : k_Entries) {
+					const bool selected = (e.Value == m_FontScale);
+					const std::string label = labelFor(e);
+					if (ImGui::Selectable(label.c_str(), selected)) {
+						m_FontScale = e.Value;
+						SaveLauncherSettings();
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
 			}
 		}
 
@@ -1735,9 +2123,9 @@ namespace Index {
 			const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 			ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 		}
-		ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
+		ImGui::SetNextWindowSize(ImVec2(480, 0), ImGuiCond_Appearing);
 		const std::string infoTitle = IDX_TR("launcher.info.title") + k_InfoId;
-		if (!ImGui::BeginPopupModal(infoTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		if (!ImGui::BeginPopupModal(infoTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			return;
 		}
 
@@ -1825,7 +2213,10 @@ namespace Index {
 				static char s_PathBuffer[1024];
 				std::snprintf(s_PathBuffer, sizeof(s_PathBuffer), "%s", entry.Path.c_str());
 				const float buttonWidth = 70.0f;
-				ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttonWidth - 6.0f);
+				const float itemSpacing = ImGui::GetStyle().ItemSpacing.x;
+				const float pathInputWidth = std::max(120.0f,
+					ImGui::GetContentRegionAvail().x - buttonWidth - itemSpacing);
+				ImGui::SetNextItemWidth(pathInputWidth);
 				ImGui::InputText("##InfoPath", s_PathBuffer, sizeof(s_PathBuffer),
 					ImGuiInputTextFlags_ReadOnly);
 				ImGui::SameLine();

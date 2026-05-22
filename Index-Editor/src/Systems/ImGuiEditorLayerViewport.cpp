@@ -43,6 +43,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace Index {
 	namespace {
@@ -59,6 +61,11 @@ namespace Index {
 			{ "3:2", 3.0f / 2.0f },
 			{ "9:16", 9.0f / 16.0f }
 		}};
+
+		AABB UnboundedViewportAABB() {
+			constexpr float limit = std::numeric_limits<float>::infinity();
+			return AABB{ Vec2{ -limit, -limit }, Vec2{ limit, limit } };
+		}
 	}
 
 	void ImGuiEditorLayer::RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
@@ -321,6 +328,12 @@ namespace Index {
 							std::abs(shape.HalfExtends.y * transform.Scale.y) * 2.0f);
 						Gizmo::DrawSquare(transform.Position, size, rotationDegrees);
 					}
+					else if constexpr (std::is_same_v<T, ParticleSystem2DComponent::EdgeParams>) {
+						const float halfLength = shape.Length * 0.5f;
+						Gizmo::DrawLine(
+							transform.TransformPoint(Vec2{ -halfLength, 0.0f }),
+							transform.TransformPoint(Vec2{ halfLength, 0.0f }));
+					}
 				}, particleSystem.Shape);
 	
 				Vec2 moveDirection = particleSystem.ParticleSettings.MoveDirection;
@@ -500,17 +513,46 @@ namespace Index {
 		if (!renderScene) {
 			return;
 		}
-		if (m_SelectedEntity == entt::null
-			|| !renderScene->IsValid(m_SelectedEntity)
-			|| !renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity))
+		const std::uint64_t renderSceneId = static_cast<std::uint64_t>(renderScene->GetSceneId());
+		const bool selectedParticleSystem = m_SelectedEntity != entt::null
+			&& renderScene->IsValid(m_SelectedEntity)
+			&& renderScene->HasComponent<ParticleSystem2DComponent>(m_SelectedEntity);
+
+		if (m_ParticlePreviewEntity != entt::null
+			&& (m_ParticlePreviewSceneId != renderSceneId
+				|| !selectedParticleSystem
+				|| m_SelectedEntity != m_ParticlePreviewEntity))
 		{
+			if (m_ParticlePreviewSceneId == renderSceneId
+				&& renderScene->IsValid(m_ParticlePreviewEntity)
+				&& renderScene->HasComponent<ParticleSystem2DComponent>(m_ParticlePreviewEntity))
+			{
+				auto& previousParticleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_ParticlePreviewEntity);
+				if (previousParticleSystem.IsEmitting() || previousParticleSystem.IsSimulating()) {
+					previousParticleSystem.Stop();
+					renderScene->MarkDirty();
+				}
+			}
+
+			m_ParticlePreviewEntity = entt::null;
+			m_ParticlePreviewSceneId = 0;
+		}
+
+		if (!selectedParticleSystem) {
 			return;
 		}
 
 		auto& particleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
 		if (!particleSystem.IsEmitting() && !particleSystem.IsSimulating()) {
+			if (m_ParticlePreviewEntity == m_SelectedEntity && m_ParticlePreviewSceneId == renderSceneId) {
+				m_ParticlePreviewEntity = entt::null;
+				m_ParticlePreviewSceneId = 0;
+			}
 			return;
 		}
+
+		m_ParticlePreviewEntity = m_SelectedEntity;
+		m_ParticlePreviewSceneId = renderSceneId;
 
 		// Unscaled dt: editor preview ignores TimeScale so designers see
 		// the effect at its authored cadence regardless of debug slow-mo.
@@ -649,47 +691,46 @@ namespace Index {
 				{
 					auto& particleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_SelectedEntity);
 					const ImGuiWindowFlags overlayFlags =
-						ImGuiWindowFlags_NoDecoration |
-						ImGuiWindowFlags_NoMove |
 						ImGuiWindowFlags_NoSavedSettings |
-						ImGuiWindowFlags_NoDocking |
-						ImGuiWindowFlags_AlwaysAutoResize |
-						ImGuiWindowFlags_NoFocusOnAppearing |
-						ImGuiWindowFlags_NoBringToFrontOnFocus |
+						ImGuiWindowFlags_NoScrollbar |
+						ImGuiWindowFlags_NoScrollWithMouse |
 						ImGuiWindowFlags_NoNav;
-					ImGui::SetNextWindowPos(
-						ImVec2(imageTopLeft.x + viewportSize.x - 12.0f, imageTopLeft.y + viewportSize.y - 12.0f),
-						ImGuiCond_Always,
-						ImVec2(1.0f, 1.0f));
+					const ImGuiStyle& style = ImGui::GetStyle();
+					const float spacing = style.ItemSpacing.x;
+					const ImVec2 overlaySize{
+						64.0f + 72.0f + 64.0f + spacing * 2.0f + style.WindowPadding.x * 2.0f,
+						ImGui::GetFrameHeight() + style.WindowPadding.y * 2.0f
+					};
+					const ImVec2 overlayPos{
+						std::max(imageTopLeft.x + 8.0f, imageTopLeft.x + viewportSize.x - overlaySize.x - 12.0f),
+						std::max(imageTopLeft.y + 8.0f, imageTopLeft.y + viewportSize.y - overlaySize.y - 12.0f)
+					};
+					ImGui::SetCursorScreenPos(overlayPos);
 					ImGui::SetNextWindowBgAlpha(0.86f);
-					if (ImGui::Begin("##ParticleSystem2DViewportControls", nullptr, overlayFlags)) {
-						const bool isEmitting = particleSystem.IsEmitting();
-						const bool isSimulating = particleSystem.IsSimulating();
-						bool drewButton = false;
-						if (!isEmitting && !isSimulating) {
-							if (ImGui::Button("Play")) {
-								particleSystem.Play();
-								renderScene->MarkDirty();
-							}
-							drewButton = true;
-						}
-						if (isEmitting || isSimulating) {
-							if (drewButton) ImGui::SameLine();
-							if (ImGui::Button("Pause")) {
+					if (ImGui::BeginChild("##ParticleSystem2DViewportControls", overlaySize, ImGuiChildFlags_Borders, overlayFlags)) {
+						const bool isRunning = particleSystem.IsEmitting() || particleSystem.IsSimulating();
+						const char* playPauseLabel = isRunning ? "Pause" : "Play";
+						if (ImGui::Button(playPauseLabel, ImVec2(64.0f, 0.0f))) {
+							if (isRunning) {
 								particleSystem.Pause();
-								renderScene->MarkDirty();
 							}
-							drewButton = true;
+							else {
+								particleSystem.Play();
+							}
+							renderScene->MarkDirty();
 						}
-						if (isEmitting) {
-							if (drewButton) ImGui::SameLine();
-							if (ImGui::Button("Stop")) {
-								particleSystem.Stop();
-								renderScene->MarkDirty();
-							}
+						ImGui::SameLine();
+						if (ImGui::Button("Restart", ImVec2(72.0f, 0.0f))) {
+							particleSystem.Restart();
+							renderScene->MarkDirty();
+						}
+						ImGui::SameLine();
+						if (ImGui::Button("Stop", ImVec2(64.0f, 0.0f))) {
+							particleSystem.Stop();
+							renderScene->MarkDirty();
 						}
 					}
-					ImGui::End();
+					ImGui::EndChild();
 				}
 
 				if (m_SelectedEntity != entt::null
@@ -1169,7 +1210,9 @@ namespace Index {
 				savedViewport->SetSize(fbW, fbH);
 				gameCam->UpdateViewport();
 				glm::mat4 vp = gameCam->GetViewProjectionMatrix();
-				AABB viewAABB = gameCam->GetViewportAABB();
+				AABB viewAABB = gameCam->IsOcclusionCullingEnabled()
+					? gameCam->GetViewportAABB()
+					: UnboundedViewportAABB();
 				const auto now = std::chrono::steady_clock::now();
 				float targetFps = 0.0f;
 				const bool appVsyncEnabled = Window::IsVsync();

@@ -95,7 +95,7 @@ namespace Index {
 		// Editor-only particle preview tick. Runs once per frame from
 		// OnPreRender so the simulation keeps advancing while the user
 		// switches between the Editor View and Game View tabs — the
-		// in-viewport Play / Pause / Stop overlay is the only thing
+		// in-viewport Play / Pause / Restart / Stop overlay is the only thing
 		// that gates emission/simulation. No-op in play mode (the
 		// ParticleUpdateSystem owns ticking there).
 		void TickParticlePreview(Scene& scene);
@@ -199,6 +199,20 @@ namespace Index {
 		// set against the editor's selection state at drop time.
 		std::vector<EntityHandle> ResolveDraggedHierarchyEntities(Scene& scene, EntityHandle primary) const;
 
+		// Migrates the given root entities (and their full subtrees) from
+		// `sourceScene` into `targetScene`. Serializes through the
+		// clipboard path (SerializeEntityForClipboard / DeserializeEntityFromValue)
+		// so component data, hierarchy, and asset references survive the
+		// cross-scene hop, then destroys the originals. Optionally reparents
+		// the new roots under `targetParent` (Entity::Null = keep as root).
+		// Marks both scenes dirty when at least one entity actually moved
+		// and returns the new entity handles in target-scene order for
+		// follow-up selection. Used by the Entities panel's cross-scene
+		// drag-drop path; same-scene drops still go through the cheaper
+		// reparent / sibling-insert routines.
+		std::vector<EntityHandle> MigrateEntitiesToScene(Scene& sourceScene, Scene& targetScene,
+			const std::vector<EntityHandle>& sourceRoots, Entity targetParent);
+
 		// ── Prefab edit mode ──────────────────────────────────────────
 		// Loads `path` into a detached scene and switches the editor's
 		// hierarchy panel + viewport to that scene. The main scene stays
@@ -247,6 +261,8 @@ namespace Index {
 			bool uiInWorldSpace = false,
 			EditorViewDrawMode drawMode = EditorViewDrawMode::Default);
 
+		EntityHandle m_ParticlePreviewEntity = entt::null;
+		std::uint64_t m_ParticlePreviewSceneId = 0;
 		EntityHandle m_SelectedEntity = entt::null;
 		EntityHandle m_PressedEntity = entt::null;
 		std::vector<EntityHandle> m_SelectedEntities;

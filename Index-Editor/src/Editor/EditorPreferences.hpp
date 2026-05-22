@@ -13,9 +13,9 @@ namespace Index {
 	// it follows the user, not the project file. Project-scoped settings
 	// still live on IndexProject.
 	enum class EditorThemeMode : uint8_t {
-		Dark = 0,
+		SystemDefault = 0,
+		Dark,
 		Light,
-		SystemDefault,
 		Custom,
 	};
 
@@ -39,6 +39,8 @@ namespace Index {
 		// SystemDefault each call so a Windows theme change picked up
 		// between sessions is honored on next Load.
 		static void ApplyTheme();
+		static EditorThemeMode GetResolvedThemeMode();
+		static EditorThemeMode GetResolvedThemeMode(EditorThemeMode mode);
 
 		// ── Appearance ────────────────────────────────────────────
 		static EditorThemeMode GetThemeMode();
@@ -59,14 +61,16 @@ namespace Index {
 		// editor launch (font atlas rebuild is not wired in this change).
 		static void SetEditorFontAssetId(uint64_t id);
 
-		static float GetEditorFontSize();
-		// Clamped to [k_MinEditorFontSize, k_MaxEditorFontSize]. Persisted
-		// immediately. Applied live: requests a deferred atlas rebuild on
-		// ImGuiContextLayer so the new size shows up next frame.
-		static void SetEditorFontSize(float sizePx);
+		static int GetEditorFontZoomPercent();
+		// Clamped to [k_MinEditorFontZoomPercent, k_MaxEditorFontZoomPercent]
+		// and snapped to k_EditorFontZoomStepPercent. Persisted immediately
+		// and applied live through ImGuiContextLayer.
+		static void SetEditorFontZoomPercent(int percent);
 
-		static constexpr float k_MinEditorFontSize = 10.0f;
-		static constexpr float k_MaxEditorFontSize = 24.0f;
+		static constexpr int k_MinEditorFontZoomPercent = 75;
+		static constexpr int k_MaxEditorFontZoomPercent = 200;
+		static constexpr int k_EditorFontZoomStepPercent = 25;
+		static constexpr int k_DefaultEditorFontZoomPercent = 100;
 
 		// ── Behavior (migrated from IndexProject) ─────────────────
 		static bool GetShowFileExtensions();

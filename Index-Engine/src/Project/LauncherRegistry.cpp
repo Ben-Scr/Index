@@ -138,6 +138,17 @@ namespace Index {
 			m_Projects.end());
 	}
 
+	bool LauncherRegistry::RenameProject(const std::string& path, const std::string& newName) {
+		if (newName.empty()) return false;
+		for (auto& p : m_Projects) {
+			if (p.Path == path) {
+				p.Name = newName;
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void LauncherRegistry::UpdateLastOpened(const std::string& path) {
 		for (auto& p : m_Projects) {
 			if (p.Path == path) {

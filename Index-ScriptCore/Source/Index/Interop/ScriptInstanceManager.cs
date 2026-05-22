@@ -413,6 +413,20 @@ internal static class ScriptInstanceManager
         if (s_UserLoadContext == null)
             return;
 
+        // Strip every static event handler still pointing into the user
+        // assembly before the ALC unloads. By the time this runs the
+        // engine has already called every script's OnDisable through
+        // ShutdownGlobalSystems + TeardownManagedScripts — well-behaved
+        // scripts that `+=` in OnEnable and `-=` in OnDisable leave
+        // nothing here. Anything remaining is genuinely leaking and
+        // would otherwise survive the AssemblyLoadContext.Unload,
+        // pointing into freed code on the next event raise.
+        int strayHandlers = SweepUserStaticEventHandlers(SweepScope.AssemblyUnload);
+        if (strayHandlers > 0)
+        {
+            Log.Warn($"{strayHandlers} registered event(s) still active. Register and unregister events using OnEnable() and OnDisable().");
+        }
+
         // Drop cached managed Component instances *before* unloading: each entry in
         // Entity.s_ManagedComponentStore references a user-defined type, which roots
         // the AssemblyLoadContext and would prevent it from unloading on hot reload.
@@ -430,6 +444,224 @@ internal static class ScriptInstanceManager
 
         if (weakContext.IsAlive)
             Log.Warn("[ScriptLoader] User assembly load context is still alive after unload; lingering references may delay full cleanup.");
+    }
+
+    // Called from native on play mode exit, AFTER the editor has
+    // reloaded the pre-play scene snapshot (which destroyed every
+    // play-mode EntityScript / GameSystem and fired their OnDisable /
+    // OnDestroy thunks). Anything left is genuinely a script that
+    // forgot to `-=` in OnDisable. GlobalSystem subscriptions are
+    // explicitly preserved because GlobalSystems live across play
+    // mode — their handlers are still valid in edit mode.
+    [UnmanagedCallersOnly]
+    public static void OnPlayModeExited()
+    {
+        int strayHandlers = SweepUserStaticEventHandlers(SweepScope.PlayModeExit);
+        if (strayHandlers > 0)
+        {
+            Log.Warn($"{strayHandlers} registered event(s) still active. Register and unregister events using OnEnable() and OnDisable().");
+        }
+    }
+
+    // Distinguishes the two contexts where the sweep runs:
+    //   • AssemblyUnload — every script kind (EntityScript, GameSystem,
+    //     GlobalSystem, free-floating helpers in user code) is about to
+    //     vanish with the ALC. Strip any handler whose method lives in
+    //     the user assembly, full stop.
+    //   • PlayModeExit — only per-play-lifetime scripts (EntityScript,
+    //     GameSystem) were torn down. GlobalSystem instances are still
+    //     alive and their subscriptions remain valid; removing them
+    //     would break legitimate cross-mode patterns like a logger
+    //     GlobalSystem forwarding Log.LogMessage to a file.
+    private enum SweepScope
+    {
+        AssemblyUnload,
+        PlayModeExit,
+    }
+
+    // Walks every static event in every loaded engine-side assembly,
+    // removes any subscriber whose method (or compiler-generated closure
+    // outer type) lives in the user assembly and matches the scope
+    // policy, and returns the total number of handlers stripped. No-op
+    // when no user assembly is loaded.
+    //
+    // Implementation notes:
+    //   • The backing field for `public static event Action<T> Foo` is
+    //     a private static field with the same name as the event. We
+    //     read/write through the field rather than the event's
+    //     add_/remove_ accessors so a single Delegate.Combine of the
+    //     kept invocations re-assembles the cleaned delegate atomically.
+    //   • Lambdas declared inside user methods compile into instance
+    //     methods on a compiler-generated closure type living in the
+    //     user assembly, so Method.DeclaringType.Module.Assembly is
+    //     the reliable user-vs-core discriminator.
+    //   • For PlayModeExit, we walk past compiler-generated nested
+    //     closure types ([CompilerGenerated]) to find the user-facing
+    //     outer class, then keep only handlers whose outer class is an
+    //     EntityScript or GameSystem subclass.
+    //   • Walks every loaded assembly (not just core) so events declared
+    //     in engine-side packages also get swept.
+    private static int SweepUserStaticEventHandlers(SweepScope scope)
+    {
+        Assembly? userAssembly = s_UserAssembly;
+        if (userAssembly == null) return 0;
+
+        // Per-play-lifetime base types are resolved once up-front, not
+        // per-handler, so the sweep stays cheap even with thousands of
+        // subscribers across all engine events.
+        Type? entityScriptBase = null;
+        Type? gameSystemBase = null;
+        if (scope == SweepScope.PlayModeExit && s_CoreAssembly != null)
+        {
+            entityScriptBase = s_CoreAssembly.GetType("Index.EntityScript");
+            gameSystemBase = s_CoreAssembly.GetType("Index.GameSystem");
+        }
+
+        int totalRemoved = 0;
+
+        const BindingFlags eventFlags =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+        const BindingFlags fieldFlags =
+            BindingFlags.NonPublic | BindingFlags.Static;
+
+        foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            // Sweeping events declared by the user assembly itself is
+            // pointless — they're about to be unloaded with the ALC. The
+            // play-mode-exit path leaves the user assembly intact, but in
+            // that case there's nothing to remove either (handlers
+            // declared and subscribed inside the same assembly are
+            // already self-cleaning when the user re-runs play).
+            if (assembly == userAssembly) continue;
+
+            // Filter to assemblies referenced by user-script-relevant
+            // surface area. Probing every loaded BCL assembly (System.*,
+            // Microsoft.*) is wasted work — none of them expose events the
+            // user assembly is supposed to subscribe to. Index-ScriptCore
+            // and any engine-side managed packages do.
+            string? name = assembly.GetName().Name;
+            if (name == null) continue;
+            if (name.StartsWith("System.", StringComparison.Ordinal)) continue;
+            if (name.StartsWith("Microsoft.", StringComparison.Ordinal)) continue;
+            if (name == "System" || name == "mscorlib" || name == "netstandard") continue;
+
+            Type[] types;
+            try { types = assembly.GetTypes(); }
+            catch (ReflectionTypeLoadException ex)
+            {
+                // Partial type loads can happen if a dependent assembly
+                // failed to bind. Sweep whatever did load and skip the
+                // rest — better than aborting the cleanup entirely.
+                types = Array.FindAll(ex.Types, t => t != null)!;
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (Type type in types)
+            {
+                if (type == null) continue;
+
+                EventInfo[] events;
+                try { events = type.GetEvents(eventFlags); }
+                catch { continue; }
+
+                foreach (EventInfo evt in events)
+                {
+                    if (evt.AddMethod == null || !evt.AddMethod.IsStatic) continue;
+
+                    // Implicit `event Foo` declarations get a backing
+                    // static field named the same as the event. Explicit
+                    // add/remove accessors don't; skip those — there's
+                    // no portable way to enumerate their subscribers.
+                    FieldInfo? field = type.GetField(evt.Name, fieldFlags);
+                    if (field == null) continue;
+                    if (!typeof(Delegate).IsAssignableFrom(field.FieldType)) continue;
+
+                    Delegate? current;
+                    try { current = field.GetValue(null) as Delegate; }
+                    catch { continue; }
+                    if (current == null) continue;
+
+                    Delegate? cleaned = null;
+                    int removedFromThisEvent = 0;
+                    foreach (Delegate invocation in current.GetInvocationList())
+                    {
+                        if (ShouldRemoveInvocation(invocation, scope, userAssembly, entityScriptBase, gameSystemBase))
+                        {
+                            ++removedFromThisEvent;
+                            continue;
+                        }
+                        cleaned = Delegate.Combine(cleaned, invocation);
+                    }
+
+                    if (removedFromThisEvent > 0)
+                    {
+                        try { field.SetValue(null, cleaned); }
+                        catch (Exception ex)
+                        {
+                            Log.Warn($"[ScriptLoader] Failed to clear stale subscribers on {type.FullName}.{evt.Name}: {ex.Message}");
+                            continue;
+                        }
+                        totalRemoved += removedFromThisEvent;
+                    }
+                }
+            }
+        }
+
+        return totalRemoved;
+    }
+
+    private static bool ShouldRemoveInvocation(
+        Delegate invocation,
+        SweepScope scope,
+        Assembly userAssembly,
+        Type? entityScriptBase,
+        Type? gameSystemBase)
+    {
+        MethodInfo method = invocation.Method;
+        Type? declaring = method.DeclaringType;
+        if (declaring == null) return false;
+        if (declaring.Module.Assembly != userAssembly) return false;
+
+        // Assembly-unload sweep: the whole user assembly is going away,
+        // anything pointing into it must die.
+        if (scope == SweepScope.AssemblyUnload) return true;
+
+        // PlayModeExit sweep: only strip handlers owned by per-play-
+        // lifetime script types. Walk past compiler-generated closure
+        // types ([CompilerGenerated]) to find the user-facing outer
+        // class — a lambda inside MyScript.OnStart compiles into a
+        // method on `MyScript.<>c__DisplayClass0_0`, whose containing
+        // type is MyScript, and we want to filter on MyScript's base
+        // class chain, not the closure's.
+        Type? owner = declaring;
+        while (owner != null && owner.IsNested && IsCompilerGenerated(owner))
+        {
+            owner = owner.DeclaringType;
+        }
+        if (owner == null) return false;
+
+        if (entityScriptBase != null && entityScriptBase.IsAssignableFrom(owner)) return true;
+        if (gameSystemBase != null && gameSystemBase.IsAssignableFrom(owner)) return true;
+        return false;
+    }
+
+    private static bool IsCompilerGenerated(Type t)
+    {
+        try
+        {
+            return Attribute.IsDefined(t, typeof(CompilerGeneratedAttribute), inherit: false);
+        }
+        catch
+        {
+            // IsDefined can throw on malformed metadata; treat as
+            // non-compiler-generated so we stop walking and use the
+            // declaring type as the owner. Safer than aborting the
+            // whole sweep.
+            return false;
+        }
     }
 
     [UnmanagedCallersOnly]

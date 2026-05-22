@@ -1,8 +1,10 @@
 using System;
+using System.Collections;
 using System.Linq;
 
 namespace Index;
 public enum FilterOption { Digits, Letters, Alphanumeric };
+public enum CaseConvention { PascalCase, CamelCase, SnakeCase, KebabCase };
 
 public static class TextUtils
 {
@@ -52,6 +54,35 @@ public static class TextUtils
 
     public static int WordsCount(string s) => s.Split(' ').Length;
 
+    public static string ToString(IEnumerable numerable)
+    {
+        string result = "[";
+        foreach (var item in numerable)
+        {
+            result += item.ToString() + ", ";
+        }
+        if (result.Length > 1)
+            result = result.Substring(0, result.Length - 2);
+        return result + "]";
+    }
+
+    public static string ToCase(string s, CaseConvention convention)
+    {
+        string[] words = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        switch (convention)
+        {
+            case CaseConvention.PascalCase:
+                return string.Concat(words.Select(w => char.ToUpper(w[0]) + w.Substring(1).ToLower()));
+            case CaseConvention.CamelCase:
+                return char.ToLower(words[0][0]) + words[0].Substring(1).ToLower() + string.Concat(words.Skip(1).Select(w => char.ToUpper(w[0]) + w.Substring(1).ToLower()));
+            case CaseConvention.SnakeCase:
+                return string.Join("_", words.Select(w => w.ToLower()));
+            case CaseConvention.KebabCase:
+                return string.Join("-", words.Select(w => w.ToLower()));
+            default:
+                return s;
+        }
+    }
 
     public static string WrapWith(string s, string beginMark, string endMark)
     {
@@ -65,7 +96,6 @@ public static class TextUtils
         s += mark;
         return s;
     }
-
     public static string WrapWith(string s, char beginMark, char endMark)
     {
         s.Insert(0, beginMark.ToString());
@@ -91,24 +121,6 @@ public static class TextUtils
             return 0;
 
         return s.Distinct().Count();
-    }
-
-    public static string ArrayToString<T>(T[] arr)
-    {
-        string text = "[";
-        for (int i = 0; i < arr.Length; i++)
-        {
-            if (i == 0)
-            {
-                text += arr[i];
-            }
-            else
-            {
-                text += ", " + arr[i];
-            }
-        }
-
-        return text + "]";
     }
 
     public static string Capitalize(string input)

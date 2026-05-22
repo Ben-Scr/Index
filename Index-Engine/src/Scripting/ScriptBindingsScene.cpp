@@ -479,8 +479,21 @@ namespace Index {
 	static void Index_Input_GetMousePosition(float* outX, float* outY)
 	{
 		auto* app = Application::GetInstance();
-		if (CanReadScriptInput()) { Vec2 pos = app->GetInput().GetMousePosition(); *outX = pos.x; *outY = pos.y; }
-		else { *outX = 0.0f; *outY = 0.0f; }
+		if (!CanReadScriptInput()) { *outX = 0.0f; *outY = 0.0f; return; }
+
+		// Editor: rebase to the Game View panel's pixel rect so scripts see
+		// (0,0) at the visible viewport's top-left, not the OS window's.
+		// The editor publishes the panel rect via Window::SetUIRegion every
+		// frame the Game View is open; standalone runtime builds leave the
+		// region inactive, so we fall through to raw OS-window coords —
+		// which IS the game viewport in a shipped build.
+		Vec2 pos = app->GetInput().GetMousePosition();
+		const Window::UIRegion uiRegion = Window::GetUIRegion();
+		if (uiRegion.IsActive()) {
+			pos.x -= static_cast<float>(uiRegion.OffsetX);
+			pos.y -= static_cast<float>(uiRegion.OffsetY);
+		}
+		*outX = pos.x; *outY = pos.y;
 	}
 
 	static void Index_Input_GetAxis(float* outX, float* outY) {

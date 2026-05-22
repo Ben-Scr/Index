@@ -2312,7 +2312,7 @@ namespace Index {
 							ImGui::SameLine();
 						}
 					}
-					ImGui::TextDisabled("(default Index logo)");
+					ImGui::TextDisabled("(Default)");
 				}
 				else {
 					ImGuiUtils::TextDisabledEllipsis(project.SplashScreen.ImagePath);
@@ -2509,7 +2509,7 @@ namespace Index {
 					ImGui::TextDisabled("No icon set");
 				}
 				else {
-					ImGui::TextDisabled("(engine default — icon.png)");
+					ImGui::TextDisabled("(Default)");
 				}
 				if (ImGui::Button("Browse...##AppIcon")) {
 					ReferencePicker::OpenForFieldKey(k_AppIconPickerKey, "Select App Icon",

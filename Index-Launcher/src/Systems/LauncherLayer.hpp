@@ -84,12 +84,46 @@ namespace Index {
 			CreatedAt = 2,
 		};
 
+		// Multiplier applied to ImGui's FontGlobalScale. The font atlas is
+		// baked statically at startup (see comment in ImGuiContextLayer.cpp
+		// about ImGuiBackendFlags_RendererHasTextures), so we can only stretch
+		// the already-baked glyphs — not re-bake at a different point size.
+		// "Auto" currently behaves identically to P100; it exists as a
+		// distinct entry so future DPI-driven heuristics can plug in without
+		// migrating saved settings.
+		enum class FontScale : uint8_t {
+			Auto = 0,
+			P75 = 1,
+			P100 = 2,
+			P125 = 3,
+			P150 = 4,
+			P175 = 5,
+			P200 = 6,
+		};
+
+		enum class ThemeSetting : uint8_t {
+			Auto = 0,
+			Dark = 1,
+			Light = 2,
+		};
+
 		void RenderLauncherPanel();
 		void RenderProjectList();
 		void RenderCreateProjectPopup();
 		void RenderDeleteProjectPopups();
 		void RenderSettingsPopup();
 		void RenderProjectInfoPopup();
+		void RenderErrorPopup();
+		void RenderRenameProjectPopup();
+		void RequestProjectRename(const LauncherProjectEntry& entry);
+		void RemoveProjectFromList(const LauncherProjectEntry& entry);
+		const LauncherProjectEntry* GetSelectedProject() const;
+
+		// Queue a one-off error to show in the modal dialog. Replaces the
+		// previous "set m_*Error string, render as inline red text" pattern.
+		// The dialog opens on the next frame (deferred via m_OpenErrorPopup)
+		// so it can be called from inside an ImGui::Begin*-scope safely.
+		void ShowError(std::string message);
 		void OpenProject(const LauncherProjectEntry& entry);
 		void OpenProjectInExplorer(const LauncherProjectEntry& entry);
 		void BrowseForExistingProject();
@@ -108,6 +142,9 @@ namespace Index {
 		void LoadLauncherSettings();
 		void SaveLauncherSettings() const;
 		static std::string GetSettingsPath();
+		float GetEffectiveFontScale() const;
+		bool IsEffectiveThemeDark() const;
+		void ApplyLauncherThemeIfNeeded();
 
 		LauncherRegistry m_Registry;
 		std::unordered_map<std::string, std::shared_ptr<ProjectSizeTaskState>> m_ProjectSizeTasks;
@@ -118,14 +155,23 @@ namespace Index {
 		SortMode m_SortMode = SortMode::LastOpened;
 		bool m_SortReverse = false;
 
+		FontScale m_FontScale = FontScale::Auto;
+		ThemeSetting m_ThemeSetting = ThemeSetting::Auto;
+		std::optional<bool> m_LastAppliedDarkTheme;
+
+		// "Auto" language mode: the launcher resolves the active language to
+		// Localization::GetSystemLanguage() at startup and whenever the user
+		// re-selects the Auto entry in the combo. Persisted independently of
+		// Localization's own locale.json so the resolved code can land there
+		// without overriding the user's "follow the OS" intent.
+		bool m_LanguageAuto = false;
+
 		std::string m_DefaultProjectsLocation;
 		bool m_OpenSettingsPopup = false;
 
 		char m_NewProjectName[256]{};
 		char m_NewProjectLocation[512]{};
 		std::string m_CreateError;
-		std::string m_BrowseError;
-		std::string m_ProjectActionError;
 
 		bool m_IsCreating = false;
 		bool m_OpenCreatePopup = false;
@@ -154,10 +200,29 @@ namespace Index {
 		bool m_OpenInfoPopup = false;
 		mutable std::unordered_map<std::string, std::string> m_EngineVersionCache;
 
+		// Rename popup state — mirrors the create-project popup pattern.
+		// m_PendingRenameProject holds the entry being renamed (so we can
+		// commit by path even if the user shuffles the list while the popup
+		// is open); m_RenameBuffer is the editable text field.
+		std::optional<LauncherProjectEntry> m_PendingRenameProject;
+		bool m_OpenRenamePopup = false;
+		char m_RenameBuffer[256]{};
+
+		// Project selection — keyed by path so the selection survives sort
+		// changes and registry edits. Empty when nothing is selected. The
+		// right-column Open/Rename/Delete buttons gate on this; rows
+		// highlight when their path matches.
+		std::string m_SelectedProjectPath;
+
 #ifdef IDX_PLATFORM_WINDOWS
 		std::unordered_map<std::string, DWORD> m_RunningProjects;
 #endif
-		std::string m_OpenError;
+
+		// Modal error dialog. m_ErrorMessage holds the current text;
+		// m_OpenErrorPopup is the one-shot "open the popup next frame" flag
+		// matching the pattern used by the create/delete/info popups.
+		std::string m_ErrorMessage;
+		bool m_OpenErrorPopup = false;
 	};
 
 }

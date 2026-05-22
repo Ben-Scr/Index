@@ -388,6 +388,11 @@ namespace Index {
 		if (s_Initialized && s_Callbacks.RaiseWindowResize) s_Callbacks.RaiseWindowResize();
 	}
 
+	void ScriptEngine::OnPlayModeExited()
+	{
+		if (s_Initialized && s_Callbacks.OnPlayModeExited) s_Callbacks.OnPlayModeExited();
+	}
+
 	uint32_t ScriptEngine::CreateGameSystemInstance(const std::string& className, const std::string& sceneName)
 	{
 		if (!s_Initialized || !s_Callbacks.CreateGameSystemInstance) return 0;

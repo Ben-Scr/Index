@@ -9,11 +9,20 @@
 #include "Serialization/SpecialFolder.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+#ifdef IDX_PLATFORM_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace Index::Localization {
 
@@ -495,6 +504,54 @@ namespace Index::Localization {
 
 	const std::string& GetCurrentLanguage() {
 		return S().CurrentLanguage;
+	}
+
+	namespace {
+		// Extracts the bare language tag from an OS locale string.
+		// Accepts both BCP-47 ("de-DE") and POSIX ("de_DE.UTF-8") forms;
+		// lowercases and trims at the first '-', '_' or '.'.
+		std::string NormalizeLocaleTag(std::string_view raw) {
+			std::string out;
+			out.reserve(raw.size());
+			for (char c : raw) {
+				if (c == '-' || c == '_' || c == '.') break;
+				out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+			}
+			return out;
+		}
+
+		std::string ProbeOsLocale() {
+#ifdef IDX_PLATFORM_WINDOWS
+			wchar_t buf[LOCALE_NAME_MAX_LENGTH] = {};
+			const int len = ::GetUserDefaultLocaleName(buf, LOCALE_NAME_MAX_LENGTH);
+			if (len <= 0) return {};
+			// LOCALE_NAME_MAX_LENGTH is small (85), narrow ASCII conversion is fine
+			// since BCP-47 tags are ASCII-only.
+			std::string out;
+			out.reserve(static_cast<std::size_t>(len));
+			for (int i = 0; i < len && buf[i]; ++i) {
+				out.push_back(static_cast<char>(buf[i] & 0x7F));
+			}
+			return out;
+#else
+			if (const char* env = std::getenv("LC_ALL"); env && *env) return env;
+			if (const char* env = std::getenv("LC_MESSAGES"); env && *env) return env;
+			if (const char* env = std::getenv("LANG"); env && *env) return env;
+			return {};
+#endif
+		}
+	}
+
+	std::string GetSystemLanguage() {
+		const std::string tag = NormalizeLocaleTag(ProbeOsLocale());
+		if (tag.empty()) return k_FallbackLanguage;
+
+		const State& s = S();
+		for (const auto& info : s.AvailableLanguages) {
+			if (info.Status != LanguageStatus::Installed) continue;
+			if (info.Code == tag) return info.Code;
+		}
+		return k_FallbackLanguage;
 	}
 
 	void SetLanguage(std::string_view code) {

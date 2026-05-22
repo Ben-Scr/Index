@@ -9,7 +9,6 @@ namespace Index::EditorTheme {
 	namespace Colors {
 
 		// Prefab instance whose source GUID resolves in the AssetRegistry.
-		// Drawn in the same accent-blue family as ImGuiCol_TabSelectedOverline.
 		inline constexpr ImVec4 PrefabInstance = ImVec4(0.42f, 0.66f, 0.95f, 1.00f);
 
 		// Reserved for "child of an instance, part of the source prefab".

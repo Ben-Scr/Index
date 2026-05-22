@@ -194,6 +194,40 @@ namespace Index {
 			return anyChanged;
 		}
 
+		template <typename Getter, typename Setter>
+		bool DrawAxisLabeledFloatMulti(const char* rowLabel,
+			const char* axisLabel,
+			std::span<const Entity> entities,
+			Getter&& get, Setter&& set,
+			float speed = 0.1f, const char* format = "%.3f")
+		{
+			float value = 0.0f;
+			const bool uniform = ImGuiUtils::MultiEdit::SampleUniform<float>(entities, get, value);
+
+			ImGui::PushID(rowLabel);
+			ImGuiUtils::BeginInspectorFieldRow(rowLabel);
+
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const float axisWidth = ImGui::CalcTextSize(axisLabel).x;
+			const float fieldWidth = std::max(1.0f,
+				ImGui::GetContentRegionAvail().x - axisWidth - style.ItemInnerSpacing.x);
+
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted(axisLabel);
+			ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+			ImGui::SetNextItemWidth(fieldWidth);
+
+			const bool changed = ImGui::DragFloat("##Value", &value, speed, 0.0f, 0.0f,
+				uniform ? format : "-");
+			if (changed) {
+				for (const Entity& e : entities) set(e, value);
+				ImGuiUtils::MarkSelectionDirty(entities);
+			}
+
+			ImGui::PopID();
+			return changed;
+		}
+
 	} // namespace
 
 	// ── SpriteRenderer ───────────────────────────────────────────────
@@ -241,22 +275,55 @@ namespace Index {
 		}
 	}
 
-	// ── Camera2D ─────────────────────────────────────────────────────
-	// Properties (Zoom, OrthographicSize, ClearColor) flow through the
-	// auto-drawer. Read-only viewport size + world viewport are diagnostic
-	// extras only meaningful when ONE camera is selected.
+	// ── Transform2D ──────────────────────────────────────────────────
+	// Axis labels live inside the value column so Position / Scale expose
+	// X/Y and Rotation exposes the authored Z angle.
 
+	void DrawTransform2DInspector(std::span<const Entity> entities)
+	{
+		using TC = Transform2DComponent;
+		const char* xyLabels[2] = { "X", "Y" };
+
+		DrawAxisLabeledVecMulti<2>("Position", xyLabels, entities,
+			[](const Entity& e, int c) {
+				const Vec2& p = e.GetComponent<TC>().LocalPosition;
+				return c == 0 ? p.x : p.y;
+			},
+			[](const Entity& e, int c, float v) {
+				TC& t = const_cast<Entity&>(e).GetComponent<TC>();
+				Vec2 p = t.LocalPosition;
+				if (c == 0) p.x = v; else p.y = v;
+				t.SetPosition(p);
+			},
+			0.1f);
+
+		DrawAxisLabeledFloatMulti("Rotation", "Z", entities,
+			[](const Entity& e) {
+				return Degrees(e.GetComponent<TC>().LocalRotation);
+			},
+			[](const Entity& e, float v) {
+				const_cast<Entity&>(e).GetComponent<TC>().SetRotation(Radians(v));
+			},
+			1.0f);
+
+		DrawAxisLabeledVecMulti<2>("Scale", xyLabels, entities,
+			[](const Entity& e, int c) {
+				const Vec2& s = e.GetComponent<TC>().LocalScale;
+				return c == 0 ? s.x : s.y;
+			},
+			[](const Entity& e, int c, float v) {
+				TC& t = const_cast<Entity&>(e).GetComponent<TC>();
+				Vec2 s = t.LocalScale;
+				if (c == 0) s.x = v; else s.y = v;
+				t.SetScale(s);
+			},
+			0.1f);
+	}
+
+	// Camera2D properties flow through the auto-drawer.
 	void DrawCamera2DInspector(std::span<const Entity> entities)
 	{
 		DrawPropertiesFor<Camera2DComponent>(entities);
-
-		if (entities.size() == 1) {
-			const auto& camera = entities[0].GetComponent<Camera2DComponent>();
-			if (Viewport* vp = camera.GetViewport()) {
-				ImGuiUtils::DrawVec2ReadOnly("Viewport Size", vp->GetSize());
-			}
-			ImGuiUtils::DrawVec2ReadOnly("World Viewport", camera.WorldViewPort());
-		}
 	}
 
 	// ── FastBody2D (Axiom-Physics) ───────────────────────────────────
@@ -285,25 +352,11 @@ namespace Index {
 	// Hybrid: every field is declared in BuiltInComponentRegistration.cpp
 	// (including the Shape variant via Properties::MakeVariantWith and the
 	// Gravity-Value EnabledIf gate). Properties flow through the auto-drawer.
-	// The two non-property bits are the Play / Pause button (a runtime
-	// toggle, not a serialized field) and the texture preview (only sane
-	// with one entity selected).
+	// The non-property bit here is the texture preview (only sane with one
+	// entity selected). Runtime preview controls live in the Editor View.
 
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities)
 	{
-		// Play / Pause toggle.
-		bool firstPlaying = false;
-		bool playUniform = true;
-		if (!entities.empty()) {
-			firstPlaying = entities[0].GetComponent<ParticleSystem2DComponent>().IsPlaying();
-			for (std::size_t i = 1; i < entities.size(); ++i) {
-				if (entities[i].GetComponent<ParticleSystem2DComponent>().IsPlaying() != firstPlaying) {
-					playUniform = false;
-					break;
-				}
-			}
-		}
-
 		// All declarative fields — auto-drawer renders the standard rows
 		// with proper EnabledIf / Variant / Clamp behavior.
 		DrawPropertiesFor<ParticleSystem2DComponent>(entities);

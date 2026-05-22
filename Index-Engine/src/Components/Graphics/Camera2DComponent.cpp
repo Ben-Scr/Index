@@ -195,27 +195,20 @@ namespace Index {
 	{
 		if (!m_Viewport) return { 0.0f, 0.0f };
 
-		// Editor: when the Game View panel is rendering into a sub-rect
-		// of the OS window, mouse coords come in OS-window-relative,
-		// but the camera renders to the panel's pixel rect. Without
-		// remapping here, ScreenToWorld would divide an OS-window
-		// coordinate by the OS-window dimensions and miss the panel's
-		// offset + size — handing back a world point that drifted by
-		// roughly the panel's top-left offset (in world units) and
-		// stretched by the OS-window/panel size ratio. Mirrors the
-		// UIRegion handling UIEventSystem does for hit-testing.
+		// `pos` is expected in viewport-local pixel space — Game View
+		// panel-relative in the editor, OS-window-relative in shipped
+		// builds. The script binding for Input.MousePosition rebases via
+		// Window::GetUIRegion() before this function ever runs, so we
+		// only need the viewport dimensions here — not the offset.
 		//
-		// Runtime: UIRegion stays unset (no editor panel publishing it),
-		// so we fall back to the OS-window viewport — which IS the
-		// camera's render target in shipped builds. Same math as
-		// before, no behavioural change.
+		// Dimensions: in editor the camera's m_Viewport gets restored to
+		// OS-window size after RenderGameView's RAII guard, so we still
+		// need to read the panel size from UIRegion. Runtime leaves
+		// UIRegion unset and m_Viewport IS the render target.
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		float vpW = 0.0f;
 		float vpH = 0.0f;
-		Vec2 local = pos;
 		if (uiRegion.IsActive()) {
-			local.x -= static_cast<float>(uiRegion.OffsetX);
-			local.y -= static_cast<float>(uiRegion.OffsetY);
 			vpW = static_cast<float>(uiRegion.Width);
 			vpH = static_cast<float>(uiRegion.Height);
 		}
@@ -225,8 +218,8 @@ namespace Index {
 		}
 		if (vpW <= 0.0f || vpH <= 0.0f) return { 0.0f, 0.0f };
 
-		const float xNdc = (2.0f * local.x / vpW) - 1.0f;
-		const float yNdc = 1.0f - (2.0f * local.y / vpH);
+		const float xNdc = (2.0f * pos.x / vpW) - 1.0f;
+		const float yNdc = 1.0f - (2.0f * pos.y / vpH);
 
 		const float zNear = 0.0f, zFar = 100.0f;
 		const float zNdc = -(zFar + zNear) / (zFar - zNear);

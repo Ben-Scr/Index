@@ -28,6 +28,7 @@ namespace Index {
 		void RenderLayoutsTab();
 		void RenderBehaviorTab();
 
+		void RenderFontRestartModal();
 		void RenderLayoutModals();
 
 		// Layout preset modal state. Lives on the panel (not as TU-static)
@@ -38,6 +39,10 @@ namespace Index {
 		bool m_OpenSaveLayoutRequest = false;
 		std::string m_PendingDeleteLayoutName;
 		bool m_OpenDeleteLayoutRequest = false;
+
+		// Raised after the editor font asset changes. The typeface is
+		// loaded during ImGui setup, so the user chooses when to reload.
+		bool m_OpenFontRestartRequest = false;
 
 		// True the frame the panel becomes visible. Used to refresh
 		// detection of external script editors so plugging in a new IDE

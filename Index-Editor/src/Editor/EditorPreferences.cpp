@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -28,12 +29,12 @@ namespace Index {
 		// class is a static facade — there's only ever one EditorPreferences
 		// per editor process.
 		struct State {
-			EditorThemeMode Theme = EditorThemeMode::Dark;
+			EditorThemeMode Theme = EditorThemeMode::SystemDefault;
 			ImVec4 CustomColors[ImGuiCol_COUNT]{};
 			bool CustomColorsSeeded = false;
 
 			uint64_t EditorFontAssetId = k_DefaultFontAssetId;
-			float EditorFontSize = k_IndexImGuiFontSize;
+			int EditorFontZoomPercent = EditorPreferences::k_DefaultEditorFontZoomPercent;
 
 			bool ShowFileExtensions = false;
 			bool AutoSaveScenes = false;
@@ -65,14 +66,27 @@ namespace Index {
 				case EditorThemeMode::SystemDefault: return "SystemDefault";
 				case EditorThemeMode::Custom:        return "Custom";
 			}
-			return "Dark";
+			return "SystemDefault";
 		}
 
 		EditorThemeMode ThemeModeFromString(std::string_view value) {
+			if (value == "Auto")          return EditorThemeMode::SystemDefault;
 			if (value == "Light")         return EditorThemeMode::Light;
 			if (value == "SystemDefault") return EditorThemeMode::SystemDefault;
 			if (value == "Custom")        return EditorThemeMode::Custom;
-			return EditorThemeMode::Dark;
+			return EditorThemeMode::SystemDefault;
+		}
+
+		int NormalizeFontZoomPercent(int percent) {
+			if (percent < EditorPreferences::k_MinEditorFontZoomPercent) {
+				percent = EditorPreferences::k_MinEditorFontZoomPercent;
+			}
+			if (percent > EditorPreferences::k_MaxEditorFontZoomPercent) {
+				percent = EditorPreferences::k_MaxEditorFontZoomPercent;
+			}
+
+			const int step = EditorPreferences::k_EditorFontZoomStepPercent;
+			return ((percent + step / 2) / step) * step;
 		}
 
 #ifdef _WIN32
@@ -169,7 +183,7 @@ namespace Index {
 		}
 
 		if (const Json::Value* v = root.FindMember("Theme")) {
-			s.Theme = ThemeModeFromString(v->AsStringOr("Dark"));
+			s.Theme = ThemeModeFromString(v->AsStringOr("SystemDefault"));
 		}
 		if (const Json::Value* v = root.FindMember("EditorFontAssetId")) {
 			// Stored as a decimal string so 64-bit ids round-trip cleanly.
@@ -181,11 +195,14 @@ namespace Index {
 				s.EditorFontAssetId = k_DefaultFontAssetId;
 			}
 		}
-		if (const Json::Value* v = root.FindMember("EditorFontSize")) {
-			float size = static_cast<float>(v->AsDoubleOr(static_cast<double>(k_IndexImGuiFontSize)));
-			if (size < EditorPreferences::k_MinEditorFontSize) size = EditorPreferences::k_MinEditorFontSize;
-			if (size > EditorPreferences::k_MaxEditorFontSize) size = EditorPreferences::k_MaxEditorFontSize;
-			s.EditorFontSize = size;
+		if (const Json::Value* v = root.FindMember("EditorFontZoomPercent")) {
+			s.EditorFontZoomPercent = NormalizeFontZoomPercent(v->AsIntOr(
+				EditorPreferences::k_DefaultEditorFontZoomPercent));
+		}
+		else if (const Json::Value* v = root.FindMember("EditorFontSize")) {
+			const float size = static_cast<float>(v->AsDoubleOr(static_cast<double>(k_IndexImGuiFontSize)));
+			const int percent = static_cast<int>(std::lround((size / k_IndexImGuiFontSize) * 100.0f));
+			s.EditorFontZoomPercent = NormalizeFontZoomPercent(percent);
 		}
 		if (const Json::Value* v = root.FindMember("ShowFileExtensions")) {
 			s.ShowFileExtensions = v->AsBoolOr(false);
@@ -221,7 +238,7 @@ namespace Index {
 			s.CustomColorsSeeded = true;
 		}
 
-		// Push the just-loaded EditorFontSize into ImGui's style. The
+		// Push the just-loaded editor font zoom into ImGui's style. The
 		// ImGuiContext was created by ImGuiContextLayer's earlier
 		// OnAttach (it pushes ahead of ImGuiEditorLayer, which is what
 		// calls Load), so the style object is live and FontSizeBase
@@ -242,7 +259,7 @@ namespace Index {
 		Json::Value root = Json::Value::MakeObject();
 		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(s.Theme))));
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
-		root.AddMember("EditorFontSize", Json::Value(static_cast<double>(s.EditorFontSize)));
+		root.AddMember("EditorFontZoomPercent", Json::Value(s.EditorFontZoomPercent));
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
@@ -295,6 +312,14 @@ namespace Index {
 		}
 	}
 
+	EditorThemeMode EditorPreferences::GetResolvedThemeMode() {
+		return ResolveTheme(S().Theme);
+	}
+
+	EditorThemeMode EditorPreferences::GetResolvedThemeMode(EditorThemeMode mode) {
+		return ResolveTheme(mode);
+	}
+
 	EditorThemeMode EditorPreferences::GetThemeMode() {
 		return S().Theme;
 	}
@@ -338,16 +363,14 @@ namespace Index {
 		Save();
 	}
 
-	float EditorPreferences::GetEditorFontSize() {
-		return S().EditorFontSize;
+	int EditorPreferences::GetEditorFontZoomPercent() {
+		return S().EditorFontZoomPercent;
 	}
 
-	void EditorPreferences::SetEditorFontSize(float sizePx) {
-		float clamped = sizePx;
-		if (clamped < k_MinEditorFontSize) clamped = k_MinEditorFontSize;
-		if (clamped > k_MaxEditorFontSize) clamped = k_MaxEditorFontSize;
-		if (S().EditorFontSize == clamped) return;
-		S().EditorFontSize = clamped;
+	void EditorPreferences::SetEditorFontZoomPercent(int percent) {
+		const int normalized = NormalizeFontZoomPercent(percent);
+		if (S().EditorFontZoomPercent == normalized) return;
+		S().EditorFontZoomPercent = normalized;
 		Save();
 		ImGuiContextLayer::ApplyEditorFontSize();
 	}
