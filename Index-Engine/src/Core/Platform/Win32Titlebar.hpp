@@ -1,4 +1,5 @@
 #pragma once
+#include "Collections/Color.hpp"
 #include "Core/Export.hpp"
 
 struct GLFWwindow;
@@ -53,6 +54,9 @@ namespace Index::Win32Titlebar {
     // window keeps native chrome — once the custom titlebar is drawn
     // over it, this only affects DWM-rendered borders / shadows.
     void SetDarkMode(GLFWwindow* window, bool enabled);
+    // Applies native Windows caption/text colors via DWM where supported.
+    // Alpha <= 0 restores the system default for that slot.
+    void SetColors(GLFWwindow* window, Color caption, Color text, Color border);
 
 #else
 
@@ -65,6 +69,7 @@ namespace Index::Win32Titlebar {
     inline void AddNonClientRect(int, int, int, int) {}
     inline void ResetNonClientRects() {}
     inline void SetDarkMode(GLFWwindow*, bool) {}
+    inline void SetColors(GLFWwindow*, Color, Color, Color) {}
 
 #endif
 

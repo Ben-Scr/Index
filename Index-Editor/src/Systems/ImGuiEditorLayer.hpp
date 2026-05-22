@@ -67,6 +67,9 @@ namespace Index {
 		struct LogEntry {
 			std::string Message;
 			Log::Level Level;
+			std::string SourceFilePath;
+			std::string SourceLinkText;
+			int SourceLine = 0;
 		};
 
 		struct LogDispatchState {

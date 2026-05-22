@@ -7,6 +7,9 @@
   },
   "strings": {
     "launcher.title": "Index Engine",
+    "launcher.progress.executing_project": "Projekt wird ausgef\u00fchrt",
+    "launcher.progress.launching_runtime": "Runtime wird gestartet...",
+    "launcher.action.execute_selected": "Ausf\u00fchren",
 
     "launcher.progress.opening_project": "Projekt wird geöffnet",
     "launcher.progress.working": "Wird ausgeführt...",

@@ -29,6 +29,29 @@ namespace Index {
 
 	namespace {
 		float s_DpiScale = 1.0f;
+
+		float Luminance(const ImVec4& color) {
+			return 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;
+		}
+
+		Color ToColor(const ImVec4& color) {
+			return Color(color.x, color.y, color.z, color.w);
+		}
+
+		void ApplyNativeTitlebarFromStyle() {
+			Window* window = Application::GetWindow();
+			if (!window) return;
+
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const ImVec4 active = style.Colors[ImGuiCol_TitleBgActive];
+			const ImVec4 inactive = style.Colors[ImGuiCol_TitleBg];
+			const ImVec4 text = style.Colors[ImGuiCol_Text];
+
+			window->SetTitlebarDarkMode(Luminance(active) < 0.5f);
+			window->SetTitlebarActiveColor(ToColor(active));
+			window->SetTitlebarInactiveColor(ToColor(inactive));
+			window->SetTitlebarTextColor(ToColor(text));
+		}
 	}
 
 	void ImGuiContextLayer::OnAttach(Application& app) {
@@ -256,6 +279,7 @@ namespace Index {
 
 		c[ImGuiCol_ModalWindowDimBg]     = dark ? ImVec4(0, 0, 0, 0.55f) : ImVec4(0.18f, 0.22f, 0.28f, 0.35f);
 
+		ApplyNativeTitlebarFromStyle();
 		style.ScaleAllSizes(s_DpiScale);
 	}
 

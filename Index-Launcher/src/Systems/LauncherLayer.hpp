@@ -64,6 +64,7 @@ namespace Index {
 			std::mutex Mutex;
 			std::thread Worker;
 			LauncherProjectEntry Entry;
+			bool LaunchRuntime = false;
 			std::string Stage = "Idle";
 			float Progress = 0.0f;
 			std::string Error;
@@ -135,6 +136,7 @@ namespace Index {
 		// so it can be called from inside an ImGui::Begin*-scope safely.
 		void ShowError(std::string message);
 		void OpenProject(const LauncherProjectEntry& entry);
+		void ExecuteProject(const LauncherProjectEntry& entry);
 		void OpenProjectInExplorer(const LauncherProjectEntry& entry);
 		void BrowseForExistingProject();
 		void BrowseForDefaultProjectsLocation();
@@ -144,7 +146,8 @@ namespace Index {
 			const std::string& directoryName);
 		void PollCreateProjectTask();
 		void ResetCreateProjectTask(bool clearWorker = true);
-		void OpenProjectWorkerBody(const LauncherProjectEntry& entry);
+		void StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime);
+		void OpenProjectWorkerBody(const LauncherProjectEntry& entry, bool launchRuntime);
 		void PollOpenProjectTask();
 		std::shared_ptr<ProjectSizeTaskState> GetOrStartProjectSizeTask(const LauncherProjectEntry& entry);
 		std::string GetProjectSizeDisplayText(const LauncherProjectEntry& entry);

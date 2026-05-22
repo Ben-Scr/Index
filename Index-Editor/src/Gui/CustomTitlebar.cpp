@@ -35,7 +35,17 @@ namespace Index {
 		// merged into the active ImGui atlas. 5-pixel half-width matches
 		// the icons drawn in the launcher's titlebar; keep them in sync
 		// if either changes.
+		constexpr float k_CaptionButtonWidthAt32 = 46.0f;
+		constexpr float k_TitlebarHeightBaseline = 32.0f;
 		constexpr float k_IconHalfW = 5.0f;
+
+		struct TitlebarButtonResult {
+			bool Clicked = false;
+			bool Hovered = false;
+			bool Active = false;
+			ImVec2 Pos{ 0.0f, 0.0f };
+			ImU32 FillColor = 0;
+		};
 
 		void DrawMinimizeIcon(ImDrawList* dl, ImVec2 center, ImU32 color) {
 			dl->AddLine(ImVec2(center.x - k_IconHalfW, center.y),
@@ -48,13 +58,13 @@ namespace Index {
 				color, 0.0f, 0, 1.0f);
 		}
 
-		void DrawRestoreIcon(ImDrawList* dl, ImVec2 center, ImU32 color) {
+		void DrawRestoreIcon(ImDrawList* dl, ImVec2 center, ImU32 color, ImU32 fillColor) {
 			dl->AddRect(ImVec2(center.x - k_IconHalfW + 2, center.y - k_IconHalfW),
 				ImVec2(center.x + k_IconHalfW, center.y + k_IconHalfW - 2),
 				color, 0.0f, 0, 1.0f);
 			dl->AddRectFilled(ImVec2(center.x - k_IconHalfW, center.y - k_IconHalfW + 2),
 				ImVec2(center.x + k_IconHalfW - 2, center.y + k_IconHalfW),
-				ImGui::GetColorU32(ImGuiCol_Button));
+				fillColor);
 			dl->AddRect(ImVec2(center.x - k_IconHalfW, center.y - k_IconHalfW + 2),
 				ImVec2(center.x + k_IconHalfW - 2, center.y + k_IconHalfW),
 				color, 0.0f, 0, 1.0f);
@@ -67,15 +77,27 @@ namespace Index {
 				ImVec2(center.x + k_IconHalfW, center.y - k_IconHalfW), color, 1.0f);
 		}
 
-		bool TitlebarButton(const char* id, ImVec2 size, ImVec2 viewportOrigin) {
-			const ImVec2 buttonPos = ImGui::GetCursorScreenPos();
-			const bool clicked = ImGui::Button(id, size);
+		TitlebarButtonResult TitlebarButton(const char* id, ImVec2 size, ImVec2 viewportOrigin,
+			ImU32 normalFill, ImU32 hoveredFill, ImU32 activeFill) {
+			TitlebarButtonResult result;
+			result.Pos = ImGui::GetCursorScreenPos();
+			result.Clicked = ImGui::InvisibleButton(id, size);
+			result.Hovered = ImGui::IsItemHovered();
+			result.Active = ImGui::IsItemActive();
+			result.FillColor = result.Active ? activeFill : (result.Hovered ? hoveredFill : normalFill);
+
+			if (result.Hovered || result.Active) {
+				ImGui::GetWindowDrawList()->AddRectFilled(result.Pos,
+					ImVec2(result.Pos.x + size.x, result.Pos.y + size.y),
+					result.FillColor);
+			}
+
 			Window::AddTitlebarNonClientRect(
-				static_cast<int>(buttonPos.x - viewportOrigin.x),
-				static_cast<int>(buttonPos.y - viewportOrigin.y),
+				static_cast<int>(result.Pos.x - viewportOrigin.x),
+				static_cast<int>(result.Pos.y - viewportOrigin.y),
 				static_cast<int>(size.x),
 				static_cast<int>(size.y));
-			return clicked;
+			return result;
 		}
 
 	}
@@ -161,50 +183,60 @@ namespace Index {
 			ImGui::TextUnformatted(title.c_str());
 		}
 
-		// Right-aligned button cluster — three square buttons whose total
-		// width is exactly the row height. SetCursorPos pins them flush
-		// to the right edge regardless of the centered title's reflow.
-		const ImVec2 btnSize(titlebarH, titlebarH);
+		// Right-aligned button cluster. Buttons use the Windows caption-
+		// button ratio so the controls read as one titlebar group.
+		const ImVec2 btnSize(titlebarH * (k_CaptionButtonWidthAt32 / k_TitlebarHeightBaseline), titlebarH);
 		const float buttonsWidth = btnSize.x * 3.0f;
 		ImGui::SetCursorPos(ImVec2(viewport->Size.x - buttonsWidth, 0.0f));
 
 		const ImU32 iconColor = ImGui::GetColorU32(ImGuiCol_Text);
+		const ImU32 closeIconColor = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+		const ImU32 normalFill = ImGui::GetColorU32(ImGuiCol_WindowBg);
+		const ImU32 hoveredFill = ImGui::GetColorU32(ImGuiCol_ButtonHovered);
+		const ImU32 activeFill = ImGui::GetColorU32(ImGuiCol_ButtonActive);
+		const ImU32 closeHoveredFill = ImGui::GetColorU32(ImVec4(0.78f, 0.13f, 0.16f, 1.0f));
+		const ImU32 closeActiveFill = ImGui::GetColorU32(ImVec4(0.62f, 0.08f, 0.11f, 1.0f));
 		ImDrawList* drawList = ImGui::GetWindowDrawList();
 
 		// Minimize
-		const ImVec2 minPos = ImGui::GetCursorScreenPos();
-		if (TitlebarButton("##min", btnSize, viewport->Pos)) {
+		const TitlebarButtonResult minButton = TitlebarButton("##min", btnSize,
+			viewport->Pos, normalFill, hoveredFill, activeFill);
+		if (minButton.Clicked) {
 			window->MinimizeWindow();
 		}
 		DrawMinimizeIcon(drawList,
-			ImVec2(minPos.x + btnSize.x * 0.5f, minPos.y + btnSize.y * 0.5f), iconColor);
-		ImGui::SameLine();
+			ImVec2(minButton.Pos.x + btnSize.x * 0.5f, minButton.Pos.y + btnSize.y * 0.5f), iconColor);
+		ImGui::SameLine(0.0f, 0.0f);
 
 		// Maximize / Restore — icon flips based on current Window state
 		// (polled each frame; no event subscription needed since the
 		// titlebar is drawn every frame anyway).
-		const ImVec2 maxPos = ImGui::GetCursorScreenPos();
-		if (TitlebarButton("##max", btnSize, viewport->Pos)) {
+		const TitlebarButtonResult maxButton = TitlebarButton("##max", btnSize,
+			viewport->Pos, normalFill, hoveredFill, activeFill);
+		if (maxButton.Clicked) {
 			window->MaximizeWindow(true);
 		}
 		if (window->IsMaximized()) {
 			DrawRestoreIcon(drawList,
-				ImVec2(maxPos.x + btnSize.x * 0.5f, maxPos.y + btnSize.y * 0.5f), iconColor);
+				ImVec2(maxButton.Pos.x + btnSize.x * 0.5f, maxButton.Pos.y + btnSize.y * 0.5f),
+				iconColor, maxButton.FillColor);
 		}
 		else {
 			DrawMaximizeIcon(drawList,
-				ImVec2(maxPos.x + btnSize.x * 0.5f, maxPos.y + btnSize.y * 0.5f), iconColor);
+				ImVec2(maxButton.Pos.x + btnSize.x * 0.5f, maxButton.Pos.y + btnSize.y * 0.5f), iconColor);
 		}
-		ImGui::SameLine();
+		ImGui::SameLine(0.0f, 0.0f);
 
 		// Close — routes through RequestQuit so the editor's existing
 		// save-before-quit dialog still fires (same path as Alt+F4).
-		const ImVec2 closePos = ImGui::GetCursorScreenPos();
-		if (TitlebarButton("##close", btnSize, viewport->Pos)) {
+		const TitlebarButtonResult closeButton = TitlebarButton("##close", btnSize,
+			viewport->Pos, normalFill, closeHoveredFill, closeActiveFill);
+		if (closeButton.Clicked) {
 			Application::RequestQuit();
 		}
 		DrawCloseIcon(drawList,
-			ImVec2(closePos.x + btnSize.x * 0.5f, closePos.y + btnSize.y * 0.5f), iconColor);
+			ImVec2(closeButton.Pos.x + btnSize.x * 0.5f, closeButton.Pos.y + btnSize.y * 0.5f),
+			(closeButton.Hovered || closeButton.Active) ? closeIconColor : iconColor);
 
 		ImGui::End();
 

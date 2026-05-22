@@ -16,11 +16,8 @@ public:
 		config.WindowSpecification = WindowSpecification(900, 600, "Index Launcher " + std::string(IDX_VERSION), true, true, false);
 		config.WindowSpecification.MinWidth  = 720;
 		config.WindowSpecification.MinHeight = 480;
-		// Custom titlebar — engine strips OS chrome and the launcher draws
-		// its own. Phase 3 wires the actual buttons + title UI; for now
-		// the top TitlebarHeight px is just a drag region.
-		config.WindowSpecification.CustomTitlebar = true;
-		config.WindowSpecification.TitlebarHeight = 32;
+		// Keep native OS chrome; theme code updates its caption colors.
+		config.WindowSpecification.CustomTitlebar = false;
 		config.EnableAudio = false;
 		config.EnableGuiRenderer = false;
 		config.EnableGizmoRenderer = false;

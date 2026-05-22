@@ -1236,8 +1236,9 @@ namespace Index {
 		// Snapshot IndexProject statics on the main thread so the worker
 		// can't race with a project reload that mutates them mid-build (M9).
 		const std::string buildConfig = IndexProject::GetActiveBuildConfiguration();
+		const char* primarySymbol = Application::IsEditor() ? "INDEX_EDITOR" : "INDEX_BUILD";
 		const std::string defineConstantsArg =
-			"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants("INDEX_EDITOR");
+			"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants(primarySymbol);
 		m_RebuildTask = LaunchTask([sandboxProjectPath, buildConfig, defineConstantsArg]() {
 			// IndexCodegenEnabled=false suppresses the GenerateNativeComponents
 			// MSBuild target in Index-Sandbox.csproj. Hot-reload on a saved .cs

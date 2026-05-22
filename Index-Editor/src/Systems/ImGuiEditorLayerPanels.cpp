@@ -6,6 +6,7 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
+#include "Editor/ExternalEditor.hpp"
 #include "Graphics/ImageData.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
@@ -783,7 +784,13 @@ namespace Index {
 		}
 
 		ImVec4 GetLogLevelColor(Log::Level level) {
-			if (level <= Log::Level::Info) return ImVec4(0.86f, 0.88f, 0.92f, 1.0f);
+			if (level <= Log::Level::Info) {
+				const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+				const float luminance = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z;
+				return luminance > 0.5f
+					? ImVec4(0.20f, 0.25f, 0.32f, 1.0f)
+					: ImVec4(0.86f, 0.88f, 0.92f, 1.0f);
+			}
 			if (level == Log::Level::Warn) return ImVec4(1.0f, 0.78f, 0.22f, 1.0f);
 			return ImVec4(1.0f, 0.32f, 0.32f, 1.0f);
 		}
@@ -802,6 +809,41 @@ namespace Index {
 		// returns false for any (category, section) pair not listed,
 		// which means missing entries are silently hidden whenever the
 		// search bar has any text in it.
+		ImVec4 GetLogLinkColor() {
+			const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+			const float luminance = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z;
+			return luminance > 0.5f
+				? ImVec4(0.05f, 0.32f, 0.68f, 1.0f)
+				: ImVec4(0.45f, 0.68f, 1.00f, 1.0f);
+		}
+
+		void RenderLogSourceLink(const std::string& label, const std::string& filePath, int line) {
+			if (label.empty() || filePath.empty()) {
+				return;
+			}
+
+			const ImVec4 linkColor = GetLogLinkColor();
+			ImGui::PushStyleColor(ImGuiCol_Text, linkColor);
+			ImGui::TextUnformatted(label.c_str());
+			ImGui::PopStyleColor();
+
+			const ImVec2 min = ImGui::GetItemRectMin();
+			const ImVec2 max = ImGui::GetItemRectMax();
+			ImGui::GetWindowDrawList()->AddLine(
+				ImVec2(min.x, max.y - 1.0f),
+				ImVec2(max.x, max.y - 1.0f),
+				ImGui::GetColorU32(linkColor),
+				1.0f);
+
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+				ImGui::SetTooltip("Double-click to open");
+				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+					ExternalEditor::OpenFile(filePath, line);
+				}
+			}
+		}
+
 		struct SettingsIndexEntry {
 			ImGuiEditorLayer::SettingsCategory Category;
 			const char* Section;   // EXACTLY as passed to ImGui::CollapsingHeader.
@@ -999,6 +1041,10 @@ namespace Index {
 			}
 
 			const std::string line = std::string(GetLogLevelPrefix(entry.Level)) + entry.Message;
+			if (!entry.SourceFilePath.empty()) {
+				RenderLogSourceLink(entry.SourceLinkText, entry.SourceFilePath, entry.SourceLine);
+				ImGui::SameLine();
+			}
 			ImGui::PushStyleColor(ImGuiCol_Text, GetLogLevelColor(entry.Level));
 			ImGui::TextWrapped("%s", line.c_str());
 			ImGui::PopStyleColor();

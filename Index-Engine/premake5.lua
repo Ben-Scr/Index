@@ -257,9 +257,9 @@ project "Index-Engine"
         buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
-        -- dwmapi: Win32Titlebar uses DwmExtendFrameIntoClientArea and
-        -- DwmSetWindowAttribute for the custom-titlebar drop shadow and
-        -- dark-mode tint. user32 / gdi32 come through GLFW.
+        -- dwmapi: Win32Titlebar uses DwmExtendFrameIntoClientArea for
+        -- custom-titlebar shadows and DwmSetWindowAttribute for native
+        -- titlebar dark mode/colors. user32 / gdi32 come through GLFW.
         links { "dwmapi.lib" }
 
     filter "system:linux"

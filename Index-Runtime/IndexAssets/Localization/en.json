@@ -9,8 +9,10 @@
     "launcher.title": "Index Engine",
 
     "launcher.progress.opening_project": "Opening project",
+    "launcher.progress.executing_project": "Executing project",
     "launcher.progress.working": "Working...",
     "launcher.progress.launching_editor": "Launching editor...",
+    "launcher.progress.launching_runtime": "Launching runtime...",
 
     "launcher.sort.label": "Sort:",
     "launcher.sort.mode.last_opened": "Last Opened",
@@ -24,6 +26,7 @@
     "launcher.action.add_existing_project": "Add Existing Project",
     "launcher.action.settings": "Settings",
     "launcher.action.open_selected": "Open",
+    "launcher.action.execute_selected": "Execute",
     "launcher.action.rename_selected": "Rename",
     "launcher.action.delete_selected": "Delete",
 
@@ -84,6 +87,7 @@
     "launcher.settings.theme.light": "Light",
     "launcher.settings.font_scale": "Font size",
     "launcher.settings.font_scale.auto_format": "Auto ({0}%)",
+    "launcher.settings.directory_name_convention": "Directory name convention",
     "launcher.settings.browse": "Browse...",
     "launcher.settings.save": "Save",
     "launcher.settings.cancel": "Cancel",

@@ -10,6 +10,9 @@
 #include <windowsx.h>
 #include <dwmapi.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace Index::Win32Titlebar {
 
     namespace {
@@ -47,6 +50,20 @@ namespace Index::Win32Titlebar {
 
         int DpiScale(int logical, UINT dpi) {
             return MulDiv(logical, static_cast<int>(dpi), 96);
+        }
+
+        COLORREF ToColorRef(Color color) {
+            const Color c = color.Clamped();
+            const auto toByte = [](float value) -> BYTE {
+                return static_cast<BYTE>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+            };
+            return RGB(toByte(c.r), toByte(c.g), toByte(c.b));
+        }
+
+        void SetColorAttribute(HWND hwnd, DWORD attribute, Color color) {
+            constexpr COLORREF k_DwmDefaultColor = 0xFFFFFFFF;
+            COLORREF value = color.a > 0.0f ? ToColorRef(color) : k_DwmDefaultColor;
+            DwmSetWindowAttribute(hwnd, attribute, &value, sizeof(value));
         }
 
         LRESULT CALLBACK TitlebarWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -275,12 +292,26 @@ namespace Index::Win32Titlebar {
         if (!window) return;
         HWND hwnd = glfwGetWin32Window(window);
         if (!hwnd) return;
+        constexpr DWORD k_DwmwaUseImmersiveDarkMode = 20;
         // Attribute 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win10 1809+).
         // DwmSetWindowAttribute returns a failure HRESULT on older
         // builds where the attribute is unknown but does not crash, so
         // the call is safe to make unconditionally.
         BOOL useDark = enabled ? TRUE : FALSE;
-        DwmSetWindowAttribute(hwnd, 20, &useDark, sizeof(useDark));
+        DwmSetWindowAttribute(hwnd, k_DwmwaUseImmersiveDarkMode, &useDark, sizeof(useDark));
+    }
+
+    void SetColors(GLFWwindow* window, Color caption, Color text, Color border) {
+        if (!window) return;
+        HWND hwnd = glfwGetWin32Window(window);
+        if (!hwnd) return;
+
+        constexpr DWORD k_DwmwaBorderColor = 34;
+        constexpr DWORD k_DwmwaCaptionColor = 35;
+        constexpr DWORD k_DwmwaTextColor = 36;
+        SetColorAttribute(hwnd, k_DwmwaCaptionColor, caption);
+        SetColorAttribute(hwnd, k_DwmwaTextColor, text);
+        SetColorAttribute(hwnd, k_DwmwaBorderColor, border);
     }
 
 }

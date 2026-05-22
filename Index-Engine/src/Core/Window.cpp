@@ -98,6 +98,9 @@ namespace Index {
 	void Window::FocusCallback(GLFWwindow* window, int focused) {
 		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
 		Application::SetWindowFocused(static_cast<bool>(focused));
+		if (win) {
+			win->ApplyTitlebarAppearance();
+		}
 
 		if ((bool)focused) {
 			ScriptEngine::RaiseFocusChanged(true);
@@ -178,21 +181,21 @@ namespace Index {
 		m_TitlebarTextColor     = props.TitlebarTextColor;
 		m_TitlebarActiveColor   = props.TitlebarActiveColor;
 		m_TitlebarInactiveColor = props.TitlebarInactiveColor;
+		m_TitlebarDarkMode      = props.TitlebarDarkMode;
 		if (props.CustomTitlebar) {
 			glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, GLFW_FALSE);
 #ifdef IDX_PLATFORM_WINDOWS
 			Win32Titlebar::SetTitlebarHeight(props.TitlebarHeight);
 			Win32Titlebar::Install(m_GLFWwindow, this);
-			Win32Titlebar::SetDarkMode(m_GLFWwindow, props.TitlebarDarkMode);
+			ApplyTitlebarAppearance();
 #endif
 			glfwShowWindow(m_GLFWwindow);
 			m_CustomTitlebar = true;
 		}
 #ifdef IDX_PLATFORM_WINDOWS
-		else if (props.TitlebarDarkMode) {
-			// Honor TitlebarDarkMode even when the native chrome is kept
-			// — tints the OS caption dark via DWMWA_USE_IMMERSIVE_DARK_MODE.
-			Win32Titlebar::SetDarkMode(m_GLFWwindow, true);
+		else {
+			// Apply native titlebar colors while keeping the OS chrome.
+			ApplyTitlebarAppearance();
 		}
 #endif
 
@@ -784,6 +787,30 @@ namespace Index {
 
 	void Window::ResetTitlebarNonClientRects() {
 		Win32Titlebar::ResetNonClientRects();
+	}
+
+	void Window::SetTitlebarDarkMode(bool enabled) {
+		if (m_TitlebarDarkMode == enabled) return;
+		m_TitlebarDarkMode = enabled;
+		ApplyTitlebarAppearance();
+	}
+
+	void Window::ApplyTitlebarAppearance() {
+#ifdef IDX_PLATFORM_WINDOWS
+		if (!m_GLFWwindow) return;
+
+		const bool focused = glfwGetWindowAttrib(m_GLFWwindow, GLFW_FOCUSED) == GLFW_TRUE;
+		Color caption = m_TitlebarColor;
+		if (focused && m_TitlebarActiveColor.a > 0.0f) {
+			caption = m_TitlebarActiveColor;
+		}
+		else if (!focused && m_TitlebarInactiveColor.a > 0.0f) {
+			caption = m_TitlebarInactiveColor;
+		}
+
+		Win32Titlebar::SetDarkMode(m_GLFWwindow, m_TitlebarDarkMode);
+		Win32Titlebar::SetColors(m_GLFWwindow, caption, m_TitlebarTextColor, caption);
+#endif
 	}
 
 	int Window::GetTitlebarHeight() const {

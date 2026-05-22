@@ -19,6 +19,8 @@
 
 using namespace Index;
  
+static std::string s_ProjectPath;
+
 
 class RuntimeApplication : public Index::Application {
 public:
@@ -145,17 +147,33 @@ public:
 
 
 Index::Application* Index::CreateApplication() {
+	const Application::CommandLineArgs args = Application::GetCommandLineArgs();
+	for (int i = 1; i < args.Count; i++) {
+		const char* rawArg = args[i];
+		if (!rawArg) {
+			continue;
+		}
+
+		std::string arg(rawArg);
+		if (arg.rfind("--project=", 0) == 0) {
+			s_ProjectPath = arg.substr(10);
+			if (s_ProjectPath.size() >= 2 && s_ProjectPath.front() == '"' && s_ProjectPath.back() == '"') {
+				s_ProjectPath = s_ProjectPath.substr(1, s_ProjectPath.size() - 2);
+			}
+		}
+	}
+
 	// Auto-detect project: look for index-project.json next to the executable
-	std::string exeDir = Path::ExecutableDir();
-	if (IndexProject::Validate(exeDir)) {
-		auto project = std::make_unique<IndexProject>(IndexProject::Load(exeDir));
+	const std::string projectRoot = s_ProjectPath.empty() ? Path::ExecutableDir() : s_ProjectPath;
+	if (IndexProject::Validate(projectRoot)) {
+		auto project = std::make_unique<IndexProject>(IndexProject::Load(projectRoot));
 		IDX_CORE_INFO_TAG("Runtime", "Loaded project: {} ({})", project->Name, project->RootDirectory);
 		ProjectManager::SetCurrentProject(std::move(project));
 	}
 	else {
 		// E30: no project file next to the executable — surface the fallback so
 		// a packaging mistake (missing index-project.json) is visible in logs.
-		IDX_CORE_WARN_TAG("Runtime", "index-project.json not found at '{}'; falling back to built-in sample scene", exeDir);
+		IDX_CORE_WARN_TAG("Runtime", "index-project.json not found at '{}'; falling back to built-in sample scene", projectRoot);
 	}
 
 	return new RuntimeApplication();

@@ -115,18 +115,19 @@ namespace Index {
 		int GetTitlebarHeight() const;
 		void SetTitlebarHeight(int logicalPx);
 
-		// Titlebar color overrides — alpha = 0 means "no override; use the
-		// ImGui theme's default for this slot." The titlebar draw code
-		// reads these each frame; calling Set* at runtime takes effect on
-		// the next frame.
+		// Titlebar color overrides. Alpha = 0 means "no override". Native
+		// Windows chrome applies these through DWM; custom titlebars read the
+		// same values while drawing their ImGui row.
 		Color GetTitlebarColor() const { return m_TitlebarColor; }
-		void  SetTitlebarColor(Color color) { m_TitlebarColor = color; }
+		void  SetTitlebarColor(Color color) { m_TitlebarColor = color; ApplyTitlebarAppearance(); }
 		Color GetTitlebarTextColor() const { return m_TitlebarTextColor; }
-		void  SetTitlebarTextColor(Color color) { m_TitlebarTextColor = color; }
+		void  SetTitlebarTextColor(Color color) { m_TitlebarTextColor = color; ApplyTitlebarAppearance(); }
 		Color GetTitlebarActiveColor() const { return m_TitlebarActiveColor; }
-		void  SetTitlebarActiveColor(Color color) { m_TitlebarActiveColor = color; }
+		void  SetTitlebarActiveColor(Color color) { m_TitlebarActiveColor = color; ApplyTitlebarAppearance(); }
 		Color GetTitlebarInactiveColor() const { return m_TitlebarInactiveColor; }
-		void  SetTitlebarInactiveColor(Color color) { m_TitlebarInactiveColor = color; }
+		void  SetTitlebarInactiveColor(Color color) { m_TitlebarInactiveColor = color; ApplyTitlebarAppearance(); }
+		bool IsTitlebarDarkMode() const { return m_TitlebarDarkMode; }
+		void SetTitlebarDarkMode(bool enabled);
 
 		static bool IsVsync() { return s_IsVsync; }
 
@@ -181,6 +182,7 @@ namespace Index {
 
 	private:
 		void Create(const WindowSpecification& props);
+		void ApplyTitlebarAppearance();
 		void SyncViewportFromFramebuffer();
 		void UpdateViewport();
 		// Present the rendered frame to the OS window. Delegates to
@@ -238,6 +240,7 @@ namespace Index {
 		Color m_TitlebarTextColor     { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color m_TitlebarActiveColor   { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color m_TitlebarInactiveColor { 0.0f, 0.0f, 0.0f, 0.0f };
+		bool m_TitlebarDarkMode = true;
 
 		static const GLFWvidmode* k_Videomode;
 

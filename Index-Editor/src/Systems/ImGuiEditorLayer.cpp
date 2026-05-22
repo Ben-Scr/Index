@@ -70,6 +70,8 @@
 #include "Systems/UILayoutSystem.hpp"
 #include "Math/VectorMath.hpp"
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -293,6 +295,264 @@ namespace Index {
 			outPayload.SerializedName = componentValue->AsStringOr();
 			outPayload.Data = *dataValue;
 			return !outPayload.SerializedName.empty();
+		}
+
+		struct LogSourceLocation {
+			std::string FilePath;
+			std::string LinkText;
+			int Line = 0;
+		};
+
+		bool IsLineBoundary(std::string_view text, size_t pos) {
+			return pos == std::string_view::npos
+				|| pos >= text.size()
+				|| text[pos] == '\n'
+				|| text[pos] == '\r';
+		}
+
+		bool IsExtensionBoundary(std::string_view text, size_t pos) {
+			if (pos >= text.size()) return true;
+			const unsigned char c = static_cast<unsigned char>(text[pos]);
+			return !std::isalnum(c) && text[pos] != '_';
+		}
+
+		bool StartsWithIgnoreCase(std::string_view text, size_t pos, std::string_view prefix) {
+			if (pos + prefix.size() > text.size()) return false;
+			for (size_t i = 0; i < prefix.size(); i++) {
+				const unsigned char a = static_cast<unsigned char>(text[pos + i]);
+				const unsigned char b = static_cast<unsigned char>(prefix[i]);
+				if (std::tolower(a) != std::tolower(b)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		void SkipWhitespace(std::string_view text, size_t& pos) {
+			while (pos < text.size() && text[pos] != '\n' && text[pos] != '\r'
+				&& std::isspace(static_cast<unsigned char>(text[pos]))) {
+				pos++;
+			}
+		}
+
+		bool ParsePositiveInt(std::string_view text, size_t& pos, int& outValue) {
+			SkipWhitespace(text, pos);
+			if (pos >= text.size() || !std::isdigit(static_cast<unsigned char>(text[pos]))) {
+				return false;
+			}
+
+			int value = 0;
+			while (pos < text.size() && std::isdigit(static_cast<unsigned char>(text[pos]))) {
+				value = value * 10 + (text[pos] - '0');
+				pos++;
+			}
+
+			outValue = value;
+			return value > 0;
+		}
+
+		bool TryParseLineNumber(std::string_view text, size_t pos, int& outLine) {
+			SkipWhitespace(text, pos);
+			if (pos >= text.size() || IsLineBoundary(text, pos)) {
+				return false;
+			}
+
+			if (text[pos] == '(') {
+				pos++;
+				return ParsePositiveInt(text, pos, outLine);
+			}
+
+			if (text[pos] == ':' || text[pos] == ',') {
+				pos++;
+				SkipWhitespace(text, pos);
+			}
+
+			if (StartsWithIgnoreCase(text, pos, "line")) {
+				pos += 4;
+				SkipWhitespace(text, pos);
+			}
+
+			return ParsePositiveInt(text, pos, outLine);
+		}
+
+		std::string ToLowerCopy(std::string value) {
+			std::transform(value.begin(), value.end(), value.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return value;
+		}
+
+		std::string CanonicalFilePath(const std::filesystem::path& path) {
+			std::error_code ec;
+			if (!std::filesystem::is_regular_file(path, ec) || ec) {
+				return {};
+			}
+			std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+			return (ec ? path : canonical).lexically_normal().make_preferred().string();
+		}
+
+		std::string FindFileByName(const std::filesystem::path& root, const std::string& fileNameLower) {
+			std::error_code ec;
+			if (!std::filesystem::is_directory(root, ec) || ec) {
+				return {};
+			}
+
+			std::filesystem::recursive_directory_iterator it(
+				root,
+				std::filesystem::directory_options::skip_permission_denied,
+				ec);
+			const std::filesystem::recursive_directory_iterator end;
+			for (; it != end && !ec; it.increment(ec)) {
+				const std::filesystem::directory_entry& entry = *it;
+				std::error_code entryEc;
+				if (!entry.is_regular_file(entryEc) || entryEc) continue;
+				if (ToLowerCopy(entry.path().filename().string()) == fileNameLower) {
+					return CanonicalFilePath(entry.path());
+				}
+			}
+			return {};
+		}
+
+		std::string ResolveLogSourceFile(std::string rawPath) {
+			if (rawPath.rfind("file:///", 0) == 0) {
+				rawPath.erase(0, 8);
+			}
+			if (rawPath.empty()) {
+				return {};
+			}
+
+			const std::filesystem::path sourcePath(rawPath);
+			std::vector<std::filesystem::path> candidates;
+			if (sourcePath.is_absolute()) {
+				candidates.push_back(sourcePath);
+			}
+			else {
+				candidates.push_back(std::filesystem::current_path() / sourcePath);
+				if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+					if (!project->RootDirectory.empty()) candidates.emplace_back(std::filesystem::path(project->RootDirectory) / sourcePath);
+					if (!project->ScriptsDirectory.empty()) candidates.emplace_back(std::filesystem::path(project->ScriptsDirectory) / sourcePath);
+					if (!project->AssetsDirectory.empty()) candidates.emplace_back(std::filesystem::path(project->AssetsDirectory) / sourcePath);
+				}
+			}
+
+			for (const std::filesystem::path& candidate : candidates) {
+				if (std::string resolved = CanonicalFilePath(candidate); !resolved.empty()) {
+					return resolved;
+				}
+			}
+
+			if (!sourcePath.has_filename()) {
+				return {};
+			}
+
+			IndexProject* project = ProjectManager::GetCurrentProject();
+			if (!project) {
+				return {};
+			}
+
+			const std::string fileNameLower = ToLowerCopy(sourcePath.filename().string());
+			const std::array<std::filesystem::path, 3> roots = {
+				std::filesystem::path(project->ScriptsDirectory),
+				std::filesystem::path(project->AssetsDirectory),
+				std::filesystem::path(project->RootDirectory)
+			};
+			for (const std::filesystem::path& root : roots) {
+				if (std::string resolved = FindFileByName(root, fileNameLower); !resolved.empty()) {
+					return resolved;
+				}
+			}
+
+			return {};
+		}
+
+		std::string ExtractRawSourcePath(std::string_view message, size_t extStart, size_t extEnd) {
+			size_t lineStart = message.rfind('\n', extStart);
+			lineStart = (lineStart == std::string_view::npos) ? 0 : lineStart + 1;
+
+			size_t start = std::string_view::npos;
+			const size_t doubleQuote = message.rfind('"', extStart);
+			const size_t singleQuote = message.rfind('\'', extStart);
+			if (doubleQuote != std::string_view::npos && doubleQuote >= lineStart) {
+				start = doubleQuote + 1;
+			}
+			if (singleQuote != std::string_view::npos && singleQuote >= lineStart
+				&& (start == std::string_view::npos || singleQuote + 1 > start)) {
+				start = singleQuote + 1;
+			}
+
+			const size_t inToken = message.rfind(" in ", extStart);
+			if (start == std::string_view::npos && inToken != std::string_view::npos && inToken >= lineStart) {
+				start = inToken + 4;
+			}
+
+			if (start == std::string_view::npos) {
+				start = extStart;
+				while (start > lineStart) {
+					const char prev = message[start - 1];
+					if (std::isspace(static_cast<unsigned char>(prev))
+						|| prev == '"' || prev == '\'' || prev == '<' || prev == '>'
+						|| prev == '[' || prev == ']') {
+						break;
+					}
+					start--;
+				}
+			}
+
+			while (start < extStart && std::isspace(static_cast<unsigned char>(message[start]))) {
+				start++;
+			}
+
+			return std::string(message.substr(start, extEnd - start));
+		}
+
+		std::optional<LogSourceLocation> FindLogSourceLocation(std::string_view message) {
+			static constexpr std::array<std::string_view, 14> kScriptExtensions = {
+				".cs", ".cpp", ".hpp", ".h", ".c", ".lua", ".py",
+				".js", ".ts", ".json", ".xml", ".yaml", ".yml", ".shader"
+			};
+
+			for (size_t pos = 0; pos < message.size(); pos++) {
+				for (std::string_view ext : kScriptExtensions) {
+					if (!StartsWithIgnoreCase(message, pos, ext)) {
+						continue;
+					}
+					const size_t extEnd = pos + ext.size();
+					if (!IsExtensionBoundary(message, extEnd)) {
+						continue;
+					}
+
+					int line = 0;
+					if (!TryParseLineNumber(message, extEnd, line)) {
+						continue;
+					}
+
+					std::string rawPath = ExtractRawSourcePath(message, pos, extEnd);
+					if (rawPath.empty()) {
+						continue;
+					}
+
+					std::filesystem::path rawExtPath(rawPath);
+					std::string loweredExt = rawExtPath.extension().string();
+					std::transform(loweredExt.begin(), loweredExt.end(), loweredExt.begin(),
+						[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+					if (!ExternalEditor::IsScriptExtension(loweredExt)) {
+						continue;
+					}
+
+					std::string resolved = ResolveLogSourceFile(rawPath);
+					if (resolved.empty()) {
+						continue;
+					}
+
+					LogSourceLocation location;
+					location.FilePath = resolved;
+					location.Line = line;
+					location.LinkText = "Open " + std::filesystem::path(resolved).filename().string()
+						+ ":" + std::to_string(line);
+					return location;
+				}
+			}
+
+			return std::nullopt;
 		}
 
 		const ComponentInfo* FindComponentInfoBySerializedName(const ComponentRegistry& registry, const std::string& serializedName)
@@ -728,6 +988,14 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::AppendLogEntry(LogEntry entry) {
+		if (entry.Level >= Log::Level::Warn) {
+			if (std::optional<LogSourceLocation> location = FindLogSourceLocation(entry.Message)) {
+				entry.SourceFilePath = std::move(location->FilePath);
+				entry.SourceLinkText = std::move(location->LinkText);
+				entry.SourceLine = location->Line;
+			}
+		}
+
 		m_LogEntries.push_back(std::move(entry));
 		if (m_LogEntries.size() > 2000) {
 			m_LogEntries.erase(m_LogEntries.begin(), m_LogEntries.begin() + 500);

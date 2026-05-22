@@ -4,6 +4,7 @@
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Core/Application.hpp"
+#include "Core/Window.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
@@ -133,6 +134,29 @@ namespace Index {
 		void MarkThemeApplied(EditorThemeMode resolved) {
 			S().HasAppliedTheme = true;
 			S().LastAppliedTheme = resolved;
+		}
+
+		float Luminance(const ImVec4& color) {
+			return 0.2126f * color.x + 0.7152f * color.y + 0.0722f * color.z;
+		}
+
+		Color ToColor(const ImVec4& color) {
+			return Color(color.x, color.y, color.z, color.w);
+		}
+
+		void ApplyNativeTitlebarFromStyle() {
+			Window* window = Application::GetWindow();
+			if (!window) return;
+
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const ImVec4 active = style.Colors[ImGuiCol_TitleBgActive];
+			const ImVec4 inactive = style.Colors[ImGuiCol_TitleBg];
+			const ImVec4 text = style.Colors[ImGuiCol_Text];
+
+			window->SetTitlebarDarkMode(Luminance(active) < 0.5f);
+			window->SetTitlebarActiveColor(ToColor(active));
+			window->SetTitlebarInactiveColor(ToColor(inactive));
+			window->SetTitlebarTextColor(ToColor(text));
 		}
 
 		void SeedCustomColorsFromCurrent() {
@@ -325,6 +349,7 @@ namespace Index {
 				// for the stock palette.
 				ImGui::StyleColorsLight();
 				MarkThemeApplied(resolved);
+				ApplyNativeTitlebarFromStyle();
 				return;
 			case EditorThemeMode::Dark:
 			case EditorThemeMode::SystemDefault: // already resolved above
@@ -333,6 +358,7 @@ namespace Index {
 				// Light → Dark thus keeps the DPI-scaled metrics.
 				ImGuiContextLayer::ApplyIndexThemeColors();
 				MarkThemeApplied(resolved);
+				ApplyNativeTitlebarFromStyle();
 				return;
 			case EditorThemeMode::Custom: {
 				if (!S().CustomColorsSeeded) {
@@ -341,6 +367,7 @@ namespace Index {
 				ImGuiStyle& style = ImGui::GetStyle();
 				std::memcpy(style.Colors, S().CustomColors, sizeof(ImVec4) * ImGuiCol_COUNT);
 				MarkThemeApplied(resolved);
+				ApplyNativeTitlebarFromStyle();
 				return;
 			}
 		}

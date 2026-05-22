@@ -127,6 +127,28 @@ namespace Index {
 		return std::to_string(years) + "y ago";
 	}
 
+	static std::string BuildManagedDefineConstantsForProject(const IndexProject& project, std::string_view primarySymbol) {
+		std::string defineConstants;
+		auto appendDefine = [&defineConstants](std::string_view define) {
+			if (define.empty()) {
+				return;
+			}
+			if (!defineConstants.empty()) {
+				defineConstants += "%3B";
+			}
+			defineConstants += define;
+		};
+
+		appendDefine(primarySymbol);
+		appendDefine(IndexProject::GetActiveBuildDefineConstant());
+		appendDefine(project.GetActiveBuildProfileDefine());
+		appendDefine(IndexProject::GetManagedPlatformDefine());
+		for (const std::string& custom : project.CustomDefines) {
+			appendDefine(custom);
+		}
+		return defineConstants;
+	}
+
 #ifdef IDX_PLATFORM_WINDOWS
 	static std::wstring Utf8ToWide(std::string_view utf8) {
 		if (utf8.empty()) {
@@ -656,7 +678,9 @@ namespace Index {
 				| ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
 
 			if (ImGui::Begin("##LauncherOpenStatus", nullptr, overlayFlags)) {
-				ImGui::TextUnformatted(IDX_TR("launcher.progress.opening_project").c_str());
+				ImGui::TextUnformatted(m_OpenTask.LaunchRuntime
+					? IDX_TR("launcher.progress.executing_project").c_str()
+					: IDX_TR("launcher.progress.opening_project").c_str());
 				ImGui::TextDisabled("%s", m_OpeningProjectName.c_str());
 				ImGui::Separator();
 				if (taskRunning) {
@@ -666,7 +690,9 @@ namespace Index {
 					ImGui::ProgressBar(taskProgress, ImVec2(260, 0), "");
 				}
 				else {
-					ImGui::TextUnformatted(IDX_TR("launcher.progress.launching_editor").c_str());
+					ImGui::TextUnformatted(m_OpenTask.LaunchRuntime
+						? IDX_TR("launcher.progress.launching_runtime").c_str()
+						: IDX_TR("launcher.progress.launching_editor").c_str());
 					float elapsed = std::chrono::duration<float>(
 						std::chrono::steady_clock::now() - m_OpenStartTime).count();
 					ImGui::ProgressBar(fmodf(elapsed * 0.3f, 1.0f), ImVec2(260, 0), "");
@@ -783,6 +809,10 @@ namespace Index {
 
 		if (ImGui::Button(IDX_TR("launcher.action.open_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
 			OpenProject(*selected);
+		}
+		ImGui::Spacing();
+		if (ImGui::Button(IDX_TR("launcher.action.execute_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+			ExecuteProject(*selected);
 		}
 		ImGui::Spacing();
 		if (ImGui::Button(IDX_TR("launcher.action.rename_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
@@ -1309,9 +1339,16 @@ namespace Index {
 	}
 
 	// ── Open Project ────────────────────────────────────────────────
-	// Launches the editor process but keeps the launcher open.
-
 	void LauncherLayer::OpenProject(const LauncherProjectEntry& entry) {
+		StartProjectLaunch(entry, false);
+	}
+
+	void LauncherLayer::ExecuteProject(const LauncherProjectEntry& entry) {
+		StartProjectLaunch(entry, true);
+	}
+
+	// Launches the editor/runtime process but keeps the launcher open.
+	void LauncherLayer::StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime) {
 		if (m_IsOpening) return; // Already in post-launch grace overlay
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
@@ -1343,6 +1380,7 @@ namespace Index {
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
 			m_OpenTask.Entry = entry;
+			m_OpenTask.LaunchRuntime = launchRuntime;
 			m_OpenTask.Stage = "Preparing...";
 			m_OpenTask.Progress = 0.02f;
 			m_OpenTask.Error.clear();
@@ -1364,12 +1402,12 @@ namespace Index {
 		m_IsOpening = true;
 		m_OpeningProjectName = entry.Name;
 
-		m_OpenTask.Worker = std::thread([this, entry]() {
-			OpenProjectWorkerBody(entry);
+		m_OpenTask.Worker = std::thread([this, entry, launchRuntime]() {
+			OpenProjectWorkerBody(entry, launchRuntime);
 		});
 	}
 
-	void LauncherLayer::OpenProjectWorkerBody(const LauncherProjectEntry& entry) {
+	void LauncherLayer::OpenProjectWorkerBody(const LauncherProjectEntry& entry, bool launchRuntime) {
 		auto setStage = [this](const std::string& stage, float progress) {
 			std::scoped_lock lock(m_OpenTask.Mutex);
 			m_OpenTask.Stage = stage;
@@ -1414,23 +1452,53 @@ namespace Index {
 			}
 		}
 
-		setStage("Launching editor...", 0.90f);
+		if (launchRuntime) {
+			setStage("Compiling runtime scripts...", 0.70f);
+			if (!IndexProject::Validate(entry.Path)) {
+				fail("Project file not found.");
+				return;
+			}
+
+			IndexProject project = IndexProject::Load(entry.Path);
+			if (std::filesystem::exists(project.CsprojPath)) {
+				const std::string buildConfiguration = IndexProject::GetActiveBuildConfiguration();
+				Process::Result buildResult = Process::Run({
+					"dotnet",
+					"build",
+					project.CsprojPath,
+					"-c", buildConfiguration,
+					"--nologo",
+					"-v", "q",
+					"-p:DefineConstants=" + BuildManagedDefineConstantsForProject(project, "INDEX_BUILD")
+				});
+				if (!buildResult.Succeeded()) {
+					fail("Runtime script build failed (dotnet exit code "
+						+ std::to_string(buildResult.ExitCode) + ").");
+					return;
+				}
+			}
+		}
+
+		setStage(launchRuntime ? "Launching runtime..." : "Launching editor...", 0.90f);
 
 #ifdef IDX_PLATFORM_WINDOWS
 		auto exeDir = std::filesystem::path(Path::ExecutableDir());
-		auto editorExe = exeDir / "Index-Editor.exe";
-		if (!std::filesystem::exists(editorExe)) {
-			editorExe = exeDir / ".." / "Index-Editor" / "Index-Editor.exe";
+		const char* executableName = launchRuntime ? "Index-Runtime.exe" : "Index-Editor.exe";
+		const char* siblingDirectoryName = launchRuntime ? "Index-Runtime" : "Index-Editor";
+
+		auto targetExe = exeDir / executableName;
+		if (!std::filesystem::exists(targetExe)) {
+			targetExe = exeDir / ".." / siblingDirectoryName / executableName;
 		}
-		if (!std::filesystem::exists(editorExe)) {
-			fail("Index-Editor.exe not found.");
+		if (!std::filesystem::exists(targetExe)) {
+			fail(std::string(executableName) + " not found.");
 			return;
 		}
 
 		std::error_code canonicalError;
-		std::filesystem::path resolvedEditorExe = std::filesystem::weakly_canonical(editorExe, canonicalError);
+		std::filesystem::path resolvedTargetExe = std::filesystem::weakly_canonical(targetExe, canonicalError);
 		if (canonicalError) {
-			resolvedEditorExe = editorExe.lexically_normal();
+			resolvedTargetExe = targetExe.lexically_normal();
 		}
 
 		const std::wstring projectPath = Utf8ToWide(entry.Path);
@@ -1440,22 +1508,23 @@ namespace Index {
 		}
 
 		const std::wstring commandLine =
-			L"\"" + resolvedEditorExe.native() + L"\" --project=\"" + projectPath + L"\"";
+			L"\"" + resolvedTargetExe.native() + L"\" --project=\"" + projectPath + L"\"";
 		std::vector<wchar_t> buf(commandLine.begin(), commandLine.end());
 		buf.push_back(L'\0');
 
-		const std::wstring workingDirectory = resolvedEditorExe.parent_path().native();
+		const std::wstring workingDirectory = resolvedTargetExe.parent_path().native();
 
 		STARTUPINFOW si{};
 		si.cb = sizeof(si);
 		PROCESS_INFORMATION pi{};
 
-		if (!CreateProcessW(resolvedEditorExe.c_str(), buf.data(), nullptr, nullptr,
+		if (!CreateProcessW(resolvedTargetExe.c_str(), buf.data(), nullptr, nullptr,
 			FALSE, CREATE_NEW_PROCESS_GROUP, nullptr,
 			workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &si, &pi))
 		{
 			const DWORD errorCode = GetLastError();
-			fail("Failed to launch editor: " + FormatWindowsError(errorCode));
+			fail(std::string("Failed to launch ") + (launchRuntime ? "runtime: " : "editor: ")
+				+ FormatWindowsError(errorCode));
 			return;
 		}
 
@@ -1463,23 +1532,27 @@ namespace Index {
 		CloseHandle(pi.hProcess);
 		CloseHandle(pi.hThread);
 
-		IDX_INFO_TAG("Launcher", "Opened project: {} at {}", entry.Name, entry.Path);
+		IDX_INFO_TAG("Launcher", "{} project: {} at {}",
+			launchRuntime ? "Executed" : "Opened", entry.Name, entry.Path);
 
 		std::scoped_lock lock(m_OpenTask.Mutex);
-		m_OpenTask.Stage = "Editor launched";
+		m_OpenTask.Stage = launchRuntime ? "Runtime launched" : "Editor launched";
 		m_OpenTask.Progress = 1.0f;
 		m_OpenTask.SpawnedProcessId = spawnedPid;
 		m_OpenTask.Success = true;
 		m_OpenTask.Finished = true;
 		m_OpenTask.Running = false;
 #else
-		fail("Project open is only implemented on Windows.");
+		fail(launchRuntime
+			? "Project execute is only implemented on Windows."
+			: "Project open is only implemented on Windows.");
 #endif
 	}
 
 	void LauncherLayer::PollOpenProjectTask() {
 		bool finished = false;
 		bool success = false;
+		bool launchRuntime = false;
 		std::string error;
 		LauncherProjectEntry entry;
 #ifdef IDX_PLATFORM_WINDOWS
@@ -1491,6 +1564,7 @@ namespace Index {
 			if (!m_OpenTask.Finished) return;
 			finished = true;
 			success = m_OpenTask.Success;
+			launchRuntime = m_OpenTask.LaunchRuntime;
 			error = m_OpenTask.Error;
 			entry = m_OpenTask.Entry;
 #ifdef IDX_PLATFORM_WINDOWS
@@ -1515,9 +1589,12 @@ namespace Index {
 #endif
 		}
 		else {
-			const std::string msg = error.empty() ? std::string("Failed to open project.") : error;
+			const std::string msg = error.empty()
+				? (launchRuntime ? std::string("Failed to execute project.") : std::string("Failed to open project."))
+				: error;
 			m_IsOpening = false;
-			IDX_ERROR_TAG("Launcher", "Open project failed: {}", msg);
+			IDX_ERROR_TAG("Launcher", "{} project failed: {}",
+				launchRuntime ? "Execute" : "Open", msg);
 			ShowError(msg);
 		}
 	}
@@ -1985,6 +2062,37 @@ namespace Index {
 			BrowseForDefaultProjectsLocation();
 			std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
 				m_DefaultProjectsLocation.c_str());
+		}
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		ImGui::TextUnformatted(IDX_TR("launcher.settings.directory_name_convention").c_str());
+		{
+			static constexpr DirectoryNameConvention k_Entries[] = {
+				DirectoryNameConvention::None,
+				DirectoryNameConvention::TitleCase,
+				DirectoryNameConvention::TitleDashCase,
+				DirectoryNameConvention::TitleCamelCase,
+				DirectoryNameConvention::TitleSnakeCase,
+				DirectoryNameConvention::TitleKebabCase,
+			};
+
+			const char* preview = DirectoryNameConventionLabel(m_DirectoryNameConvention);
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::BeginCombo("##LauncherDirectoryNameConventionCombo", preview)) {
+				for (DirectoryNameConvention convention : k_Entries) {
+					const bool selected = convention == m_DirectoryNameConvention;
+					const char* label = DirectoryNameConventionLabel(convention);
+					if (ImGui::Selectable(label, selected)) {
+						m_DirectoryNameConvention = convention;
+						SaveLauncherSettings();
+					}
+					if (selected) ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
 		}
 
 		ImGui::Spacing();

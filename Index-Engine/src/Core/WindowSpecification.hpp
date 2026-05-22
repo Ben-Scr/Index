@@ -19,31 +19,25 @@ namespace Index {
 		bool Windowed{ false };
 		Color ClearColor;
 
-		// Replaces the native OS titlebar with a fully app-drawn one. When
-		// true, the engine strips the OS chrome (GLFW_DECORATED is forced
-		// off) and the Win32 layer subclasses the WndProc to handle drag /
-		// resize / Aero-Snap hit-testing. The editor and launcher draw
-		// their own titlebar via ImGui; standalone games get a minimal
-		// engine-provided one unless they install their own titlebar layer.
-		// Windows-only at the moment — no-op on other platforms.
+		// Replaces the native OS titlebar with a fully app-drawn one. Prefer
+		// native chrome plus the color options below for desktop tools unless
+		// the app really needs custom hit-testing and caption buttons.
+		// Windows-only at the moment - no-op on other platforms.
 		bool CustomTitlebar{ false };
 		// Logical-pixel height of the custom titlebar row; DPI-scaled at
 		// query time. Ignored when CustomTitlebar is false.
 		int  TitlebarHeight{ 32 };
-		// Titlebar color overrides. Alpha = 0 means "no override — use the
-		// active ImGui theme color." Set alpha > 0 to apply. TitlebarColor
-		// is the row background; TitlebarTextColor is the title text;
-		// TitlebarActive/Inactive override the row background based on
-		// window focus (when both set, replaces TitlebarColor).
+		// Titlebar color overrides. Alpha = 0 means "no override". For
+		// native Windows chrome these map to DWM caption/text colors. For a
+		// custom titlebar they are read by the app-drawn ImGui titlebar.
+		// TitlebarActive/Inactive override TitlebarColor based on focus.
 		Color TitlebarColor          { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color TitlebarTextColor      { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color TitlebarActiveColor    { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color TitlebarInactiveColor  { 0.0f, 0.0f, 0.0f, 0.0f };
-		// Opt into the Windows immersive dark-mode titlebar tint via
-		// DWMWA_USE_IMMERSIVE_DARK_MODE. Win10 1809+ only — silently
-		// no-ops on older builds. Has no visual effect once a full
-		// custom titlebar (CustomTitlebar = true) is drawn, but stays
-		// useful for windows that keep native chrome.
+		// Opt into the Windows immersive dark-mode titlebar controls via
+		// DWMWA_USE_IMMERSIVE_DARK_MODE. Win10 1809+ only - silently no-ops
+		// on older builds.
 		bool TitlebarDarkMode{ true };
 
 		WindowSpecification() = default;
