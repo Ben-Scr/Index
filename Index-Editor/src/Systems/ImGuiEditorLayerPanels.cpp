@@ -11,6 +11,7 @@
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Packages/GitHubSource.hpp"
@@ -1640,7 +1641,7 @@ namespace Index {
 					}
 					if (active) {
 						ImGui::Text("Platform: %s",
-							IndexBuildProfile::PlatformToString(active->Platform));
+							IndexBuildProfile::PlatformDisplayName(active->Platform));
 						ImGui::Text("Rendering API: %s",
 							IndexProject::RenderBackendToString(active->RenderBackend));
 						if (!BuildPlatformSupport::IsAvailable(active->Platform)) {
@@ -1914,6 +1915,7 @@ namespace Index {
 		if (!m_ShowProjectSettings) return;
 
 		ImGui::SetNextWindowSize(ImVec2(760.0f, 520.0f), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (!ImGui::Begin("Project Settings", &m_ShowProjectSettings)) {
 			ImGui::End();
 			return;
@@ -2238,6 +2240,7 @@ namespace Index {
 			s_RenderBackendChangePopup = false;
 		}
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Restart Renderer?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::TextWrapped(
@@ -2833,6 +2836,7 @@ namespace Index {
 			// WriteIndexEntityBitsConfigHeader in the root premake5.lua;
 			// the two paths converge on the same header content.
 			ImGuiUtils::CenterNextModal();
+			ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 			if (ImGui::BeginPopupModal("Rebuild Engine?", nullptr,
 				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 				ImGui::TextWrapped(

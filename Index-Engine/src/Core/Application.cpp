@@ -748,12 +748,28 @@ namespace Index {
 
 		dispatcher.Dispatch<WindowResizeEvent>([this](WindowResizeEvent& e) {
 			m_IsMinimized = e.GetWidth() == 0 || e.GetHeight() == 0;
-			// Forward to managed scripts so `Index.Window.OnResize`
-			// subscribers fire the same frame GLFW delivered the new
-			// framebuffer size. Skipped when minimised (zero-area
-			// frame) so scripts don't see a transient 0x0 just because
-			// the user dragged the window down to the taskbar.
-			if (!m_IsMinimized) ScriptEngine::RaiseWindowResize();
+			if (!m_IsMinimized) {
+				// Recompute every Camera2DComponent's projection against the
+				// new aspect. m_ProjMat is cached and only rebuilt by
+				// UpdateProj(); without this, runtime sprites stretch on
+				// resize because the swap chain widened but the camera kept
+				// the launch-time ortho. (Editor's game-view path resets the
+				// viewport per-frame, so this call is transient there.)
+				if (m_SceneManager) {
+					m_SceneManager->ForeachLoadedScene([](Scene& scene) {
+						auto view = scene.GetRegistry().view<Camera2DComponent>();
+						for (EntityHandle entity : view) {
+							view.get<Camera2DComponent>(entity).UpdateViewport();
+						}
+					});
+				}
+				// Forward to managed scripts so `Index.Window.OnResize`
+				// subscribers fire the same frame GLFW delivered the new
+				// framebuffer size. Skipped when minimised (zero-area
+				// frame) so scripts don't see a transient 0x0 just because
+				// the user dragged the window down to the taskbar.
+				ScriptEngine::RaiseWindowResize();
+			}
 			return false;
 			});
 

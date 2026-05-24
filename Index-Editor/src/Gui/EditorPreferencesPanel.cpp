@@ -8,6 +8,7 @@
 #include "Graphics/Text/FontHandle.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiFonts.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/ReferencePicker.hpp"
 
@@ -91,6 +92,7 @@ namespace Index {
 		m_WasOpenLastFrame = true;
 
 		ImGui::SetNextWindowSize(ImVec2(640.0f, 520.0f), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (!ImGui::Begin("Editor Preferences", pOpen)) {
 			ImGui::End();
 			return;
@@ -321,6 +323,7 @@ namespace Index {
 		}
 
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Restart Editor?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::TextWrapped(
@@ -549,6 +552,7 @@ namespace Index {
 		}
 
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Save Layout As", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::TextUnformatted("Save current editor layout as preset:");
@@ -589,6 +593,7 @@ namespace Index {
 		}
 
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Delete Layout", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::Text("Delete layout preset '%s'?", m_PendingDeleteLayoutName.c_str());

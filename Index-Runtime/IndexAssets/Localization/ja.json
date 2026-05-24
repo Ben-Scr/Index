@@ -87,6 +87,7 @@
     "launcher.settings.theme.light": "\u30e9\u30a4\u30c8",
     "launcher.settings.font_scale": "フォントサイズ",
     "launcher.settings.font_scale.auto_format": "自動 ({0}%)",
+    "launcher.settings.directory_name_convention": "ディレクトリ名規則",
     "launcher.settings.browse": "参照...",
     "launcher.settings.save": "保存",
     "launcher.settings.cancel": "キャンセル",

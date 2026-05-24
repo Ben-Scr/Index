@@ -3,10 +3,17 @@
 
 #include "Core/Log.hpp"
 #include "Core/PackageHost.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Serialization/Json.hpp"
+#include "Serialization/Path.hpp"
+#include "Utils/PackageToolPath.hpp"
 #include "Utils/Process.hpp"
+
+#include <fstream>
+#include <sstream>
 
 #include <imgui.h>
 #include <algorithm>
@@ -27,6 +34,13 @@
 namespace Index {
 
 	namespace {
+
+		// Hardcoded for v1. v2 promotes this to an editable Project Settings
+		// field stored in index-project.json. The publishing convention is a
+		// static index.json in a public GitHub repo (raw.githubusercontent.com
+		// CDN-caches it), so changing this string is the only deploy step.
+		constexpr const char* k_IndexRegistryUrl =
+			"https://raw.githubusercontent.com/Ben-Scr/Index-PackageRegistry/main/index.json";
 
 		std::string ToLower(std::string value) {
 			std::transform(value.begin(), value.end(), value.begin(),
@@ -56,15 +70,23 @@ namespace Index {
 		m_Manager = manager;
 		m_AutomationTask = std::make_shared<AutomationTaskState>();
 		m_DiskInstallTask = std::make_shared<DiskInstallTaskState>();
+		m_RegistryFetchTask = std::make_shared<RegistryFetchTaskState>();
+		m_CloudInstallTask = std::make_shared<CloudInstallTaskState>();
 	}
 
 	void PackageManagerPanel::Shutdown() {
-		// Wait for both workers before tearing down the state they touch.
+		// Wait for every worker before tearing down the state they touch.
 		if (m_AutomationWorker.joinable()) {
 			m_AutomationWorker.join();
 		}
 		if (m_DiskInstallWorker.joinable()) {
 			m_DiskInstallWorker.join();
+		}
+		if (m_RegistryFetchWorker.joinable()) {
+			m_RegistryFetchWorker.join();
+		}
+		if (m_CloudInstallWorker.joinable()) {
+			m_CloudInstallWorker.join();
 		}
 		// std::async-policy futures join in their destructors, so a still-running
 		// search or install would otherwise stall the UI thread on shutdown by
@@ -81,8 +103,11 @@ namespace Index {
 		m_SearchResults.clear();
 		m_InstalledNuGetPackages.clear();
 		m_AllManifests.clear();
+		m_RegistryEntries.clear();
 		m_AutomationTask.reset();
 		m_DiskInstallTask.reset();
+		m_RegistryFetchTask.reset();
+		m_CloudInstallTask.reset();
 	}
 
 	void PackageManagerPanel::Render() {
@@ -132,20 +157,38 @@ namespace Index {
 
 		PollAutomationTask();
 		PollDiskInstallTask();
+		PollRegistryFetchTask();
+		PollCloudInstallTask();
 		RefreshManifestsIfDirty();
+		RefreshRegistryIfDirty();
 
 		// Progress strip — above tab bar so it's visible from any tab.
-		if (m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire)) {
-			std::string stage;
-			float progress = 0.0f;
+		// The cloud-install task takes precedence because it carries a real
+		// stage string and progress fraction; the post-install automation
+		// task is shorter-lived and follows it.
+		auto drawProgress = [](std::string_view stage, float progress) {
+			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "%.*s",
+				static_cast<int>(stage.size()), stage.data());
+			ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f));
+			ImGui::Separator();
+		};
+		if (m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire)) {
+			std::string stage; float progress = 0.0f;
+			{
+				std::scoped_lock lock(m_CloudInstallTask->Mutex);
+				stage = m_CloudInstallTask->Stage;
+				progress = m_CloudInstallTask->Progress;
+			}
+			drawProgress(stage, progress);
+		}
+		else if (m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire)) {
+			std::string stage; float progress = 0.0f;
 			{
 				std::scoped_lock lock(m_AutomationTask->Mutex);
 				stage = m_AutomationTask->Stage;
 				progress = m_AutomationTask->Progress;
 			}
-			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "%s", stage.c_str());
-			ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f));
-			ImGui::Separator();
+			drawProgress(stage, progress);
 		}
 
 		// Tab bar + content. The tab body used to be wrapped in BeginChild
@@ -184,6 +227,49 @@ namespace Index {
 		RenderGitInstallWindow();
 		RenderNuGetInstallWindow();
 		RenderNewPackageWindow();
+		RenderInstallErrorPopup();
+	}
+
+	void PackageManagerPanel::RenderInstallErrorPopup() {
+		if (m_OpenInstallErrorPopup) {
+			ImGui::OpenPopup("Package install failed");
+			m_OpenInstallErrorPopup = false;
+		}
+
+		// Center on the next display.
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 0.0f), ImVec2(720.0f, 600.0f));
+
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		if (ImGui::BeginPopupModal("Package install failed", nullptr,
+				ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+			ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "Installation could not complete.");
+			ImGui::Spacing();
+			ImGui::TextUnformatted(m_InstallErrorMessage.c_str());
+			ImGui::PopTextWrapPos();
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			const float buttonWidth = 110.0f;
+			const float spacing = ImGui::GetStyle().ItemSpacing.x;
+			ImGui::SetCursorPosX(ImGui::GetContentRegionAvail().x - 2 * buttonWidth - spacing + ImGui::GetCursorPosX());
+
+			if (ImGui::Button("Copy details", ImVec2(buttonWidth, 0))) {
+				ImGui::SetClipboardText(m_InstallErrorMessage.c_str());
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Close", ImVec2(buttonWidth, 0)) ||
+				ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+				ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+				m_InstallErrorMessage.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 
 	void PackageManagerPanel::RefreshManifestsIfDirty() {
@@ -258,15 +344,129 @@ namespace Index {
 	void PackageManagerPanel::RenderIndexRegistrySection() {
 		ImGui::Indent();
 
+		// Refresh row — manual re-fetch + status line. The fetch worker runs
+		// off the main thread (kicked by RefreshRegistryIfDirty), so the
+		// button just sets the dirty flag.
+		const bool fetching = m_RegistryFetchTask
+			&& m_RegistryFetchTask->Running.load(std::memory_order_acquire);
+		if (fetching) ImGui::BeginDisabled();
+		if (ImGui::Button("Refresh registry")) {
+			m_RegistryDirty = true;
+		}
+		if (fetching) ImGui::EndDisabled();
+		ImGui::SameLine();
+		if (fetching) {
+			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "Fetching...");
+		}
+		else if (m_RegistryStatusIsError) {
+			ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s",
+				m_RegistryStatusMessage.c_str());
+		}
+		else if (!m_RegistryStatusMessage.empty()) {
+			ImGui::TextDisabled("%s", m_RegistryStatusMessage.c_str());
+		}
+		ImGui::Spacing();
+
+		// Track which on-disk engine packages we've already rendered so we
+		// can skip duplicate cloud rows for packages already installed/present.
+		std::vector<std::string> seenNames;
+		seenNames.reserve(m_AllManifests.size());
+
 		int shown = 0;
 		for (const auto& manifest : m_AllManifests) {
 			if (!manifest.IsEngine) continue;
+			seenNames.push_back(manifest.Name);
 			if (!MatchesFilter(manifest.Name, m_IndexSearchFilterBuffer)) continue;
 			RenderIndexPackageRow(manifest, "search-engine", RowMode::ShowAll);
 			++shown;
 		}
+
+		// Cloud-only entries: anything in m_RegistryEntries not present on disk.
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		const bool cloudInstalling = m_CloudInstallTask
+			&& m_CloudInstallTask->Running.load(std::memory_order_acquire);
+		const bool automating = m_AutomationTask
+			&& m_AutomationTask->Running.load(std::memory_order_acquire);
+		const bool canInstall = (project != nullptr) && !m_IsOperating && !automating && !cloudInstalling;
+
+		// Render project-local packages whose name appears in the registry —
+		// these are cloud-installed Index packages and belong here, not under
+		// "User Packages". We let RenderIndexPackageRow handle the row UI so
+		// they look identical to engine-shipped packages (no special badge —
+		// the registry is the default source).
+		for (const auto& manifest : m_AllManifests) {
+			if (manifest.IsEngine) continue;
+			const bool inRegistry = std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
+				[&](const RegistryEntry& e) { return e.Name == manifest.Name; });
+			if (!inRegistry) continue;
+			seenNames.push_back(manifest.Name);
+			if (!MatchesFilter(manifest.Name, m_IndexSearchFilterBuffer)) continue;
+			RenderIndexPackageRow(manifest, "search-registry", RowMode::ShowAll);
+			++shown;
+		}
+
+		for (const auto& entry : m_RegistryEntries) {
+			if (std::find(seenNames.begin(), seenNames.end(), entry.Name) != seenNames.end()) {
+				continue; // already rendered above (engine or installed-from-registry)
+			}
+			if (!MatchesFilter(entry.Name, m_IndexSearchFilterBuffer)) continue;
+
+			ImGui::PushID(("registry:" + entry.Name).c_str());
+
+			ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "%s", entry.Name.c_str());
+			ImGui::SameLine();
+			ImGui::TextDisabled("v%s", entry.Version.c_str());
+
+			const float buttonWidth = 90.0f;
+			ImGui::SameLine(ImGui::GetContentRegionMax().x - buttonWidth);
+			if (!canInstall) ImGui::BeginDisabled();
+			ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.2f, 1.0f));
+			if (ImGui::Button("Install", ImVec2(buttonWidth, 0))) {
+				HandleCloudInstall(entry);
+			}
+			ImGui::PopStyleColor();
+			if (!canInstall) ImGui::EndDisabled();
+
+			// Layer badges. We don't have an on-disk manifest yet, so synthesize
+			// one from the registry entry — RenderLayerBadges only reads the
+			// three Has*Layer bools (and Name for the imgui id), nothing else.
+			IndexPackageManifest pseudoManifest;
+			pseudoManifest.Name = entry.Name;
+			pseudoManifest.HasNativeLayer = entry.HasNativeLayer;
+			pseudoManifest.HasNativeStandaloneLayer = entry.HasNativeStandaloneLayer;
+			pseudoManifest.HasCSharpLayer = entry.HasCSharpLayer;
+			RenderLayerBadges(pseudoManifest);
+
+			if (!entry.Description.empty()) {
+				ImGui::TextWrapped("%s", entry.Description.c_str());
+			}
+			// Dependency status — flag missing deps but don't auto-install.
+			if (!entry.Dependencies.empty()) {
+				ImGui::TextDisabled("Depends on:");
+				ImGui::SameLine();
+				bool first = true;
+				for (const auto& dep : entry.Dependencies) {
+					if (!first) { ImGui::SameLine(); ImGui::TextDisabled(","); ImGui::SameLine(); }
+					const bool depInstalled = IsPackageInstalled(dep);
+					ImVec4 color = depInstalled ? ImVec4(0.5f, 0.85f, 0.5f, 1.0f)
+												: ImVec4(1.0f, 0.65f, 0.35f, 1.0f);
+					ImGui::TextColored(color, "%s%s", dep.c_str(),
+						depInstalled ? "" : " (missing)");
+					first = false;
+				}
+			}
+			ImGui::Separator();
+			ImGui::PopID();
+			++shown;
+		}
+
 		if (shown == 0) {
-			ImGui::TextDisabled("No packages match the filter.");
+			if (m_RegistryEntries.empty() && m_AllManifests.empty()) {
+				ImGui::TextDisabled("No packages available yet.");
+			}
+			else {
+				ImGui::TextDisabled("No packages match the filter.");
+			}
 		}
 
 		ImGui::Unindent();
@@ -410,6 +610,7 @@ namespace Index {
 		if (!m_ShowNewPackageWindow) return;
 
 		ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::Begin("Create new package", &m_ShowNewPackageWindow,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking)) {
 
@@ -595,6 +796,7 @@ namespace Index {
 		if (!m_ShowGitInstallWindow) return;
 
 		ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::Begin("Install package from git URL", &m_ShowGitInstallWindow,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking)) {
 
@@ -638,6 +840,7 @@ namespace Index {
 		if (!m_ShowNuGetInstallWindow) return;
 
 		ImGui::SetNextWindowSize(ImVec2(640, 480), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::Begin("Install package from NuGet", &m_ShowNuGetInstallWindow,
 			ImGuiWindowFlags_NoDocking)) {
 
@@ -718,21 +921,31 @@ namespace Index {
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			ImGui::TextDisabled("Open a project to see its installed engine packages.");
+			ImGui::TextDisabled("Open a project to see its installed Index packages.");
 			ImGui::Unindent();
 			return;
 		}
 
+		// "Index Packages" covers BOTH engine-shipped packages and
+		// project-local packages installed from the official Index registry.
+		// Project-local packages NOT in the registry (Git/local/manual
+		// installs) live in "User Packages" instead.
+		auto isFromRegistry = [&](const std::string& name) {
+			return std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
+				[&](const RegistryEntry& e) { return e.Name == name; });
+		};
+
 		int shown = 0;
 		for (const auto& manifest : m_AllManifests) {
-			if (!manifest.IsEngine) continue;
+			const bool indexPackage = manifest.IsEngine || isFromRegistry(manifest.Name);
+			if (!indexPackage) continue;
 			if (!IsPackageInstalled(manifest.Name)) continue;
 			if (!MatchesFilter(manifest.Name, m_InstalledFilterBuffer)) continue;
-			RenderIndexPackageRow(manifest, "installed-engine", RowMode::InstalledOnly);
+			RenderIndexPackageRow(manifest, "installed-index", RowMode::InstalledOnly);
 			++shown;
 		}
 		if (shown == 0) {
-			ImGui::TextDisabled("No engine packages installed. Use the Search tab to install one.");
+			ImGui::TextDisabled("No Index packages installed. Use the Search tab to install one.");
 		}
 
 		ImGui::Unindent();
@@ -748,10 +961,18 @@ namespace Index {
 			return;
 		}
 
-		// Index packages from the allow-list; NuGet PackageReferences are in a separate panel.
+		// Project-local Index packages NOT in the official registry — i.e.
+		// Git/local/manual installs. Registry-sourced ones live in the
+		// "Index Packages" section above. NuGet PackageReferences are
+		// shown in their own panel below.
+		auto isFromRegistry = [&](const std::string& name) {
+			return std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
+				[&](const RegistryEntry& e) { return e.Name == name; });
+		};
 		int shown = 0;
 		for (const auto& manifest : m_AllManifests) {
 			if (manifest.IsEngine) continue;
+			if (isFromRegistry(manifest.Name)) continue;
 			if (!IsPackageInstalled(manifest.Name)) continue;
 			if (!MatchesFilter(manifest.Name, m_InstalledFilterBuffer)) continue;
 			RenderIndexPackageRow(manifest, "installed-user", RowMode::InstalledOnly);
@@ -1036,16 +1257,30 @@ namespace Index {
 			m_AutomationWorker.join();
 		}
 
-		// shared_ptr keeps state alive if panel shuts down mid-flight.
+		// Capture state by value so the worker is independent of the project
+		// lifetime (user may close/switch projects mid-flight).
+
+		// shared_ptr keeps task state alive if panel shuts down mid-flight.
 		auto state = m_AutomationTask;
 		m_AutomationWorker = std::thread([state]() {
-			auto setStage = [&state](const std::string& stage, float progress) {
+			// Precompiled package model: there's nothing to build at install
+			// time — the .dll the user references was placed on disk by the
+			// extract step already. PollAutomationTask still triggers a
+			// PackageHost::LoadInstalled() rescan after this worker finishes,
+			// so native .Native.dll(s) get loaded into the running editor.
+			// Future work (not blocking): copy prebuilt deps to a known scan
+			// path if PackageHost can't find them in <project>/Packages/...
+			{
 				std::scoped_lock lock(state->Mutex);
-				state->Stage = stage;
-				state->Progress = progress;
-			};
+				state->Stage = "Refreshing package host...";
+				state->Progress = 0.5f;
+			}
 
-			setStage("Refreshing package host...", 0.55f);
+			// Tiny pause so the spinner is visible for at least one frame —
+			// otherwise the user clicks Install and the strip flashes from
+			// "Installing..." straight to "Done", which feels glitchy.
+			std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
 			{
 				std::scoped_lock lock(state->Mutex);
 				state->Progress = 1.0f;
@@ -1087,21 +1322,404 @@ namespace Index {
 			const size_t newlyLoaded = PackageHost::LoadInstalled();
 			if (newlyLoaded > 0) {
 				m_StatusMessage = "Package operation complete; loaded " +
-					std::to_string(newlyLoaded) + " new package(s); components are available now. " +
-					"If your C# IDE still shows the namespace as unresolved, reload the .csproj.";
+					std::to_string(newlyLoaded) + " new package(s). "
+					"Reload the .csproj in your C# IDE if a new namespace doesn't resolve.";
 			}
 			else {
 				m_StatusMessage = "Package operation complete; project package references refreshed. "
-					"If a newly-added namespace doesn't resolve in your C# IDE, reload the .csproj.";
+					"Reload the .csproj in your C# IDE if a new namespace doesn't resolve.";
 			}
 			m_StatusIsError = false;
 		}
 		else {
-			m_StatusMessage = error.empty() ? "Package automation failed." : error;
-			m_StatusIsError = true;
+			// Premake/MSBuild output can be hundreds of lines — surface the full
+			// text in the modal popup. Don't echo a redundant one-liner in the
+			// bottom strip; the popup is the canonical channel for errors.
+			m_StatusMessage.clear();
+			m_StatusIsError = false;
+			m_InstallErrorMessage = error.empty() ? std::string("Package automation failed.") : error;
+			m_OpenInstallErrorPopup = true;
 		}
 
 		m_ManifestsDirty = true;
+	}
+
+	// ── Cloud Registry ─────────────────────────────────────────────────────────────
+
+	namespace {
+		// Slurp a UTF-8 file into a string. Used to read the registry cache
+		// after the C# tool writes it. Returns false if the file is missing
+		// or unreadable; the caller surfaces a status message in that case.
+		bool ReadFileUtf8(const std::filesystem::path& path, std::string& outText) {
+			std::ifstream in(path, std::ios::binary);
+			if (!in.is_open()) return false;
+			std::ostringstream ss;
+			ss << in.rdbuf();
+			outText = ss.str();
+			return true;
+		}
+
+		// Per-project cache path: <project>/.index/registry-cache.json.
+		// Hidden ".index/" folder keeps tool state out of the user's
+		// scene/assets browsing path while staying inside the project so
+		// it travels with VCS (a .gitignore entry for ".index/" is the
+		// publisher's responsibility).
+		std::filesystem::path RegistryCachePath(const IndexProject& project) {
+			return std::filesystem::path(project.RootDirectory) / ".index" / "registry-cache.json";
+		}
+
+		// Build the argv for invoking Index-PackageTool, handling both the
+		// native-exe and the .dll-via-dotnet forms the same way LanguageDownloader
+		// does. Caller appends the subcommand + args.
+		std::vector<std::string> BuildPackageToolBase(const std::filesystem::path& toolPath) {
+			std::vector<std::string> command;
+			if (toolPath.extension() == ".dll") {
+				command.push_back("dotnet");
+				command.push_back(toolPath.string());
+			}
+			else {
+				command.push_back(toolPath.string());
+			}
+			return command;
+		}
+	} // namespace
+
+	void PackageManagerPanel::ParseRegistry(const std::string& jsonText,
+		std::vector<RegistryEntry>& outEntries,
+		std::string& outError) {
+		outEntries.clear();
+		std::string parseError;
+		Json::Value root;
+		if (!Json::TryParse(jsonText, root, &parseError)) {
+			outError = "Registry JSON parse failed: " + parseError;
+			return;
+		}
+		if (!root.IsObject()) {
+			outError = "Registry JSON root is not an object.";
+			return;
+		}
+		const Json::Value* packagesNode = root.FindMember("packages");
+		if (!packagesNode || !packagesNode->IsArray()) {
+			outError = "Registry JSON missing 'packages' array.";
+			return;
+		}
+		for (const Json::Value& pkg : packagesNode->GetArray()) {
+			if (!pkg.IsObject()) continue;
+			RegistryEntry entry;
+			if (auto* v = pkg.FindMember("name"))             entry.Name = v->AsStringOr();
+			if (auto* v = pkg.FindMember("version"))          entry.Version = v->AsStringOr();
+			if (auto* v = pkg.FindMember("description"))      entry.Description = v->AsStringOr();
+			if (auto* v = pkg.FindMember("downloadUrl"))      entry.DownloadUrl = v->AsStringOr();
+			if (auto* v = pkg.FindMember("sha256"))           entry.Sha256 = v->AsStringOr();
+			if (auto* v = pkg.FindMember("homepage"))         entry.Homepage = v->AsStringOr();
+			if (auto* v = pkg.FindMember("license"))          entry.License = v->AsStringOr();
+			if (auto* v = pkg.FindMember("minEngineVersion")) entry.MinEngineVersion = v->AsStringOr();
+			if (auto* v = pkg.FindMember("sizeBytes"))        entry.SizeBytes = v->AsUInt64Or(0);
+			if (auto* v = pkg.FindMember("dependencies"); v && v->IsArray()) {
+				for (const auto& dep : v->GetArray()) {
+					if (dep.IsString()) entry.Dependencies.push_back(dep.AsStringOr());
+				}
+			}
+			// "layers": ["native", "csharp", ...] — fold legacy names too so
+			// older registries that still use engine_core / standalone_cpp
+			// don't lose their badges.
+			if (auto* v = pkg.FindMember("layers"); v && v->IsArray()) {
+				for (const auto& layer : v->GetArray()) {
+					if (!layer.IsString()) continue;
+					const std::string name = layer.AsStringOr();
+					if (name == "native" || name == "engine_core") entry.HasNativeLayer = true;
+					else if (name == "native_standalone" || name == "standalone_cpp") entry.HasNativeStandaloneLayer = true;
+					else if (name == "csharp") entry.HasCSharpLayer = true;
+				}
+			}
+			if (entry.Name.empty() || entry.Version.empty() || entry.DownloadUrl.empty()) {
+				continue; // skip malformed rows; required fields missing
+			}
+			outEntries.push_back(std::move(entry));
+		}
+	}
+
+	void PackageManagerPanel::RefreshRegistryIfDirty() {
+		if (!m_RegistryDirty) return;
+		if (!m_RegistryFetchTask) return;
+		if (m_RegistryFetchTask->Running.load(std::memory_order_acquire)) return;
+
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			// Without a project we have no cache location and no install target.
+			// Clear dirty so we don't spin every frame; a project-open event
+			// (or the user clicking Refresh) re-triggers.
+			m_RegistryDirty = false;
+			m_RegistryEntries.clear();
+			m_RegistryStatusMessage = "Open a project to browse the Index registry.";
+			m_RegistryStatusIsError = false;
+			return;
+		}
+
+		const std::filesystem::path toolPath = Index::PackageTool::ResolveExecutable();
+		if (toolPath.empty()) {
+			m_RegistryDirty = false;
+			m_RegistryStatusMessage = "Index-PackageTool not found — cannot fetch registry.";
+			m_RegistryStatusIsError = true;
+			return;
+		}
+
+		const std::filesystem::path cachePath = RegistryCachePath(*project);
+		std::error_code ec;
+		std::filesystem::create_directories(cachePath.parent_path(), ec);
+
+		// Join the prior worker before mutating state.
+		if (m_RegistryFetchWorker.joinable()) {
+			m_RegistryFetchWorker.join();
+		}
+
+		{
+			std::scoped_lock lock(m_RegistryFetchTask->Mutex);
+			m_RegistryFetchTask->Finished = false;
+			m_RegistryFetchTask->Success = false;
+			m_RegistryFetchTask->Error.clear();
+			m_RegistryFetchTask->CachedJsonPath = cachePath.string();
+		}
+		m_RegistryFetchTask->Running.store(true, std::memory_order_release);
+		m_RegistryDirty = false;
+		m_RegistryStatusMessage = "Fetching registry...";
+		m_RegistryStatusIsError = false;
+
+		auto state = m_RegistryFetchTask;
+		const std::string url = k_IndexRegistryUrl;
+		const std::string cachePathStr = cachePath.string();
+		m_RegistryFetchWorker = std::thread([state, toolPath, url, cachePathStr]() {
+			std::vector<std::string> command = BuildPackageToolBase(toolPath);
+			command.push_back("registry-fetch");
+			command.push_back(url);
+			command.push_back(cachePathStr);
+
+			const Process::Result result = Process::Run(command, {},
+				std::chrono::milliseconds(30000));
+
+			std::scoped_lock lock(state->Mutex);
+			state->Success = result.Succeeded();
+			if (!state->Success) {
+				// The C# tool prefixes its own "Registry fetch failed:" /
+				// "Registry fetch timed out." message; only synthesize one
+				// here if it didn't get a chance to (process wrapper timed
+				// out before the tool wrote anything).
+				if (result.TimedOut && result.Output.empty()) {
+					state->Error = "Registry fetch timed out.";
+				}
+				else {
+					state->Error = result.Output.empty()
+						? std::string("Registry fetch failed (exit ")
+							+ std::to_string(result.ExitCode) + ")."
+						: result.Output;
+				}
+			}
+			state->Finished = true;
+			state->Running.store(false, std::memory_order_release);
+		});
+	}
+
+	void PackageManagerPanel::PollRegistryFetchTask() {
+		if (!m_RegistryFetchTask) return;
+
+		bool finished = false;
+		bool success = false;
+		std::string error;
+		std::string cachePath;
+		{
+			std::scoped_lock lock(m_RegistryFetchTask->Mutex);
+			finished = m_RegistryFetchTask->Finished;
+			success = m_RegistryFetchTask->Success;
+			error = m_RegistryFetchTask->Error;
+			cachePath = m_RegistryFetchTask->CachedJsonPath;
+		}
+		if (!finished) return;
+
+		{
+			std::scoped_lock lock(m_RegistryFetchTask->Mutex);
+			m_RegistryFetchTask->Finished = false;
+		}
+
+		if (m_RegistryFetchWorker.joinable()) {
+			m_RegistryFetchWorker.join();
+		}
+
+		// On either outcome, try to load from cache: a fresh fetch wrote
+		// the file; a failed fetch falls back to whatever was cached on a
+		// prior session (offline-first behavior).
+		std::string jsonText;
+		const bool haveCache = ReadFileUtf8(cachePath, jsonText);
+
+		if (success && haveCache) {
+			std::string parseError;
+			ParseRegistry(jsonText, m_RegistryEntries, parseError);
+			if (!parseError.empty()) {
+				m_RegistryStatusMessage = parseError;
+				m_RegistryStatusIsError = true;
+			}
+			else {
+				m_RegistryStatusMessage = std::to_string(m_RegistryEntries.size())
+					+ " package(s) in registry.";
+				m_RegistryStatusIsError = false;
+			}
+		}
+		else if (!success && haveCache) {
+			std::string parseError;
+			ParseRegistry(jsonText, m_RegistryEntries, parseError);
+			m_RegistryStatusMessage = parseError.empty()
+				? std::string("Using cached registry (offline).")
+				: parseError;
+			m_RegistryStatusIsError = !parseError.empty();
+		}
+		else {
+			m_RegistryEntries.clear();
+			m_RegistryStatusMessage = error.empty()
+				? std::string("Could not reach registry; no cache available.")
+				: error;
+			m_RegistryStatusIsError = true;
+		}
+	}
+
+	void PackageManagerPanel::HandleCloudInstall(const RegistryEntry& entry) {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			m_StatusMessage = "Open a project before installing a package.";
+			m_StatusIsError = true;
+			return;
+		}
+		if (!m_CloudInstallTask) return;
+		if (m_CloudInstallTask->Running.load(std::memory_order_acquire)) return;
+
+		const std::filesystem::path toolPath = Index::PackageTool::ResolveExecutable();
+		if (toolPath.empty()) {
+			m_StatusMessage = "Index-PackageTool not found.";
+			m_StatusIsError = true;
+			return;
+		}
+
+		// Join the prior worker before mutating state.
+		if (m_CloudInstallWorker.joinable()) {
+			m_CloudInstallWorker.join();
+		}
+
+		{
+			std::scoped_lock lock(m_CloudInstallTask->Mutex);
+			m_CloudInstallTask->Stage = "Downloading " + entry.Name + " v" + entry.Version + "...";
+			m_CloudInstallTask->Progress = 0.1f;
+			m_CloudInstallTask->Finished = false;
+			m_CloudInstallTask->Success = false;
+			m_CloudInstallTask->Error.clear();
+			m_CloudInstallTask->PackageName.clear();
+		}
+		m_CloudInstallTask->Running.store(true, std::memory_order_release);
+
+		m_StatusMessage = "Installing " + entry.Name + " from registry...";
+		m_StatusIsError = false;
+
+		auto state = m_CloudInstallTask;
+		const std::string packagesDir = project->PackagesDirectory;
+		const std::string expectedName = entry.Name;
+		const std::string downloadUrl = entry.DownloadUrl;
+		const std::string sha256 = entry.Sha256;
+		m_CloudInstallWorker = std::thread([state, toolPath, packagesDir, downloadUrl, sha256, expectedName]() {
+			std::vector<std::string> command = BuildPackageToolBase(toolPath);
+			command.push_back("registry-download");
+			command.push_back(downloadUrl);
+			command.push_back(sha256);
+			command.push_back(packagesDir);
+
+			// Bump the stage so the UI shows progress while dotnet works. The
+			// C# tool also emits @event=progress lines we could parse to drive
+			// a real bytes-based bar; for v1 the coarse stage labels are enough.
+			{
+				std::scoped_lock lock(state->Mutex);
+				state->Stage = "Downloading " + expectedName + "...";
+				state->Progress = 0.3f;
+			}
+
+			const Process::Result result = Process::Run(command, {}, std::chrono::milliseconds(0));
+
+			std::scoped_lock lock(state->Mutex);
+			state->Success = result.Succeeded();
+			if (state->Success) {
+				state->Stage = "Verified + extracted " + expectedName;
+				state->Progress = 0.9f;
+				state->PackageName = expectedName;
+			}
+			else {
+				// Tool prefixes its own "Registry download failed:" or
+				// "SHA-256 mismatch ..." message; only synthesize if it
+				// didn't get a chance to.
+				if (result.TimedOut && result.Output.empty()) {
+					state->Error = "Cloud install timed out.";
+				}
+				else {
+					state->Error = result.Output.empty()
+						? std::string("Cloud install failed (exit ")
+							+ std::to_string(result.ExitCode) + ")."
+						: result.Output;
+				}
+				state->Progress = 0.0f;
+			}
+			state->Finished = true;
+			state->Running.store(false, std::memory_order_release);
+		});
+	}
+
+	void PackageManagerPanel::PollCloudInstallTask() {
+		if (!m_CloudInstallTask) return;
+
+		bool finished = false;
+		bool success = false;
+		std::string error;
+		std::string packageName;
+		{
+			std::scoped_lock lock(m_CloudInstallTask->Mutex);
+			finished = m_CloudInstallTask->Finished;
+			success = m_CloudInstallTask->Success;
+			error = m_CloudInstallTask->Error;
+			packageName = m_CloudInstallTask->PackageName;
+		}
+		if (!finished) return;
+
+		{
+			std::scoped_lock lock(m_CloudInstallTask->Mutex);
+			m_CloudInstallTask->Finished = false;
+		}
+
+		if (m_CloudInstallWorker.joinable()) {
+			m_CloudInstallWorker.join();
+		}
+
+		if (!success) {
+			m_StatusMessage.clear();
+			m_StatusIsError = false;
+			m_InstallErrorMessage = error.empty() ? std::string("Cloud install failed.") : error;
+			m_OpenInstallErrorPopup = true;
+			return;
+		}
+
+		// Worker landed the package on disk. Now run the same flow the
+		// on-disk Install button uses: update the project allow-list, write
+		// index-project.json, regenerate IndexPackages.props, then kick the
+		// post-install hot-load.
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			m_StatusMessage = "Downloaded " + packageName + " but no project is open to install it into.";
+			m_StatusIsError = true;
+			return;
+		}
+		const auto result = IndexPackageInstaller::InstallToProject(*project, packageName);
+		if (!result.Success) {
+			m_StatusMessage = "Downloaded " + packageName + " but allow-list update failed: " + result.Message;
+			m_StatusIsError = true;
+			return;
+		}
+
+		m_ManifestsDirty = true;
+		m_StatusMessage = "Installed " + packageName + " from registry.";
+		m_StatusIsError = false;
+		StartPostInstallAutomation();
 	}
 
 }

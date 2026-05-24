@@ -9,6 +9,8 @@
 #include "Events/MouseEvents.hpp"
 #include "Scripting/ScriptEngine.hpp"
 #include <Utils/StringHelper.hpp>
+#include <algorithm>
+#include <cmath>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
@@ -523,6 +525,52 @@ namespace Index {
 		m_CursorMode = normalized;
 	}
 	namespace {
+		// Normalized pixel size for project-supplied cursors. GLFW hands
+		// the image straight to the OS, which renders the cursor at its
+		// raw pixel size — so without resampling, a 128x128 source would
+		// show up four times the on-screen size of a 32x32 one. We force
+		// every cursor through a single logical size so authored art
+		// reads the same regardless of source resolution. 32x32 matches
+		// the classic Windows cursor and what users expect from "default
+		// cursor size".
+		constexpr int k_CursorTargetSize = 32;
+
+		// Bilinear RGBA8 resample into a freshly-allocated buffer. Caller
+		// owns the returned memory and must `delete[]` it. Returns nullptr
+		// on bad input. Kept inline here to avoid pulling stb_image_resize2's
+		// ~10k LOC into Window.cpp's TU just for a 32x32 cursor.
+		unsigned char* ResizeRGBA8Bilinear(const unsigned char* src,
+			int srcW, int srcH, int dstW, int dstH)
+		{
+			if (!src || srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0) return nullptr;
+			auto* dst = new unsigned char[static_cast<size_t>(dstW) * dstH * 4];
+			const float scaleX = static_cast<float>(srcW) / static_cast<float>(dstW);
+			const float scaleY = static_cast<float>(srcH) / static_cast<float>(dstH);
+			for (int y = 0; y < dstH; ++y) {
+				const float sy = (y + 0.5f) * scaleY - 0.5f;
+				const int y0 = std::max(0, static_cast<int>(std::floor(sy)));
+				const int y1 = std::min(srcH - 1, y0 + 1);
+				const float fy = sy - std::floor(sy);
+				for (int x = 0; x < dstW; ++x) {
+					const float sx = (x + 0.5f) * scaleX - 0.5f;
+					const int x0 = std::max(0, static_cast<int>(std::floor(sx)));
+					const int x1 = std::min(srcW - 1, x0 + 1);
+					const float fx = sx - std::floor(sx);
+					for (int c = 0; c < 4; ++c) {
+						const float p00 = src[(y0 * srcW + x0) * 4 + c];
+						const float p10 = src[(y0 * srcW + x1) * 4 + c];
+						const float p01 = src[(y1 * srcW + x0) * 4 + c];
+						const float p11 = src[(y1 * srcW + x1) * 4 + c];
+						const float top = p00 + (p10 - p00) * fx;
+						const float bot = p01 + (p11 - p01) * fx;
+						const float v = top + (bot - top) * fy;
+						dst[(y * dstW + x) * 4 + c] = static_cast<unsigned char>(v + 0.5f);
+					}
+				}
+			}
+			return dst;
+		}
+
 		// Build a GLFWcursor from a Texture2D. Returns nullptr on any
 		// failure with a warning logged. The caller owns the returned
 		// cursor and must free it via glfwDestroyCursor.
@@ -536,10 +584,27 @@ namespace Index {
 			if (tex2D->IsFlippedY()) {
 				imgData->FlipVerticalRGBA();
 			}
+
 			GLFWimage img;
-			img.width = imgData->Width;
-			img.height = imgData->Height;
-			img.pixels = imgData->Pixels;
+			img.width = k_CursorTargetSize;
+			img.height = k_CursorTargetSize;
+
+			std::unique_ptr<unsigned char[]> resized;
+			if (imgData->Width == k_CursorTargetSize && imgData->Height == k_CursorTargetSize) {
+				img.pixels = imgData->Pixels;
+			}
+			else {
+				resized.reset(ResizeRGBA8Bilinear(imgData->Pixels,
+					imgData->Width, imgData->Height,
+					k_CursorTargetSize, k_CursorTargetSize));
+				if (!resized) {
+					IDX_WARN_TAG("Window", "Cursor resize to {}x{} failed",
+						k_CursorTargetSize, k_CursorTargetSize);
+					return nullptr;
+				}
+				img.pixels = resized.get();
+			}
+
 			return glfwCreateCursor(&img, 0, 0);
 		}
 	}

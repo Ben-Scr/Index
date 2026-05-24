@@ -95,6 +95,13 @@
 
 namespace Index {
 
+	// Display label used for empty / cleared reference fields across every
+	// inspector site — the reference picker's clear entry, the
+	// PropertyDrawer's empty-flag-enum preview, ComponentInspectors' event
+	// target labels, and the ResolveXxxDisplay helpers. Change here to
+	// retheme to e.g. "<None>" without touching every call site.
+	inline constexpr const char* k_NoneLabel = "(None)";
+
 	enum class PropertyType : uint8_t {
 		None = 0,
 

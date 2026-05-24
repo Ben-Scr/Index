@@ -931,7 +931,7 @@ namespace Index {
 					// OpenForFieldKey / ConsumeSelection / RenderPopup
 					// loop; we encode the chosen UUID into ArgumentValue.
 					const uint64_t uuid = DecodeUInt64(row.ArgumentValue);
-					std::string label = uuid == 0 ? "(None)" : DescribeEventTarget(uuid);
+					std::string label = uuid == 0 ? k_NoneLabel : DescribeEventTarget(uuid);
 					ImGui::Button((label + "##ArgEntity").c_str(), ImVec2(width, 0.0f));
 					// Picker open is wired by the caller via setValue
 					// keys — left as a placeholder so the value can
@@ -1170,7 +1170,7 @@ namespace Index {
 						});
 					}
 					const uint64_t argUuid = DecodeUInt64(row.ArgumentValue);
-					std::string argLabel = argUuid == 0 ? "(None)" : DescribeEventTarget(argUuid);
+					std::string argLabel = argUuid == 0 ? k_NoneLabel : DescribeEventTarget(argUuid);
 					bool truncatedArg = false;
 					const std::string argText = ImGuiUtils::Ellipsize(argLabel,
 						fieldWidth - style.FramePadding.x * 2.0f, &truncatedArg);

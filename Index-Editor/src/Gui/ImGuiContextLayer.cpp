@@ -209,6 +209,33 @@ namespace Index {
 		// must run before the load below; the rest of the docking-
 		// adjacent config (resize grips, etc.) can stay where it is.
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+		// Same ordering rule for multi-viewport: the [Viewport] /
+		// per-window viewport-state sections in imgui.ini are parsed
+		// by handlers that are only registered when ViewportsEnable is
+		// set. Loading first would silently scrub the persisted floating-
+		// window positions/sizes that ImGui restored across launches.
+		// The matching RendererHasViewports flag tells ImGui's per-frame
+		// UpdatePlatformWindows traversal that ImGuiImplWebGPU is ready
+		// to drive secondary viewports (handlers registered just below
+		// after ImGuiImplWebGPU::Init); imgui_impl_glfw sets the
+		// PlatformHasViewports flag in its own Init.
+		//
+		// Effect on the editor: undocking any panel that doesn't sit
+		// fully inside the editor's main window spawns a real OS window
+		// (taskbar + Alt+Tab visible). Panels with their own ImGuiWindowClass
+		// can set ViewportFlagsOverrideSet = NoAutoMerge to always be
+		// their own viewport. Secondary viewports use the native OS
+		// titlebar (Win32Titlebar's WndProc subclass only attaches to
+		// the main window) — fine here because CustomTitlebar = false
+		// in EditorApplication anyway.
+		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+		io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
+		// Taskbar hiding is handled by the owner-window relationship that
+		// MultiViewport_CreateWindow sets on each viewport HWND (Windows
+		// excludes owned windows from the taskbar automatically). We do NOT
+		// set io.ConfigViewportsNoTaskBarIcon here for the same reason
+		// documented in the launcher's ImGuiContextLayer — it would force
+		// WS_EX_TOOLWINDOW back on, breaking the close-button chrome.
 		// Belt-and-suspenders load. ImGui's NewFrame would auto-load
 		// on the first frame anyway, but doing it explicitly here
 		// (a) makes it easy to confirm via the log whether the file
@@ -288,6 +315,13 @@ namespace Index {
 			"Failed to init glfw for imgui (WebGPU backend)!");
 		IDX_VERIFY(ImGuiImplWebGPU::Init(),
 			"Failed to init WebGPU imgui backend (device not ready?)");
+
+		// Wire renderer-side multi-viewport handlers AFTER ImGui_ImplWGPU
+		// is up. Binds Renderer_RenderWindow / SwapBuffers etc. on
+		// platform_io to ImGuiImplWebGPU's per-viewport surface code.
+		// imgui_impl_glfw installs its own platform-side handlers lazily
+		// on first NewFrame when ViewportsEnable is set.
+		ImGuiImplWebGPU::RegisterMultiViewportHandlers();
 
 		ApplyIndexTheme();
 		// Must run after the theme — ScaleAllSizes is multiplicative on the
@@ -378,6 +412,13 @@ namespace Index {
 		// for ABI stability). ImGuiImplWebGPU::RenderDrawData uses
 		// whatever framebuffer RenderApi::BindFramebuffer last bound.
 		ImGuiImplWebGPU::RenderDrawData(ImGui::GetDrawData(), /*viewId*/ 0xFFFFu);
+
+		// Pump secondary OS windows when multi-viewport is enabled. No-op
+		// otherwise. The engine.dll-side helper internally flushes the
+		// main encoder before walking viewports so per-frame WriteBuffer
+		// ordering across the shared ImGui_ImplWGPU FrameResources slot
+		// is correct — see ImGuiImplWebGPU.hpp for the full rationale.
+		ImGuiImplWebGPU::RenderPlatformWindowsDefault();
 
 		// Belt-and-suspenders settings flush — runs after ImGui::Render
 		// has finalised the frame's settings state, so any dock split,

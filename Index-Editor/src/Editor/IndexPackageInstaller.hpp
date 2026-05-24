@@ -22,6 +22,12 @@ namespace Index {
 		bool HasNativeLayer = false;            // canonical "native" (legacy alias: "engine_core")
 		bool HasNativeStandaloneLayer = false;  // canonical "native_standalone" (legacy alias: "standalone_cpp")
 		bool HasCSharpLayer = false;
+
+		// True when the csharp layer declares `allow_unsafe = true`. Propagated
+		// into the generated .csproj as <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		// so the package can use unsafe blocks / fixed-pointer marshalling
+		// (commonly needed for P/Invoke into a native sibling).
+		bool CSharpAllowUnsafe = false;
 	};
 
 	// Install/validate helpers for index-package.lua-based packages.
@@ -80,8 +86,11 @@ namespace Index {
 		// IndexPackages.props. Does NOT delete the package's files on disk.
 		static InstallResult UninstallFromProject(class IndexProject& project, const std::string& packageName);
 
-		// Generate <project>/Packages/IndexPackages.props with one <Reference Include="...">
-		// per installed C# package. Idempotent; safe to call repeatedly.
+		// Generate <project>/Packages/IndexPackages.props with one <Reference>
+		// per installed C# package. The HintPath points at the prebuilt DLL the
+		// package ships at Packages/<Name>/Bin/Windows-x64/Pkg.<Name>.dll, so
+		// the user's .csproj resolves the reference without any build step at
+		// install time. Idempotent; safe to call repeatedly.
 		// Also patches the project's .csproj to <Import> this props file if it doesn't already.
 		static void RegeneratePackageReferences(const class IndexProject& project);
 	};

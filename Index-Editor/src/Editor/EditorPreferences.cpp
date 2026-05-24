@@ -148,15 +148,16 @@ namespace Index {
 			Window* window = Application::GetWindow();
 			if (!window) return;
 
+			// Pick dark/light DWM titlebar chrome from the theme; leave the
+			// caption + text colors at their default (alpha = 0 ->
+			// DWMWA_COLOR_DEFAULT) so Windows paints the standard system
+			// titlebar — same look as a no-customization app like Godot.
 			const ImGuiStyle& style = ImGui::GetStyle();
-			const ImVec4 active = style.Colors[ImGuiCol_TitleBgActive];
-			const ImVec4 inactive = style.Colors[ImGuiCol_TitleBg];
-			const ImVec4 text = style.Colors[ImGuiCol_Text];
-
-			window->SetTitlebarDarkMode(Luminance(active) < 0.5f);
-			window->SetTitlebarActiveColor(ToColor(active));
-			window->SetTitlebarInactiveColor(ToColor(inactive));
-			window->SetTitlebarTextColor(ToColor(text));
+			const bool dark = Luminance(style.Colors[ImGuiCol_WindowBg]) < 0.5f;
+			window->SetTitlebarDarkMode(dark);
+			window->SetTitlebarActiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarInactiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarTextColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 		}
 
 		void SeedCustomColorsFromCurrent() {

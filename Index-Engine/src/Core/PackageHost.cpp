@@ -135,6 +135,28 @@ namespace Index {
 			// Distribution layout (future): packages alongside the exe in a Packages/ folder.
 			DiscoverIn(exeDir / "Packages", candidates);
 
+			// Precompiled-package layout: each installed package ships its
+			// native sibling DLL inside <project>/Packages/<Name>/Bin/Windows-x64/.
+			// This is the path used by the cloud registry installer — the DLL
+			// is published as part of the zip, not built from source on the
+			// user's machine. We probe this for every package in the project's
+			// allow-list (looked up further down) so a package's native code
+			// loads without needing the engine source / Index.sln / premake.
+			const IndexProject* projectForScan = ProjectManager::GetCurrentProject();
+			if (projectForScan && !projectForScan->PackagesDirectory.empty()) {
+				const std::filesystem::path projectPackages(projectForScan->PackagesDirectory);
+				for (const std::string& packageName : projectForScan->Packages) {
+					const std::filesystem::path candidate = projectPackages
+						/ packageName
+						/ "Bin" / "Windows-x64"
+						/ ("Pkg." + packageName + ".Native.dll");
+					std::error_code ec;
+					if (std::filesystem::exists(candidate, ec) && !ec) {
+						candidates.push_back(candidate);
+					}
+				}
+			}
+
 			// Modular package policy: only packages the active project has
 			// explicitly *installed* (listed in index-project.json's `packages`
 			// array) are LoadLibrary'd. The engine itself stays free of types

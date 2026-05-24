@@ -3,6 +3,7 @@
 #include "Components/General/NameComponent.hpp"
 #include "Core/Application.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Inspector/PropertyDescriptor.hpp"
 #include "Inspector/PropertyDrawer.hpp"
@@ -602,6 +603,7 @@ namespace Index {
 			if (!s_PickerState.Open) return;
 
 			ImGui::SetNextWindowSize(ImVec2(320, 380), ImGuiCond_FirstUseEver);
+			ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 			if (!ImGui::Begin("Select Script", &s_PickerState.Open)) {
 				ImGui::End();
 				return;

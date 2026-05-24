@@ -277,7 +277,7 @@ namespace Index {
 	}
 
 	bool AssetBrowser::TryCreatePrefabFromHierarchyDrop(const ImGuiPayload* payload, const std::string& targetDirectory) {
-		if (!payload || payload->DataSize != sizeof(int) + sizeof(uint32_t)) {
+		if (!payload || payload->DataSize != sizeof(HierarchyDragData)) {
 			return false;
 		}
 
@@ -285,7 +285,19 @@ namespace Index {
 		const auto* dragData = static_cast<const HierarchyDragData*>(payload->Data);
 		const entt::entity entityHandle = static_cast<entt::entity>(dragData->EntityHandle);
 
-		Scene* scene = SceneManager::Get().GetActiveScene();
+		// Resolve via SourceSceneId so cross-scene drags (drag entity from a
+		// non-active scene into the asset browser) still find the right
+		// registry — falls back to the active scene when the payload has no
+		// source id (older producers / direct calls).
+		Scene* scene = nullptr;
+		if (dragData->SourceSceneId != 0) {
+			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+				if (!scene && static_cast<uint64_t>(s.GetSceneId()) == dragData->SourceSceneId) {
+					scene = &s;
+				}
+			});
+		}
+		if (!scene) scene = SceneManager::Get().GetActiveScene();
 		if (!scene || !scene->IsValid(entityHandle)) {
 			return false;
 		}

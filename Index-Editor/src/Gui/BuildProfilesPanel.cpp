@@ -2,9 +2,13 @@
 #include "Gui/BuildProfilesPanel.hpp"
 
 #include "Core/Log.hpp"
+#include "Graphics/Texture2D.hpp"
+#include "Graphics/TextureManager.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Project/BuildPlatformSupport.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Serialization/Path.hpp"
 
 #include <imgui.h>
 #include <algorithm>
@@ -36,6 +40,33 @@ namespace Index {
 
 		const char* RenderBackendLabel(IndexProject::RenderBackend backend) {
 			return IndexProject::RenderBackendToString(backend);
+		}
+
+		// Resolves the GPU handle for a platform's icon under
+		// IndexAssets/Textures/Editor/PlatformIcons/<name>.png. Goes through
+		// TextureManager so repeated lookups hit the existing texture cache
+		// (and the icons survive PurgeUnreferenced via TextureManager's own
+		// retention of explicitly-loaded handles). Returns 0 when the
+		// platform ships no icon or the file is missing, in which case the
+		// caller falls back to a text-only row.
+		uint64_t LoadPlatformIconHandle(BuildPlatform platform) {
+			const char* iconName = IndexBuildProfile::PlatformIconName(platform);
+			if (!iconName) return 0;
+
+			static std::string platformIconsDir = []() {
+				const std::string editorTexturesDir = Path::ResolveIndexAssets("Textures");
+				if (editorTexturesDir.empty()) return std::string{};
+				return (std::filesystem::path(editorTexturesDir) / "Editor" / "PlatformIcons").string();
+			}();
+			if (platformIconsDir.empty()) return 0;
+
+			const std::string fullPath = (std::filesystem::path(platformIconsDir) /
+				(std::string(iconName) + ".png")).string();
+			TextureHandle handle = TextureManager::LoadTexture(
+				fullPath, Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
+			Texture2D* tex = TextureManager::GetTexture(handle);
+			if (tex && tex->IsValid()) return tex->GetHandle();
+			return 0;
 		}
 	}
 
@@ -325,6 +356,7 @@ namespace Index {
 		if (ImGui::Button("Delete")) ImGui::OpenPopup("##ConfirmDeleteProfile");
 		if (!hasSelection) ImGui::EndDisabled();
 
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("##ConfirmDeleteProfile", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize)) {
 			ImGui::Text("Delete profile '%s'?",
@@ -344,6 +376,7 @@ namespace Index {
 			ImGui::OpenPopup("##RenameProfile");
 			m_OpenRenamePopup = false;
 		}
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("##RenameProfile", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize)) {
 			ImGui::Text("New name:");
@@ -388,23 +421,30 @@ namespace Index {
 		ImGui::Text("Name: %s", profile.Name.c_str());
 		ImGui::Spacing();
 
-		// Platform combo — drives the available backend list.
-		const BuildPlatform platforms[] = { BuildPlatform::Windows, BuildPlatform::Linux };
-		int platformIdx = (profile.Platform == BuildPlatform::Linux) ? 1 : 0;
+		// Platform list — drives the available backend list. Rendered as a
+		// vertical icon-prefixed list (Unity Build Settings style) instead
+		// of a combo so the user can see every target at a glance and
+		// platforms ship a recognizable icon. Icon files live under
+		// IndexAssets/Textures/Editor/PlatformIcons/<name>.png.
 		ImGui::TextUnformatted("Target Platform:");
-		ImGui::SetNextItemWidth(-1);
-		std::string platformPreview = IndexBuildProfile::PlatformToString(platforms[platformIdx]);
-		if (ImGui::BeginCombo("##Platform", platformPreview.c_str())) {
-			for (int i = 0; i < IM_ARRAYSIZE(platforms); ++i) {
-				const bool selected = (platformIdx == i);
-				const char* label = IndexBuildProfile::PlatformToString(platforms[i]);
-				std::string itemLabel = label;
-				if (!BuildPlatformSupport::IsAvailable(platforms[i])) {
-					itemLabel += "  (not installed)";
-				}
-				if (ImGui::Selectable(itemLabel.c_str(), selected)) {
-					if (profile.Platform != platforms[i]) {
-						profile.Platform = platforms[i];
+		{
+			const std::vector<BuildPlatform> allPlatforms = IndexBuildProfile::AllPlatforms();
+			const float iconSize = 20.0f;
+			const float rowHeight = iconSize + 6.0f;
+			const float iconPad = 6.0f;
+			const float labelPad = 8.0f;
+
+			for (BuildPlatform p : allPlatforms) {
+				const bool isSelected = (profile.Platform == p);
+				const bool available = BuildPlatformSupport::IsAvailable(p);
+				const uint64_t iconHandle = LoadPlatformIconHandle(p);
+
+				ImGui::PushID(static_cast<int>(p));
+
+				const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+				if (ImGui::Selectable("##PlatformRow", isSelected, 0, ImVec2(0, rowHeight))) {
+					if (profile.Platform != p) {
+						profile.Platform = p;
 						// Coerce backend into the new platform's allowed set.
 						if (!IndexBuildProfile::IsBackendAllowed(profile.Platform, profile.RenderBackend)) {
 							const auto allowed = IndexBuildProfile::AllowedBackends(profile.Platform);
@@ -413,8 +453,41 @@ namespace Index {
 						SaveSelected();
 					}
 				}
+
+				// Selectable has advanced the cursor below the row; remember
+				// that position so we can restore it after the overlay draws.
+				const ImVec2 nextRowCursor = ImGui::GetCursorScreenPos();
+
+				ImDrawList* drawList = ImGui::GetWindowDrawList();
+				const float iconY = rowStart.y + (rowHeight - iconSize) * 0.5f;
+				if (iconHandle != 0) {
+					// TextureManager loads with flipVertical=false (top-left
+					// origin), so the default 0,0→1,1 UV renders right-side up.
+					drawList->AddImage(
+						static_cast<ImTextureID>(static_cast<intptr_t>(iconHandle)),
+						ImVec2(rowStart.x + iconPad, iconY),
+						ImVec2(rowStart.x + iconPad + iconSize, iconY + iconSize));
+				}
+
+				const float textY = rowStart.y + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f;
+				const float textX = rowStart.x + iconPad + iconSize + labelPad;
+				drawList->AddText(ImVec2(textX, textY),
+					ImGui::GetColorU32(ImGuiCol_Text),
+					IndexBuildProfile::PlatformDisplayName(p));
+
+				if (!available) {
+					const char* hint = "(not installed)";
+					const ImVec2 hintSize = ImGui::CalcTextSize(hint);
+					const float rowRight = rowStart.x + ImGui::GetContentRegionAvail().x;
+					drawList->AddText(
+						ImVec2(rowRight - hintSize.x - iconPad, textY),
+						ImGui::GetColorU32(ImGuiCol_TextDisabled),
+						hint);
+				}
+
+				ImGui::SetCursorScreenPos(nextRowCursor);
+				ImGui::PopID();
 			}
-			ImGui::EndCombo();
 		}
 
 		ImGui::Spacing();
@@ -450,6 +523,7 @@ namespace Index {
 		if (!pOpen || !*pOpen) return;
 
 		ImGui::SetNextWindowSize(ImVec2(720, 420), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (!ImGui::Begin("Build Profiles", pOpen)) {
 			ImGui::End();
 			return;

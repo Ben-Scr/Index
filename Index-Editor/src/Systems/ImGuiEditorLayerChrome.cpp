@@ -14,6 +14,7 @@
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Scene/Scene.hpp"
@@ -372,6 +373,7 @@ namespace Index {
 			m_ShowSaveConfirmDialog = false;
 		}
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Save Changes?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			Scene* active = SceneManager::Get().GetActiveScene();
@@ -415,6 +417,7 @@ namespace Index {
 			m_ShowPrefabEditDiscardPrompt = false;
 		}
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Unsaved Prefab Changes", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			// Stem (no .prefab extension) keeps the message consistent
@@ -449,6 +452,7 @@ namespace Index {
 			m_ShowPrefabSavePrompt = false;
 		}
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Save Prefab Changes?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			std::string prefabName = std::filesystem::path(m_PrefabInspector.GetCurrentPath()).filename().string();
@@ -496,6 +500,7 @@ namespace Index {
 			m_ShowQuitSaveDialog = false;
 		}
 		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Save Before Quit?", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			Scene* active = SceneManager::Get().GetActiveScene();

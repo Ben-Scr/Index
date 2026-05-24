@@ -11,16 +11,68 @@ namespace Index {
 
 	const char* IndexBuildProfile::PlatformToString(BuildPlatform platform) {
 		switch (platform) {
-			case BuildPlatform::Windows: return "Windows";
-			case BuildPlatform::Linux:   return "Linux";
+			case BuildPlatform::Windows:  return "Windows";
+			case BuildPlatform::Linux:    return "Linux";
+			case BuildPlatform::MacOS:    return "MacOS";
+			case BuildPlatform::Android:  return "Android";
+			case BuildPlatform::IOS:      return "iOS";
+			case BuildPlatform::VisionOS: return "visionOS";
+			case BuildPlatform::Web:      return "Web";
 		}
 		return "Windows";
 	}
 
 	BuildPlatform IndexBuildProfile::PlatformFromString(std::string_view value) {
-		if (value == "Windows" || value == "windows" || value == "Win" || value == "win") return BuildPlatform::Windows;
-		if (value == "Linux"   || value == "linux")                                       return BuildPlatform::Linux;
+		if (value == "Windows"  || value == "windows"  || value == "Win" || value == "win"
+			|| value == "WindowsDesktop" || value == "Windows Desktop")                  return BuildPlatform::Windows;
+		if (value == "Linux"    || value == "linux")                                     return BuildPlatform::Linux;
+		if (value == "MacOS"    || value == "macOS"    || value == "macos"
+			|| value == "OSX"   || value == "osx"      || value == "Mac")                return BuildPlatform::MacOS;
+		if (value == "Android"  || value == "android")                                   return BuildPlatform::Android;
+		if (value == "iOS"      || value == "IOS"      || value == "ios")                return BuildPlatform::IOS;
+		if (value == "visionOS" || value == "VisionOS" || value == "visionos")           return BuildPlatform::VisionOS;
+		if (value == "Web"      || value == "web"      || value == "HTML5" || value == "WebAssembly") return BuildPlatform::Web;
 		return BuildPlatform::Windows;
+	}
+
+	const char* IndexBuildProfile::PlatformDisplayName(BuildPlatform platform) {
+		switch (platform) {
+			case BuildPlatform::Windows:  return "Windows Desktop";
+			case BuildPlatform::Linux:    return "Linux";
+			case BuildPlatform::MacOS:    return "macOS";
+			case BuildPlatform::Android:  return "Android";
+			case BuildPlatform::IOS:      return "iOS";
+			case BuildPlatform::VisionOS: return "visionOS";
+			case BuildPlatform::Web:      return "Web";
+		}
+		return "Windows Desktop";
+	}
+
+	const char* IndexBuildProfile::PlatformIconName(BuildPlatform platform) {
+		switch (platform) {
+			case BuildPlatform::Windows:  return "windows";
+			case BuildPlatform::Linux:    return "linux";
+			case BuildPlatform::MacOS:    return "macos";
+			case BuildPlatform::Android:  return "android";
+			case BuildPlatform::IOS:      return "ios";
+			// visionOS/Web icons not shipped under PlatformIcons/ yet; the
+			// panel renders a name-only row when this returns nullptr.
+			case BuildPlatform::VisionOS: return nullptr;
+			case BuildPlatform::Web:      return nullptr;
+		}
+		return nullptr;
+	}
+
+	std::vector<BuildPlatform> IndexBuildProfile::AllPlatforms() {
+		return {
+			BuildPlatform::Android,
+			BuildPlatform::IOS,
+			BuildPlatform::Linux,
+			BuildPlatform::MacOS,
+			BuildPlatform::VisionOS,
+			BuildPlatform::Web,
+			BuildPlatform::Windows,
+		};
 	}
 
 	std::vector<IndexProject::RenderBackend> IndexBuildProfile::AllowedBackends(BuildPlatform platform) {
@@ -35,6 +87,22 @@ namespace Index {
 			case BuildPlatform::Linux:
 				return {
 					IndexProject::RenderBackend::Vulkan,
+					IndexProject::RenderBackend::OpenGL,
+				};
+			case BuildPlatform::MacOS:
+			case BuildPlatform::IOS:
+			case BuildPlatform::VisionOS:
+				return {
+					IndexProject::RenderBackend::Metal,
+				};
+			case BuildPlatform::Android:
+				return {
+					IndexProject::RenderBackend::Vulkan,
+					IndexProject::RenderBackend::OpenGLES,
+				};
+			case BuildPlatform::Web:
+				return {
+					IndexProject::RenderBackend::OpenGLES,
 				};
 		}
 		return {};

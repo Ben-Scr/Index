@@ -13,9 +13,18 @@ namespace Index {
 	// from IndexProject::RenderBackend (which is the platform's graphics
 	// backend) so future platforms drop in by adding one enum value plus a
 	// row in the BuildPlatformSupport table.
+	//
+	// Stable integer values — used as the serialization fallback when the
+	// JSON file is hand-edited with a garbage platform string. Don't
+	// renumber without a migration path for existing .indexbuild files.
 	enum class BuildPlatform : uint8_t {
-		Windows = 0,
-		Linux   = 1,
+		Windows  = 0,  // display: "Windows Desktop" — kept as "Windows" for serialization back-compat
+		Linux    = 1,
+		MacOS    = 2,
+		Android  = 3,
+		IOS      = 4,
+		VisionOS = 5,
+		Web      = 6,
 	};
 
 	// A named bundle of (platform, render backend) the user can pick from
@@ -29,8 +38,27 @@ namespace Index {
 		BuildPlatform Platform = BuildPlatform::Windows;
 		IndexProject::RenderBackend RenderBackend = IndexProject::RenderBackend::Auto;
 
+		// Stable serialization key written into the .indexbuild JSON.
+		// "Windows" and "Linux" predate this expansion and are kept exactly
+		// for back-compat with on-disk profiles.
 		static const char* PlatformToString(BuildPlatform platform);
 		static BuildPlatform PlatformFromString(std::string_view value);
+
+		// Human-readable label shown in the editor UI. Differs from the
+		// serialization key for platforms whose marketing name uses casing
+		// or spacing the JSON key doesn't ("Windows" → "Windows Desktop",
+		// "MacOS" → "macOS", "IOS" → "iOS", "VisionOS" → "visionOS").
+		static const char* PlatformDisplayName(BuildPlatform platform);
+
+		// Filename stem (no extension) of the platform's icon under
+		// IndexAssets/Textures/Editor/PlatformIcons/. Returns nullptr when
+		// no icon is shipped yet — caller should render a name-only row.
+		static const char* PlatformIconName(BuildPlatform platform);
+
+		// All platforms in display order. Used by the Build Profiles panel
+		// to enumerate the target list without hand-maintaining a parallel
+		// array.
+		static std::vector<BuildPlatform> AllPlatforms();
 
 		// Render backends the editor exposes as valid for a given platform.
 		// Profiles loaded with a backend outside this list get coerced to

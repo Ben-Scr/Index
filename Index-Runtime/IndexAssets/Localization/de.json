@@ -87,6 +87,7 @@
     "launcher.settings.theme.light": "Hell",
     "launcher.settings.font_scale": "Schriftgröße",
     "launcher.settings.font_scale.auto_format": "Auto ({0}%)",
+    "launcher.settings.directory_name_convention": "Verzeichnisnamenskonvention",
     "launcher.settings.browse": "Durchsuchen...",
     "launcher.settings.save": "Speichern",
     "launcher.settings.cancel": "Abbrechen",

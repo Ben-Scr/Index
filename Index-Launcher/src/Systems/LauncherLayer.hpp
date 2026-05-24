@@ -12,6 +12,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #ifndef NOMINMAX
@@ -29,6 +30,43 @@ namespace Index {
 		void OnAttach(Application& app) override;
 		void OnPreRender(Application& app) override;
 		void OnDetach(Application& app) override;
+
+		// Public so the anonymous-namespace helpers in LauncherLayer.cpp can
+		// see the asset-library data shapes. Not part of any exported
+		// engine-side API — they're just internal-to-the-launcher data.
+		enum class AssetLibraryStage : std::uint8_t {
+			Idle = 0,
+			FetchingManifest,
+			Downloading,
+			Verifying,
+			Extracting,
+			Importing,
+			Done,
+			Error,
+		};
+
+		struct AssetLibraryEntry {
+			std::string Id;
+			std::string Name;
+			std::string Author;
+			std::string ShortDescription;
+			std::string Description;
+			std::vector<std::string> Tags;
+			std::string Category;
+			std::string Version;
+			std::string License;
+			std::string ThumbnailUrl;
+			std::vector<std::string> ScreenshotUrls;
+			std::string ArchiveUrl;
+			std::string ArchiveSha256;
+			std::uint64_t ArchiveSizeBytes = 0;
+			std::string ArchiveRootInZip;
+			std::string EngineMinVersion;
+			std::string EngineMaxVersion;
+			std::vector<std::string> RequiredPackages;
+			std::string Homepage;
+			std::string SourceUrl;
+		};
 
 	private:
 		struct CreateProjectTaskState {
@@ -76,6 +114,66 @@ namespace Index {
 #endif
 		};
 
+		// Async pipeline for downloading a project from the GitHub-backed
+		// asset library. Same shape as OpenProjectTaskState — main thread
+		// reads under the mutex each frame, worker writes under the same
+		// mutex. The worker captures the entry by value so the index can
+		// be re-fetched while a download is in flight.
+		struct AssetLibraryTaskState {
+			std::mutex Mutex;
+			std::thread Worker;
+			std::string EntryId;          // index.json entry id
+			std::string DisplayName;      // surfaced to the overlay
+			AssetLibraryStage Stage = AssetLibraryStage::Idle;
+			float Progress = 0.0f;        // 0..1; per-stage for Downloading
+			std::string Error;
+			std::string TargetProjectPath; // populated once Importing succeeds
+			bool Running = false;
+			bool Finished = false;
+			bool Success = false;
+		};
+
+		// Stages of the publish pipeline. Same shape as AssetLibraryStage but
+		// runs in the opposite direction (pack → hash → emit instead of
+		// download → verify → extract).
+		enum class PublishStage : std::uint8_t {
+			Idle = 0,
+			Zipping,
+			Hashing,
+			WritingEntry,
+			Done,
+			Error,
+		};
+
+		// Async task for "publish a project as an asset-library entry". The
+		// main thread reads under the mutex each frame; the worker calls
+		// PackageTool zip → Hash::Sha256OfFile → writes entry.json. Failure
+		// modes are reported via Error; on success TargetZipPath +
+		// TargetEntryPath point at the artifacts the user should upload.
+		struct PublishProjectTaskState {
+			std::mutex Mutex;
+			std::thread Worker;
+			PublishStage Stage = PublishStage::Idle;
+			float Progress = 0.0f;
+			std::string Error;
+			std::string TargetZipPath;
+			std::string TargetEntryPath;
+			std::string EntryJsonForDisplay;  // pretty-printed, paste-ready
+			bool Running = false;
+			bool Finished = false;
+			bool Success = false;
+		};
+
+		struct AssetLibraryIndex {
+			int SchemaVersion = 0;
+			std::string GeneratedAt;
+			std::vector<AssetLibraryEntry> Entries;
+			bool Loaded = false;           // false if a fetch hasn't succeeded yet
+			bool FetchInFlight = false;
+			std::string FetchError;        // last fetch error, if any
+			std::chrono::steady_clock::time_point LastRefreshedAt{};
+		};
+
 		// Project sort axis. The launcher persists the user's choice in
 		// launcher_settings.json so reopening the launcher keeps the same
 		// view. "LastOpened descending" matches the prior implicit default
@@ -119,6 +217,11 @@ namespace Index {
 		};
 
 		void RenderLauncherPanel();
+		void RenderMyProjectsTab();
+		void RenderAssetLibraryTab();
+		void RenderAssetLibraryDetailModal();
+		void RenderAssetLibraryTrustModal();
+		void RenderPublishProjectModal();
 		void RenderProjectList();
 		void RenderCreateProjectPopup();
 		void RenderDeleteProjectPopups();
@@ -149,6 +252,29 @@ namespace Index {
 		void StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime);
 		void OpenProjectWorkerBody(const LauncherProjectEntry& entry, bool launchRuntime);
 		void PollOpenProjectTask();
+
+		// Publish flow: spawn the pack/hash/entry-write worker.
+		void RequestPublishProject(const LauncherProjectEntry& entry);
+		void StartPublishProject();
+		void PublishProjectWorkerBody(std::string projectPath, std::string outputDir,
+			std::string id, std::string version, std::string name, std::string author,
+			std::string shortDesc, std::string description, std::string tags,
+			std::string category, std::string license, std::string archiveRepo,
+			std::string archiveTag, std::string engineMin, std::string requiredPackages);
+		void PollPublishProjectTask();
+		// Sanitize a display name into a kebab-case-ish id.
+		static std::string SanitizeId(std::string_view name);
+
+		// Asset library: fetch index, queue downloads, poll worker.
+		void StartFetchAssetLibraryIndex();
+		void StartAssetLibraryDownload(const AssetLibraryEntry& entry);
+		void AssetLibraryDownloadWorkerBody(AssetLibraryEntry entry);
+		void PollAssetLibraryTask();
+		// Returns the cached entry by id, or nullptr if no longer present.
+		const AssetLibraryEntry* FindAssetLibraryEntry(std::string_view id) const;
+		// Convenience: build the localized stage string for the overlay.
+		std::string AssetLibraryStageText(AssetLibraryStage stage,
+			std::string_view displayName) const;
 		std::shared_ptr<ProjectSizeTaskState> GetOrStartProjectSizeTask(const LauncherProjectEntry& entry);
 		std::string GetProjectSizeDisplayText(const LauncherProjectEntry& entry);
 		std::vector<const LauncherProjectEntry*> GetSortedProjectsView() const;
@@ -203,6 +329,46 @@ namespace Index {
 		std::string m_OpeningProjectName;
 		OpenProjectTaskState m_OpenTask;
 
+		// Asset library state. The index is fetched lazily — either on first
+		// switch to the tab, or on user-clicked Refresh. The download task
+		// state is single-slot: only one library download is allowed in
+		// flight at a time. The "detail" string is the entry id of whatever
+		// the user has open in the Detail modal (empty = closed).
+		AssetLibraryIndex m_AssetLibrary;
+		AssetLibraryTaskState m_AssetLibraryTask;
+		std::string m_AssetLibrarySearch;
+		std::string m_AssetLibrarySelectedTag;     // empty = "All tags"
+		std::string m_AssetLibraryDetailEntryId;
+		int m_AssetLibraryDetailScreenshot = 0;
+		// Per-source-URL acknowledgement flag for the trust modal. The modal
+		// shows once per source URL per machine; ack is persisted in
+		// launcher_settings.json so subsequent runs skip it.
+		std::unordered_map<std::string, bool> m_AssetLibraryTrustAck;
+		// One-shot: when set, the trust modal opens with this entry pending.
+		// After ack the worker is kicked off and the field cleared.
+		std::optional<AssetLibraryEntry> m_PendingTrustedDownload;
+		bool m_OpenAssetLibraryDetailPopup = false;
+		bool m_OpenAssetLibraryTrustPopup = false;
+
+		// Publish-to-Library modal. Form buffers live here so they survive
+		// re-opens. m_PublishSourceProject is the entry the user clicked
+		// Publish on; cleared when the modal closes.
+		PublishProjectTaskState m_PublishTask;
+		std::optional<LauncherProjectEntry> m_PublishSourceProject;
+		bool m_OpenPublishPopup = false;
+		char m_PublishId[128]{};
+		char m_PublishVersion[32]{};
+		char m_PublishName[256]{};
+		char m_PublishShort[256]{};
+		char m_PublishDescription[1024]{};
+		char m_PublishTags[256]{};
+		char m_PublishAuthor[128]{};
+		char m_PublishLicense[64]{};
+		char m_PublishArchiveRepo[256]{};
+		char m_PublishArchiveTag[128]{};
+		int  m_PublishCategoryIndex = 0;  // 0=Template, 1=Sample, 2=Demo
+		std::string m_PublishFormError;
+
 		std::optional<LauncherProjectEntry> m_PendingDeleteProject;
 		bool m_OpenDeleteConfirmPopup = false;
 		bool m_OpenDeleteFinalConfirmPopup = false;
@@ -233,7 +399,17 @@ namespace Index {
 		std::string m_SelectedProjectPath;
 
 #ifdef IDX_PLATFORM_WINDOWS
-		std::unordered_map<std::string, DWORD> m_RunningProjects;
+		// Per-project process tracker. Each project may have at most one
+		// editor process AND one runtime process alive concurrently — the
+		// two are tracked in separate slots so launching the runtime via
+		// "Execute" doesn't make "Open In Editor" think the project is
+		// already open (and vice versa). PID 0 means "no live process in
+		// that slot".
+		struct RunningProjectProcesses {
+			DWORD EditorPid = 0;
+			DWORD RuntimePid = 0;
+		};
+		std::unordered_map<std::string, RunningProjectProcesses> m_RunningProjects;
 #endif
 
 		// Modal error dialog. m_ErrorMessage holds the current text;

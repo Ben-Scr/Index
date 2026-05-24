@@ -42,15 +42,16 @@ namespace Index {
 			Window* window = Application::GetWindow();
 			if (!window) return;
 
+			// Pick dark/light DWM titlebar chrome from the theme; leave the
+			// caption + text colors at their default (alpha = 0 ->
+			// DWMWA_COLOR_DEFAULT) so Windows paints the standard system
+			// titlebar — same look as a no-customization app like Godot.
 			const ImGuiStyle& style = ImGui::GetStyle();
-			const ImVec4 active = style.Colors[ImGuiCol_TitleBgActive];
-			const ImVec4 inactive = style.Colors[ImGuiCol_TitleBg];
-			const ImVec4 text = style.Colors[ImGuiCol_Text];
-
-			window->SetTitlebarDarkMode(Luminance(active) < 0.5f);
-			window->SetTitlebarActiveColor(ToColor(active));
-			window->SetTitlebarInactiveColor(ToColor(inactive));
-			window->SetTitlebarTextColor(ToColor(text));
+			const bool dark = Luminance(style.Colors[ImGuiCol_WindowBg]) < 0.5f;
+			window->SetTitlebarDarkMode(dark);
+			window->SetTitlebarActiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarInactiveColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+			window->SetTitlebarTextColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
 		}
 	}
 
@@ -87,6 +88,27 @@ namespace Index {
 
 		ImGuiIO& io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+		// Multi-viewport: undocked ImGui windows (and popups marked with
+		// ImGuiViewportFlags_NoAutoMerge via a window class) spawn real OS
+		// windows through imgui_impl_glfw's platform handlers + the engine's
+		// WebGPUBackend::ViewportSurface renderer handlers (registered just
+		// below). imgui_impl_wgpu doesn't advertise renderer-side multi-
+		// viewport support on its own — we bolt it on in ImGuiImplWebGPU.
+		// The matching BackendFlag tells ImGui's per-frame UpdatePlatform-
+		// Windows traversal that the renderer side is ready to drive
+		// secondary viewports; imgui_impl_glfw sets PlatformHasViewports
+		// in its own Init.
+		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+		io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
+		// Taskbar hiding is handled by the owner-window relationship that
+		// MultiViewport_CreateWindow sets on each viewport HWND (Windows
+		// excludes owned windows from the taskbar automatically). We
+		// deliberately do NOT set io.ConfigViewportsNoTaskBarIcon = true
+		// here — that would push ImGui to set ImGuiViewportFlags_NoTaskBarIcon
+		// on every secondary viewport, which causes imgui_impl_glfw's
+		// Platform_ShowWindow to re-apply WS_EX_TOOLWINDOW (stripping
+		// WS_THICKFRAME and triggering the chunky "compact dialog" close-
+		// button rendering instead of the normal app close button).
 		// Edge-resize left at default (true). Forcing it false combined with the
 		// transparent ResizeGrip colors below made undocked floating windows
 		// effectively non-resizable.
@@ -106,6 +128,12 @@ namespace Index {
 			"Failed to init glfw for imgui (WebGPU backend)!");
 		IDX_VERIFY(ImGuiImplWebGPU::Init(),
 			"Failed to init WebGPU imgui backend (device not ready?)");
+
+		// Wire renderer-side multi-viewport handlers AFTER ImGui_ImplWGPU is
+		// up — RegisterMultiViewportHandlers binds Renderer_RenderWindow etc.
+		// to platform_io. imgui_impl_glfw registers its own platform-side
+		// handlers lazily on first NewFrame when ViewportsEnable is set.
+		ImGuiImplWebGPU::RegisterMultiViewportHandlers();
 
 		ApplyIndexTheme(GetSystemTheme());
 		m_IsInitialized = true;
@@ -145,6 +173,13 @@ namespace Index {
 		// for ABI stability); ImGuiImplWebGPU::RenderDrawData uses
 		// whatever framebuffer RenderApi::BindFramebuffer last bound.
 		ImGuiImplWebGPU::RenderDrawData(ImGui::GetDrawData(), /*viewId*/ 0xFFFFu);
+
+		// Pump secondary OS windows when multi-viewport is enabled. No-op
+		// otherwise. The engine.dll-side helper internally flushes the
+		// main encoder before walking viewports so per-frame WriteBuffer
+		// ordering across the shared ImGui_ImplWGPU FrameResources slot
+		// is correct — see ImGuiImplWebGPU.hpp for the full rationale.
+		ImGuiImplWebGPU::RenderPlatformWindowsDefault();
 	}
 
 	ImGuiContextLayer::Theme ImGuiContextLayer::GetSystemTheme() {

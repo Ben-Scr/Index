@@ -655,7 +655,7 @@ namespace Index::PropertyDrawer {
 						preview += d.Metadata.Enum->Options[b].Name;
 					}
 				}
-				if (preview.empty()) preview = "(None)";
+				if (preview.empty()) preview = k_NoneLabel;
 			}
 
 			// Mask of every declared flag value. Any bits outside this mask

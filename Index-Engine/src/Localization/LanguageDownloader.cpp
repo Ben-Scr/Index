@@ -2,122 +2,15 @@
 #include "Localization/LanguageDownloader.hpp"
 
 #include "Core/Log.hpp"
-#include "Serialization/Path.hpp"
+#include "Utils/Hash.hpp"
+#include "Utils/PackageToolPath.hpp"
 #include "Utils/Process.hpp"
 
-#include <array>
-#include <cctype>
 #include <fstream>
 #include <system_error>
 #include <vector>
 
-#ifdef IDX_PLATFORM_WINDOWS
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <bcrypt.h>
-#pragma comment(lib, "bcrypt.lib")
-#endif
-
 namespace Index::Localization {
-
-	namespace {
-
-		std::string GetPackageToolExecutableName() {
-#if defined(IDX_PLATFORM_WINDOWS)
-			return "Index-PackageTool.exe";
-#else
-			return "Index-PackageTool";
-#endif
-		}
-
-		// Mirrors PackageManager's resolution logic. Looks alongside the running
-		// exe first (the postbuild copy lands the tool next to consumer binaries),
-		// then falls back to the Index-PackageTool build output a few levels up
-		// from the launcher's dev-layout exeDir. Returns empty if nothing found.
-		std::filesystem::path ResolvePackageToolPath() {
-			const std::filesystem::path exeDir(Path::ExecutableDir());
-
-			std::vector<std::filesystem::path> candidates;
-			candidates.push_back(exeDir / GetPackageToolExecutableName());
-			candidates.push_back(exeDir / "Index-PackageTool.dll");
-
-			const std::filesystem::path projectDir = exeDir / ".." / ".." / ".." / "Index-PackageTool";
-			for (const char* configuration : { "Debug", "Release", "Dist" }) {
-				const std::filesystem::path outputDirectory = projectDir / "bin" / configuration / "net9.0";
-				candidates.push_back(outputDirectory / GetPackageToolExecutableName());
-				candidates.push_back(outputDirectory / "Index-PackageTool.dll");
-			}
-
-			for (const auto& candidate : candidates) {
-				std::error_code ec;
-				if (std::filesystem::exists(candidate, ec) && !ec) {
-					return std::filesystem::canonical(candidate, ec);
-				}
-			}
-			return {};
-		}
-
-		std::string ToLowerHex(std::string_view s) {
-			std::string out;
-			out.reserve(s.size());
-			for (char c : s) out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-			return out;
-		}
-
-#ifdef IDX_PLATFORM_WINDOWS
-		bool ComputeSha256Win32(const std::filesystem::path& filePath, std::string& outHexLower, std::string& outError) {
-			BCRYPT_ALG_HANDLE algHandle = nullptr;
-			NTSTATUS status = BCryptOpenAlgorithmProvider(&algHandle, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
-			if (status != 0) { outError = "BCryptOpenAlgorithmProvider failed"; return false; }
-
-			struct AlgGuard { BCRYPT_ALG_HANDLE h; ~AlgGuard() { if (h) BCryptCloseAlgorithmProvider(h, 0); } } algGuard{ algHandle };
-
-			DWORD hashObjLen = 0; DWORD cbResult = 0;
-			status = BCryptGetProperty(algHandle, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&hashObjLen), sizeof(hashObjLen), &cbResult, 0);
-			if (status != 0) { outError = "BCryptGetProperty(OBJECT_LENGTH) failed"; return false; }
-
-			std::vector<UCHAR> hashObj(hashObjLen);
-			BCRYPT_HASH_HANDLE hashHandle = nullptr;
-			status = BCryptCreateHash(algHandle, &hashHandle, hashObj.data(), hashObjLen, nullptr, 0, 0);
-			if (status != 0) { outError = "BCryptCreateHash failed"; return false; }
-
-			struct HashGuard { BCRYPT_HASH_HANDLE h; ~HashGuard() { if (h) BCryptDestroyHash(h); } } hashGuard{ hashHandle };
-
-			std::ifstream in(filePath, std::ios::binary);
-			if (!in.is_open()) { outError = "open failed"; return false; }
-
-			std::array<char, 64 * 1024> buf{};
-			while (in.good()) {
-				in.read(buf.data(), buf.size());
-				const std::streamsize n = in.gcount();
-				if (n <= 0) break;
-				status = BCryptHashData(hashHandle, reinterpret_cast<PUCHAR>(buf.data()), static_cast<ULONG>(n), 0);
-				if (status != 0) { outError = "BCryptHashData failed"; return false; }
-			}
-
-			std::array<UCHAR, 32> digest{};
-			status = BCryptFinishHash(hashHandle, digest.data(), static_cast<ULONG>(digest.size()), 0);
-			if (status != 0) { outError = "BCryptFinishHash failed"; return false; }
-
-			std::string hex;
-			hex.reserve(digest.size() * 2);
-			static const char* k_Hex = "0123456789abcdef";
-			for (UCHAR b : digest) {
-				hex.push_back(k_Hex[(b >> 4) & 0xF]);
-				hex.push_back(k_Hex[b & 0xF]);
-			}
-			outHexLower = std::move(hex);
-			return true;
-		}
-#else
-		bool ComputeSha256Win32(const std::filesystem::path&, std::string& outHexLower, std::string& outError) {
-			outHexLower.clear();
-			outError = "SHA-256 verification not implemented on this platform";
-			return false;
-		}
-#endif
-
-	}
 
 	LanguageDownloader::~LanguageDownloader() {
 		if (m_Worker.joinable()) m_Worker.join();
@@ -202,7 +95,7 @@ namespace Index::Localization {
 	}
 
 	bool LanguageDownloader::DownloadOne(const DownloadItem& item, std::string& outError) {
-		const std::filesystem::path toolPath = ResolvePackageToolPath();
+		const std::filesystem::path toolPath = Index::PackageTool::ResolveExecutable();
 		if (toolPath.empty()) {
 			outError = "Index-PackageTool not found";
 			return false;
@@ -268,9 +161,9 @@ namespace Index::Localization {
 	bool LanguageDownloader::VerifySha256(const std::filesystem::path& filePath,
 		std::string_view expectedHex, std::string& outError) const {
 		std::string actual;
-		if (!ComputeSha256Win32(filePath, actual, outError)) return false;
+		if (!Hash::Sha256OfFile(filePath, actual, outError)) return false;
 
-		const std::string expected = ToLowerHex(expectedHex);
+		const std::string expected = Hash::ToLowerHex(expectedHex);
 		if (actual != expected) {
 			outError = "SHA-256 mismatch (expected " + expected + ", got " + actual + ")";
 			return false;

@@ -4481,9 +4481,18 @@ namespace Index {
 		// Top-of-inspector prefab actions (only when the source resolves; orphans
 		// can't apply or revert because we have no source to diff against).
 		if (isSinglePrefabInstance && prefabSourceResolvable) {
+			// No overrides == nothing to apply or revert. Without this gate the
+			// buttons happily fire on a clean instance: Apply All rewrites the
+			// source prefab to a structurally-equivalent file (still triggers
+			// a disk write, asset re-bake, and live-instance refresh pass on
+			// every other open scene), and Revert All destroys + rebuilds the
+			// entity for no semantic change — both visible as "the editor did
+			// something for no reason" to the user.
+			const bool hasOverrides = !prefabOverrides.GetObject().empty();
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.42f, 0.66f, 0.95f, 1.0f));
 			ImGui::TextUnformatted("Prefab Instance");
 			ImGui::PopStyleColor();
+			ImGui::BeginDisabled(!hasOverrides);
 			if (ImGui::SmallButton("Apply All")) {
 				// Capture old source BEFORE the apply, then push instance state to disk
 				// and propagate to other live instances preserving their overrides.
@@ -4523,12 +4532,30 @@ namespace Index {
 			}
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Revert All")) {
-				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, entity.GetHandle(), {});
+				// RevertPrefabInstanceOverride destroys the current entity and
+				// returns a freshly-built replacement — every cached handle
+				// derived from `entity` (selectedEntities, entitySpan, the
+				// prefab-edit root) is stale after this point. Capture the
+				// pre-revert handle, dispatch the revert, then patch every
+				// editor-side reference and bail out of the inspector body
+				// this frame so we don't run the component loop against
+				// destroyed memory (which manifested as the editor's UI
+				// freezing to the clear colour after one click).
+				const EntityHandle revertedHandle = entity.GetHandle();
+				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, revertedHandle, {});
 				if (replacement != entt::null) {
-					SelectEntity(replacement);
+					if (m_PrefabEditRootEntity == revertedHandle) {
+						m_PrefabEditRootEntity = replacement;
+					}
+					SelectEntity(replacement); // also bumps m_SelectionVersion
 					m_EntityOrder.clear(); m_EntityOrderDirty = true;
+					ImGui::EndDisabled();
+					ImGui::Separator();
+					ImGui::End();
+					return;
 				}
 			}
+			ImGui::EndDisabled();
 			ImGui::Separator();
 		}
 		else if (isSinglePrefabInstance) {

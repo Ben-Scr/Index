@@ -1195,13 +1195,13 @@ endforeach()
 						project.SplashScreen.Enabled = v->AsBoolOr(true);
 					}
 					if (const Json::Value* v = splashValue->FindMember("durationSeconds")) {
-						project.SplashScreen.DurationSeconds = static_cast<float>(v->AsDoubleOr(2.5));
+						project.SplashScreen.DurationSeconds = static_cast<float>(v->AsDoubleOr(0.7));
 					}
 					if (const Json::Value* v = splashValue->FindMember("fadeInSeconds")) {
 						project.SplashScreen.FadeInSeconds = static_cast<float>(v->AsDoubleOr(0.5));
 					}
 					if (const Json::Value* v = splashValue->FindMember("fadeOutSeconds")) {
-						project.SplashScreen.FadeOutSeconds = static_cast<float>(v->AsDoubleOr(0.5));
+						project.SplashScreen.FadeOutSeconds = static_cast<float>(v->AsDoubleOr(0.0));
 					}
 					if (const Json::Value* v = splashValue->FindMember("imagePath")) {
 						project.SplashScreen.ImagePath = v->AsStringOr();
@@ -1907,11 +1907,23 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		// MSBuild expects -t:X;Y;Z with semicolons; solution targets are dot-separated (Pkg.Foo.Native).
+		// MSBuild solution-level project targets have a precise syntax:
+		//   /t:<EscapedProjectName>:<TargetName>
+		// where dots/spaces/etc. in the project name are replaced with '_'.
+		// Without the ":Build" suffix MSBuild treats <EscapedProjectName>
+		// as a bare target name and tries to invoke it on every project in
+		// the solution — which fails MSB4057 on every project that doesn't
+		// happen to define a target with that name (i.e. all of them).
+		// See https://learn.microsoft.com/en-us/visualstudio/msbuild/how-to-build-specific-targets-in-solutions-by-using-msbuild-exe
+		auto escapeTarget = [](const std::string& t) {
+			std::string out = t;
+			std::replace(out.begin(), out.end(), '.', '_');
+			return out + ":Build";
+		};
 		std::string targetsArg = "-t:";
 		for (size_t i = 0; i < targets.size(); ++i) {
 			if (i > 0) targetsArg += ";";
-			targetsArg += targets[i];
+			targetsArg += escapeTarget(targets[i]);
 		}
 
 		const std::string msbuild = GetMSBuildPath();
@@ -1979,15 +1991,88 @@ public class GameScript : EntityScript
 		}
 
 		// Build local packages only — relinking Index-Engine.dll would fail (loaded by caller).
-		std::vector<std::string> targets;
+		// We invoke MSBuild directly on each project file rather than going through
+		// solution-level targets (-t:Pkg_X:Build), because MSBuild's flag parser
+		// splits on the first ':' of -t: and treats the rest as a literal target
+		// name, defeating the documented "project:target" escape syntax. Building
+		// the .csproj/.vcxproj directly sidesteps that entirely and also matches
+		// how the eventual shipped-binary flow will work (no Index.sln involved).
+		// TODO(registry-v2): for end-user binaries that don't have the engine
+		// source / Index.sln, replace this whole regen+build path with: generate
+		// a self-contained per-package .csproj at install time referencing the
+		// shipped Index-ScriptCore.dll, then `dotnet build` it.
+		const std::filesystem::path generatedRoot =
+			std::filesystem::path(GetEngineRootDir()) / "premake" / "generated";
+
+		std::vector<std::filesystem::path> projectFiles;
 		for (const std::string& packageName : EnumerateProjectLocalPackages(projectRootDir)) {
-			// Up to two targets per package; MSBuild silently ignores unresolved ones.
-			targets.push_back("Pkg." + packageName + ".Native");
-			targets.push_back("Pkg." + packageName);
+			std::error_code ec;
+			const std::filesystem::path nativeProj = generatedRoot
+				/ ("Pkg." + packageName + ".Native")
+				/ ("Pkg." + packageName + ".Native.vcxproj");
+			const std::filesystem::path csharpProj = generatedRoot
+				/ ("Pkg." + packageName)
+				/ ("Pkg." + packageName + ".csproj");
+
+			if (std::filesystem::exists(nativeProj, ec) && !ec) projectFiles.push_back(nativeProj);
+			if (std::filesystem::exists(csharpProj, ec) && !ec) projectFiles.push_back(csharpProj);
 		}
 
-		result.Build = BuildSolutionTargets(targets, configuration, platform);
-		result.RanBuild = !targets.empty();
+		if (projectFiles.empty()) {
+			result.Build.Succeeded = true;
+			result.Build.ExitCode = 0;
+			result.Build.Output = "No project-local package projects to build.";
+			result.RanBuild = false;
+			return result;
+		}
+
+		const std::string msbuild = GetMSBuildPath();
+		if (msbuild.empty()) {
+			result.Build.Succeeded = false;
+			result.Build.ExitCode = -1;
+			result.Build.Output = "MSBuild not found on PATH or via vswhere.";
+			result.RanBuild = false;
+			IDX_ERROR_TAG("IndexProject", "{}", result.Build.Output);
+			return result;
+		}
+
+		// Build each project file in turn. Stop on first failure so the error
+		// dialog shows the actual failing project's output rather than a long
+		// tail of "skipped because previous failed" noise from msbuild.
+		std::string combinedOutput;
+		bool allSucceeded = true;
+		int lastExitCode = 0;
+		for (const auto& projFile : projectFiles) {
+			IDX_INFO_TAG("IndexProject", "Building {} (Configuration={}, Platform={})",
+				projFile.generic_string(), configuration, platform);
+
+			Process::Result pr = Process::Run({
+				msbuild,
+				projFile.generic_string(),
+				"-p:Configuration=" + configuration,
+				"-p:Platform=" + platform,
+				"-m",
+				"-restore",
+				"-verbosity:minimal",
+				"-nologo"
+			});
+
+			if (!combinedOutput.empty()) combinedOutput += "\n";
+			combinedOutput += "=== " + projFile.filename().generic_string() + " ===\n" + pr.Output;
+
+			if (!pr.Succeeded()) {
+				allSucceeded = false;
+				lastExitCode = pr.ExitCode;
+				IDX_ERROR_TAG("IndexProject", "Build of {} failed (exit {}).",
+					projFile.generic_string(), pr.ExitCode);
+				break;
+			}
+		}
+
+		result.Build.Succeeded = allSucceeded;
+		result.Build.ExitCode = allSucceeded ? 0 : lastExitCode;
+		result.Build.Output = std::move(combinedOutput);
+		result.RanBuild = true;
 		return result;
 	}
 

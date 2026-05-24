@@ -3,6 +3,16 @@ using Index.Interop;
 
 namespace Index;
 
+// Display label used for empty / cleared asset references across every
+// managed wrapper's Name / ToString (TextureRef, AudioRef, Texture, Audio,
+// Font, ...). Mirror of the C++ `Index::k_NoneLabel` in
+// `Index-Engine/src/Inspector/PropertyType.hpp` — keep the two in sync if
+// you retheme one (e.g. to "<None>").
+internal static class AssetDisplay
+{
+    public const string NoneLabel = "(None)";
+}
+
 internal struct TextureRef
 {
     public ulong UUID;
@@ -20,7 +30,7 @@ internal struct TextureRef
         get
         {
             if (UUID == 0)
-                return "(None)";
+                return AssetDisplay.NoneLabel;
 
             string name = InternalCalls.Asset_GetDisplayName(UUID);
             return string.IsNullOrEmpty(name) ? "(Missing Asset)" : name;
@@ -43,7 +53,7 @@ internal struct TextureRef
     public override string ToString()
     {
         if (UUID == 0)
-            return "(None)";
+            return AssetDisplay.NoneLabel;
 
         string name = InternalCalls.Asset_GetDisplayName(UUID);
         if (!string.IsNullOrEmpty(name))
@@ -71,7 +81,7 @@ internal struct AudioRef
         get
         {
             if (UUID == 0)
-                return "(None)";
+                return AssetDisplay.NoneLabel;
 
             string name = InternalCalls.Asset_GetDisplayName(UUID);
             return string.IsNullOrEmpty(name) ? "(Missing Asset)" : name;
@@ -94,7 +104,7 @@ internal struct AudioRef
     public override string ToString()
     {
         if (UUID == 0)
-            return "(None)";
+            return AssetDisplay.NoneLabel;
 
         string name = InternalCalls.Asset_GetDisplayName(UUID);
         if (!string.IsNullOrEmpty(name))

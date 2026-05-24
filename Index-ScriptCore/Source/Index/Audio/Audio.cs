@@ -17,7 +17,7 @@ public sealed class Audio : IEquatable<Audio>
         get
         {
             if (UUID == 0)
-                return "(None)";
+                return AssetDisplay.NoneLabel;
 
             string name = InternalCalls.Asset_GetDisplayName(UUID);
             return string.IsNullOrEmpty(name) ? "(Missing Asset)" : name;

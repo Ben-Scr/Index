@@ -196,7 +196,7 @@ namespace Index::ReferencePicker {
 		};
 
 		std::vector<Entry> entries;
-		entries.push_back({ "(None)", "", "(none)", "", "__none__", false });
+		entries.push_back({ k_NoneLabel, "", "(none)", "", "__none__", false });
 		const auto records = AssetRegistry::GetAssetsByKind(kind);
 #ifndef NDEBUG
 		// I2: an empty result here is the load-bearing symptom of the
@@ -234,7 +234,7 @@ namespace Index::ReferencePicker {
 
 	std::vector<Entry> CollectEntities() {
 		std::vector<Entry> entries;
-		entries.push_back({ "(None)", "", "(none)", "0", "__none__" });
+		entries.push_back({ k_NoneLabel, "", "(none)", "0", "__none__" });
 
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
 			const std::string scenePrefix =
@@ -281,7 +281,7 @@ namespace Index::ReferencePicker {
 
 	std::vector<Entry> CollectComponentTargets(const std::string& componentDisplayName) {
 		std::vector<Entry> entries;
-		entries.push_back({ "(None)", "", "(none)", "", "__none__" });
+		entries.push_back({ k_NoneLabel, "", "(none)", "", "__none__" });
 		const ComponentInfo* info = FindComponentByDisplayName(componentDisplayName);
 		if (!info || !info->has) return entries;
 
@@ -667,7 +667,7 @@ namespace Index::ReferencePicker {
 	{
 		outMissing = false;
 		if (outSecondary) outSecondary->clear();
-		if (assetId == 0) return "(None)";
+		if (assetId == 0) return k_NoneLabel;
 
 		// The editor binary has its own copy of AssetRegistry's built-in
 		// table (engine DLL static state doesn't cross the DLL boundary),
@@ -696,7 +696,7 @@ namespace Index::ReferencePicker {
 	{
 		outMissing = false;
 		if (outSecondary) outSecondary->clear();
-		if (prefabId == 0) return "(None)";
+		if (prefabId == 0) return k_NoneLabel;
 		if (AssetRegistry::GetKind(prefabId) != AssetKind::Prefab) {
 			outMissing = true;
 			return "(Missing Prefab)";
@@ -710,7 +710,7 @@ namespace Index::ReferencePicker {
 	{
 		outMissing = false;
 		if (outSecondary) outSecondary->clear();
-		if (entityId == 0) return "(None)";
+		if (entityId == 0) return k_NoneLabel;
 
 		std::string display;
 		std::string secondary;
@@ -742,7 +742,7 @@ namespace Index::ReferencePicker {
 	{
 		outMissing = false;
 		if (outSecondary) outSecondary->clear();
-		if (entityId == 0) return "(None)";
+		if (entityId == 0) return k_NoneLabel;
 
 		std::string entityName;
 		bool resolved = false;

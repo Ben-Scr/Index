@@ -244,9 +244,9 @@ namespace Index {
 		// generated subtitle line.
 		struct SplashScreenSettings {
 			bool Enabled = true;
-			float DurationSeconds = 2.5f;
+			float DurationSeconds = 0.7f;
 			float FadeInSeconds = 0.5f;
-			float FadeOutSeconds = 0.5f;
+			float FadeOutSeconds = 0.0f;
 			std::string ImagePath;
 			// Optional background image painted full-canvas behind the
 			// foreground logo. Same path convention as ImagePath /

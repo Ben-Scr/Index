@@ -27,8 +27,25 @@ public:
 	ApplicationConfig GetConfiguration() const override {
 		ApplicationConfig config;
 		IndexProject* project = ProjectManager::GetCurrentProject();
+
+		// Window title format: "<ProjectName> - <BuildConfiguration>".
+		// BuildConfiguration is Debug whenever the runtime binary was built
+		// against the engine's Debug config (engine devs / dogfooding), and
+		// otherwise mirrors the project's ActiveBuildProfile (Development
+		// or Release) so shipped builds advertise the gameplay-relevant
+		// profile rather than the MSBuild config name. Without a loaded
+		// project the version-suffixed fallback title still applies.
+		const char* buildConfig =
+#if defined(IDX_DEBUG)
+			"Debug";
+#else
+			(project && project->ActiveBuildProfile == IndexProject::BuildProfile::Release)
+				? "Release"
+				: "Development";
+#endif
+
 		std::string title = project
-			? project->Name + " - Index Runtime"
+			? project->Name + " - " + buildConfig
 			: "Index Runtime Application " + std::string(IDX_VERSION);
 
 		if (project) {

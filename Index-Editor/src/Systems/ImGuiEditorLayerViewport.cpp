@@ -577,7 +577,8 @@ namespace Index {
 		{
 			constexpr const char* k_DrawModeLabels[] = { "Default", "Triangle", "Mixed" };
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
-			ImGui::TextUnformatted("Draw:");
+			ImGui::AlignTextToFramePadding();
+			ImGui::TextUnformatted("Drawmode:");
 			ImGui::SameLine();
 			ImGui::SetNextItemWidth(120.0f);
 			if (ImGui::BeginCombo("##EditorViewDrawMode", k_DrawModeLabels[currentIndex])) {

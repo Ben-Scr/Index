@@ -723,6 +723,158 @@ namespace Index {
 			g_CurrentTarget.Height      = snap.Height;
 			g_CurrentTarget.IsSwapChain = snap.IsSwapChain;
 		}
+
+		// ── Multi-viewport surface support ─────────────────────────────────
+		// See WebGPUBackend.hpp for the rationale. Each ViewportSurface is
+		// self-contained and presents independently of the main surface.
+
+		struct ViewportSurface {
+			wgpu::Surface            Surface;
+			wgpu::Texture            CurrentTexture;
+			wgpu::TextureView        CurrentView;
+			uint32_t                 Width  = 0;
+			uint32_t                 Height = 0;
+			wgpu::PresentMode        PresentMode = wgpu::PresentMode::Fifo;
+			wgpu::CompositeAlphaMode AlphaMode   = wgpu::CompositeAlphaMode::Opaque;
+			bool                     HasCurrent  = false;
+		};
+
+		namespace {
+			// Configure a viewport's surface at a given size. Format is FIXED
+			// to g_SurfaceFormat so all viewports share the ImGui_ImplWGPU
+			// pipeline (configured for the main format) without per-format
+			// pipeline variants. Reuses the main path's ChoosePresentMode /
+			// alpha-mode preference logic so viewport vsync follows the main
+			// window's setting.
+			bool ConfigureViewportSurface(ViewportSurface* vs,
+				uint32_t width, uint32_t height)
+			{
+				if (!vs || !vs->Surface || width == 0 || height == 0) return false;
+
+				wgpu::SurfaceCapabilities caps{};
+				vs->Surface.GetCapabilities(g_Adapter, &caps);
+
+				vs->PresentMode = ChoosePresentMode(caps);
+				vs->AlphaMode   = wgpu::CompositeAlphaMode::Opaque;
+				for (size_t i = 0; i < caps.alphaModeCount; ++i) {
+					if (caps.alphaModes[i] == wgpu::CompositeAlphaMode::Premultiplied) {
+						vs->AlphaMode = wgpu::CompositeAlphaMode::Premultiplied;
+						break;
+					}
+				}
+
+				wgpu::SurfaceConfiguration config{};
+				config.device          = g_Device;
+				config.format          = g_SurfaceFormat;
+				config.usage           = wgpu::TextureUsage::RenderAttachment;
+				config.width           = width;
+				config.height          = height;
+				config.presentMode     = vs->PresentMode;
+				config.alphaMode       = vs->AlphaMode;
+				config.viewFormatCount = 0;
+
+				vs->Surface.Configure(&config);
+				vs->Width  = width;
+				vs->Height = height;
+				return true;
+			}
+		}
+
+		ViewportSurface* CreateViewportSurface(void* hwnd, void* hinstance,
+			uint32_t width, uint32_t height)
+		{
+			if (!g_Initialized || !g_Instance || !hwnd) return nullptr;
+
+#if defined(IDX_PLATFORM_WINDOWS)
+			wgpu::SurfaceSourceWindowsHWND hwndSource{};
+			hwndSource.hwnd      = hwnd;
+			hwndSource.hinstance = hinstance ? hinstance
+				: static_cast<void*>(::GetModuleHandleW(nullptr));
+
+			wgpu::SurfaceDescriptor surfaceDesc{};
+			surfaceDesc.nextInChain = &hwndSource;
+
+			wgpu::Surface surface = g_Instance.CreateSurface(&surfaceDesc);
+			if (!surface) {
+				IDX_CORE_ERROR_TAG("WebGPUApi",
+					"CreateViewportSurface: instance.CreateSurface returned null");
+				return nullptr;
+			}
+
+			auto* vs = new ViewportSurface{};
+			vs->Surface = std::move(surface);
+			if (!ConfigureViewportSurface(vs, width, height)) {
+				IDX_CORE_ERROR_TAG("WebGPUApi",
+					"CreateViewportSurface: ConfigureViewportSurface failed at {}x{}",
+					width, height);
+				delete vs;
+				return nullptr;
+			}
+			return vs;
+#else
+			(void)hwnd; (void)hinstance; (void)width; (void)height;
+			IDX_CORE_ERROR_TAG("WebGPUApi",
+				"CreateViewportSurface: only Windows is supported in Stage 1");
+			return nullptr;
+#endif
+		}
+
+		void DestroyViewportSurface(ViewportSurface* vs) {
+			if (!vs) return;
+			vs->CurrentView    = nullptr;
+			vs->CurrentTexture = nullptr;
+			if (vs->Surface) vs->Surface.Unconfigure();
+			vs->Surface = nullptr;
+			delete vs;
+		}
+
+		void ResizeViewportSurface(ViewportSurface* vs,
+			uint32_t width, uint32_t height)
+		{
+			if (!vs || !vs->Surface || width == 0 || height == 0) return;
+			if (vs->Width == width && vs->Height == height) return;
+			vs->CurrentView    = nullptr;
+			vs->CurrentTexture = nullptr;
+			vs->HasCurrent     = false;
+			ConfigureViewportSurface(vs, width, height);
+		}
+
+		wgpu::TextureView AcquireViewportSurfaceView(ViewportSurface* vs) {
+			if (!vs || !vs->Surface) return nullptr;
+			if (vs->HasCurrent) return vs->CurrentView;
+
+			wgpu::SurfaceTexture st{};
+			vs->Surface.GetCurrentTexture(&st);
+			const bool ok =
+				st.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal ||
+				st.status == wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal;
+			if (!ok) {
+				return nullptr;
+			}
+			vs->CurrentTexture = wgpu::Texture(st.texture);
+
+			wgpu::TextureViewDescriptor viewDesc{};
+			viewDesc.format          = g_SurfaceFormat;
+			viewDesc.dimension       = wgpu::TextureViewDimension::e2D;
+			viewDesc.mipLevelCount   = 1;
+			viewDesc.arrayLayerCount = 1;
+			viewDesc.aspect          = wgpu::TextureAspect::All;
+			vs->CurrentView = vs->CurrentTexture.CreateView(&viewDesc);
+			vs->HasCurrent  = true;
+			return vs->CurrentView;
+		}
+
+		void PresentViewportSurface(ViewportSurface* vs) {
+			if (!vs || !vs->Surface || !vs->HasCurrent) return;
+			vs->Surface.Present();
+			vs->CurrentView    = nullptr;
+			vs->CurrentTexture = nullptr;
+			vs->HasCurrent     = false;
+		}
+
+		wgpu::TextureFormat GetViewportSurfaceFormat() { return g_SurfaceFormat; }
+
+		wgpu::Instance GetInstance() { return g_Instance; }
 	}
 
 	// ── RenderApi: Lifecycle ────────────────────────────────────────────────

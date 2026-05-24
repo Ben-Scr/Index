@@ -233,4 +233,59 @@ namespace Index::WebGPUBackend {
 	// phases inside a GuiRenderer pass).
 	void FlushCommands();
 
+	// ── Multi-viewport surface support ───────────────────────────────────
+	// Additional OS-window surfaces, parallel to the engine's main swap
+	// chain. Created by ImGuiImplWebGPU when ImGui multi-viewport spawns
+	// a secondary GLFW window for a detached ImGui modal/window. Each
+	// ViewportSurface is self-contained: own wgpu::Surface, own size,
+	// own per-acquire texture/view. Shares the engine's wgpu::Device +
+	// Queue + Instance (one device per process; surfaces are cheap).
+	//
+	// The main backbuffer keeps its existing globals (g_Surface,
+	// g_BackbufferWidth/Height) — this API is purely additive. Each
+	// ViewportSurface presents independently of the main surface, so
+	// ImGui can spawn N detached windows without disturbing the engine's
+	// per-frame swap-chain flow.
+
+	struct ViewportSurface;
+
+	// Create a new viewport surface bound to a native window. On Windows
+	// pass HWND + HINSTANCE; other platforms not supported yet (matches
+	// the main-surface Windows-only limitation in CreateSurface). Returns
+	// nullptr on failure (logged).
+	ViewportSurface* CreateViewportSurface(void* hwnd, void* hinstance,
+		uint32_t width, uint32_t height);
+
+	// Destroy. Safe with null. Releases the surface + any in-flight
+	// per-acquire texture handle.
+	void DestroyViewportSurface(ViewportSurface* vs);
+
+	// Re-configure at a new size. No-op if size matches. Drops any
+	// in-flight per-acquire texture (stale once the surface is
+	// reconfigured).
+	void ResizeViewportSurface(ViewportSurface* vs,
+		uint32_t width, uint32_t height);
+
+	// Acquire the per-frame backbuffer view. Caller renders into it,
+	// then calls PresentViewportSurface. Returns null on acquisition
+	// failure (surface lost, window minimised, etc.) — caller must
+	// skip rendering and still call PresentViewportSurface to keep
+	// the acquire/present pair balanced (PresentViewportSurface is a
+	// no-op when no view was successfully acquired).
+	wgpu::TextureView AcquireViewportSurfaceView(ViewportSurface* vs);
+
+	// Present the acquired backbuffer. Pairs with AcquireViewportSurfaceView.
+	// No-op when no view was acquired (failed acquire, double-present).
+	void PresentViewportSurface(ViewportSurface* vs);
+
+	// Texture format used by viewport surfaces. Matches the main swap-
+	// chain format so a single ImGui_ImplWGPU pipeline (configured for
+	// the main format) can render into any viewport surface without
+	// per-format pipeline variants.
+	wgpu::TextureFormat GetViewportSurfaceFormat();
+
+	// Direct access to the engine's wgpu::Instance. The engine owns
+	// instance lifetime; do not call Release on it.
+	wgpu::Instance GetInstance();
+
 }  // namespace Index::WebGPUBackend
