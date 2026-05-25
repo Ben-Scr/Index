@@ -1,6 +1,7 @@
 #include "pch.hpp"
 #include "Serialization/FileWatcher.hpp"
 #include "Core/Log.hpp"
+#include "Profiling/Profiler.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -163,6 +164,7 @@ namespace Index {
 	}
 
 	void FileWatcher::WorkerMain() {
+		INDEX_PROFILE_THREAD_NAME("FileWatcher");
 #ifdef IDX_PLATFORM_WINDOWS
 		if (WaitForNativeChanges()) {
 			return;

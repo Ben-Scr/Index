@@ -124,6 +124,64 @@ namespace Index {
 		return CreateSlot(std::move(font), assetId, pixelSize);
 	}
 
+	FontHandle FontManager::LoadFontByUUIDAsync(uint64_t assetId, float pixelSize) {
+		if (!s_IsInitialized || assetId == 0 || pixelSize <= 0.0f) {
+			return FontHandle::Invalid();
+		}
+
+		// Returns the slot regardless of whether the bake has published — that
+		// is the whole point of the async API. The render path then sees
+		// GetFont() == nullptr until PollAsync() flips IsLoaded() on a later
+		// frame, and meanwhile renders with the default fallback. We use the
+		// raw slot lookup (not FindExisting, which now skips in-flight bakes
+		// to keep the sync LoadFontByUUID path away from baking slots) so a
+		// second async request for the same (uuid, quantized px) bucket
+		// latches onto the in-flight bake instead of fanning out a duplicate
+		// worker.
+		const LookupKey key{ assetId, QuantizePixelSize(pixelSize) };
+		auto it = s_Lookup.find(key);
+		if (it != s_Lookup.end()) {
+			const uint16_t idx = it->second;
+			if (idx < s_Slots.size() && s_Slots[idx].InUse) {
+				return FontHandle{ idx, s_Slots[idx].Generation };
+			}
+		}
+
+		std::string path = AssetRegistry::ResolvePath(assetId);
+		if (path.empty()) {
+			AssetRegistry::MarkDirty();
+			AssetRegistry::Sync();
+			path = AssetRegistry::ResolvePath(assetId);
+		}
+		if (path.empty()) return FontHandle::Invalid();
+
+		// Synchronous disk read — typical TTFs are <5MB so this is sub-ms on
+		// SSDs. The expensive stbtt_PackFontRanges work is what BeginAsyncBake
+		// pushes to the worker. If profiling later shows the read itself is
+		// the bottleneck (huge CJK fonts, slow disks), this can move into
+		// the worker too.
+		std::vector<uint8_t> ttf = File::ReadAllBytes(path);
+		if (ttf.empty()) {
+			IDX_CORE_ERROR_TAG("FontManager", "TTF read failed for async bake: {}", path);
+			return FontHandle::Invalid();
+		}
+
+		auto font = std::make_unique<Font>();
+		if (!font->BeginAsyncBake(path, std::move(ttf), pixelSize)) {
+			return FontHandle::Invalid();
+		}
+		return CreateSlot(std::move(font), assetId, pixelSize);
+	}
+
+	void FontManager::PollAsync() {
+		if (!s_IsInitialized) return;
+		for (Slot& slot : s_Slots) {
+			if (!slot.InUse || !slot.Font) continue;
+			if (!slot.Font->IsBakingAsync()) continue;
+			slot.Font->PollAsyncBake();
+		}
+	}
+
 	void FontManager::UnloadFont(const FontHandle& handle) {
 		if (!IsValid(handle)) return;
 		Slot& slot = s_Slots[handle.index];
@@ -209,6 +267,22 @@ namespace Index {
 		if (it == s_Lookup.end()) return FontHandle::Invalid();
 		const uint16_t idx = it->second;
 		if (idx >= s_Slots.size() || !s_Slots[idx].InUse) {
+			return FontHandle::Invalid();
+		}
+		// Skip in-flight async bakes — callers of FindExisting (LoadFontByUUID,
+		// GetDefaultFont via that path) expect a font that is ready to render,
+		// not one whose atlas is still being packed on a worker. Returning
+		// Invalid here sends the sync caller down the fresh-load branch so the
+		// fallback path (e.g. GetDefaultFont's bundled-atlas request) hands
+		// back a loaded slot even when an async bake is already in flight for
+		// the same (uuid, quantized px) bucket. The async slot keeps living
+		// and either publishes via PollAsync later (reachable through the
+		// FontHandle stored on the requesting component) or gets cleaned up
+		// on UnloadAll. The async lookup in LoadFontByUUIDAsync intentionally
+		// uses its own s_Lookup probe (not FindExisting) so a second async
+		// request for the same key still latches onto the in-flight bake
+		// instead of fanning out a duplicate worker.
+		if (s_Slots[idx].Font && !s_Slots[idx].Font->IsLoaded()) {
 			return FontHandle::Invalid();
 		}
 		return FontHandle{ idx, s_Slots[idx].Generation };

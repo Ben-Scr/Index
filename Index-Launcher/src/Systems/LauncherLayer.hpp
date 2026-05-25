@@ -246,7 +246,7 @@ namespace Index {
 		void RequestProjectDelete(const LauncherProjectEntry& entry);
 		bool DeleteProjectFromDisk(const LauncherProjectEntry& entry);
 		void StartCreateProjectAsync(const std::string& name, const std::string& location,
-			const std::string& directoryName);
+			const std::string& directoryName, bool initializeGit);
 		void PollCreateProjectTask();
 		void ResetCreateProjectTask(bool clearWorker = true);
 		void StartProjectLaunch(const LauncherProjectEntry& entry, bool launchRuntime);
@@ -315,6 +315,10 @@ namespace Index {
 
 		char m_NewProjectName[256]{};
 		char m_NewProjectLocation[512]{};
+		// Default ON so the common case (Unity-/Godot-style "make a repo for
+		// each project") is one less click. Persisted across popup re-opens
+		// for the duration of a launcher session — not written to disk.
+		bool m_NewProjectInitializeGit = true;
 		std::string m_CreateError;
 
 		bool m_IsCreating = false;

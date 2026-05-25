@@ -2,6 +2,7 @@
 
 #include "Components/General/HierarchyComponent.hpp"
 #include "Components/General/NameComponent.hpp"
+#include "Components/General/PrefabInstanceComponent.hpp"
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
 #include "Scene/Entity.hpp"
@@ -118,4 +119,47 @@ TEST_CASE("Editor-style duplicate (re-parenting under source's parent) preserves
 	Entity clonedChild = scene->GetEntity(clone.GetChildren().front());
 	CHECK(clonedChild.GetName() == "Child");
 	CHECK(clonedChild.GetParent().GetHandle() == cloneHandle);
+}
+
+TEST_CASE("Duplicating a prefab instance preserves prefab origin and PrefabGUID")
+{
+	// Regression: editor-side Duplicate (Ctrl+D) routes through
+	// SerializeEntityForClipboard + DeserializeEntityFromValue. The clipboard
+	// path stripped Origin / PrefabGUID with the rest of the identity members,
+	// so the duplicate came back as a plain Scene entity — no
+	// PrefabInstanceComponent, no asset link, no override tracking.
+	auto scene = Scene::CreateDetachedScene("Prefab Duplicate Test");
+
+	Entity source = scene->CreateEntity("PrefabRoot");
+	Entity sourceChild = scene->CreateEntity("PrefabChild");
+	sourceChild.SetParent(source);
+
+	constexpr uint64_t k_PrefabGuid = 0x1234ABCDull;
+	constexpr uint64_t k_RootSourceEntityId = 0xAAAA1ull;
+	constexpr uint64_t k_ChildSourceEntityId = 0xBBBB2ull;
+
+	scene->SetEntityMetaData(source.GetHandle(), EntityOrigin::Prefab, AssetGUID(k_PrefabGuid));
+	scene->SetEntityMetaData(sourceChild.GetHandle(), EntityOrigin::Prefab, AssetGUID(k_PrefabGuid));
+	REQUIRE(scene->HasComponent<PrefabInstanceComponent>(source.GetHandle()));
+	scene->GetComponent<PrefabInstanceComponent>(source.GetHandle()).SourceEntityId = k_RootSourceEntityId;
+	scene->GetComponent<PrefabInstanceComponent>(sourceChild.GetHandle()).SourceEntityId = k_ChildSourceEntityId;
+
+	Json::Value clipboardValue = SceneSerializer::SerializeEntityForClipboard(*scene, source.GetHandle());
+	REQUIRE(clipboardValue.IsObject());
+
+	const EntityHandle cloneHandle = SceneSerializer::DeserializeEntityFromValue(*scene, clipboardValue);
+	REQUIRE(cloneHandle != entt::null);
+
+	CHECK(scene->GetEntityOrigin(cloneHandle) == EntityOrigin::Prefab);
+	CHECK(static_cast<uint64_t>(scene->GetPrefabGUID(cloneHandle)) == k_PrefabGuid);
+	REQUIRE(scene->HasComponent<PrefabInstanceComponent>(cloneHandle));
+	CHECK(scene->GetComponent<PrefabInstanceComponent>(cloneHandle).SourceEntityId == k_RootSourceEntityId);
+
+	Entity clone = scene->GetEntity(cloneHandle);
+	REQUIRE(clone.GetChildren().size() == 1);
+	const EntityHandle cloneChildHandle = clone.GetChildren().front();
+	CHECK(scene->GetEntityOrigin(cloneChildHandle) == EntityOrigin::Prefab);
+	CHECK(static_cast<uint64_t>(scene->GetPrefabGUID(cloneChildHandle)) == k_PrefabGuid);
+	REQUIRE(scene->HasComponent<PrefabInstanceComponent>(cloneChildHandle));
+	CHECK(scene->GetComponent<PrefabInstanceComponent>(cloneChildHandle).SourceEntityId == k_ChildSourceEntityId);
 }

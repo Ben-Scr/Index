@@ -83,4 +83,34 @@ Index-Engine/src/
 
 ## External dependencies (all in External/ as git submodules)
 
-GLFW, Glad, ImGui (docking), EnTT, GLM, Box2D, Axiom-Physics, spdlog, miniaudio, STB, magic_enum, Cereal (rapidxml header only — Cereal proper is unused), .NET SDK
+GLFW, Glad, ImGui (docking), EnTT, GLM, Box2D, Axiom-Physics, spdlog, miniaudio, STB, magic_enum, Cereal (rapidxml header only — Cereal proper is unused), .NET SDK, Tracy (profiler client + viewer)
+
+## Profiling
+
+Two complementary layers, both fed from the same `INDEX_PROFILE_*` macros in `Index-Engine/src/Profiling/Profiler.hpp`:
+
+- **In-editor `ProfilerPanel`** — lightweight at-a-glance dashboard. Per-module rolling avg/min/max + scrolling line graph. Drives the "Sampling Hz" / "Tracking Span" knobs; gated by panel visibility unless "Track in Background" is on.
+- **Tracy** — full timeline / flamegraph / per-thread lane / memory / plots. The Tracy client is compiled with `TRACY_ON_DEMAND` ([premake/dependencies/tracy.lua](premake/dependencies/tracy.lua)) — zero cost until a viewer attaches.
+
+### Connecting Tracy
+
+1. Build the standalone viewer once: `External/tracy/profiler/build/win32/Tracy.sln` (VS2022, x64 Release) or `cmake -B build -DCMAKE_BUILD_TYPE=Release` under `External/tracy/profiler/`. Drop the resulting `Tracy.exe` somewhere stable (e.g. `tools/Tracy.exe`, gitignored).
+2. Build Index in **Release** (Dist strips the profiler entirely; Debug works but is slow).
+3. Launch the editor / runtime — Tracy client is silent until a viewer attaches.
+4. Launch `Tracy.exe`. On localhost it auto-discovers via UDP broadcast on port 8086. First Windows Firewall prompt: allow. If discovery fails, connect manually to `127.0.0.1`.
+
+### Macros
+
+- `INDEX_PROFILE_SCOPE(name)` — RAII zone. Tracy zone + in-engine ring-buffer push (if `name` matches a registered module).
+- `INDEX_PROFILE_FRAME(name)` — call once per frame to advance sampling cadence and emit Tracy frame mark.
+- `INDEX_PROFILE_VALUE(name, val)` — Tracy plot + value push (counts, MB, etc.).
+- `INDEX_PROFILE_THREAD_NAME(name)` — call once at thread entry so the lane is labeled in Tracy.
+
+All four become `(void)0` when the profiler is stripped (`--no-profiler` at premake time).
+
+### What Tracy sees today
+
+- **CPU zones**: 52+ instrumentation sites across `Application`, `Renderer2D`, `JobSystem`, scene update, UI, particles, scripting. Physics / scene-graph internals / asset IO are still dark — adding `INDEX_PROFILE_SCOPE` sites is cheap.
+- **Threads with semantic names**: `Main`, `Index Worker 0..N` (cross-platform), `FileWatcher`, `LanguageDownloader`, `ScriptProcess`. Other threads show as bare TIDs.
+- **Memory allocations**: only on Windows Debug builds with `IDX_TRACK_MEMORY` — `Index-Engine/src/Core/Memory.cpp` hooks `TracyAlloc`/`TracyFree` from inside the gated `operator new/delete`.
+- **GPU**: surfaces as a Tracy plot (`GPU.ms`) — no dedicated GPU lane yet (no `TracyWebGPU` integration). The in-engine `GpuTimer` resolves WebGPU timestamp queries through a 3-deep readback ring.

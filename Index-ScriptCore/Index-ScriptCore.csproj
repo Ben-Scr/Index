@@ -161,6 +161,7 @@
     <Compile Include="Source\Index\Scene\Entity.cs" />
     <Compile Include="Source\Index\Scene\EntityCommandBuffer.cs" />
     <Compile Include="Source\Index\Scene\EntityCommandBufferParallelWriter.cs" />
+    <Compile Include="Source\Index\Scene\EntityPicker.cs" />
     <Compile Include="Source\Index\Scene\EntityRef.cs" />
     <Compile Include="Source\Index\Scene\EntityScript.cs" />
     <Compile Include="Source\Index\Scene\GameSystem.cs" />

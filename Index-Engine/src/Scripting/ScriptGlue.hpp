@@ -14,6 +14,7 @@ namespace Index {
 		float  (*Application_GetTargetFrameRate)();
 		void   (*Application_SetTargetFrameRate)(float fps);
 		void   (*Application_Quit)();
+		void   (*Application_Reload)();
 		float  (*Application_GetFixedDeltaTime)();
 		float  (*Application_GetUnscaledDeltaTime)();
 		float  (*Application_GetFixedUnscaledDeltaTime)();
@@ -339,6 +340,12 @@ namespace Index {
 		int (*Physics2D_ContainsPoint)(float originX, float originY, int mode, uint64_t* entityID);
 		int (*Physics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
 
+		// ── EntityPicker ─────────────────────────────────────────────
+		// AABB-based "what entity is at this world point" query. Shares the
+		// algorithm with the editor viewport's click-to-select handler — see
+		// Scene/EntityPicker.{hpp,cpp}.
+		int (*EntityPicker_TryPickEntity)(float worldX, float worldY, uint64_t* entityID);
+
 		// ── UI: RectTransform2D ──────────────────────────────────────
 		void (*RectTransform_GetAnchorMin)(uint64_t entityID, float* outX, float* outY);
 		void (*RectTransform_SetAnchorMin)(uint64_t entityID, float x, float y);
@@ -411,7 +418,7 @@ namespace Index {
 		void (*Dropdown_SetFocusedColor)(uint64_t entityID, float r, float g, float b, float a);
 
 		// ── UI: TransitionMode + sprite slots ────────────────────────
-		// TransitionMode is the enum that picks ColorTint / SpriteSwap /
+		// TransitionMode is the enum that picks ColorSwap / SpriteSwap /
 		// None for each widget. Sprite slots are UUIDs (0 == unset).
 		// One slot per state mirrors the *Color slots above.
 		int (*Button_GetTransitionMode)(uint64_t entityID);
@@ -996,6 +1003,29 @@ namespace Index {
 		// BEFORE the ALC tears down so captured lambdas don't outlive the
 		// storage they reference. Idempotent.
 		void (*Component_UnregisterAllDynamic)();
+
+		// ── Scene load-by-GUID (appended for binary compat) ──
+		// Scenes are tracked by AssetRegistry through `<Name>.scene` files
+		// + their `.meta` companion (carrying the stable AssetGUID). These
+		// entries let scripts route the asset-picker's UUID handle through
+		// the same SceneManager paths the name-based bindings hit, so a
+		// [ShowInEditor] SceneRef field can power SceneManager.LoadScene
+		// without the script having to know the file's stem.
+		//
+		// Resolver: GUID → AssetRegistry::ResolvePath → file stem →
+		// existing LoadSceneByName / UnloadScene / SetActiveScene. Returns
+		// 0 (or warns + no-ops, for Unload) when the GUID isn't a Scene
+		// asset or isn't tracked.
+		int      (*Scene_LoadByGuid)(uint64_t sceneGuid);
+		int      (*Scene_LoadAdditiveByGuid)(uint64_t sceneGuid);
+		void     (*Scene_UnloadByGuid)(uint64_t sceneGuid);
+		int      (*Scene_SetActiveByGuid)(uint64_t sceneGuid);
+		int      (*Scene_ReloadByGuid)(uint64_t sceneGuid);
+		int      (*Scene_DoesSceneExistByGuid)(uint64_t sceneGuid);
+		// Round-trip: read the active scene back out as its tracked GUID.
+		// Returns 0 when the active scene's source file isn't asset-
+		// tracked (freshly created and unsaved, etc.).
+		uint64_t (*Scene_GetActiveSceneGuid)();
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

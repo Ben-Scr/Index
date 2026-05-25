@@ -68,6 +68,22 @@ namespace Index {
 		// overridden components/fields and feed the Revert Field UI.
 		static bool ComputeInstanceOverrides(Scene& scene, EntityHandle entity, Json::Value& outOverrides);
 
+		// Resolve the prefab-instance root for any entity in a prefab subtree.
+		// Returns `entity` itself when it carries PrefabInstanceComponent
+		// (i.e. is the instance root), otherwise walks up HierarchyComponent.Parent
+		// until it finds the root or runs out of ancestors. Returns entt::null
+		// when the entity is not part of a prefab instance.
+		static EntityHandle GetPrefabInstanceRoot(Scene& scene, EntityHandle entity);
+
+		// True when any entity in this prefab instance's subtree differs from
+		// its on-disk source (root override OR per-child entity override).
+		// `entity` may be the root or any descendant — the root is resolved
+		// internally. Returns false for non-instances and orphans (source
+		// missing). Used by the inspector to enable/disable the Apply All /
+		// Revert All buttons; without the subtree walk an edit to a child
+		// entity would leave the buttons disabled on the root.
+		static bool HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
+
 	private:
 		static EntityHandle DeserializeEntity(Scene& scene, const Json::Value& entityValue);
 		static EntityHandle DeserializeFullEntity(

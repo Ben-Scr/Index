@@ -651,7 +651,7 @@ namespace Index {
 				}
 
 				if (ImGui::IsItemHovered() && (truncated || !entry.Path.empty())) {
-					const std::string path = entry.Path.string();
+					const std::string path = Path::ToProjectRelativeDisplay(entry.Path.string());
 					ImGui::SetTooltip("%s", path.c_str());
 				}
 			}

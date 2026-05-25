@@ -68,6 +68,8 @@
     "launcher.create.create_button": "作成",
     "launcher.create.working": "処理中...",
     "launcher.create.cancel": "キャンセル",
+    "launcher.create.init_git": "Gitリポジトリを初期化",
+    "launcher.create.init_git.tooltip": "新規プロジェクトフォルダで `git init` を実行し、Index向けの .gitignore を書き出します。PATH に git が必要です。",
 
     "launcher.settings.title": "ランチャー設定",
     "launcher.settings.default_location": "デフォルトのプロジェクト保存場所",

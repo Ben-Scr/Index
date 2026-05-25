@@ -1,6 +1,11 @@
 #include <pch.hpp>
 #include "Path.hpp"
 
+#include "Project/IndexProject.hpp"
+#include "Project/ProjectManager.hpp"
+
+#include <optional>
+
 #ifdef IDX_PLATFORM_WINDOWS
 #include <windows.h>
 #include <shlobj.h>
@@ -115,5 +120,52 @@ namespace Index {
             return std::filesystem::canonical(dev).string();
 
         return {};
+    }
+
+    std::string Path::ToProjectRelativeDisplay(const std::string& absolutePath) {
+        if (absolutePath.empty()) return {};
+
+        std::error_code ec;
+        std::filesystem::path input(absolutePath);
+        std::filesystem::path canonInput = std::filesystem::weakly_canonical(input, ec);
+        if (ec || canonInput.empty()) canonInput = input;
+
+        auto tryRelative = [&canonInput](const std::string& rootStr,
+                                         const std::string& displayPrefix) -> std::optional<std::string> {
+            if (rootStr.empty()) return std::nullopt;
+            std::error_code rec;
+            std::filesystem::path canonRoot = std::filesystem::weakly_canonical(
+                std::filesystem::path(rootStr), rec);
+            if (rec || canonRoot.empty()) canonRoot = std::filesystem::path(rootStr);
+
+            std::filesystem::path rel = canonInput.lexically_relative(canonRoot);
+            const std::string relString = rel.generic_string();
+            // lexically_relative returns "." for equality, "" when the roots
+            // differ (e.g. C: vs D:), and a "..-prefix" when the input is
+            // outside the root. None of those are valid display strings.
+            if (relString.empty() || relString == ".") return std::nullopt;
+            if (relString.rfind("..", 0) == 0) return std::nullopt;
+            if (displayPrefix.empty()) return relString;
+            return displayPrefix + "/" + relString;
+        };
+
+        if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+            if (auto rel = tryRelative(project->RootDirectory, {}); rel) {
+                return *rel;
+            }
+        }
+
+        // Engine-shipped IndexAssets (e.g. the default font when no project is
+        // loaded, or the editor itself walking the engine assets directory).
+        const std::string engineIndexAssets = ResolveIndexAssets("");
+        if (!engineIndexAssets.empty()) {
+            if (auto rel = tryRelative(engineIndexAssets, "IndexAssets"); rel) {
+                return *rel;
+            }
+        }
+
+        // Last-resort fallback: surface just the filename so we never leak the
+        // full machine-local path even for unexpected inputs.
+        return std::filesystem::path(absolutePath).filename().string();
     }
 }

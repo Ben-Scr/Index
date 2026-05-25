@@ -19,6 +19,7 @@
 #include "Components/Physics/FastBody2DComponent.hpp"
 #include "Components/Physics/FastBoxCollider2DComponent.hpp"
 #include "Components/Physics/FastCircleCollider2DComponent.hpp"
+#include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Diagnostics/StatsOverlay.hpp"
@@ -35,6 +36,7 @@
 #include "Math/VectorMath.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/ComponentInfo.hpp"
+#include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
@@ -46,22 +48,6 @@
 #include <cstdint>
 
 namespace Index {
-	namespace {
-		struct GameViewAspectPreset {
-			const char* Label;
-			float Aspect = 0.0f;
-		};
-
-		constexpr std::array<GameViewAspectPreset, 6> k_GameViewAspectPresets = {{
-			{ "Free Aspect", 0.0f },
-			{ "16:9", 16.0f / 9.0f },
-			{ "21:9", 21.0f / 9.0f },
-			{ "4:3", 4.0f / 3.0f },
-			{ "3:2", 3.0f / 2.0f },
-			{ "9:16", 9.0f / 16.0f }
-		}};
-
-	}
 
 	void ImGuiEditorLayer::RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB,
@@ -560,7 +546,17 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::RenderEditorView(Scene& scene) {
-		m_IsEditorViewActive = ImGui::Begin("Editor View");
+		// NoScrollbar/NoScrollWithMouse: the viewport itself never scrolls — the
+		// FBO image fills the content region and is the only "real" content.
+		// The InvisibleButton overlays below (rect-resize handles, text-margin
+		// handles) call SetCursorScreenPos at world→screen-projected positions,
+		// which can land far outside the panel when the editor camera is zoomed
+		// in heavily. Each InvisibleButton then extends ImGui's CursorMaxPos to
+		// cover that off-panel position, causing ImGui to render a scrollbar
+		// for content that doesn't exist. Suppressing scrolling on this window
+		// kills the spurious scrollbar without changing the actual rendering.
+		m_IsEditorViewActive = ImGui::Begin("Editor View", nullptr,
+			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
 		if (!m_IsEditorViewActive) {
 			m_IsEditorViewHovered = false;
@@ -1012,6 +1008,62 @@ namespace Index {
 					}
 					// (No cursor restore — see comment above the loop.)
 				}
+
+				// ── Viewport entity picking ───────────────────────────
+				// Left-click on the FBO area (outside any gizmo handle or
+				// overlay child window) hit-tests the scene's entity AABBs
+				// against the world-space click point and selects the
+				// topmost hit. Ctrl/Shift toggle multi-selection; clicking
+				// empty world with no modifier clears selection. The
+				// hit-test itself lives in Picking::TryPickEntity so the
+				// C# scripting binding can share the same algorithm.
+				//
+				// Gating:
+				//   IsWindowHovered() (default flags) → mouse is over the
+				//     editor view's content AND no child window blocks it,
+				//     so clicking the particle overlay falls through here.
+				//   !IsAnyItemActive() → no gizmo handle (rect-resize,
+				//     text-margin) consumed the press this frame.
+				//   inside the image rect → excludes the toolbar row above.
+				if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+					&& ImGui::IsWindowHovered()
+					&& !ImGui::IsAnyItemActive())
+				{
+					const ImVec2 mousePos = ImGui::GetMousePos();
+					const float localX = mousePos.x - imageTopLeft.x;
+					const float localY = mousePos.y - imageTopLeft.y;
+					if (localX >= 0.0f && localX < viewportSize.x
+						&& localY >= 0.0f && localY < viewportSize.y)
+					{
+						// Screen → world via the editor camera's axis-aligned
+						// ortho view AABB. Y flips because the FBO's top row
+						// is screen-y=0 but world +y points up.
+						const AABB camAABB = m_EditorCamera.GetViewportAABB();
+						const float u = localX / std::max(1.0f, viewportSize.x);
+						const float v = localY / std::max(1.0f, viewportSize.y);
+						const Vec2 worldPoint{
+							camAABB.Min.x + u * (camAABB.Max.x - camAABB.Min.x),
+							camAABB.Max.y - v * (camAABB.Max.y - camAABB.Min.y)
+						};
+
+						EntityHandle picked = entt::null;
+						EntityPicker::TryPickEntity(*renderScene, worldPoint, picked);
+
+						const bool hasModifier =
+							ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+						if (picked != entt::null) {
+							if (hasModifier) {
+								ToggleEntitySelection(picked, -1);
+							}
+							else {
+								SetSingleEntitySelection(picked, -1);
+							}
+						}
+						else if (!hasModifier) {
+							ClearEntitySelection();
+						}
+					}
+				}
 			}
 		}
 		else {
@@ -1034,12 +1086,12 @@ namespace Index {
 			return;
 		}
 
-		const int aspectPresetIndex = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_GameViewAspectPresets.size()) - 1);
+		const int aspectPresetIndex = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
 		m_GameViewAspectPresetIndex = aspectPresetIndex;
 		if (!m_GameViewAspectLoaded) {
 			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-				for (int i = 0; i < static_cast<int>(k_GameViewAspectPresets.size()); ++i) {
-					if (project->GameViewAspect == k_GameViewAspectPresets[i].Label) {
+				for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
+					if (project->GameViewAspect == k_AspectRatioPresets[i].Label) {
 						m_GameViewAspectPresetIndex = i;
 						break;
 					}
@@ -1055,13 +1107,13 @@ namespace Index {
 		}
 
 		ImGui::SetNextItemWidth(140.0f);
-		if (ImGui::BeginCombo("##GameViewAspect", k_GameViewAspectPresets[m_GameViewAspectPresetIndex].Label)) {
-			for (int i = 0; i < static_cast<int>(k_GameViewAspectPresets.size()); ++i) {
+		if (ImGui::BeginCombo("##GameViewAspect", k_AspectRatioPresets[m_GameViewAspectPresetIndex].Label)) {
+			for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
 				const bool selected = (i == m_GameViewAspectPresetIndex);
-				if (ImGui::Selectable(k_GameViewAspectPresets[i].Label, selected)) {
+				if (ImGui::Selectable(k_AspectRatioPresets[i].Label, selected)) {
 					m_GameViewAspectPresetIndex = i;
 					if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-						project->GameViewAspect = k_GameViewAspectPresets[i].Label;
+						project->GameViewAspect = k_AspectRatioPresets[i].Label;
 						project->Save();
 					}
 				}
@@ -1118,7 +1170,7 @@ namespace Index {
 		ImGui::Separator();
 
 		const ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-		const float targetAspect = k_GameViewAspectPresets[m_GameViewAspectPresetIndex].Aspect;
+		const float targetAspect = k_AspectRatioPresets[m_GameViewAspectPresetIndex].Aspect;
 
 		ImVec2 renderSize = viewportSize;
 		if (targetAspect > 0.0f && viewportSize.x > 0.0f && viewportSize.y > 0.0f) {
@@ -1271,9 +1323,25 @@ namespace Index {
 				// (rect resolves at one scale while the renderer projects with
 				// another). Publishing UIRegion first pins layout, ortho, and
 				// text rendering all to the same renderSize.
+				//
+				// imageMin lives in ImGui screen space, which equals OS-DESKTOP
+				// pixels once ImGuiConfigFlags_ViewportsEnable is on (the editor
+				// turns it on). Engine input — input.GetMousePosition() — comes
+				// from GLFW's cursor callback and is in MAIN-WINDOW-CLIENT
+				// pixels. UIEventSystem subtracts the published offset from the
+				// mouse coords; if we publish desktop coords and the editor
+				// isn't sitting at desktop (0,0), the subtraction is off by the
+				// window's desktop position on every axis where it isn't zero
+				// (e.g. a window snapped to the left edge has X=0 but Y>0, so
+				// only the Y hit-test drifts — the classic "Slider works on X
+				// but the Y handle is offset" bug). Subtract the main viewport's
+				// desktop position to convert imageMin into the same window-
+				// client space the input system reports. With multi-viewport
+				// disabled this is (0,0) and the math is a no-op.
+				const ImVec2 mainViewportPos = ImGui::GetMainViewport()->Pos;
 				Window::SetUIRegion(
-					static_cast<int>(imageMin.x),
-					static_cast<int>(imageMin.y),
+					static_cast<int>(imageMin.x - mainViewportPos.x),
+					static_cast<int>(imageMin.y - mainViewportPos.y),
 					static_cast<int>(renderSize.x),
 					static_cast<int>(renderSize.y));
 

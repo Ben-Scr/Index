@@ -89,8 +89,8 @@ namespace Index {
 		// other widget. UIEventSystem applies the resolved state to the
 		// HandleEntity's ImageComponent each frame; in edit mode the
 		// system pre-applies NormalColor so authoring the palette gives
-		// immediate feedback. Defaults to ColorTint, matching Button etc.
-		UITransitionMode TransitionMode = UITransitionMode::ColorTint;
+		// immediate feedback. Defaults to ColorSwap, matching Button etc.
+		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;
 
 		Color NormalColor   { 0.95f, 0.95f, 0.95f, 1.0f };
 		Color HoveredColor  { 0.80f, 0.80f, 0.80f, 1.0f };

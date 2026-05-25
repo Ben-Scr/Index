@@ -471,6 +471,7 @@ namespace Index {
 		passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetBindGroup(0, g_BindGroup);
 		pass.SetVertexBuffer(0, g_VertexBuffer);

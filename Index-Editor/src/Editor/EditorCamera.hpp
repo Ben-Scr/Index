@@ -7,6 +7,14 @@ namespace Index {
 
 	class EditorCamera {
 	public:
+		// Editor-camera zoom range, expressed as orthographic half-height.
+		// Min was tightened from 0.5 so users can zoom into very small
+		// entities; max was added so scroll-zoom doesn't run away to a
+		// state where world-space picking and gizmo hit-tests stop being
+		// usable.
+		static constexpr float k_MinOrthographicSize = 0.05f;
+		static constexpr float k_MaxOrthographicSize = 1000.0f;
+
 		void SetViewportSize(int width, int height);
 		void Update(float deltaTime, bool isHovered, const Vec2& mouseDelta, float scroll);
 

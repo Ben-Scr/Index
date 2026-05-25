@@ -77,7 +77,7 @@ namespace Index {
 		// See ButtonComponent — same TransitionMode + per-state sprite
 		// model. Affects the dropdown's closed "header" cell only;
 		// the popup option list is unaffected by transition mode.
-		UITransitionMode TransitionMode = UITransitionMode::ColorTint;
+		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;
 
 		Color NormalColor   { 1.00f, 1.00f, 1.00f, 1.0f };
 		Color HoveredColor  { 0.92f, 0.94f, 0.98f, 1.0f };

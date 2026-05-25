@@ -1004,8 +1004,7 @@ namespace Index {
 						text.FontSize = v;
 						// Different px size means different atlas slot.
 						text.ResolvedFont = FontHandle{};
-					},
-					Properties::Meta::Clamp(1.0, 512.0, 0.5f)),
+					}),
 				Properties::Make("Color", "Color", &TextRendererComponent::Color),
 				Properties::MakeWith<float>("LetterSpacing", "Letter Spacing",
 					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().LetterSpacing; },
@@ -1424,7 +1423,7 @@ namespace Index {
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&ButtonComponent::TransitionMode,
 				{
-					Properties::Branch(UITransitionMode::ColorTint, {
+					Properties::Branch(UITransitionMode::ColorSwap, {
 						Properties::Make("NormalColor",   "Normal Color",   &ButtonComponent::NormalColor),
 						Properties::Make("HoveredColor",  "Hovered Color",  &ButtonComponent::HoveredColor),
 						Properties::Make("PressedColor",  "Pressed Color",  &ButtonComponent::PressedColor),
@@ -1503,7 +1502,7 @@ namespace Index {
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&SliderComponent::TransitionMode,
 				{
-					Properties::Branch(UITransitionMode::ColorTint, {
+					Properties::Branch(UITransitionMode::ColorSwap, {
 						Properties::Make("NormalColor",   "Normal Color",   &SliderComponent::NormalColor),
 						Properties::Make("HoveredColor",  "Hovered Color",  &SliderComponent::HoveredColor),
 						Properties::Make("PressedColor",  "Pressed Color",  &SliderComponent::PressedColor),
@@ -1596,7 +1595,7 @@ namespace Index {
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&InputFieldComponent::TransitionMode,
 				{
-					Properties::Branch(UITransitionMode::ColorTint, {
+					Properties::Branch(UITransitionMode::ColorSwap, {
 						Properties::Make("NormalColor",   "Normal Color",   &InputFieldComponent::NormalColor),
 						Properties::Make("HoveredColor",  "Hovered Color",  &InputFieldComponent::HoveredColor),
 						Properties::Make("PressedColor",  "Pressed Color",  &InputFieldComponent::PressedColor),
@@ -1715,7 +1714,7 @@ namespace Index {
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&DropdownComponent::TransitionMode,
 				{
-					Properties::Branch(UITransitionMode::ColorTint, {
+					Properties::Branch(UITransitionMode::ColorSwap, {
 						Properties::Make("NormalColor",   "Normal Color",   &DropdownComponent::NormalColor),
 						Properties::Make("HoveredColor",  "Hovered Color",  &DropdownComponent::HoveredColor),
 						Properties::Make("PressedColor",  "Pressed Color",  &DropdownComponent::PressedColor),
@@ -1807,7 +1806,7 @@ namespace Index {
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&ToggleComponent::TransitionMode,
 				{
-					Properties::Branch(UITransitionMode::ColorTint, {
+					Properties::Branch(UITransitionMode::ColorSwap, {
 						Properties::Make("NormalColor",   "Normal Color",   &ToggleComponent::NormalColor),
 						Properties::Make("HoveredColor",  "Hovered Color",  &ToggleComponent::HoveredColor),
 						Properties::Make("PressedColor",  "Pressed Color",  &ToggleComponent::PressedColor),
@@ -1880,7 +1879,7 @@ namespace Index {
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&ScrollbarComponent::TransitionMode,
 				{
-					Properties::Branch(UITransitionMode::ColorTint, {
+					Properties::Branch(UITransitionMode::ColorSwap, {
 						Properties::Make("NormalColor",   "Normal Color",   &ScrollbarComponent::NormalColor),
 						Properties::Make("HoveredColor",  "Hovered Color",  &ScrollbarComponent::HoveredColor),
 						Properties::Make("PressedColor",  "Pressed Color",  &ScrollbarComponent::PressedColor),

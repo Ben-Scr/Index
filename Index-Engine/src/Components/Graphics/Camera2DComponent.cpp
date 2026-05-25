@@ -221,12 +221,21 @@ namespace Index {
 		const float xNdc = (2.0f * pos.x / vpW) - 1.0f;
 		const float yNdc = 1.0f - (2.0f * pos.y / vpH);
 
-		const float zNear = 0.0f, zFar = 100.0f;
-		const float zNdc = -(zFar + zNear) / (zFar - zNear);
+		// Build the projection from the same (vpW, vpH) we just used to
+		// derive NDC. m_ProjMat is cached from m_Viewport's aspect — and
+		// the editor's Game View flow temporarily resizes m_Viewport to
+		// the FBO, then restores it to the OS-window size before scripts
+		// run. Using m_ProjMat here would invert against the OS-window
+		// aspect while NDC was derived against the panel aspect, which
+		// drifts X (and Y, on a width-letterboxed render) any time those
+		// aspects differ.
+		const float aspect = vpW / vpH;
+		const float halfH = m_OrthographicSize * m_Zoom;
+		const float halfW = halfH * aspect;
+		const glm::mat4 projMat = glm::ortho(-halfW, +halfW, -halfH, +halfH, -1.0f, 1.0f);
 
-		const glm::vec4 clip(xNdc, yNdc, zNdc, 1.0f);
-
-		const glm::mat4 vp = m_ProjMat * m_ViewMat;
+		const glm::vec4 clip(xNdc, yNdc, 0.0f, 1.0f);
+		const glm::mat4 vp = projMat * m_ViewMat;
 		const glm::mat4 invVp = glm::inverse(vp);
 
 		glm::vec4 world = invVp * clip;

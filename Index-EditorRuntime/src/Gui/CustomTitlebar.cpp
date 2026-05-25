@@ -1,26 +1,20 @@
-#include "Systems/ImGuiEditorLayer.hpp"
+#include "Gui/CustomTitlebar.hpp"
 
 #include "Collections/Color.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
-#include "Core/Version.hpp"
-#include "Project/IndexProject.hpp"
-#include "Project/ProjectManager.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 
-#include <string>
-
-namespace Index {
+namespace Index::EditorRuntime {
 
 	namespace {
 
-		// Picks the effective background color for the titlebar from
-		// the focused / unfocused / fallback color slots. Returns a
-		// color with alpha = 0 when no override applies (caller skips
-		// the style push entirely so the ImGui theme's WindowBg shows
-		// through).
+		// Picks the effective background color for the titlebar from the
+		// focused / unfocused / fallback color slots. Returns a color with
+		// alpha = 0 when no override applies (caller skips the style push
+		// entirely so the ImGui theme's WindowBg shows through).
 		Color ResolveTitlebarBg(const Window& w, bool focused) {
 			const Color active   = w.GetTitlebarActiveColor();
 			const Color inactive = w.GetTitlebarInactiveColor();
@@ -32,9 +26,8 @@ namespace Index {
 
 		// Icon drawers — drawn via ImDrawList primitives so the titlebar
 		// works regardless of whether Segoe MDL2 / Font Awesome have been
-		// merged into the active ImGui atlas. 5-pixel half-width matches
-		// the icons drawn in the launcher's titlebar; keep them in sync
-		// if either changes.
+		// merged into the active ImGui atlas. Each icon is 10x10 logical
+		// pixels centered in the button rect.
 		constexpr float k_CaptionButtonWidthAt32 = 46.0f;
 		constexpr float k_TitlebarHeightBaseline = 32.0f;
 		constexpr float k_IconHalfW = 5.0f;
@@ -77,6 +70,10 @@ namespace Index {
 				ImVec2(center.x + k_IconHalfW, center.y - k_IconHalfW), color, 1.0f);
 		}
 
+		// Returns the button result. The button itself has no visible label —
+		// the icon is overlaid by the caller via the returned screen-position
+		// rect. Also publishes the button rect as a non-client override so
+		// Win32 lets ImGui receive the click instead of starting a window drag.
 		TitlebarButtonResult TitlebarButton(const char* id, ImVec2 size, ImVec2 viewportOrigin,
 			ImU32 normalFill, ImU32 hoveredFill, ImU32 activeFill) {
 			TitlebarButtonResult result;
@@ -102,20 +99,19 @@ namespace Index {
 
 	}
 
-	float ImGuiEditorLayer::GetCustomTitlebarHeight() const {
+	float GetTitlebarRowHeight() {
 		const Window* window = Window::GetActiveWindow();
 		if (!window || !window->IsCustomTitlebarEnabled()) return 0.0f;
 		if (window->IsFullScreen()) return 0.0f;
 		return static_cast<float>(window->GetTitlebarHeight());
 	}
 
-	void ImGuiEditorLayer::RenderCustomTitlebar() {
+	void RenderTitlebar(const TitlebarConfig& config) {
 		Window* window = Window::GetActiveWindow();
 		if (!window || !window->IsCustomTitlebarEnabled()) return;
-		// Fullscreen: hide the row and clear the caption hit-region so
-		// the entire screen is HTCLIENT (no part of the fullscreen
-		// surface acts as a drag handle). Subclass stays installed —
-		// same HWND across the SetFullScreen toggle.
+		// Fullscreen: hide the row and clear the caption hit-region so no
+		// part of the fullscreen surface acts as a drag handle. The
+		// subclass stays installed across SetFullScreen toggles.
 		if (window->IsFullScreen()) {
 			Window::ResetTitlebarNonClientRects();
 			Window::SetTitlebarCaptionRect(0, 0, 0, 0);
@@ -123,10 +119,12 @@ namespace Index {
 		}
 
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
-		const float titlebarH = static_cast<float>(window->GetTitlebarHeight());
+		const float titlebarH = GetTitlebarRowHeight();
 		if (titlebarH <= 0.0f) return;
 
-		// Clear last frame's overrides; re-publish caption + buttons.
+		// Each frame: clear last frame's button rects so the WndProc doesn't
+		// apply stale non-client overrides. The caption rect is re-published
+		// below.
 		Window::ResetTitlebarNonClientRects();
 		Window::SetTitlebarCaptionRect(
 			0, 0,
@@ -151,9 +149,6 @@ namespace Index {
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 0.0f));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
-		// Background + text color overrides; only push when the spec
-		// actually set a color (alpha > 0). Skipping the push lets the
-		// active ImGui theme's defaults flow through unchanged.
 		const bool focused = glfwGetWindowAttrib(window->GetGLFWWindow(), GLFW_FOCUSED) == GLFW_TRUE;
 		const Color bg = ResolveTitlebarBg(*window, focused);
 		const Color text = window->GetTitlebarTextColor();
@@ -167,20 +162,22 @@ namespace Index {
 			++colorPushes;
 		}
 
-		ImGui::Begin("##EditorTitlebar", nullptr, k_TitlebarFlags);
+		ImGui::Begin("##IndexTitlebar", nullptr, k_TitlebarFlags);
 
-		// Centered title: "Index Editor <version> - <project name>".
-		// Falls back to the engine title if no project is open.
-		std::string title = "Index Editor " + std::string(IDX_VERSION);
-		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-			title += " - " + project->Name;
-		}
+		// Title text — centered (editor) or left-aligned at WindowPadding
+		// default x (launcher). Either way vertically centered against the
+		// row height.
 		{
-			const ImVec2 textSize = ImGui::CalcTextSize(title.c_str());
+			const ImVec2 textSize = ImGui::CalcTextSize(config.Title.c_str());
 			const float yOffset = (titlebarH - textSize.y) * 0.5f;
-			const float xOffset = (viewport->Size.x - textSize.x) * 0.5f;
-			ImGui::SetCursorPos(ImVec2(xOffset, yOffset));
-			ImGui::TextUnformatted(title.c_str());
+			if (config.Centered) {
+				const float xOffset = (viewport->Size.x - textSize.x) * 0.5f;
+				ImGui::SetCursorPos(ImVec2(xOffset, yOffset));
+			}
+			else {
+				ImGui::SetCursorPosY(yOffset);
+			}
+			ImGui::TextUnformatted(config.Title.c_str());
 		}
 
 		// Right-aligned button cluster. Buttons use the Windows caption-
@@ -227,8 +224,9 @@ namespace Index {
 		}
 		ImGui::SameLine(0.0f, 0.0f);
 
-		// Close — routes through RequestQuit so the editor's existing
-		// save-before-quit dialog still fires (same path as Alt+F4).
+		// Close — routes through RequestQuit so layer-installed close
+		// intercepts (e.g. the editor's save-before-quit dialog) still
+		// fire. Same path as Alt+F4.
 		const TitlebarButtonResult closeButton = TitlebarButton("##close", btnSize,
 			viewport->Pos, normalFill, closeHoveredFill, closeActiveFill);
 		if (closeButton.Clicked) {

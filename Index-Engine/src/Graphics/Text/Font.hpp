@@ -2,11 +2,16 @@
 #include "Core/Export.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace Index {
+
+    // Forward-declared so <thread>/<mutex>/<atomic> stay out of this header
+    // (and out of every TU that touches Font). Defined inside Font.cpp.
+    struct FontAsyncBakeState;
 
     // Per-glyph metrics + UV rect into the font's atlas texture.
     // All measurements are in pixels at the font's baked size — callers
@@ -37,7 +42,10 @@ namespace Index {
     // (or, future: a multi-size SDF atlas).
     class INDEX_API Font {
     public:
-        Font() = default;
+        // Out-of-line default ctor + dtor — Font holds a unique_ptr to the
+        // forward-declared FontAsyncBakeState, so member init / teardown
+        // must be compiled in the TU that sees the full struct (Font.cpp).
+        Font();
         ~Font();
 
         Font(const Font&) = delete;
@@ -59,6 +67,30 @@ namespace Index {
         // m_TtfBuffer so the caller's buffer can free at any time.
         bool LoadFromBuffer(const std::string& sourcePath,
             const std::vector<uint8_t>& ttfBuffer, float pixelSize);
+
+        // Begin an off-thread bake: kicks a worker that runs stbtt_PackFontRanges
+        // into a CPU bitmap, then leaves the GPU upload + glyph-table publish for
+        // the main thread to pick up in PollAsyncBake(). Returns false only if
+        // the inputs are invalid or the backend isn't ready — the bake itself
+        // can still fail later (the worker reports back through PollAsyncBake).
+        // While the worker is running, IsLoaded() returns false; callers should
+        // fall back to a default font for that frame (TextRenderer already does
+        // this via ResolveFontAtPixelSize).
+        bool BeginAsyncBake(const std::string& sourcePath,
+            std::vector<uint8_t> ttfBuffer, float pixelSize);
+
+        // Drive a pending async bake forward. Cheap (atomic load) when nothing
+        // is ready. When the worker has finished, this joins it on the main
+        // thread and performs the wgpu::Texture creation + WriteTexture +
+        // glyph-table publish, then returns true. Returns false while the worker
+        // is still running or when no bake is in flight. FontManager calls this
+        // once per frame for every pending slot.
+        bool PollAsyncBake();
+
+        // True between BeginAsyncBake and PollAsyncBake's successful publish (or
+        // the bake's failure). Distinguishes "loading" from "load failed" —
+        // IsLoaded() can be false in both cases.
+        bool IsBakingAsync() const;
 
         bool IsLoaded() const { return m_AtlasTexture != 0; }
 
@@ -108,6 +140,12 @@ namespace Index {
         std::vector<unsigned char> m_StbFontInfoStorage;
 
         std::string m_Filepath;
+
+        // Owned worker state for an in-flight async bake. Non-null only between
+        // BeginAsyncBake and the next successful PollAsyncBake (or Cleanup).
+        // unique_ptr to a forward-declared type keeps <thread>/<atomic>/<mutex>
+        // out of this header.
+        std::unique_ptr<FontAsyncBakeState> m_AsyncBake;
     };
 
 }

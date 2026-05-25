@@ -99,6 +99,7 @@ public static class Application
     /// Quits the application. Only works in build mode, ignored in the editor.
     /// </summary>
     public static void Quit() => InternalCalls.Application_Quit();
+    public static void Reload() => InternalCalls.Application_Reload();
 
     private static string GetLocalApplicationDataPath()
     {

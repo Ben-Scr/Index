@@ -134,7 +134,7 @@ namespace Index {
 		// own roles — these four only affect the background rect.
 		// See ButtonComponent — same TransitionMode + per-state sprite
 		// model.
-		UITransitionMode TransitionMode = UITransitionMode::ColorTint;
+		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;
 
 		Color NormalColor   { 1.00f, 1.00f, 1.00f, 1.0f };
 		Color HoveredColor  { 0.95f, 0.95f, 0.95f, 1.0f };

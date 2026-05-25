@@ -2,6 +2,7 @@
 #include "Project/IndexProject.hpp"
 #include "Project/IndexBuildProfile.hpp"
 #include "Project/ProjectManager.hpp"
+#include "Collections/AspectRatio.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/Directory.hpp"
 #include "Serialization/File.hpp"
@@ -122,6 +123,177 @@ namespace Index {
 			}
 
 			return {};
+		}
+
+		// 64-bit FNV-1a. Cache-key quality, not cryptographic. Used by the
+		// premake-regen skip cache to decide whether the inputs feeding
+		// `premake5 vs2022 --index-project=...` have actually changed since
+		// the last successful regeneration. Lifetime of the stamp file (see
+		// RegenStampPath) is bounded by `bin-int/`, which is git-ignored and
+		// gets wiped by clean builds.
+		constexpr uint64_t k_Fnv1aSeed   = 0xcbf29ce484222325ull;
+		constexpr uint64_t k_Fnv1aPrime  = 0x100000001b3ull;
+
+		uint64_t HashBytesInto(uint64_t seed, const void* data, size_t len) {
+			const auto* bytes = static_cast<const unsigned char*>(data);
+			uint64_t h = seed;
+			for (size_t i = 0; i < len; ++i) {
+				h ^= bytes[i];
+				h *= k_Fnv1aPrime;
+			}
+			return h;
+		}
+
+		uint64_t HashStringInto(uint64_t seed, std::string_view s) {
+			// Mix a separator byte so adjacent strings can't collide by
+			// concatenation (e.g. {"ab","c"} vs {"a","bc"}).
+			seed = HashBytesInto(seed, s.data(), s.size());
+			const unsigned char sep = 0x1f;
+			return HashBytesInto(seed, &sep, 1);
+		}
+
+		uint64_t HashFileContentsInto(uint64_t seed, const std::filesystem::path& path) {
+			std::ifstream in(path, std::ios::binary);
+			if (!in) {
+				// Distinguish "missing" from "empty" so adding/removing a file
+				// actually changes the hash.
+				return HashStringInto(seed, "<missing>");
+			}
+			std::stringstream buf;
+			buf << in.rdbuf();
+			const std::string contents = buf.str();
+			return HashStringInto(seed, contents);
+		}
+
+		uint64_t HashPackageManifestsInto(uint64_t seed, const std::filesystem::path& packagesDir) {
+			std::error_code ec;
+			if (!std::filesystem::exists(packagesDir, ec) || ec) {
+				return HashStringInto(seed, "<no-packages-dir>");
+			}
+			// Sort by directory name so iteration order doesn't depend on the
+			// underlying filesystem.
+			std::vector<std::filesystem::path> manifests;
+			for (const auto& entry : std::filesystem::directory_iterator(packagesDir, ec)) {
+				if (ec) break;
+				if (!entry.is_directory(ec) || ec) continue;
+				const auto manifest = entry.path() / "index-package.lua";
+				if (std::filesystem::exists(manifest, ec) && !ec) {
+					manifests.push_back(manifest);
+				}
+			}
+			std::sort(manifests.begin(), manifests.end());
+			for (const auto& manifest : manifests) {
+				seed = HashStringInto(seed, manifest.parent_path().filename().generic_string());
+				seed = HashFileContentsInto(seed, manifest);
+			}
+			return seed;
+		}
+
+		uint64_t HashEngineSubprojectPremakesInto(uint64_t seed, const std::filesystem::path& parentDir) {
+			std::error_code ec;
+			if (!std::filesystem::exists(parentDir, ec) || ec) return seed;
+			std::vector<std::filesystem::path> hits;
+			for (const auto& entry : std::filesystem::directory_iterator(parentDir, ec)) {
+				if (ec) break;
+				if (!entry.is_directory(ec) || ec) continue;
+				const auto premake = entry.path() / "premake5.lua";
+				if (std::filesystem::exists(premake, ec) && !ec) {
+					hits.push_back(premake);
+				}
+			}
+			std::sort(hits.begin(), hits.end());
+			for (const auto& premake : hits) {
+				seed = HashStringInto(seed, premake.parent_path().filename().generic_string());
+				seed = HashFileContentsInto(seed, premake);
+			}
+			return seed;
+		}
+
+		uint64_t HashLuaTreeInto(uint64_t seed, const std::filesystem::path& root) {
+			std::error_code ec;
+			if (!std::filesystem::exists(root, ec) || ec) return seed;
+			std::vector<std::filesystem::path> luaFiles;
+			for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
+				if (ec) break;
+				if (!entry.is_regular_file(ec) || ec) continue;
+				if (entry.path().extension() == ".lua") {
+					luaFiles.push_back(entry.path());
+				}
+			}
+			std::sort(luaFiles.begin(), luaFiles.end());
+			for (const auto& lua : luaFiles) {
+				const auto rel = std::filesystem::relative(lua, root, ec);
+				seed = HashStringInto(seed, ec ? lua.generic_string() : rel.generic_string());
+				seed = HashFileContentsInto(seed, lua);
+			}
+			return seed;
+		}
+
+		// Returns a 64-bit digest of every input that affects what `premake5
+		// vs2022 --index-project=<projectRoot>` would generate. If two calls
+		// return the same value, the premake invocation would produce identical
+		// .vcxproj / .sln files and can be safely skipped — saving the user a
+		// full Visual Studio recompile on every launcher-driven project open.
+		//
+		// Inputs covered:
+		//   • The project root path itself (different projects yield different
+		//     solutions because the package filter differs).
+		//   • <projectRoot>/index-project.json (packages list, entityBits, etc.).
+		//   • Every <projectRoot>/Packages/<Name>/index-package.lua.
+		//   • Every <engineRoot>/packages/<Name>/index-package.lua.
+		//   • <engineRoot>/premake5.lua and Dependencies.lua.
+		//   • Every .lua under <engineRoot>/premake/.
+		//   • Every <engineRoot>/Index-*/premake5.lua and Tests/*/premake5.lua.
+		uint64_t ComputeRegenInputHash(const std::filesystem::path& engineRoot,
+		                                const std::filesystem::path& projectRoot) {
+			uint64_t h = k_Fnv1aSeed;
+			h = HashStringInto(h, "regen-v1");
+			h = HashStringInto(h, projectRoot.generic_string());
+			h = HashFileContentsInto(h, projectRoot / "index-project.json");
+			h = HashPackageManifestsInto(h, projectRoot / "Packages");
+			h = HashPackageManifestsInto(h, engineRoot / "packages");
+			h = HashFileContentsInto(h, engineRoot / "premake5.lua");
+			h = HashFileContentsInto(h, engineRoot / "Dependencies.lua");
+			h = HashLuaTreeInto(h, engineRoot / "premake");
+			h = HashEngineSubprojectPremakesInto(h, engineRoot);
+			h = HashEngineSubprojectPremakesInto(h, engineRoot / "Tests");
+			return h;
+		}
+
+		std::filesystem::path RegenStampPath(const std::filesystem::path& engineRoot) {
+			// bin-int/ is the premake objdir prefix — already git-ignored and
+			// scoped to per-machine build state. The stamp records only the
+			// hash of the LAST regen; switching between projects forces a
+			// regen anyway because projectRoot is part of the hash.
+			return engineRoot / "bin-int" / ".index-regen-stamp";
+		}
+
+		std::string ReadRegenStamp(const std::filesystem::path& stampPath) {
+			std::ifstream in(stampPath, std::ios::binary);
+			if (!in) return {};
+			std::string contents;
+			std::getline(in, contents);
+			// Trim trailing whitespace (CR from a Windows line ending, stray spaces).
+			while (!contents.empty() && (contents.back() == '\r' || contents.back() == '\n'
+				|| contents.back() == ' ' || contents.back() == '\t')) {
+				contents.pop_back();
+			}
+			return contents;
+		}
+
+		bool WriteRegenStamp(const std::filesystem::path& stampPath, uint64_t hash) {
+			std::error_code ec;
+			std::filesystem::create_directories(stampPath.parent_path(), ec);
+			std::ofstream out(stampPath, std::ios::binary | std::ios::trunc);
+			if (!out) return false;
+			out << std::hex << std::setw(16) << std::setfill('0') << hash << '\n';
+			return out.good();
+		}
+
+		std::string FormatHashHex(uint64_t hash) {
+			std::ostringstream oss;
+			oss << std::hex << std::setw(16) << std::setfill('0') << hash;
+			return oss.str();
 		}
 
 		std::string GetNativeLibraryFilename(const std::string& projectName) {
@@ -545,6 +717,7 @@ endforeach()
 		root.AddMember("buildFullscreen", project.BuildFullscreen);
 		root.AddMember("buildResizable", project.BuildResizable);
 		root.AddMember("buildRunInBackground", project.BuildRunInBackground);
+		root.AddMember("buildAspect", project.BuildAspect);
 		root.AddMember("uiReferenceWidth", project.UIReferenceWidth);
 		root.AddMember("uiReferenceHeight", project.UIReferenceHeight);
 		root.AddMember("uiScaleMatch", project.UIScaleMatch);
@@ -1167,6 +1340,23 @@ endforeach()
 				if (const Json::Value* runInBackgroundValue = root.FindMember("buildRunInBackground")) {
 					project.BuildRunInBackground = runInBackgroundValue->AsBoolOr(true);
 				}
+				if (const Json::Value* buildAspectValue = root.FindMember("buildAspect")) {
+					std::string raw = buildAspectValue->AsStringOr("Free Aspect");
+					// Validate against the shared preset list — typo'd or
+					// stale labels (e.g. an older engine that didn't have
+					// "21:9") fall back to "Free Aspect" so a broken
+					// project file still loads with no enforcement.
+					bool matched = false;
+					for (const auto& preset : k_AspectRatioPresets) {
+						if (raw == preset.Label) { matched = true; break; }
+					}
+					if (!matched) {
+						IDX_CORE_WARN_TAG("Project",
+							"Unknown buildAspect '{}' — falling back to 'Free Aspect'", raw);
+						raw = "Free Aspect";
+					}
+					project.BuildAspect = std::move(raw);
+				}
 				if (const Json::Value* uiRefWidthValue = root.FindMember("uiReferenceWidth")) {
 					project.UIReferenceWidth = std::max(1, uiRefWidthValue->AsIntOr(project.UIReferenceWidth));
 				}
@@ -1762,7 +1952,37 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		IDX_INFO_TAG("IndexProject", "Regenerating engine solution for project: {}", projectRootDir);
+		// Skip the premake invocation when none of its inputs have changed
+		// since the last successful regen. Premake rewrites all .vcxproj
+		// timestamps unconditionally — even on a no-op run — which trips
+		// MSBuild's FastUpToDateCheck and forces Visual Studio to recompile
+		// the entire engine solution on every project open. The hash covers
+		// every file premake reads (project json, package manifests, all
+		// .lua) so a genuine change still triggers regen.
+		const std::filesystem::path engineRootPath(engineRoot);
+		const std::filesystem::path projectRootPath(projectRootDir);
+		const std::filesystem::path solutionPath = engineRootPath / "Index.sln";
+		const std::filesystem::path stampPath = RegenStampPath(engineRootPath);
+
+		const uint64_t inputHash = ComputeRegenInputHash(engineRootPath, projectRootPath);
+		const std::string cachedHash = ReadRegenStamp(stampPath);
+		const std::string currentHash = FormatHashHex(inputHash);
+
+		std::error_code slnEc;
+		const bool solutionPresent = std::filesystem::exists(solutionPath, slnEc) && !slnEc;
+
+		if (solutionPresent && !cachedHash.empty() && cachedHash == currentHash) {
+			result.Succeeded = true;
+			result.ExitCode = 0;
+			result.Output = "Engine solution regeneration skipped: inputs unchanged (hash=" + currentHash + ").";
+			IDX_INFO_TAG("IndexProject", "{}", result.Output);
+			return result;
+		}
+
+		IDX_INFO_TAG("IndexProject", "Regenerating engine solution for project: {} (input hash {} -> {})",
+			projectRootDir,
+			cachedHash.empty() ? std::string("<none>") : cachedHash,
+			currentHash);
 
 		Process::Result processResult = Process::Run({
 			premakePath,
@@ -1776,6 +1996,15 @@ public class GameScript : EntityScript
 
 		if (!result.Succeeded) {
 			IDX_ERROR_TAG("IndexProject", "premake regeneration failed (exit code {}): {}", result.ExitCode, result.Output);
+			return result;
+		}
+
+		if (!WriteRegenStamp(stampPath, inputHash)) {
+			// Non-fatal: missing the stamp just means the next open will do
+			// one extra (redundant) regen. The user-visible behaviour is
+			// still correct.
+			IDX_WARN_TAG("IndexProject", "Could not write regen stamp at {}; next open will re-run premake unnecessarily.",
+				stampPath.generic_string());
 		}
 		return result;
 	}

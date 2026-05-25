@@ -488,6 +488,17 @@ namespace Index {
 	void GuiRenderer::CollectAndDraw(const Scene& scene, const glm::mat4& mvp,
 		float halfW, float halfH)
 	{
+		// Publish any async font bakes that finished since last frame, so a
+		// newly-rasterized atlas can be sampled by this frame's text rather
+		// than waiting one more frame to flip from the default fallback.
+		// TextRenderer::RenderScene also calls this, but nothing in the engine
+		// routes UI text through that entry point (it's only the world-space
+		// Transform2D path) — without this call, async bakes started by
+		// ResolveFontAtPixelSize below would never get a chance to publish
+		// on UI-only scenes, leaving the user's font perpetually stuck on
+		// the default fallback.
+		FontManager::PollAsync();
+
 		entt::registry& registry = const_cast<entt::registry&>(scene.GetRegistry());
 
 		// ── 1. Build hierarchy draw order ────────────────────────────
@@ -1039,6 +1050,7 @@ namespace Index {
 			passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
 
 			wgpu::RenderPassEncoder pass = enc.BeginRenderPass(&passDesc);
+			WebGPUBackend::ApplyCachedViewportToPass(pass);
 			pass.SetPipeline(pipeline);
 			pass.SetVertexBuffer(0, WebGPUSpriteResources::GetQuadVertexBuffer());
 			pass.SetVertexBuffer(1, state.InstanceBuffer);

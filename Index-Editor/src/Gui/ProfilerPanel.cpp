@@ -1,5 +1,7 @@
 #include "Gui/ProfilerPanel.hpp"
 
+#include "Gui/ImGuiImplWebGPU.hpp"
+
 #include <imgui.h>
 
 #ifdef INDEX_PROFILER_ENABLED
@@ -244,6 +246,7 @@ namespace Index {
 		}
 
 		ImGui::SetNextWindowSize(ImVec2(600, 600), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		const bool windowOpen = ImGui::Begin("Profiler", pOpen);
 		// `windowOpen == false` means the window is collapsed (still the
 		// chrome is being drawn, but the body is skipped). Either case
@@ -316,6 +319,7 @@ namespace Index {
 	void ProfilerPanel::Render(bool* pOpen) {
 		if (pOpen && !*pOpen) return;
 		ImGui::SetNextWindowSize(ImVec2(360, 90), ImGuiCond_FirstUseEver);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::Begin("Profiler", pOpen)) {
 			ImGui::TextDisabled("Profiler is disabled in this build.");
 			ImGui::TextDisabled("Rebuild without --no-profiler to enable.");

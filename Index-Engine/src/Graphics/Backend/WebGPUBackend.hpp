@@ -182,6 +182,21 @@ namespace Index::WebGPUBackend {
 	// drawing rather than open a pass on a null view.
 	CurrentTargetInfo BeginRenderToCurrentTarget();
 
+	// Apply the engine's last-set RenderApi::SetViewport rect to a freshly
+	// opened wgpu::RenderPassEncoder. WebGPU's viewport is a per-pass op —
+	// the cached value in WebGPUApi.cpp is dead state until each renderer
+	// explicitly calls pass.SetViewport on its newly-opened pass. Every
+	// engine-internal sprite / UI / text / gizmo / post-process pass calls
+	// this immediately after BeginRenderPass so the runtime aspect-lock
+	// sub-rect (set by Window::UpdateViewport during letterboxing) actually
+	// confines rasterization to the locked aspect.
+	//
+	// Skips automatically when the cached size is degenerate (0×0), which
+	// happens during the first frame before any SetViewport call lands.
+	// ImGui's own passes must NOT use this — ImGui drives its own scissor /
+	// viewport per draw command via ImDrawData.
+	void ApplyCachedViewportToPass(wgpu::RenderPassEncoder& pass);
+
 	// Snapshot/restore the engine's bound-target state. Used by render
 	// passes that need to temporarily redirect to a private intermediate
 	// FBO (PostProcessor's scene FBO) and then put the caller's binding

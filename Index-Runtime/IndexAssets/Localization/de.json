@@ -68,6 +68,8 @@
     "launcher.create.create_button": "Erstellen",
     "launcher.create.working": "Wird ausgeführt...",
     "launcher.create.cancel": "Abbrechen",
+    "launcher.create.init_git": "Git-Repository initialisieren",
+    "launcher.create.init_git.tooltip": "Führt `git init` im neuen Projektordner aus und schreibt eine auf Index zugeschnittene .gitignore. Erfordert git im PATH.",
 
     "launcher.settings.title": "Launcher-Einstellungen",
     "launcher.settings.default_location": "Standard-Projektspeicherort",

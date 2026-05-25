@@ -82,9 +82,9 @@ namespace Index {
 	}
 
 	void Window::SetVsync(bool enabled) {
-		if (s_IsInitialized && glfwGetCurrentContext() != nullptr) {
-			glfwSwapInterval(enabled ? 1 : 0);
-		}
+		// Vsync is owned by the WebGPU swap-chain; see RenderApi::SetVsync.
+		// GLFW is initialised with GLFW_NO_API (Dawn owns the GPU context),
+		// so glfwSwapInterval has no context to act on here.
 		s_IsVsync = enabled;
 		RenderApi::SetVsync(enabled);
 	}
@@ -137,6 +137,11 @@ namespace Index {
 
 	void Window::Create(const WindowSpecification& props) {
 		IDX_ASSERT(s_IsInitialized, IndexErrorCode::NotInitialized, "The Window isn't initialized");
+
+		// Seeded before any viewport math runs so the first
+		// SyncViewportFromFramebuffer / UpdateViewport at create-time
+		// already applies the lock.
+		m_AspectLock = props.AspectLock > 0.0f ? props.AspectLock : 0.0f;
 
 		// WebGPU (Dawn) owns the GPU context. Telling GLFW to skip OpenGL
 		// context creation is mandatory — otherwise GLFW would pick a GL
@@ -809,8 +814,17 @@ namespace Index {
 		if (!RenderApi::IsInitialized() || !s_MainViewport) {
 			return;
 		}
-		const int w = s_MainViewport->GetWidth();
-		const int h = s_MainViewport->GetHeight();
+		// Swap-chain reset always uses the *full* framebuffer dimensions so
+		// the surface covers the whole OS window — without that, an aspect-
+		// locked sub-rect would leave the surround undefined instead of
+		// black-able. The render viewport, in contrast, points at the
+		// logical sub-rect so the camera renders within the locked aspect.
+		const int fbW = s_MainViewport->GetFramebufferWidth();
+		const int fbH = s_MainViewport->GetFramebufferHeight();
+		const int x   = s_MainViewport->GetOffsetX();
+		const int y   = s_MainViewport->GetOffsetY();
+		const int w   = s_MainViewport->GetWidth();
+		const int h   = s_MainViewport->GetHeight();
 		// Drives BOTH the swap-chain reset on the GLFW framebuffer's new
 		// size AND the default view's rect. Without the explicit
 		// OnWindowResize call, SetViewport-only would miss the reset
@@ -820,8 +834,8 @@ namespace Index {
 		// viewport but leave the swap chain at its initial resolution
 		// (visible as "editor renders only into the top-left corner of
 		// the OS window").
-		RenderApi::OnWindowResize(w, h);
-		RenderApi::SetViewport(0, 0, w, h);
+		RenderApi::OnWindowResize(fbW, fbH);
+		RenderApi::SetViewport(x, y, w, h);
 	}
 
 	void Window::SyncViewportFromFramebuffer() {
@@ -829,17 +843,48 @@ namespace Index {
 			return;
 		}
 
-		int width = 0;
-		int height = 0;
-		glfwGetFramebufferSize(m_GLFWwindow, &width, &height);
+		int fbW = 0;
+		int fbH = 0;
+		glfwGetFramebufferSize(m_GLFWwindow, &fbW, &fbH);
 
-		if (!s_MainViewport) {
-			s_MainViewport = std::make_unique<Viewport>(width, height);
-			return;
+		// Compute the logical sub-rect within the framebuffer. The same math
+		// the editor's Game View panel uses (ImGuiEditorLayerViewport letter-
+		// box block); the only difference is the target rect — full frame-
+		// buffer here, ImGui content region there.
+		int subW = fbW > 0 ? fbW : 1;
+		int subH = fbH > 0 ? fbH : 1;
+		int offsetX = 0;
+		int offsetY = 0;
+		if (m_AspectLock > 0.0f && fbW > 0 && fbH > 0) {
+			const float fbAspect = static_cast<float>(fbW) / static_cast<float>(fbH);
+			if (fbAspect > m_AspectLock) {
+				// Pillarbox: shrink width, keep full height.
+				subW = static_cast<int>(std::round(static_cast<float>(fbH) * m_AspectLock));
+				subH = fbH;
+			} else {
+				// Letterbox: keep full width, shrink height.
+				subW = fbW;
+				subH = static_cast<int>(std::round(static_cast<float>(fbW) / m_AspectLock));
+			}
+			if (subW < 1) subW = 1;
+			if (subH < 1) subH = 1;
+			offsetX = (fbW - subW) / 2;
+			offsetY = (fbH - subH) / 2;
 		}
 
-		s_MainViewport->SetWidth(width);
-		s_MainViewport->SetHeight(height);
+		if (!s_MainViewport) {
+			s_MainViewport = std::make_unique<Viewport>(subW, subH);
+		}
+		s_MainViewport->SetLetterboxedSubRect(fbW, fbH, offsetX, offsetY, subW, subH);
+	}
+
+	void Window::SetAspectLock(float aspect) {
+		m_AspectLock = aspect > 0.0f ? aspect : 0.0f;
+		// Re-derive the sub-rect from the current framebuffer size and
+		// re-arm the render viewport so the change is visible without
+		// waiting for the next OS resize event.
+		SyncViewportFromFramebuffer();
+		UpdateViewport();
 	}
 
 	void Window::SetTitlebarCaptionRect(int x, int y, int w, int h) {

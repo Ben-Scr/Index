@@ -7,6 +7,7 @@
 #include "Scene/SceneDefinition.hpp"
 #include "Scene/SceneManager.hpp"
 
+#include <Collections/AspectRatio.hpp>
 #include <Scene/EntityHelper.hpp>
 #include <Serialization/SceneSerializer.hpp>
 #include <Serialization/Path.hpp>
@@ -56,6 +57,10 @@ public:
 			config.WindowSpecification.MinHeight = project->BuildMinHeight;
 			config.WindowSpecification.MaxWidth  = project->BuildMaxWidth;
 			config.WindowSpecification.MaxHeight = project->BuildMaxHeight;
+			// Resolves the stored preset label ("16:9" etc.) to a float
+			// aspect. "Free Aspect" / unknown labels resolve to 0.0f
+			// which the Window treats as "no lock".
+			config.WindowSpecification.AspectLock = AspectRatioFromLabel(project->BuildAspect);
 			SetRunInBackground(project->BuildRunInBackground);
 		} else {
 			config.WindowSpecification = WindowSpecification(800, 800, title, true, true, false);

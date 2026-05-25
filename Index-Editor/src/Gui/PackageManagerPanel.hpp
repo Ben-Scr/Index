@@ -27,6 +27,14 @@ namespace Index {
 		void Shutdown();
 		void Render();
 
+		// Cloud-install introspection — surfaced so the editor's unified
+		// loading popup (Win32BuildProgressWindow) can show a progress
+		// window without the panel depending on it directly.
+		bool IsCloudInstallRunning() const;
+		// Snapshots stage + progress under the task mutex. Returns false if
+		// the task isn't running (out-params left untouched).
+		bool TryGetCloudInstallProgress(std::string& outStage, float& outProgress) const;
+
 	private:
 		// ── Top-level tabs ──────────────────────────────────────────────────────────
 		void RenderSearchPackagesTab();

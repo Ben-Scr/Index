@@ -118,7 +118,7 @@ namespace Index {
 
 		// Apply the per-state visual to a widget's resolved image based
 		// on TransitionMode:
-		//   ColorTint  → write image.Color, leave the texture alone.
+		//   ColorSwap  → write image.Color, leave the texture alone.
 		//   SpriteSwap → swap image.TextureAssetId / TextureHandle for
 		//                the resolved per-state sprite, leave Color alone.
 		//   None       → no-op; the user owns the visual.
@@ -134,7 +134,7 @@ namespace Index {
 			UUID disabledS, UUID focusedS)
 		{
 			switch (mode) {
-			case UITransitionMode::ColorTint:
+			case UITransitionMode::ColorSwap:
 				image.Color = ResolveStateTint(normalC, hoveredC, pressedC,
 					disabledC, focusedC, interact);
 				return;
@@ -156,7 +156,7 @@ namespace Index {
 		// TextRenderer — the preset is one valid setup, not a
 		// requirement. SpriteSwap on a text-only target is a no-op
 		// (text glyphs aren't textures) so the colour path still runs
-		// when ColorTint is the active mode.
+		// when ColorSwap is the active mode.
 		void ApplyWidgetVisualToEntity(entt::registry& registry, EntityHandle target,
 			const InteractableComponent& interact,
 			UITransitionMode mode,
@@ -173,7 +173,7 @@ namespace Index {
 				return;
 			}
 			if (auto* txt = registry.try_get<TextRendererComponent>(target)) {
-				if (mode == UITransitionMode::ColorTint) {
+				if (mode == UITransitionMode::ColorSwap) {
 					txt->Color = ResolveStateTint(normalC, hoveredC, pressedC,
 						disabledC, focusedC, interact);
 				}
@@ -1475,9 +1475,9 @@ namespace Index {
 
 		{
 		INDEX_PROFILE_SCOPE("UIEvent.Visuals");
-		// ── 5. Widget visual state (color tint OR sprite swap) ──────
+		// ── 5. Widget visual state (color swap OR sprite swap) ──────
 		// Each widget's TransitionMode picks between the two paths:
-		// ColorTint writes per-state Color, SpriteSwap rewrites the
+		// ColorSwap writes per-state Color, SpriteSwap rewrites the
 		// ImageComponent's TextureAssetId / TextureHandle for the
 		// resolved state. None opts out entirely so user code can
 		// drive the visual.

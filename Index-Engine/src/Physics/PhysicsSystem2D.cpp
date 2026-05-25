@@ -6,6 +6,7 @@
 #include <Components/Physics/CircleCollider2DComponent.hpp>
 #include <Components/Physics/PolygonCollider2DComponent.hpp>
 #include <Components/General/Transform2DComponent.hpp>
+#include <Components/General/HierarchyComponent.hpp>
 #include <Components/Tags.hpp>
 
 #include "Physics/PhysicsSystem2D.hpp"
@@ -24,6 +25,33 @@ namespace Index {
 	std::optional<Box2DWorld> PhysicsSystem2D::s_MainWorld;
 	std::optional<IndexPhysicsWorld2D> PhysicsSystem2D::s_IndexWorld;
 
+	namespace {
+		// Refresh tf.Position/Rotation/Scale from LocalPosition/LocalRotation/LocalScale
+		// for a body-owned entity. TransformHierarchySystem deliberately skips body-owned
+		// entities (physics is authoritative for their world transform in play mode), so
+		// without this step a user editing Position via the inspector — which writes only
+		// LocalPosition through Transform2DComponent::SetPosition — would leave tf.Position
+		// stale; rb.SetTransform(tf) below would then push the body's own stale position
+		// right back to the body, silently discarding the edit. Mirrors the composition
+		// the C# Transform2D_SetLocalPosition binding (ScriptBindings.cpp) already does.
+		void ComposeBodyOwnedWorldFromLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf) {
+			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+			const EntityHandle parent = hierarchy ? hierarchy->Parent : entt::null;
+			const Transform2DComponent* parentTf = (parent != entt::null)
+				? registry.try_get<Transform2DComponent>(parent) : nullptr;
+			if (!parentTf) {
+				tf.Position = tf.LocalPosition;
+				tf.Rotation = tf.LocalRotation;
+				tf.Scale = tf.LocalScale;
+				return;
+			}
+			tf.Position = parentTf->TransformPoint(tf.LocalPosition);
+			tf.Rotation = parentTf->Rotation + tf.LocalRotation;
+			tf.Scale = { parentTf->Scale.x * tf.LocalScale.x,
+						 parentTf->Scale.y * tf.LocalScale.y };
+		}
+	}
+
 	void PhysicsSystem2D::Initialize() {
 		s_MainWorld.emplace();
 		s_IndexWorld.emplace();
@@ -37,6 +65,20 @@ namespace Index {
 		// collider would lag a frame behind the transform.
 		SceneManager::Get().ForeachLoadedScene([](Scene& scene) {
 			auto& registry = scene.GetRegistry();
+
+			// Refresh World* from Local* for body-owned entities BEFORE the
+			// collider / body sync reads tf.Position and tf.Scale.
+			// TransformHierarchySystem skips body-owned entities, so without
+			// this pass an inspector edit (which writes only LocalPosition /
+			// LocalScale via Transform2DComponent::SetPosition / SetScale)
+			// would leave the world snapshot stale, and the loops below would
+			// either short-circuit (collider scale unchanged) or push the
+			// body's own stale position right back into the body.
+			for (auto [ent, tf] : registry.view<Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+				if (!tf.IsDirty()) continue;
+				if (!registry.any_of<Rigidbody2DComponent, FastBody2DComponent>(ent)) continue;
+				ComposeBodyOwnedWorldFromLocal(registry, ent, tf);
+			}
 
 			for (auto [ent, box, tf] : registry.view<BoxCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
 				if (tf.IsDirty() && box.IsValid()) {

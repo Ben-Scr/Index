@@ -17,7 +17,8 @@ namespace Index {
 
 		if (scroll != 0.0f) {
 			float zoomDelta = -scroll * ZoomSpeed * 0.1f;
-			OrthographicSize = Max(0.5f, OrthographicSize + zoomDelta * OrthographicSize);
+			OrthographicSize = Clamp(OrthographicSize + zoomDelta * OrthographicSize,
+				k_MinOrthographicSize, k_MaxOrthographicSize);
 			UpdateProjection();
 		}
 

@@ -1570,9 +1570,42 @@ namespace Index {
 				RemoveEntityIdentityMembers(entityValue);
 			}
 
-			EntityHandle handle = DeserializeFullEntity(scene, entityValue, origin, prefabGuid);
+			// Per-entity origin auto-detect for the clipboard / generic-entity
+			// path (caller passed Scene + prefabGuid==0). The persistent
+			// scene-load path reads Origin via DeserializeEntity (singular)
+			// before getting here, so only the entity-tree paths needed this.
+			// Without it, duplicating / pasting a prefab instance silently
+			// demoted the duplicate to a plain scene entity because Origin /
+			// PrefabGUID never reached DeserializeFullEntity.
+			EntityOrigin entityOrigin = origin;
+			uint64_t entityPrefabGuid = prefabGuid;
+			if (origin == EntityOrigin::Scene && prefabGuid == 0) {
+				const std::string originStr = GetStringMember(sourceEntityValue, "Origin", "");
+				if (!originStr.empty() && EntityOriginFromString(originStr) == EntityOrigin::Prefab) {
+					const uint64_t detectedPrefabGuid = GetUInt64Member(sourceEntityValue, "PrefabGUID", 0);
+					if (detectedPrefabGuid != 0) {
+						entityOrigin = EntityOrigin::Prefab;
+						entityPrefabGuid = detectedPrefabGuid;
+					}
+				}
+			}
+
+			EntityHandle handle = DeserializeFullEntity(scene, entityValue, entityOrigin, entityPrefabGuid);
 			if (handle == entt::null) {
 				continue;
+			}
+
+			// Restore the prefab source-entity link from the clipboard JSON.
+			// DeserializeFullEntity seeds SourceEntityId from the entity's
+			// `uuid` field, but the clipboard's uuid is a sequential clone-id
+			// (1, 2, 3...), NOT the original source-tree id — using it would
+			// scramble override tracking on the duplicate.
+			if (entityOrigin == EntityOrigin::Prefab
+				&& scene.HasComponent<PrefabInstanceComponent>(handle)) {
+				const uint64_t sourceEntityId = GetUInt64Member(sourceEntityValue, "SourceEntityId", 0);
+				if (sourceEntityId != 0) {
+					scene.GetComponent<PrefabInstanceComponent>(handle).SourceEntityId = sourceEntityId;
+				}
 			}
 
 			if (root == entt::null) {
@@ -2197,23 +2230,71 @@ namespace Index {
 		}
 
 		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
-		Value prefabEntityValue;
-		if (prefabGuid == 0 || !LoadPrefabEntityValue(prefabGuid, prefabEntityValue)) {
+		if (prefabGuid == 0) {
 			return entt::null;
 		}
 
-		Value replacementValue;
+		// Empty path: full revert. Rebuild the entire prefab subtree from
+		// the on-disk source so child entities come back too — the old
+		// single-DeserializeFullEntity path lost every child, leaving a
+		// childless husk where a hierarchy used to be. Mirrors the
+		// destroy + rebuild + identity-restore dance from
+		// RefreshPrefabInstance so saved scene refs and parent links don't
+		// dangle. Operates on the prefab ROOT regardless of which entity
+		// in the subtree the user clicked Revert All from.
 		if (overridePath.empty()) {
-			replacementValue = prefabEntityValue;
-		}
-		else {
-			replacementValue = SerializeEntityFull(scene, entity);
-			RemoveEntityIdentityMembers(replacementValue);
-
-			const Value* baseValue = GetOverrideValueAtPath(prefabEntityValue, overridePath);
-			if (!baseValue || !ApplyOverridePath(replacementValue, overridePath, *baseValue)) {
+			EntityHandle root = GetPrefabInstanceRoot(scene, entity);
+			if (root == entt::null) {
 				return entt::null;
 			}
+
+			PrefabDefinition definition;
+			if (!LoadPrefabDefinition(prefabGuid, definition) || definition.Entities.empty()) {
+				return entt::null;
+			}
+
+			auto& registry = scene.GetRegistry();
+			uint64_t preservedInstanceUuid = 0;
+			if (registry.all_of<UUIDComponent>(root)) {
+				preservedInstanceUuid = static_cast<uint64_t>(registry.get<UUIDComponent>(root).Id);
+			}
+			EntityHandle preservedParent = entt::null;
+			if (registry.all_of<HierarchyComponent>(root)) {
+				preservedParent = registry.get<HierarchyComponent>(root).Parent;
+			}
+
+			scene.DestroyEntity(root);
+			const EntityHandle freshRoot =
+				DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+			if (freshRoot == entt::null) {
+				return entt::null;
+			}
+
+			if (preservedInstanceUuid != 0 && registry.all_of<UUIDComponent>(freshRoot)) {
+				registry.get<UUIDComponent>(freshRoot).Id = UUID(preservedInstanceUuid);
+			}
+			if (preservedParent != entt::null && registry.valid(preservedParent)) {
+				scene.GetEntity(freshRoot).SetParent(scene.GetEntity(preservedParent));
+			}
+
+			scene.MarkDirty();
+			return freshRoot;
+		}
+
+		// Non-empty path: single-field revert on `entity`. Restores just
+		// that one field to the source value, preserving every other
+		// override on the entity (and on the rest of the subtree).
+		Value prefabEntityValue;
+		if (!LoadPrefabEntityValue(prefabGuid, prefabEntityValue)) {
+			return entt::null;
+		}
+
+		Value replacementValue = SerializeEntityFull(scene, entity);
+		RemoveEntityIdentityMembers(replacementValue);
+
+		const Value* baseValue = GetOverrideValueAtPath(prefabEntityValue, overridePath);
+		if (!baseValue || !ApplyOverridePath(replacementValue, overridePath, *baseValue)) {
+			return entt::null;
 		}
 
 		RemoveEntityIdentityMembers(replacementValue);
@@ -2225,6 +2306,68 @@ namespace Index {
 		scene.DestroyEntity(entity);
 		scene.MarkDirty();
 		return replacement;
+	}
+
+	EntityHandle SceneSerializer::GetPrefabInstanceRoot(Scene& scene, EntityHandle entity) {
+		if (entity == entt::null || !scene.IsValid(entity)) {
+			return entt::null;
+		}
+		if (scene.GetEntityOrigin(entity) != EntityOrigin::Prefab) {
+			return entt::null;
+		}
+
+		auto& registry = scene.GetRegistry();
+		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
+		if (prefabGuid == 0) {
+			return entt::null;
+		}
+
+		// PrefabInstanceComponent is only attached to the root. If we have
+		// it, we're already there.
+		if (registry.all_of<PrefabInstanceComponent>(entity)) {
+			return entity;
+		}
+
+		// Otherwise climb the hierarchy until we find an ancestor with
+		// PrefabInstanceComponent + matching PrefabGUID. A depth cap protects
+		// against pathological / corrupted parent chains (cycles would
+		// otherwise hang the inspector this is called from every frame).
+		constexpr int k_MaxAncestorWalk = 1024;
+		EntityHandle current = entity;
+		for (int i = 0; i < k_MaxAncestorWalk; ++i) {
+			if (!registry.all_of<HierarchyComponent>(current)) {
+				return entt::null;
+			}
+			const EntityHandle parent = registry.get<HierarchyComponent>(current).Parent;
+			if (parent == entt::null || !registry.valid(parent)) {
+				return entt::null;
+			}
+			if (registry.all_of<PrefabInstanceComponent>(parent)
+				&& static_cast<uint64_t>(scene.GetPrefabGUID(parent)) == prefabGuid) {
+				return parent;
+			}
+			current = parent;
+		}
+		return entt::null;
+	}
+
+	bool SceneSerializer::HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity) {
+		const EntityHandle root = GetPrefabInstanceRoot(scene, entity);
+		if (root == entt::null) {
+			return false;
+		}
+
+		const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(root));
+		PrefabDefinition definition;
+		if (!LoadPrefabDefinition(prefabGuid, definition) || definition.Entities.empty()) {
+			// Orphan / unresolvable source — no overrides we can act on.
+			return false;
+		}
+
+		Value rootOverrides;
+		Value entityOverrides;
+		BuildPrefabInstanceOverrideSet(scene, root, definition, rootOverrides, entityOverrides);
+		return !rootOverrides.GetObject().empty() || !entityOverrides.GetObject().empty();
 	}
 
 	EntityHandle SceneSerializer::RefreshPrefabInstance(Scene& scene, EntityHandle existing,

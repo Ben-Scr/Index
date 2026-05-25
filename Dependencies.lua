@@ -16,6 +16,7 @@ IncludeDir["Glad"] = "External/glad/include"
 IncludeDir["DotNet"] = "External/dotnet"
 IncludeDir["IndexEngine"] = "Index-Engine/src"
 IncludeDir["IndexEngineLegacy"] = "Index-Engine/src"
+IncludeDir["IndexEditorRuntime"] = "Index-EditorRuntime/src"
 IncludeDir["Tracy"] = "External/tracy/public"
 
 local isWindowsTarget = os.target() == "windows"
@@ -319,10 +320,17 @@ Dependency["EngineCoreAllModules"] = MergeDependencies(
 -- Explicit legacy/full-module compatibility path for consumers that opt into INDEX_ALL_MODULES.
 Dependency["EngineCoreLegacy"] = Dependency["EngineCoreAllModules"]
 
+-- NOTE: `EditorRuntimeCommon` is re-defined in the root `premake5.lua`
+-- (after this file is loaded), where it picks up `Index-EditorRuntime`
+-- in its DependsOn/Links list. This earlier definition exists only for
+-- compatibility with consumers that still resolve the dep set during
+-- Dependencies.lua load order; the root file's definition supersedes
+-- it at premake-run time.
 Dependency["EditorRuntimeCommon"] = MergeDependencies(
     {
-        DependsOn = { "Index-Engine" },
-        Links = { "Index-Engine" }
+        IncludeDirs = { "%{IncludeDir.IndexEditorRuntime}" },
+        DependsOn = { "Index-Engine", "Index-EditorRuntime" },
+        Links = { "Index-Engine", "Index-EditorRuntime" }
     },
     Dependency["EngineCoreAllModules"]
 )

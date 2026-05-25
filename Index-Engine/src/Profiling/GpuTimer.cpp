@@ -229,6 +229,11 @@ namespace Index {
 				const uint64_t deltaNs = ts[1] > ts[0] ? ts[1] - ts[0] : 0;
 				const float    deltaMs = static_cast<float>(deltaNs) * 1.0e-6f;
 				Profiler::PushSample("GPU", deltaMs);
+				// Mirror to Tracy as a plot — the standalone viewer has no GPU
+				// lane today (no TracyWebGPU integration), so a CPU-side plot
+				// is the cheapest way to surface GPU frame time alongside the
+				// CPU zones until a proper GPU zone bridge is built.
+				TracyPlot("GPU.ms", double(deltaMs));
 			}
 			s.Readback.Unmap();
 			s.State = SlotState::Empty;

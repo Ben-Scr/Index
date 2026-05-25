@@ -75,8 +75,23 @@ namespace Index::ImGuiImplWebGPU {
 		//     the viewport has NoTaskBarIcon — gives the chunky red close
 		//     button. We use owner-window relationship to hide from the
 		//     taskbar instead).
-		//   * Pick chrome based on the viewport's NoAutoMerge flag:
-		//       dialog (helper-marked):  WS_CAPTION + WS_SYSMENU + WS_THICKFRAME
+		//   * Strip WS_EX_APPWINDOW (which GLFW unconditionally sets in
+		//     _glfwCreateNativeWindow on Win32). Without removing it, the
+		//     window forces itself into the taskbar EVEN IF it has an
+		//     owner — the APPWINDOW flag overrides the default "owned
+		//     windows are hidden from taskbar" rule. With it stripped and
+		//     the owner relationship in place, secondary viewports merge
+		//     into the launcher/editor's single taskbar entry (Godot-
+		//     style "one app, many windows").
+		//   * Pick chrome based on the viewport's flags:
+		//       popup  (NoDecoration):   WS_POPUP only — no caption, no border,
+		//                                no thick frame. Combo dropdowns,
+		//                                tooltips, menus, drag previews. ImGui
+		//                                sets NoDecoration on all of these and
+		//                                expects the OS window to be borderless
+		//                                so its own rounded popup background
+		//                                is what the user sees.
+		//       dialog (NoAutoMerge):    WS_CAPTION + WS_SYSMENU + WS_THICKFRAME
 		//                                (just close, no min/max — matches a
 		//                                short modal form)
 		//       panel  (undocked window): WS_CAPTION + WS_SYSMENU + WS_THICKFRAME
@@ -86,7 +101,7 @@ namespace Index::ImGuiImplWebGPU {
 		//                                tool windows)
 		//   * SWP_FRAMECHANGED so Windows re-evaluates the non-client area.
 		//   * DWM immersive dark mode so the titlebar matches the launcher/
-		//     editor's dark theme.
+		//     editor's dark theme (skipped for popups — no titlebar to tint).
 		//
 		// Called from both MultiViewport_CreateWindow (initial chrome) and
 		// MultiViewport_ShowWindow (re-applied each show — imgui_impl_glfw's
@@ -98,13 +113,27 @@ namespace Index::ImGuiImplWebGPU {
 			const bool isDialog =
 				viewport != nullptr &&
 				(viewport->Flags & ImGuiViewportFlags_NoAutoMerge) != 0;
+			// ImGui sets NoDecoration on combo popups, tooltips, menus, and
+			// drag previews — anything that should look like a transient
+			// floating UI element, not an OS window. Without this branch we
+			// were adding WS_CAPTION + WS_THICKFRAME unconditionally, giving
+			// every combo dropdown and tooltip a real Win32 titlebar + the
+			// white thick-frame border, which is what the user was reporting.
+			const bool noDecoration =
+				viewport != nullptr &&
+				(viewport->Flags & ImGuiViewportFlags_NoDecoration) != 0;
 
 			LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
 			exStyle &= ~WS_EX_TOOLWINDOW;
+			exStyle &= ~WS_EX_APPWINDOW;
 			SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
 
 			LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-			if (isDialog) {
+			if (noDecoration) {
+				style &= ~(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME |
+					WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_BORDER | WS_DLGFRAME);
+				style |= WS_POPUP;
+			} else if (isDialog) {
 				style |= WS_CAPTION | WS_SYSMENU | WS_THICKFRAME;
 				style &= ~(WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
 			} else {
@@ -117,12 +146,17 @@ namespace Index::ImGuiImplWebGPU {
 				SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE |
 				SWP_NOZORDER | SWP_NOACTIVATE);
 
-			BOOL useDarkMode = TRUE;
-			DwmSetWindowAttribute(
-				hwnd,
-				DWMWA_USE_IMMERSIVE_DARK_MODE,
-				&useDarkMode,
-				sizeof(useDarkMode));
+			// Immersive dark mode only matters for chromed windows — popups
+			// have no titlebar to tint. Skipping the DwmSetWindowAttribute
+			// call also avoids a one-frame visual hiccup on transient popups.
+			if (!noDecoration) {
+				BOOL useDarkMode = TRUE;
+				DwmSetWindowAttribute(
+					hwnd,
+					DWMWA_USE_IMMERSIVE_DARK_MODE,
+					&useDarkMode,
+					sizeof(useDarkMode));
+			}
 		}
 #endif
 
@@ -315,6 +349,15 @@ namespace Index::ImGuiImplWebGPU {
 
 	namespace {
 
+		// Forward declarations so MultiViewport_CreateWindow below can wire
+		// up the refresh callback (defined further down — it calls the
+		// render+swap pair).
+#if defined(IDX_PLATFORM_WINDOWS)
+		void MultiViewport_RenderWindow(ImGuiViewport* viewport, void* render_arg);
+		void MultiViewport_SwapBuffers(ImGuiViewport* viewport, void* render_arg);
+		void MultiViewport_RefreshCallback(GLFWwindow* glfwWindow);
+#endif
+
 		void MultiViewport_CreateWindow(ImGuiViewport* viewport) {
 			void* hwnd = viewport->PlatformHandleRaw;
 			if (!hwnd) {
@@ -419,6 +462,29 @@ namespace Index::ImGuiImplWebGPU {
 				DWMWA_USE_IMMERSIVE_DARK_MODE,
 				&useDarkMode,
 				sizeof(useDarkMode));
+
+			// (4) Install GLFW window-refresh callback so we re-present
+			// during Win32's modal sizing loop (WM_ENTERSIZEMOVE..WM_EXIT-
+			// SIZEMOVE). The main thread is blocked in DefWindowProc during
+			// that loop, so our normal frame loop doesn't run, and the OS
+			// just stretches the last-rendered framebuffer to fit the new
+			// window size — the "UI gets stretched while dragging" artifact.
+			// Windows still dispatches WM_PAINT periodically inside the
+			// modal loop, which GLFW routes to this callback. We use it to
+			// reconfigure the WebGPU surface to the current size and
+			// re-present the viewport's last DrawData. Content stays "old"
+			// (ImGui doesn't re-layout from here — that would need a full
+			// frame), but at correct geometry: any new space created by
+			// growing the window appears as the clear color instead of as
+			// stretched bitmap.
+			// imgui_impl_glfw does not install a refresh callback, so we
+			// don't have to chain — we own this slot.
+			GLFWwindow* viewportGlfw =
+				static_cast<GLFWwindow*>(viewport->PlatformHandle);
+			if (viewportGlfw) {
+				glfwSetWindowRefreshCallback(viewportGlfw,
+					MultiViewport_RefreshCallback);
+			}
 #endif
 		}
 
@@ -500,6 +566,64 @@ namespace Index::ImGuiImplWebGPU {
 			WebGPUBackend::PresentViewportSurface(vs);
 		}
 
+#if defined(IDX_PLATFORM_WINDOWS)
+		// GLFW window-refresh callback installed on every viewport HWND
+		// in MultiViewport_CreateWindow. Fires on WM_PAINT, including
+		// during Win32's modal sizing/moving loop when the main thread
+		// would otherwise be blocked in DefWindowProc and our normal
+		// frame loop wouldn't run. Without this, dragging a viewport
+		// edge shows the last-rendered framebuffer stretched to the new
+		// window size. With this, the surface is reconfigured to the
+		// current size and the last DrawData is re-presented — content
+		// stays "old layout" (we don't re-run ImGui::NewFrame from here,
+		// that would need full app cooperation), but at correct geometry.
+		void MultiViewport_RefreshCallback(GLFWwindow* glfwWindow) {
+			// Resolve the ImGuiViewport for this GLFW handle. ImGui's
+			// FindViewportByPlatformHandle matches against PlatformHandle,
+			// which imgui_impl_glfw sets to the GLFWwindow*.
+			SyncImGuiContextFromBridge();
+			if (ImGui::GetCurrentContext() == nullptr) return;
+			ImGuiViewport* viewport =
+				ImGui::FindViewportByPlatformHandle(glfwWindow);
+			if (!viewport || !viewport->RendererUserData) return;
+			// First-frame guard: no DrawData yet means the viewport has
+			// never completed a render. Skip — nothing to re-present.
+			if (!viewport->DrawData) return;
+
+			int w = 0;
+			int h = 0;
+			glfwGetWindowSize(glfwWindow, &w, &h);
+			if (w <= 0 || h <= 0) return;
+
+			// Shrink-guard: the cached DrawData's scissor rects reference
+			// positions inside its original DisplaySize. If we render it
+			// onto a smaller surface (user is dragging the window edge
+			// INWARD), Dawn validation fires:
+			//   "Scissor rect ... is not contained in the render area
+			//    dimensions {...}"
+			// On growth the scissor stays inside bounds (the render area
+			// is bigger than the scissor source), so growth is safe.
+			// On shrink: skip the re-render and fall back to the OS
+			// scaling the existing surface. The next normal frame after
+			// the modal loop ends will re-layout for the smaller size.
+			const int drawW =
+				static_cast<int>(viewport->DrawData->DisplaySize.x);
+			const int drawH =
+				static_cast<int>(viewport->DrawData->DisplaySize.y);
+			if (w < drawW || h < drawH) return;
+
+			// Growth path: reconfigure the WebGPU surface to the new
+			// (larger) size and re-present.
+			auto* vs = static_cast<WebGPUBackend::ViewportSurface*>(
+				viewport->RendererUserData);
+			WebGPUBackend::ResizeViewportSurface(
+				vs, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+
+			MultiViewport_RenderWindow(viewport, nullptr);
+			MultiViewport_SwapBuffers(viewport, nullptr);
+		}
+#endif
+
 		// Wrapper around imgui_impl_glfw's Platform_ShowWindow that fixes
 		// two things the upstream backend gets wrong for our use case:
 		//
@@ -513,14 +637,19 @@ namespace Index::ImGuiImplWebGPU {
 		//      Owner relationship (set in MultiViewport_CreateWindow) keeps
 		//      the popup out of the taskbar without needing WS_EX_TOOLWINDOW.
 		//
-		//   2. No auto-focus. GLFW creates viewport windows with
+		//   2. No auto-focus for dialogs. GLFW creates viewport windows with
 		//      GLFW_FOCUSED=false / GLFW_FOCUS_ON_SHOW=false so they don't
 		//      steal focus during routine dock/undock. For modal dialogs
 		//      opened by an explicit button click this is the wrong default:
 		//      the user expects to start typing into the dialog immediately.
 		//      SetForegroundWindow is allowed here because the recent user-
 		//      input click that triggered the open grants us the foreground-
-		//      steal permission Windows requires.
+		//      steal permission Windows requires. ImGui marks transient UI
+		//      that must NOT take focus (tooltips, menus, combo popups, drag
+		//      previews) with ImGuiViewportFlags_NoFocusOnAppearing — we
+		//      honor that flag so hovering an item inside a secondary
+		//      dialog doesn't yank focus back to the main window when its
+		//      tooltip viewport appears.
 		void MultiViewport_ShowWindow(ImGuiViewport* viewport) {
 			// Chain to imgui_impl_glfw first — it actually shows the GLFW
 			// window (and re-applies WS_EX_TOOLWINDOW we're about to undo).
@@ -543,8 +672,15 @@ namespace Index::ImGuiImplWebGPU {
 			// notification; SetFocus routes keystrokes to the new HWND.
 			// The recent-user-input click that triggered the open grants
 			// us the foreground-steal permission Windows requires.
-			SetForegroundWindow(hwnd);
-			SetFocus(hwnd);
+			// Skip both for viewports ImGui flagged NoFocusOnAppearing —
+			// those are transient (tooltip, menu, combo, drag preview) and
+			// must leave keyboard focus on whatever the user was using.
+			const bool noFocusOnAppearing =
+				(viewport->Flags & ImGuiViewportFlags_NoFocusOnAppearing) != 0;
+			if (!noFocusOnAppearing) {
+				SetForegroundWindow(hwnd);
+				SetFocus(hwnd);
+			}
 #endif
 		}
 

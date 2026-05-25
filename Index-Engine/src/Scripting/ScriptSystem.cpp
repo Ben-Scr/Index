@@ -745,6 +745,7 @@ namespace Index {
 			// worker has signalled completion.
 			std::weak_ptr<ProcessTaskState> weakTask = task;
 			task->Worker = std::thread([weakTask, work = std::move(work)]() mutable {
+				INDEX_PROFILE_THREAD_NAME("ScriptProcess");
 				Process::Result result{};
 				try {
 					result = work();

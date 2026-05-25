@@ -50,6 +50,14 @@ namespace Index {
 		bool BuildResizable = true;
 		bool BuildRunInBackground = true;
 
+		// Aspect-ratio lock applied at runtime startup (and on every
+		// window resize). "Free Aspect" disables the lock so the game
+		// fills the full window. Any preset label from k_AspectRatioPresets
+		// (e.g. "16:9", "21:9") letterboxes the swap chain to that aspect
+		// with black bars. Independent of GameViewAspect so the editor
+		// preview can differ from the shipped game intentionally.
+		std::string BuildAspect = "Free Aspect";
+
 		// Optional override for the produced .exe filename. Empty = use the
 		// project Name (the historical behaviour). Stored without an
 		// extension; the build step appends the platform extension. Useful

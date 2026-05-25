@@ -369,8 +369,8 @@ public class Button : Component
         set => InternalCalls.Button_SetFocusedColor(RequireComponent<Button>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Picks between color-tint, sprite-swap, and "no automatic
-    // transition" for this widget. Default ColorTint preserves the
+    // Picks between color-swap, sprite-swap, and "no automatic
+    // transition" for this widget. Default ColorSwap preserves the
     // original mouse-only behaviour. See UITransitionMode for details.
     public UITransitionMode TransitionMode
     {

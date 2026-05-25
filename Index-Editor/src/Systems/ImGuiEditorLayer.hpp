@@ -70,6 +70,11 @@ namespace Index {
 			std::string SourceFilePath;
 			std::string SourceLinkText;
 			int SourceLine = 0;
+			// Byte span within `Message` of the clickable "<path>:line N"
+			// substring. The renderer styles those bytes as a link inline
+			// in the message text; equal start/end means no inline link.
+			size_t SourceLinkStart = 0;
+			size_t SourceLinkEnd = 0;
 		};
 
 		struct LogDispatchState {
@@ -91,17 +96,6 @@ namespace Index {
 
 		void RenderDockspaceRoot();
 		void RenderMainMenu(Scene& scene);
-		// Custom OS-titlebar replacement row drawn above the dockspace
-		// when WindowSpecification::CustomTitlebar is enabled. Owns app
-		// icon, project name, and the min/max/close buttons. The menu
-		// bar stays attached to the dockspace below — fewer moving parts
-		// than threading menus through this row. Implementation lives
-		// in Gui/CustomTitlebar.cpp.
-		void RenderCustomTitlebar();
-		// Logical-pixel height of the row above the dockspace. Returns 0
-		// when custom titlebar is disabled. RenderDockspaceRoot offsets
-		// by this value so the dockspace doesn't overlap the titlebar.
-		float GetCustomTitlebarHeight() const;
 		void RenderToolbar();
 		void RenderEntitiesPanel();
 		void RenderInspectorPanel(Scene& scene);
@@ -350,6 +344,15 @@ namespace Index {
 		// so any flip of m_EntityOrderDirty invalidates them together.
 		std::vector<entt::entity> m_VisibleEntityOrder;
 		std::vector<int> m_VisibleEntityDepths;
+		// SceneId the cached order was built for. The active scene can swap
+		// without anyone flipping m_EntityOrderDirty (e.g. a C# script calling
+		// SceneManager.Load between frames). The size-mismatch fallback in the
+		// hierarchy rebuild only catches that when the two scenes' entity
+		// counts differ — when they happen to match, the cached order keeps
+		// pointing at the destroyed scene's now-invalid handles, the clipper
+		// iterates them all, scene.IsValid() filters every row, no widget is
+		// submitted, and ImGui asserts "Failed to calculate item height".
+		uint64_t m_EntityOrderSceneId = 0;
 
 		// ── Prefab edit mode ──────────────────────────────────────────
 		// Owned detached scene that contains the entity tree of the
@@ -423,6 +426,14 @@ namespace Index {
 		bool m_EditorCameraFocusActive = false;
 		Vec2 m_EditorCameraFocusTarget{ 0.0f, 0.0f };
 		float m_EditorCameraFocusOrthoSize = 5.0f;
+		// Snapshot of the camera at the moment a focus animation begins,
+		// plus elapsed time. The interpolation drives off these instead of
+		// the live camera position so the animation always takes the same
+		// wall-clock duration regardless of how far the camera has to
+		// travel or how zoomed-out it starts.
+		Vec2 m_EditorCameraFocusStartPosition{ 0.0f, 0.0f };
+		float m_EditorCameraFocusStartOrthoSize = 5.0f;
+		float m_EditorCameraFocusElapsed = 0.0f;
 		EntityHandle m_FocusLastEntity = entt::null;
 		bool m_FocusNextPressTight = false;
 

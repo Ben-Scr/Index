@@ -9,6 +9,13 @@ public class Scene
     private delegate int QueryExecutor(Span<ulong> buffer);
 
     public string Name { get; internal set; } = "";
+    /// <summary>
+    /// Stable asset GUID of the underlying `.scene` file, or 0 when the
+    /// scene isn't tracked in AssetRegistry (e.g. a freshly created scene
+    /// that hasn't been saved). Use this to round-trip through
+    /// SceneManager.LoadScene(ulong) / UnloadScene(ulong).
+    /// </summary>
+    public ulong Guid { get => AssetUUID; internal set => AssetUUID = value; }
     internal ulong AssetUUID { get; set; }
     public string Path => AssetUUID != 0 ? InternalCalls.Asset_GetPath(AssetUUID) : "";
 

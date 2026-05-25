@@ -735,6 +735,28 @@ namespace Index {
 				const uint64_t clipboardId = clipboardIds[static_cast<uint32_t>(entity)];
 				entityValue.AddMember("uuid", Value(std::to_string(clipboardId)));
 
+				// Preserve prefab-instance status across duplicate / copy-paste.
+				// Origin and PrefabGUID describe an entity's *kind*, not its
+				// runtime identity, so they survive the identity strip. Without
+				// this, RemoveEntityIdentityMembers silently demoted a duplicated
+				// prefab instance to a plain scene entity. SourceEntityId pins
+				// the override-tracking link to the right node in the source
+				// prefab tree — DeserializeFullEntity otherwise re-seeds it from
+				// the new clipboard uuid, scrambling future override diffs.
+				if (scene.GetEntityOrigin(entity) == EntityOrigin::Prefab) {
+					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
+					if (prefabGuid != 0) {
+						entityValue.AddMember("Origin", Value(EntityOriginToString(EntityOrigin::Prefab)));
+						entityValue.AddMember("PrefabGUID", Value(std::to_string(prefabGuid)));
+					}
+					if (registry.all_of<PrefabInstanceComponent>(entity)) {
+						const uint64_t sourceEntityId = registry.get<PrefabInstanceComponent>(entity).SourceEntityId;
+						if (sourceEntityId != 0) {
+							entityValue.AddMember("SourceEntityId", Value(std::to_string(sourceEntityId)));
+						}
+					}
+				}
+
 				if (entity != root) {
 					EntityHandle parent = entt::null;
 					if (registry.all_of<HierarchyComponent>(entity)) {

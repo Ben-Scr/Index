@@ -7,6 +7,7 @@
 #include "Graphics/Texture2D.hpp"
 #include "Gui/AssetType.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/ComponentRegistry.hpp"
@@ -394,6 +395,7 @@ namespace Index::ReferencePicker {
 		}
 
 		const std::string windowTitle = s_State.Title + "##ReferencePickerWindow";
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (!ImGui::Begin(windowTitle.c_str(), &s_State.IsOpen,
 			ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking))
 		{
@@ -550,15 +552,20 @@ namespace Index::ReferencePicker {
 					const std::string displayName = ImGuiUtils::Ellipsize(entry.Label, textWidth, &nameTruncated);
 					drawList->AddText(ImVec2(textX, rowMin.y + rowPadding),
 						ImGui::GetColorU32(ImGuiCol_Text), displayName.c_str());
+					// Surface the project-relative form (Assets/..., IndexAssets/...) instead
+					// of the absolute path stored in Secondary — Secondary itself stays the
+					// absolute path because the thumbnail cache + asset lookups below key on it.
+					std::string secondaryDisplay;
 					if (!entry.Secondary.empty()) {
-						const std::string displayPath = ImGuiUtils::Ellipsize(entry.Secondary, textWidth, &pathTruncated);
+						secondaryDisplay = Path::ToProjectRelativeDisplay(entry.Secondary);
+						const std::string displayPath = ImGuiUtils::Ellipsize(secondaryDisplay, textWidth, &pathTruncated);
 						drawList->AddText(ImVec2(textX, rowMin.y + rowPadding + lineHeight),
 							ImGui::GetColorU32(ImGuiCol_TextDisabled), displayPath.c_str());
 					}
 					if (hovered && (nameTruncated || pathTruncated)) {
-						ImGui::SetTooltip("%s", entry.Secondary.empty()
+						ImGui::SetTooltip("%s", secondaryDisplay.empty()
 							? entry.Label.c_str()
-							: entry.Secondary.c_str());
+							: secondaryDisplay.c_str());
 					}
 					ImGui::PopID();
 				}
@@ -589,18 +596,26 @@ namespace Index::ReferencePicker {
 				if (ImGui::Selectable(label.c_str(), false)) {
 					applySelection(&entry);
 				}
-				if (ImGui::IsItemHovered() && (truncated || !entry.Secondary.empty())) {
+				// Entities/component-refs feed plain scene names through Secondary,
+				// so the helper is a no-op for them; for prefab rows (Secondary is
+				// an absolute path) it collapses to "Assets/.../Foo.prefab".
+				std::string secondaryDisplay;
+				if (!entry.Secondary.empty()) {
+					secondaryDisplay = Path::ToProjectRelativeDisplay(entry.Secondary);
+					if (secondaryDisplay.empty()) secondaryDisplay = entry.Secondary;
+				}
+				if (ImGui::IsItemHovered() && (truncated || !secondaryDisplay.empty())) {
 					ImGui::BeginTooltip();
 					ImGui::TextUnformatted(entry.Label.c_str());
-					if (!entry.Secondary.empty()) {
+					if (!secondaryDisplay.empty()) {
 						ImGui::Separator();
-						ImGui::TextDisabled("%s", entry.Secondary.c_str());
+						ImGui::TextDisabled("%s", secondaryDisplay.c_str());
 					}
 					ImGui::EndTooltip();
 				}
-				if (!entry.Secondary.empty()) {
+				if (!secondaryDisplay.empty()) {
 					ImGui::Indent(14.0f);
-					ImGuiUtils::TextDisabledEllipsis(entry.Secondary);
+					ImGuiUtils::TextDisabledEllipsis(secondaryDisplay);
 					ImGui::Unindent(14.0f);
 				}
 				ImGui::PopID();
@@ -682,7 +697,7 @@ namespace Index::ReferencePicker {
 			outMissing = true;
 			return "(Missing Asset)";
 		}
-		if (outSecondary) *outSecondary = AssetRegistry::ResolvePath(assetId);
+		if (outSecondary) *outSecondary = Path::ToProjectRelativeDisplay(AssetRegistry::ResolvePath(assetId));
 		const std::string name = AssetRegistry::GetDisplayName(assetId);
 		if (name.empty()) {
 			outMissing = true;
@@ -701,7 +716,7 @@ namespace Index::ReferencePicker {
 			outMissing = true;
 			return "(Missing Prefab)";
 		}
-		if (outSecondary) *outSecondary = AssetRegistry::ResolvePath(prefabId);
+		if (outSecondary) *outSecondary = Path::ToProjectRelativeDisplay(AssetRegistry::ResolvePath(prefabId));
 		return AssetRegistry::GetDisplayName(prefabId);
 	}
 

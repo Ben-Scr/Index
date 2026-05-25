@@ -6,9 +6,10 @@ namespace Index.UI;
 // sync because we marshal as int through the binding layer.
 public enum UITransitionMode : byte
 {
-    // Per-state Color writes into the widget's ImageComponent.Color
-    // (the original mouse-only behaviour, default for every widget).
-    ColorTint  = 0,
+    // Per-state Color writes into the widget's ImageComponent.Color,
+    // replacing it outright — not a blend / tint. (The original
+    // mouse-only behaviour, default for every widget.)
+    ColorSwap  = 0,
 
     // Per-state UUID writes into the widget's
     // ImageComponent.TextureAssetId / TextureHandle. Slots that are

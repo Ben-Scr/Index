@@ -10,20 +10,10 @@
 #include "Core/Application.hpp"
 #include "Core/Assert.hpp"
 #include "Core/Window.hpp"
+#include "Gui/ImGuiContextSetup.hpp"
 #include "Gui/ImGuiFonts.hpp"
-#include "Packages/PackageImGuiBridge.hpp"
 
 #include <imgui.h>
-#include <backends/imgui_impl_glfw.h>
-// ImGui backend lives inside Index-Engine.dll (Index-Engine/src/Gui/ImGuiImplWebGPU.{hpp,cpp},
-// a thin wrapper around the official imgui_impl_wgpu). The launcher previously
-// static-linked imgui_impl_opengl3 into its own binary, but the engine's window
-// is created with GLFW_NO_API (no GL context exists) so that path can't init.
-// Reaching into engine.dll via the INDEX_API exports keeps the launcher and the
-// engine running against the same wgpu::Device.
-#include "Gui/ImGuiImplWebGPU.hpp"
-
-#include <algorithm>
 
 namespace Index {
 
@@ -68,72 +58,17 @@ namespace Index {
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 
-		// Engine.dll has its own static-linked copy of ImGui (so it can
-		// host the ImGui WebGPU backend alongside wgpu::Device). Publish
-		// our context + allocators here so engine.dll's ImGui state can
-		// sync to our context on every backend entry point. See
-		// Index-Engine/src/Gui/ImGuiImplWebGPU.cpp
-		// `SyncImGuiContextFromBridge`.
-		{
-			ImGuiMemAllocFunc allocFn = nullptr;
-			ImGuiMemFreeFunc  freeFn  = nullptr;
-			void*             userData = nullptr;
-			ImGui::GetAllocatorFunctions(&allocFn, &freeFn, &userData);
-			PackageImGuiBridge::Publish(
-				reinterpret_cast<void*>(ImGui::GetCurrentContext()),
-				reinterpret_cast<void*>(allocFn),
-				reinterpret_cast<void*>(freeFn),
-				userData);
-		}
+		EditorRuntime::ImGuiContextSetup::PublishImGuiContextToPackages();
 
 		ImGuiIO& io = ImGui::GetIO();
-		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-		// Multi-viewport: undocked ImGui windows (and popups marked with
-		// ImGuiViewportFlags_NoAutoMerge via a window class) spawn real OS
-		// windows through imgui_impl_glfw's platform handlers + the engine's
-		// WebGPUBackend::ViewportSurface renderer handlers (registered just
-		// below). imgui_impl_wgpu doesn't advertise renderer-side multi-
-		// viewport support on its own — we bolt it on in ImGuiImplWebGPU.
-		// The matching BackendFlag tells ImGui's per-frame UpdatePlatform-
-		// Windows traversal that the renderer side is ready to drive
-		// secondary viewports; imgui_impl_glfw sets PlatformHasViewports
-		// in its own Init.
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-		io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
-		// Taskbar hiding is handled by the owner-window relationship that
-		// MultiViewport_CreateWindow sets on each viewport HWND (Windows
-		// excludes owned windows from the taskbar automatically). We
-		// deliberately do NOT set io.ConfigViewportsNoTaskBarIcon = true
-		// here — that would push ImGui to set ImGuiViewportFlags_NoTaskBarIcon
-		// on every secondary viewport, which causes imgui_impl_glfw's
-		// Platform_ShowWindow to re-apply WS_EX_TOOLWINDOW (stripping
-		// WS_THICKFRAME and triggering the chunky "compact dialog" close-
-		// button rendering instead of the normal app close button).
-		// Edge-resize left at default (true). Forcing it false combined with the
-		// transparent ResizeGrip colors below made undocked floating windows
-		// effectively non-resizable.
+		EditorRuntime::ImGuiContextSetup::ApplyCommonIoConfigFlags(io);
 
-		// One-time HiDPI scale captured from the window's monitor. Applied below
-		// to the UI font and to the theme via ScaleAllSizes. Mid-session
-		// monitor moves are not handled — wire glfwSetWindowContentScaleCallback
-		// if that becomes a real symptom.
-		float xScale = 1.0f, yScale = 1.0f;
-		glfwGetWindowContentScale(glfwWindow, &xScale, &yScale);
-		const float dpiScale = std::max(1.0f, xScale);
+		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(glfwWindow);
 		s_DpiScale = dpiScale;
 
 		LoadIndexImGuiFont(io, dpiScale);
 
-		IDX_VERIFY(ImGui_ImplGlfw_InitForOther(glfwWindow, true),
-			"Failed to init glfw for imgui (WebGPU backend)!");
-		IDX_VERIFY(ImGuiImplWebGPU::Init(),
-			"Failed to init WebGPU imgui backend (device not ready?)");
-
-		// Wire renderer-side multi-viewport handlers AFTER ImGui_ImplWGPU is
-		// up — RegisterMultiViewportHandlers binds Renderer_RenderWindow etc.
-		// to platform_io. imgui_impl_glfw registers its own platform-side
-		// handlers lazily on first NewFrame when ViewportsEnable is set.
-		ImGuiImplWebGPU::RegisterMultiViewportHandlers();
+		EditorRuntime::ImGuiContextSetup::InitBackends(glfwWindow);
 
 		ApplyIndexTheme(GetSystemTheme());
 		m_IsInitialized = true;
@@ -145,10 +80,7 @@ namespace Index {
 			return;
 		}
 
-		ImGuiImplWebGPU::Shutdown();
-		ImGui_ImplGlfw_Shutdown();
-		PackageImGuiBridge::Clear();
-		ImGui::DestroyContext();
+		EditorRuntime::ImGuiContextSetup::ShutdownBackends();
 
 		m_IsInitialized = false;
 	}
@@ -158,9 +90,7 @@ namespace Index {
 		if (!m_IsInitialized) {
 			return;
 		}
-		ImGuiImplWebGPU::NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
+		EditorRuntime::ImGuiContextSetup::NewFrame();
 	}
 
 	void ImGuiContextLayer::OnPostRender(Application& app) {
@@ -168,18 +98,7 @@ namespace Index {
 		if (!m_IsInitialized) {
 			return;
 		}
-		ImGui::Render();
-		// viewId is vestigial on WebGPU (preserved in the API signature
-		// for ABI stability); ImGuiImplWebGPU::RenderDrawData uses
-		// whatever framebuffer RenderApi::BindFramebuffer last bound.
-		ImGuiImplWebGPU::RenderDrawData(ImGui::GetDrawData(), /*viewId*/ 0xFFFFu);
-
-		// Pump secondary OS windows when multi-viewport is enabled. No-op
-		// otherwise. The engine.dll-side helper internally flushes the
-		// main encoder before walking viewports so per-frame WriteBuffer
-		// ordering across the shared ImGui_ImplWGPU FrameResources slot
-		// is correct — see ImGuiImplWebGPU.hpp for the full rationale.
-		ImGuiImplWebGPU::RenderPlatformWindowsDefault();
+		EditorRuntime::ImGuiContextSetup::RenderAndPresent();
 	}
 
 	ImGuiContextLayer::Theme ImGuiContextLayer::GetSystemTheme() {

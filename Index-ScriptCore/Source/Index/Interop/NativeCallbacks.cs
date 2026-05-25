@@ -15,6 +15,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float> Application_GetTargetFrameRate;
     public delegate* unmanaged<float, void> Application_SetTargetFrameRate;
     public delegate* unmanaged<void> Application_Quit;
+    public delegate* unmanaged<void> Application_Reload;
     public delegate* unmanaged<float> Application_GetFixedDeltaTime;
     public delegate* unmanaged<float> Application_GetUnscaledDeltaTime;
     public delegate* unmanaged<float> Application_GetFixedUnscaledDeltaTime;
@@ -307,6 +308,9 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float, float, float*, int, ulong*, int, int> Physics2D_OverlapPolygonAll;
     public delegate* unmanaged<float, float, int, ulong*, int> Physics2D_ContainsPoint;
     public delegate* unmanaged<float, float, ulong*, int, int> Physics2D_ContainsPointAll;
+
+    // ── EntityPicker ─────────────────────────────────────────────
+    public delegate* unmanaged<float, float, ulong*, int> EntityPicker_TryPickEntity;
 
     // ── UI: RectTransform2D ──────────────────────────────────────
     public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetAnchorMin;
@@ -868,6 +872,21 @@ internal unsafe struct NativeBindingsStruct
     // Returns the assigned typeIdU32 (0 on failure). Category: 0=Component, 1=Tag.
     public delegate* unmanaged<byte*, byte*, byte*, uint, uint, uint, uint> Component_RegisterDynamic;
     public delegate* unmanaged<void> Component_UnregisterAllDynamic;
+
+    // ── Scene load-by-GUID (appended for binary compat) ──
+    // Mirror of the Scene_*ByGuid block in ScriptGlue.hpp. The native side
+    // resolves the GUID via AssetRegistry::ResolvePath, looks up the
+    // <Name>.scene stem, and forwards to the same SceneManager calls the
+    // name-based bindings use — so AsserRef<Scene> handles in scripts can
+    // drive LoadScene / UnloadScene / SetActiveScene without round-tripping
+    // through the name.
+    public delegate* unmanaged<ulong, int>  Scene_LoadByGuid;
+    public delegate* unmanaged<ulong, int>  Scene_LoadAdditiveByGuid;
+    public delegate* unmanaged<ulong, void> Scene_UnloadByGuid;
+    public delegate* unmanaged<ulong, int>  Scene_SetActiveByGuid;
+    public delegate* unmanaged<ulong, int>  Scene_ReloadByGuid;
+    public delegate* unmanaged<ulong, int>  Scene_DoesSceneExistByGuid;
+    public delegate* unmanaged<ulong>       Scene_GetActiveSceneGuid;
 }
 
 internal static unsafe class NativeCallbacks

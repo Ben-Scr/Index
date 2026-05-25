@@ -32,9 +32,9 @@ namespace Index {
 		EntityHandle TargetGraphic = kNullEntity;
 
 		// How the button visually transitions between input states.
-		// Defaults to ColorTint (existing behaviour). See
+		// Defaults to ColorSwap (existing behaviour). See
 		// UITransitionMode for the SpriteSwap and None modes.
-		UITransitionMode TransitionMode = UITransitionMode::ColorTint;
+		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;
 
 		Color NormalColor   { 1.00f, 1.00f, 1.00f, 1.0f };
 		Color HoveredColor  { 0.85f, 0.85f, 0.85f, 1.0f };
@@ -55,7 +55,7 @@ namespace Index {
 		// stores a UUID; UUID{0} = "unset, fall back to NormalSprite".
 		// NormalSprite itself being unset disables the swap entirely
 		// (the widget's authored ImageComponent.TextureAssetId is left
-		// as-is). Ignored in ColorTint / None modes.
+		// as-is). Ignored in ColorSwap / None modes.
 		UUID NormalSprite  { 0 };
 		UUID HoveredSprite { 0 };
 		UUID PressedSprite { 0 };

@@ -7,7 +7,9 @@
 #include "Components/Graphics/PostProcessing2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Components/Tags.hpp"
+#include "Collections/Viewport.hpp"
 #include "Core/Log.hpp"
+#include "Core/Window.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/DynamicRenderData.hpp"
 #include "Graphics/RenderApi.hpp"
@@ -1073,11 +1075,35 @@ namespace Index {
 
 		RenderApi::BindDefaultFramebuffer();
 
-		// Pull the per-frame clear colour from the active main camera so
-		// the runtime visually matches what the Game View panel shows in
-		// the editor (which threads the same camera's GetClearColor()
-		// into RenderSceneIntoFBO).
-		RenderApi::SetClearColor(cam->GetClearColor());
+		// Aspect-locked runtime builds render into a centered sub-rect of
+		// the swap-chain framebuffer; the surround letterbox/pillarbox
+		// must be black. WebGPU's loadOp=Clear is always full-attachment
+		// (no scissor / no sub-rect), so we can only do one Clear here —
+		// pick black when locked. The sprite, UI, text, and gizmo passes
+		// below all call WebGPUBackend::ApplyCachedViewportToPass on the
+		// pass they open, which honours the sub-rect viewport that
+		// Window::UpdateViewport cached during the last framebuffer
+		// resize. Result: bars stay black, sprites rasterise into the
+		// sub-rect only.
+		//
+		// Side effect: the camera's clear color is replaced by BLACK
+		// inside the sub-rect too, since WebGPU has no API to clear only
+		// a region. 2D projects typically cover the render area with a
+		// background sprite or tiled layer, so this is rarely visible.
+		// If a project really needs a coloured background under sprites,
+		// it can place a fullscreen-sized background sprite at the lowest
+		// sorting layer.
+		Viewport* mainViewport = Window::GetMainViewport();
+		const bool hasLetterbox = mainViewport && mainViewport->HasLetterbox();
+		if (hasLetterbox) {
+			RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 1.0f });
+		} else {
+			// Pull the per-frame clear colour from the active main camera so
+			// the runtime visually matches what the Game View panel shows in
+			// the editor (which threads the same camera's GetClearColor()
+			// into RenderSceneIntoFBO).
+			RenderApi::SetClearColor(cam->GetClearColor());
+		}
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 
 		const glm::mat4 vp = cam->GetViewProjectionMatrix();
@@ -1341,6 +1367,7 @@ namespace Index {
 #endif
 
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+			WebGPUBackend::ApplyCachedViewportToPass(pass);
 
 			// Set common state once. The pipeline carries vertex layout / blend /
 			// primitive state — only what varies per batch (bind group +

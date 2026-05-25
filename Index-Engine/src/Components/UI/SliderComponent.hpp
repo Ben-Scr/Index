@@ -119,7 +119,7 @@ namespace Index {
 		// model. Tinting applies to the resolved drag surface (handle
 		// when present, slider parent otherwise), so SpriteSwap also
 		// rewrites whichever ImageComponent UIEventSystem chose.
-		UITransitionMode TransitionMode = UITransitionMode::ColorTint;
+		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;
 
 		Color NormalColor   { 1.00f, 1.00f, 1.00f, 1.0f };
 		Color HoveredColor  { 0.85f, 0.85f, 0.85f, 1.0f };

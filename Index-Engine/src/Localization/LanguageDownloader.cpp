@@ -2,6 +2,7 @@
 #include "Localization/LanguageDownloader.hpp"
 
 #include "Core/Log.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Utils/Hash.hpp"
 #include "Utils/PackageToolPath.hpp"
 #include "Utils/Process.hpp"
@@ -62,6 +63,7 @@ namespace Index::Localization {
 	}
 
 	void LanguageDownloader::RunWorker(std::string code, std::vector<DownloadItem> items, bool restartRequiredOnSuccess) {
+		INDEX_PROFILE_THREAD_NAME("LanguageDownloader");
 		bool success = true;
 		std::string finalError;
 

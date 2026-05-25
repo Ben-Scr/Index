@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <functional>
 #include <thread>
 #include <vector>
@@ -76,13 +77,19 @@ namespace Index {
 		}
 
 		void SetWorkerThreadName(int workerIndex) {
+			// Format the name once as both wide (for SetThreadDescription, which
+			// surfaces in the VS Threads window even with the profiler stripped)
+			// and narrow (for Tracy's cross-platform SetThreadName, which uses
+			// pthread_setname_np under the hood on POSIX so Linux/Mac gdb/lldb
+			// also pick it up).
+			char name[32];
+			std::snprintf(name, sizeof(name), "Index Worker %d", workerIndex);
 #ifdef IDX_PLATFORM_WINDOWS
-			wchar_t name[32];
-			swprintf_s(name, L"Index Worker %d", workerIndex);
-			::SetThreadDescription(::GetCurrentThread(), name);
-#else
-			(void)workerIndex;
+			wchar_t wname[32];
+			swprintf_s(wname, L"Index Worker %d", workerIndex);
+			::SetThreadDescription(::GetCurrentThread(), wname);
 #endif
+			INDEX_PROFILE_THREAD_NAME(name);
 		}
 
 		void ExecuteJob(std::function<void()>&& job) {

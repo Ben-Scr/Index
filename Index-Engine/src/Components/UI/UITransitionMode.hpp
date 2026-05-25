@@ -7,11 +7,12 @@ namespace Index {
 	// How a widget visually transitions between Normal / Hovered /
 	// Pressed / Focused / Disabled states. Set per-widget via the
 	// TransitionMode field on each widget preset (ButtonComponent,
-	// ToggleComponent, etc.). Defaults to ColorTint, which preserves
+	// ToggleComponent, etc.). Defaults to ColorSwap, which preserves
 	// the original mouse-only colour-swap behaviour for every existing
 	// scene.
 	//
-	//   ColorTint  — write the per-state Color into ImageComponent.Color.
+	//   ColorSwap  — write the per-state Color into ImageComponent.Color,
+	//                replacing it outright (not a blend / tint).
 	//                Original behaviour, no texture changes.
 	//   SpriteSwap — write the per-state UUID into ImageComponent's
 	//                TextureAssetId / TextureHandle, leaving the Color
@@ -27,7 +28,7 @@ namespace Index {
 	//                whatever script code does. Useful when game code
 	//                drives the visual change from outside.
 	enum class UITransitionMode : std::uint8_t {
-		ColorTint  = 0,
+		ColorSwap  = 0,
 		SpriteSwap = 1,
 		None       = 2,
 	};

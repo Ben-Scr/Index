@@ -1666,6 +1666,19 @@ namespace Index {
 		});
 	}
 
+	bool PackageManagerPanel::IsCloudInstallRunning() const {
+		return m_CloudInstallTask
+			&& m_CloudInstallTask->Running.load(std::memory_order_acquire);
+	}
+
+	bool PackageManagerPanel::TryGetCloudInstallProgress(std::string& outStage, float& outProgress) const {
+		if (!IsCloudInstallRunning()) return false;
+		std::scoped_lock lock(m_CloudInstallTask->Mutex);
+		outStage = m_CloudInstallTask->Stage;
+		outProgress = m_CloudInstallTask->Progress;
+		return true;
+	}
+
 	void PackageManagerPanel::PollCloudInstallTask() {
 		if (!m_CloudInstallTask) return;
 

@@ -143,6 +143,8 @@
     "launcher.create.create_button": "Create",
     "launcher.create.working": "Working...",
     "launcher.create.cancel": "Cancel",
+    "launcher.create.init_git": "Initialize Git repository",
+    "launcher.create.init_git.tooltip": "Runs `git init` in the new project folder and writes an Index-tailored .gitignore. Requires git on PATH.",
 
     "launcher.settings.title": "Launcher Settings",
     "launcher.settings.default_location": "Default projects location",

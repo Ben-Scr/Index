@@ -4,6 +4,7 @@
 #include <imgui.h>
 
 #include "Assets/AssetRegistry.hpp"
+#include "Collections/AspectRatio.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Editor/ExternalEditor.hpp"
@@ -818,30 +819,90 @@ namespace Index {
 				: ImVec4(0.45f, 0.68f, 1.00f, 1.0f);
 		}
 
-		void RenderLogSourceLink(const std::string& label, const std::string& filePath, int line) {
-			if (label.empty() || filePath.empty()) {
-				return;
-			}
-
+		// Renders a log message line-by-line, styling the byte span
+		// [linkStart, linkEnd) of `fullText` as an inline clickable link.
+		// We split on '\n' and emit each line as one or more TextUnformatted
+		// calls joined by SameLine(0,0); ImGui's SameLine math only behaves
+		// correctly for single-line text, so wrapping is sacrificed for the
+		// inline-link cases (the parent BeginChild already has a horizontal
+		// scrollbar). Messages with no link still go through TextWrapped at
+		// the call site, preserving wrap for the common case.
+		void RenderLogMessageWithInlineLink(
+			std::string_view fullText,
+			size_t linkStart,
+			size_t linkEnd,
+			const std::string& filePath,
+			int linkLine,
+			const ImVec4& textColor)
+		{
 			const ImVec4 linkColor = GetLogLinkColor();
-			ImGui::PushStyleColor(ImGuiCol_Text, linkColor);
-			ImGui::TextUnformatted(label.c_str());
-			ImGui::PopStyleColor();
+			const bool hasLink = !filePath.empty()
+				&& linkEnd > linkStart
+				&& linkEnd <= fullText.size();
 
-			const ImVec2 min = ImGui::GetItemRectMin();
-			const ImVec2 max = ImGui::GetItemRectMax();
-			ImGui::GetWindowDrawList()->AddLine(
-				ImVec2(min.x, max.y - 1.0f),
-				ImVec2(max.x, max.y - 1.0f),
-				ImGui::GetColorU32(linkColor),
-				1.0f);
+			auto renderSegment = [&](std::string_view segment, bool isLink, bool firstOnLine) {
+				if (segment.empty()) return;
+				if (!firstOnLine) ImGui::SameLine(0.0f, 0.0f);
 
-			if (ImGui::IsItemHovered()) {
-				ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-				ImGui::SetTooltip("Double-click to open");
-				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-					ExternalEditor::OpenFile(filePath, line);
+				const ImVec4& color = isLink ? linkColor : textColor;
+				ImGui::PushStyleColor(ImGuiCol_Text, color);
+				ImGui::TextUnformatted(segment.data(), segment.data() + segment.size());
+				ImGui::PopStyleColor();
+
+				if (!isLink) return;
+
+				const ImVec2 min = ImGui::GetItemRectMin();
+				const ImVec2 max = ImGui::GetItemRectMax();
+				ImGui::GetWindowDrawList()->AddLine(
+					ImVec2(min.x, max.y - 1.0f),
+					ImVec2(max.x, max.y - 1.0f),
+					ImGui::GetColorU32(linkColor),
+					1.0f);
+
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+					ImGui::SetTooltip("Double-click to open");
+					if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+						ExternalEditor::OpenFile(filePath, linkLine);
+					}
 				}
+			};
+
+			size_t pos = 0;
+			while (pos <= fullText.size()) {
+				const size_t newlinePos = fullText.find('\n', pos);
+				const size_t lineEnd = (newlinePos == std::string_view::npos)
+					? fullText.size()
+					: newlinePos;
+
+				if (lineEnd == pos) {
+					// Empty line — emit a blank line of standard text height
+					// so consecutive '\n's preserve their vertical gap.
+					ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
+				}
+				else if (hasLink && linkStart < lineEnd && linkEnd > pos) {
+					const size_t segLinkStart = std::max(linkStart, pos);
+					const size_t segLinkEnd = std::min(linkEnd, lineEnd);
+
+					bool firstOnLine = true;
+					if (segLinkStart > pos) {
+						renderSegment(fullText.substr(pos, segLinkStart - pos), false, firstOnLine);
+						firstOnLine = false;
+					}
+					renderSegment(
+						fullText.substr(segLinkStart, segLinkEnd - segLinkStart),
+						true, firstOnLine);
+					firstOnLine = false;
+					if (segLinkEnd < lineEnd) {
+						renderSegment(fullText.substr(segLinkEnd, lineEnd - segLinkEnd), false, firstOnLine);
+					}
+				}
+				else {
+					renderSegment(fullText.substr(pos, lineEnd - pos), false, true);
+				}
+
+				if (newlinePos == std::string_view::npos) break;
+				pos = newlinePos + 1;
 			}
 		}
 
@@ -1041,14 +1102,29 @@ namespace Index {
 				continue;
 			}
 
-			const std::string line = std::string(GetLogLevelPrefix(entry.Level)) + entry.Message;
-			if (!entry.SourceFilePath.empty()) {
-				RenderLogSourceLink(entry.SourceLinkText, entry.SourceFilePath, entry.SourceLine);
-				ImGui::SameLine();
+			const std::string prefix = std::string(GetLogLevelPrefix(entry.Level));
+			const ImVec4 levelColor = GetLogLevelColor(entry.Level);
+
+			const bool hasInlineLink = !entry.SourceFilePath.empty()
+				&& entry.SourceLinkEnd > entry.SourceLinkStart
+				&& entry.SourceLinkEnd <= entry.Message.size();
+
+			if (hasInlineLink) {
+				const std::string fullText = prefix + entry.Message;
+				RenderLogMessageWithInlineLink(
+					fullText,
+					entry.SourceLinkStart + prefix.size(),
+					entry.SourceLinkEnd + prefix.size(),
+					entry.SourceFilePath,
+					entry.SourceLine,
+					levelColor);
 			}
-			ImGui::PushStyleColor(ImGuiCol_Text, GetLogLevelColor(entry.Level));
-			ImGui::TextWrapped("%s", line.c_str());
-			ImGui::PopStyleColor();
+			else {
+				const std::string line = prefix + entry.Message;
+				ImGui::PushStyleColor(ImGuiCol_Text, levelColor);
+				ImGui::TextWrapped("%s", line.c_str());
+				ImGui::PopStyleColor();
+			}
 		}
 
 		if (wasAtBottom) {
@@ -1502,6 +1578,7 @@ namespace Index {
 	void ImGuiEditorLayer::RenderBuildPanel() {
 		if (!m_ShowBuildPanel) return;
 
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		ImGui::Begin("Build", &m_ShowBuildPanel);
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
@@ -2076,6 +2153,31 @@ namespace Index {
 				changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
 				changed |= ImGui::Checkbox("Resizable", &project.BuildResizable);
 				changed |= ImGui::Checkbox("Run in background", &project.BuildRunInBackground);
+
+				ImGui::Spacing();
+				int aspectIndex = AspectRatioPresetIndexFromLabel(project.BuildAspect);
+				ImGui::SetNextItemWidth(220.0f);
+				if (ImGui::BeginCombo("Aspect Ratio", k_AspectRatioPresets[aspectIndex].Label)) {
+					for (int i = 0; i < static_cast<int>(k_AspectRatioPresets.size()); ++i) {
+						const bool selected = (i == aspectIndex);
+						if (ImGui::Selectable(k_AspectRatioPresets[i].Label, selected)) {
+							project.BuildAspect = k_AspectRatioPresets[i].Label;
+							changed = true;
+						}
+						if (selected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip(
+						"Locks the shipped game to this aspect ratio.\n"
+						"When the window's aspect doesn't match, the renderer\n"
+						"adds black bars (letterbox/pillarbox) so the game\n"
+						"always appears at the chosen aspect.\n"
+						"\n"
+						"Independent of the editor's Game View aspect.\n"
+						"Select 'Free Aspect' to disable and fill the full window.");
+				}
 				ImGui::Unindent(8);
 			}
 		}
@@ -3582,6 +3684,7 @@ namespace Index {
 		// area to 0 px and the user only sees the tab strip.
 		ImGui::SetNextWindowSize(ImVec2(880, 540), ImGuiCond_FirstUseEver);
 		ImGui::SetNextWindowSizeConstraints(ImVec2(420, 320), ImVec2(FLT_MAX, FLT_MAX));
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		ImGui::Begin("Package Manager", &m_ShowPackageManager);
 		m_PackageManagerPanel.Render();
 		ImGui::End();

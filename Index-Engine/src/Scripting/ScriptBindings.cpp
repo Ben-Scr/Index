@@ -10,6 +10,7 @@
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
 #include "Core/Log.hpp"
+#include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneDefinition.hpp"
@@ -823,21 +824,49 @@ namespace Index {
 	}
 
 	static int LoadSceneByName(const char* sceneName, bool additive) {
+		// Validate name before any side effects. Without this guard, an empty
+		// or unsafe name passed from a script would still trigger RegisterScene
+		// + LoadScene below — and in the non-additive path, LoadScene calls
+		// UnloadAllScenes(false) before its OnLoad runs, so we'd destroy the
+		// current scene and leave the editor holding stale EntityHandles into
+		// it (crash in Scene::GetEntity).
+		if (!sceneName || sceneName[0] == '\0') {
+			IDX_CORE_ERROR_TAG("ScriptBindings", "LoadScene called with an empty name");
+			return 0;
+		}
+
 		auto& sm = SceneManager::Get();
 		std::string name(sceneName);
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		const bool hasDefinition = sm.HasSceneDefinition(name);
 
+		// Resolve the scene file path up-front. GetSceneFilePath also rejects
+		// unsafe names (traversal characters, control bytes) via IsValidSceneName,
+		// returning empty — so an empty result here means either "no project",
+		// "name failed validation", or "no .scene file exists under Assets/".
+		std::string scenePath;
+		if (project) {
+			scenePath = project->GetSceneFilePath(name);
+		}
+		const bool fileResolves = !scenePath.empty() && File::Exists(scenePath);
+
+		// Only auto-register if we have something usable to load. If the
+		// caller pre-registered the definition (e.g. via a SceneDefinition
+		// with custom OnLoad callbacks that don't rely on a .scene file),
+		// honour that.
+		if (!hasDefinition && !fileResolves) {
+			IDX_CORE_ERROR_TAG("ScriptBindings",
+				"LoadScene: no scene file resolves for '{}' and no definition is registered", name);
+			return 0;
+		}
+
 		if (!hasDefinition) {
 			auto& definition = sm.RegisterScene(name);
-			if (project) {
-				const std::string scenePath = project->GetSceneFilePath(name);
-				definition.OnLoad([scenePath](Scene& scene) {
-					if (File::Exists(scenePath)) {
-						SceneSerializer::LoadFromFile(scene, scenePath);
-					}
-				});
-			}
+			definition.OnLoad([scenePath](Scene& scene) {
+				if (File::Exists(scenePath)) {
+					SceneSerializer::LoadFromFile(scene, scenePath);
+				}
+			});
 		}
 
 		auto sceneWeak = additive ? sm.LoadSceneAdditive(name) : sm.LoadScene(name);
@@ -905,6 +934,91 @@ namespace Index {
 
 		const Scene* scene = SceneManager::Get().GetLoadedSceneAt(static_cast<size_t>(index));
 		return CopyCStringToBuffer(scene ? scene->GetName().c_str() : "", outBuffer, capacity);
+	}
+
+	// ── Scene by GUID ───────────────────────────────────────────────────
+	// Scenes are persisted as `<Name>.scene` files under the project's
+	// Assets/ tree and tracked by AssetRegistry through their companion
+	// `.meta` (carrying the stable AssetGUID). Scripts that want to load
+	// by GUID — the natural choice when wiring scenes via [ShowInEditor]
+	// SceneRef fields or the asset picker — route through this resolver
+	// which maps the GUID back to the scene's name and then forwards to
+	// the same SceneManager calls the name-based path uses. Returns the
+	// empty string if the GUID is unknown or not a Scene asset.
+	static std::string ResolveSceneNameForGuid(uint64_t sceneGuid) {
+		if (sceneGuid == 0) return {};
+		if (AssetRegistry::GetKind(sceneGuid) != AssetKind::Scene) return {};
+
+		const std::string path = AssetRegistry::ResolvePath(sceneGuid);
+		if (path.empty()) return {};
+
+		// Scene file name on disk is "<sceneName>.scene"; the engine
+		// uses the stem as the scene's canonical name (matches the
+		// convention in IndexProject::GetSceneFilePath and the scene
+		// serializer).
+		return std::filesystem::path(path).stem().string();
+	}
+
+	static int Index_Scene_LoadByGuid(uint64_t sceneGuid) {
+		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
+		if (sceneName.empty()) {
+			IDX_CORE_ERROR_TAG("ScriptBindings",
+				"Scene_LoadByGuid: no Scene asset registered for GUID {}.", sceneGuid);
+			return 0;
+		}
+		return LoadSceneByName(sceneName.c_str(), false);
+	}
+
+	static int Index_Scene_LoadAdditiveByGuid(uint64_t sceneGuid) {
+		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
+		if (sceneName.empty()) {
+			IDX_CORE_ERROR_TAG("ScriptBindings",
+				"Scene_LoadAdditiveByGuid: no Scene asset registered for GUID {}.", sceneGuid);
+			return 0;
+		}
+		return LoadSceneByName(sceneName.c_str(), true);
+	}
+
+	static void Index_Scene_UnloadByGuid(uint64_t sceneGuid) {
+		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
+		if (sceneName.empty()) {
+			IDX_CORE_WARN_TAG("ScriptBindings",
+				"Scene_UnloadByGuid: no Scene asset registered for GUID {}.", sceneGuid);
+			return;
+		}
+		SceneManager::Get().UnloadScene(sceneName);
+	}
+
+	static int Index_Scene_SetActiveByGuid(uint64_t sceneGuid) {
+		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
+		if (sceneName.empty()) return 0;
+		return SceneManager::Get().SetActiveScene(sceneName) ? 1 : 0;
+	}
+
+	static int Index_Scene_ReloadByGuid(uint64_t sceneGuid) {
+		const std::string sceneName = ResolveSceneNameForGuid(sceneGuid);
+		if (sceneName.empty()) return 0;
+		auto result = SceneManager::Get().ReloadScene(sceneName);
+		return result.lock() ? 1 : 0;
+	}
+
+	static int Index_Scene_DoesSceneExistByGuid(uint64_t sceneGuid) {
+		return ResolveSceneNameForGuid(sceneGuid).empty() ? 0 : 1;
+	}
+
+	// Resolves the active scene to its tracked AssetGUID, or 0 when the
+	// active scene isn't an asset-tracked file (e.g. a freshly-created
+	// scene that hasn't been saved yet). Mirrors
+	// Scene_GetActiveSceneNameBuffer but on the GUID side so scripts can
+	// round-trip through the same handle they passed to LoadByGuid.
+	static uint64_t Index_Scene_GetActiveSceneGuid() {
+		Scene* scene = GetScene();
+		if (!scene) return 0;
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) return 0;
+		const std::string path = project->GetSceneFilePath(scene->GetName());
+		if (path.empty()) return 0;
+		return AssetRegistry::GetOrCreateAssetUUID(path);
 	}
 
 	// ── Scene Query ─────────────────────────────────────────────────────
@@ -2643,6 +2757,23 @@ namespace Index {
 			outEntityIDs, maxOut);
 	}
 
+	// ── EntityPicker ────────────────────────────────────────────────────
+
+	static int Index_EntityPicker_TryPickEntity(float worldX, float worldY, uint64_t* entityID) {
+		if (!entityID) return 0;
+		*entityID = 0;
+
+		Scene* scene = GetScene();
+		if (!scene) return 0;
+
+		EntityHandle picked = entt::null;
+		if (!EntityPicker::TryPickEntity(*scene, { worldX, worldY }, picked)) {
+			return 0;
+		}
+		*entityID = GetEntityScriptId(*scene, picked);
+		return *entityID != 0 ? 1 : 0;
+	}
+
 	// ── UI: RectTransform2D ─────────────────────────────────────────────
 
 	static void Index_RectTransform_GetAnchorMin(uint64_t entityID, float* outX, float* outY) {
@@ -3672,6 +3803,8 @@ namespace Index {
 		b.Physics2D_ContainsPoint = &Index_Physics2D_ContainsPoint;
 		b.Physics2D_ContainsPointAll = &Index_Physics2D_ContainsPointAll;
 
+		b.EntityPicker_TryPickEntity = &Index_EntityPicker_TryPickEntity;
+
 		// ── UI ──────────────────────────────────────────────────────
 		b.RectTransform_GetAnchorMin        = &Index_RectTransform_GetAnchorMin;
 		b.RectTransform_SetAnchorMin        = &Index_RectTransform_SetAnchorMin;
@@ -4154,6 +4287,15 @@ namespace Index {
 		// ── Dynamic component registration (appended for binary compat) ──
 		b.Component_RegisterDynamic       = &Index_Component_RegisterDynamic;
 		b.Component_UnregisterAllDynamic  = &Index_Component_UnregisterAllDynamic;
+
+		// ── Scene load-by-GUID (appended for binary compat) ──
+		b.Scene_LoadByGuid           = &Index_Scene_LoadByGuid;
+		b.Scene_LoadAdditiveByGuid   = &Index_Scene_LoadAdditiveByGuid;
+		b.Scene_UnloadByGuid         = &Index_Scene_UnloadByGuid;
+		b.Scene_SetActiveByGuid      = &Index_Scene_SetActiveByGuid;
+		b.Scene_ReloadByGuid         = &Index_Scene_ReloadByGuid;
+		b.Scene_DoesSceneExistByGuid = &Index_Scene_DoesSceneExistByGuid;
+		b.Scene_GetActiveSceneGuid   = &Index_Scene_GetActiveSceneGuid;
 	}
 
 } // namespace Index

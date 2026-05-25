@@ -12,9 +12,11 @@
 
 #include <webgpu/webgpu_cpp.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -190,6 +192,26 @@ namespace Index {
 				case wgpu::BackendType::Null:    return "Null";
 				default:                         return "Unknown";
 			}
+		}
+
+		const char* PresentModeName(wgpu::PresentMode m) {
+			switch (m) {
+				case wgpu::PresentMode::Fifo:        return "Fifo";
+				case wgpu::PresentMode::FifoRelaxed: return "FifoRelaxed";
+				case wgpu::PresentMode::Immediate:   return "Immediate";
+				case wgpu::PresentMode::Mailbox:     return "Mailbox";
+				case wgpu::PresentMode::Undefined:   return "Undefined";
+				default:                             return "Unknown";
+			}
+		}
+
+		std::string JoinPresentModes(const wgpu::SurfaceCapabilities& caps) {
+			std::string out;
+			for (size_t i = 0; i < caps.presentModeCount; ++i) {
+				if (i > 0) out += ',';
+				out += PresentModeName(caps.presentModes[i]);
+			}
+			return out;
 		}
 
 		bool SupportsPresentMode(const wgpu::SurfaceCapabilities& caps, wgpu::PresentMode mode) {
@@ -451,6 +473,11 @@ namespace Index {
 			config.alphaMode   = wgpu::CompositeAlphaMode::Opaque;
 			config.viewFormatCount = 0;
 
+			IDX_CORE_INFO_TAG("WebGPUApi",
+				"ConfigureSurface: {}x{}, vsync={}, advertised=[{}], chosen={}",
+				width, height, g_VsyncEnabled,
+				JoinPresentModes(caps), PresentModeName(config.presentMode));
+
 			g_Surface.Configure(&config);
 
 			g_BackbufferWidth  = width;
@@ -652,6 +679,20 @@ namespace Index {
 			return g_Frame.Encoder;
 		}
 
+		void ApplyCachedViewportToPass(wgpu::RenderPassEncoder& pass) {
+			if (!pass) return;
+			// Degenerate viewport — early frame before any SetViewport, or
+			// the renderer set a 0-sized rect. Skip rather than dispatch an
+			// invalid SetViewport (Dawn validation errors on zero w/h).
+			if (g_ViewportW == 0 || g_ViewportH == 0) return;
+			pass.SetViewport(
+				static_cast<float>(g_ViewportX),
+				static_cast<float>(g_ViewportY),
+				static_cast<float>(g_ViewportW),
+				static_cast<float>(g_ViewportH),
+				0.0f, 1.0f);
+		}
+
 		CurrentTargetInfo BeginRenderToCurrentTarget() {
 			CurrentTargetInfo out;
 			if (!g_Initialized) return out;
@@ -739,6 +780,12 @@ namespace Index {
 			bool                     HasCurrent  = false;
 		};
 
+		// Tracks every live ViewportSurface so RenderApi::SetVsync can re-apply
+		// the new present mode to all of them (CreateViewportSurface reads
+		// g_VsyncEnabled at creation time only). Main-thread-only: ImGui
+		// platform IO and scripts both run on the main thread, so no mutex.
+		std::vector<ViewportSurface*> g_LiveViewportSurfaces;
+
 		namespace {
 			// Configure a viewport's surface at a given size. Format is FIXED
 			// to g_SurfaceFormat so all viewports share the ImGui_ImplWGPU
@@ -773,10 +820,34 @@ namespace Index {
 				config.alphaMode       = vs->AlphaMode;
 				config.viewFormatCount = 0;
 
+				IDX_CORE_INFO_TAG("WebGPUApi",
+					"ConfigureSurface (viewport): {}x{}, vsync={}, advertised=[{}], chosen={}",
+					width, height, g_VsyncEnabled,
+					JoinPresentModes(caps), PresentModeName(config.presentMode));
+
 				vs->Surface.Configure(&config);
 				vs->Width  = width;
 				vs->Height = height;
 				return true;
+			}
+		}
+
+		// Re-apply the current g_VsyncEnabled to every live ViewportSurface.
+		// Mirrors the main-surface fix in RenderApi::SetVsync: drop cached
+		// views/textures first, then Unconfigure, then ConfigureViewportSurface.
+		// Same Dawn requirement — re-Configure with a new presentMode is a
+		// no-op on some backends unless preceded by Unconfigure. Lives at
+		// outer-anonymous scope so RenderApi::SetVsync (in namespace Index)
+		// can resolve it through the same transparent-import path it uses
+		// for ConfigureSurface.
+		void ReconfigureAllViewportSurfaces() {
+			for (ViewportSurface* vs : g_LiveViewportSurfaces) {
+				if (!vs || !vs->Surface || vs->Width == 0 || vs->Height == 0) continue;
+				vs->CurrentView    = nullptr;
+				vs->CurrentTexture = nullptr;
+				vs->HasCurrent     = false;
+				vs->Surface.Unconfigure();
+				ConfigureViewportSurface(vs, vs->Width, vs->Height);
 			}
 		}
 
@@ -810,6 +881,7 @@ namespace Index {
 				delete vs;
 				return nullptr;
 			}
+			g_LiveViewportSurfaces.push_back(vs);
 			return vs;
 #else
 			(void)hwnd; (void)hinstance; (void)width; (void)height;
@@ -821,6 +893,9 @@ namespace Index {
 
 		void DestroyViewportSurface(ViewportSurface* vs) {
 			if (!vs) return;
+			g_LiveViewportSurfaces.erase(
+				std::remove(g_LiveViewportSurfaces.begin(), g_LiveViewportSurfaces.end(), vs),
+				g_LiveViewportSurfaces.end());
 			vs->CurrentView    = nullptr;
 			vs->CurrentTexture = nullptr;
 			if (vs->Surface) vs->Surface.Unconfigure();
@@ -1116,6 +1191,14 @@ namespace Index {
 		// validation chatter.
 		g_Frame = FrameState{};
 
+		// Unconfigure before Configure for the same reason SetVsync does:
+		// Dawn's D3D12 backend reuses the swap chain across re-Configure,
+		// which can preserve stale per-swap-chain flags (notably the
+		// DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING / Independent Flip state set
+		// when the window first transitioned to/from fullscreen). Doing a
+		// clean teardown forces a fresh swap chain that picks up the
+		// current g_VsyncEnabled and present-mode flags from scratch.
+		g_Surface.Unconfigure();
 		ConfigureSurface(uw, uh);
 	}
 
@@ -1124,8 +1207,26 @@ namespace Index {
 		if (!g_Initialized || !g_Surface) return;
 		if (g_BackbufferWidth == 0 || g_BackbufferHeight == 0) return;
 
+		IDX_CORE_INFO_TAG("WebGPUApi",
+			"SetVsync: enabled={} -> unconfigure + reconfigure", enabled);
+
+		// Order: drop frame refs → Unconfigure → Configure. Dawn's
+		// Surface.Configure is a no-op for presentMode changes on D3D12
+		// unless preceded by Unconfigure (the field is only sampled on
+		// first configuration). Without this, toggling vsync off at
+		// runtime leaves the swap-chain stuck in Fifo and FPS pinned to
+		// the display refresh rate. g_Frame must reset BEFORE Unconfigure
+		// or Dawn validation complains about views outliving the surface.
 		g_Frame = FrameState{};
+		g_Surface.Unconfigure();
 		ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
+
+		// ImGui multi-viewport platform windows each own a ViewportSurface
+		// that read g_VsyncEnabled at creation/resize time only — without
+		// this they'd stay locked to whatever mode was active when the user
+		// dragged the panel out. The viewport helpers live in
+		// namespace WebGPUBackend, so the call needs explicit qualification.
+		WebGPUBackend::ReconfigureAllViewportSurfaces();
 	}
 
 	void RenderApi::SetScissor(int x, int y, int width, int height) {

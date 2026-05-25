@@ -11,6 +11,7 @@
 #include "Components/Tags.hpp"
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
+#include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Graphics/Framebuffer.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
@@ -23,8 +24,11 @@
 #include <Scene/EntityHelper.hpp>
 
 #include "Graphics/TextureManager.hpp"
+#include "Gui/CustomTitlebar.hpp"
 #include "Gui/ImGuiUtils.hpp"
+#include "Core/Version.hpp"
 #include "Serialization/Path.hpp"
+#include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/File.hpp"
@@ -355,7 +359,13 @@ namespace Index {
 		// region + button non-client rects to the Win32 hit-test layer
 		// here. No-op when CustomTitlebar is disabled in the window
 		// spec — the editor still works with the native OS chrome.
-		RenderCustomTitlebar();
+		{
+			std::string titlebarText = "Index Editor " + std::string(IDX_VERSION);
+			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+				titlebarText += " - " + project->Name;
+			}
+			EditorRuntime::RenderTitlebar(EditorRuntime::TitlebarConfig{ std::move(titlebarText), /*Centered=*/true });
+		}
 		RenderDockspaceRoot();
 
 		// Block menu-bar interaction while a project build is in flight —
@@ -619,92 +629,50 @@ namespace Index {
 			m_ProfilerPanel.Render(&m_ShowProfiler);
 		}
 
-		// Build progress overlay. While the worker is running we read
-		// the atomic progress + the locked stage label and feed both
-		// into a real progress bar. Pre-async this used a fake
-		// fmod(elapsed)-driven indeterminate animation that always
-		// hovered around 0–1% from the user's perspective; the worker
-		// now reports actual stage completion.
+		// Unified loading popup — real OS window (not an ImGui overlay) so
+		// it stays crisp even when the editor's render thread is briefly
+		// busy. Win32BuildProgressWindow is a no-op on non-Windows
+		// platforms. Project build takes priority over script recompile
+		// because the build pipeline already runs a script compile as a
+		// sub-stage and the build popup reports the real progress for it.
+		bool showPopup = false;
+		std::string popupTitle;
+		std::string popupStage;
+		float popupProgress = 0.0f;
+
 		if (m_BuildState > 0) {
-			ImGuiViewport* viewport = ImGui::GetMainViewport();
-
-			// Fullscreen dim background. Submitted first and explicitly
-			// focused so it sits behind the overlay but above every other
-			// editor window.
-			ImGui::SetNextWindowPos(viewport->Pos);
-			ImGui::SetNextWindowSize(viewport->Size);
-			ImGuiWindowFlags dimFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-				| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar
-				| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
-				| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav
-				| ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.5f));
-			ImGui::SetNextWindowFocus();
-			ImGui::Begin("##BuildDim", nullptr, dimFlags);
-			ImGui::End();
-			ImGui::PopStyleColor();
-			ImGui::PopStyleVar(3);
-
-			ImVec2 center(viewport->Pos.x + viewport->Size.x * 0.5f,
-				viewport->Pos.y + viewport->Size.y * 0.5f);
-
-			ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-			ImGui::SetNextWindowSize(ImVec2(360, 110));
-			ImGui::SetNextWindowBgAlpha(0.92f);
-			// Force the overlay to the top every frame so other panels
-			// (asset browser dialogs, inspectors, popups) can't end up
-			// drawing above it.
-			ImGui::SetNextWindowFocus();
-
-			ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-				| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar
-				| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
-				| ImGuiWindowFlags_NoSavedSettings;
-
-			ImGui::Begin("##BuildOverlay", nullptr, overlayFlags);
-			ImGui::TextUnformatted("Building Project...");
-			ImGui::Spacing();
-
-			std::string stage;
-			float progress;
-			{
-				// Snapshot both under the same lock so the stage label always
-				// matches the bar fraction in any given frame.
-				std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
-				stage = m_BuildStage;
-				progress = m_BuildProgress;
-			}
-			ImGui::ProgressBar(progress, ImVec2(-1, 0), "");
-			ImGui::TextDisabled("%s", stage.empty() ? "Working..." : stage.c_str());
-			ImGui::End();
+			showPopup = true;
+			popupTitle = "Building Project...";
+			// Snapshot both under the same lock so the stage label always
+			// matches the bar fraction in any given frame.
+			std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
+			popupStage = m_BuildStage;
+			popupProgress = m_BuildProgress;
+		} else if (auto* scriptSys = scene.HasSystem<ScriptSystem>()
+				? scene.GetSystem<ScriptSystem>() : nullptr;
+			scriptSys && (scriptSys->IsScriptRebuildRunning() || scriptSys->IsNativeRebuildRunning())) {
+			showPopup = true;
+			popupTitle = scriptSys->IsNativeRebuildRunning()
+				? "Compiling Native Scripts..."
+				: "Compiling Scripts...";
+			// No real progress signal from the script-rebuild path, so
+			// loop the bar 0→1 the same way the old ImGui overlay did.
+			const float elapsed = scriptSys->GetActiveRebuildElapsedSeconds();
+			popupProgress = fmodf(elapsed * 0.4f, 1.0f);
+		} else if (m_PackageManagerPanel.IsCloudInstallRunning()) {
+			showPopup = true;
+			popupTitle = "Downloading Package...";
+			// The cloud-install task carries a real stage string + coarse
+			// progress fraction; reuse them so the popup mirrors the
+			// per-stage label the package panel's own strip shows.
+			m_PackageManagerPanel.TryGetCloudInstallProgress(popupStage, popupProgress);
 		}
 
-		// Script rebuild overlay — rendered editor-side so the engine has no ImGui dep.
-		if (scene.HasSystem<ScriptSystem>()) {
-			auto* scriptSys = scene.GetSystem<ScriptSystem>();
-			if (scriptSys && (scriptSys->IsScriptRebuildRunning() || scriptSys->IsNativeRebuildRunning())) {
-				ImGuiViewport* viewport = ImGui::GetMainViewport();
-				ImVec2 center(viewport->Pos.x + viewport->Size.x * 0.5f,
-					viewport->Pos.y + viewport->Size.y * 0.5f);
-
-				ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-				ImGui::SetNextWindowSize(ImVec2(320, 80));
-				ImGui::SetNextWindowBgAlpha(0.92f);
-
-				ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-					| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar
-					| ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav;
-
-				ImGui::Begin("##ScriptBuildOverlay", nullptr, overlayFlags);
-				ImGui::TextUnformatted(scriptSys->IsNativeRebuildRunning() ? "Compiling Native Scripts..." : "Compiling Scripts...");
-				ImGui::Spacing();
-				const float elapsed = scriptSys->GetActiveRebuildElapsedSeconds();
-				ImGui::ProgressBar(fmodf(elapsed * 0.4f, 1.0f), ImVec2(-1, 0), "");
-				ImGui::End();
-			}
+		if (showPopup) {
+			Win32BuildProgressWindow::Show(popupTitle); // idempotent — retitles if already shown
+			Win32BuildProgressWindow::Update(popupProgress, popupStage);
+		} else if (Win32BuildProgressWindow::IsVisible()) {
+			Win32BuildProgressWindow::Hide();
 		}
 
 		ImGui::End(); // Close dockspace opened in RenderDockspaceRoot.

@@ -249,11 +249,18 @@ namespace Index {
 			::Index::Profiler::PushValue(name, float(val));                 \
 		} while (0)
 
+	// Label the current thread for Tracy's per-thread lane view. Call once
+	// at thread entry. Tracy internally uses SetThreadDescription on Windows
+	// and pthread_setname_np on POSIX, so the OS debugger picks up the
+	// same name when the profiler is enabled.
+	#define INDEX_PROFILE_THREAD_NAME(name) ::tracy::SetThreadName(name)
+
 #else // !INDEX_PROFILER_ENABLED — strip everything
 
-	#define INDEX_PROFILE_SCOPE(name)      ((void)0)
-	#define INDEX_PROFILE_FRAME(name)      ((void)0)
-	#define INDEX_PROFILE_VALUE(name, val) ((void)0)
+	#define INDEX_PROFILE_SCOPE(name)       ((void)0)
+	#define INDEX_PROFILE_FRAME(name)       ((void)0)
+	#define INDEX_PROFILE_VALUE(name, val)  ((void)0)
+	#define INDEX_PROFILE_THREAD_NAME(name) ((void)0)
 
 #endif
 

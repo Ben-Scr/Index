@@ -70,7 +70,7 @@ namespace Index {
 		// Per-state visuals applied to the handle's ImageComponent (see
 		// ButtonComponent for the same TransitionMode + per-state sprite
 		// model).
-		UITransitionMode TransitionMode = UITransitionMode::ColorTint;
+		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;
 
 		Color NormalColor   { 1.00f, 1.00f, 1.00f, 1.0f };
 		Color HoveredColor  { 0.85f, 0.85f, 0.85f, 1.0f };

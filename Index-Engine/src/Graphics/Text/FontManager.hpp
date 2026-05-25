@@ -29,6 +29,23 @@ namespace Index {
 
         static FontHandle LoadFont(std::string_view path, float pixelSize);
         static FontHandle LoadFontByUUID(uint64_t assetId, float pixelSize);
+
+        // Async variant: returns immediately with a handle whose Font is in
+        // the baking state (IsValid()/GetFont() return false/nullptr until
+        // the bake publishes). Re-uses an existing slot if one already exists
+        // for the (uuid, quantized pixelSize) bucket (loaded OR still baking),
+        // so repeated frame-by-frame calls from the render path don't fan out
+        // duplicate workers. Render-path callers should pair this with
+        // GetDefaultFont() as a fallback for the frames before the bake
+        // publishes — TextRenderer::ResolveFontAtPixelSize already does this.
+        static FontHandle LoadFontByUUIDAsync(uint64_t assetId, float pixelSize);
+
+        // Drive every pending async bake forward by one step. Cheap when no
+        // bakes are pending (one atomic load per slot). Called once per frame
+        // by TextRenderer at the top of RenderScene so completed bakes become
+        // visible in the same frame.
+        static void PollAsync();
+
         static void UnloadFont(const FontHandle& handle);
         static void UnloadAll();
 

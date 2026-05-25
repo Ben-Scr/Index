@@ -95,6 +95,20 @@ namespace Index {
 		Application::Quit();
 	}
 
+	static void Index_Application_Reload() {
+		Application* app = Application::GetInstance();
+		if (!app) return;
+		if (Application::IsEditor()) {
+			// Mirror Application.Quit()'s editor routing: a scripted
+			// reload inside the editor would otherwise tear down the
+			// editor process. Stop play instead — that's the editor
+			// analog of a runtime "restart from scratch".
+			Application::RequestEditorStopPlay();
+			return;
+		}
+		Application::Reload();
+	}
+
 	// Runtime sibling of the compile-time INDEX_EDITOR define. True when
 	// the host process is the editor binary, false in shipped runtime
 	// builds. Useful for runtime branches that can't be #if'd because
@@ -567,6 +581,7 @@ namespace Index {
 		b.Application_GetTargetFrameRate = &Index_Application_GetTargetFrameRate;
 		b.Application_SetTargetFrameRate = &Index_Application_SetTargetFrameRate;
 		b.Application_Quit = &Index_Application_Quit;
+		b.Application_Reload = &Index_Application_Reload;
 		b.Application_GetFixedDeltaTime = &Index_Application_GetFixedDeltaTime;
 		b.Application_GetUnscaledDeltaTime = &Index_Application_GetUnscaledDeltaTime;
 		b.Application_GetFixedUnscaledDeltaTime = &Index_Application_GetFixedUnscaledDeltaTime;

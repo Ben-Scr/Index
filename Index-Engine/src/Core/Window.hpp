@@ -78,6 +78,13 @@ namespace Index {
 		void SetResizeable(bool enabled);
 		void SetTitle(const std::string& title) { glfwSetWindowTitle(m_GLFWwindow, title.c_str()); }
 
+		// Locks the rendered game area to a target aspect ratio. A positive
+		// value enables letterbox/pillarbox; 0.0f disables the lock so the
+		// renderer fills the whole framebuffer. Re-syncs the main viewport
+		// so cameras see the new logical size on the next frame.
+		void SetAspectLock(float aspect);
+		float GetAspectLock() const { return m_AspectLock; }
+
 		std::string GetTitle() const { return std::string(glfwGetWindowTitle(m_GLFWwindow)); }
 		int GetWidth()  const { return s_MainViewport->GetWidth(); }
 		int GetHeight() const { return s_MainViewport->GetHeight(); }
@@ -236,6 +243,7 @@ namespace Index {
 		Vec2Int m_MinSize;
 		Vec2Int m_MaxSize;
 		bool m_CustomTitlebar = false;
+		float m_AspectLock = 0.0f;
 		Color m_TitlebarColor         { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color m_TitlebarTextColor     { 0.0f, 0.0f, 0.0f, 0.0f };
 		Color m_TitlebarActiveColor   { 0.0f, 0.0f, 0.0f, 0.0f };

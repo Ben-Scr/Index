@@ -13,6 +13,7 @@ internal static unsafe class InternalCalls
     internal static float Application_GetTargetFrameRate() => NativeCallbacks.Bindings.Application_GetTargetFrameRate();
     internal static void Application_SetTargetFrameRate(float fps) => NativeCallbacks.Bindings.Application_SetTargetFrameRate(fps);
     internal static void Application_Quit() => NativeCallbacks.Bindings.Application_Quit();
+    internal static void Application_Reload() => NativeCallbacks.Bindings.Application_Reload();
     internal static float Application_GetFixedDeltaTime() => NativeCallbacks.Bindings.Application_GetFixedDeltaTime();
     internal static float Application_GetUnscaledDeltaTime() => NativeCallbacks.Bindings.Application_GetUnscaledDeltaTime();
     internal static float Application_GetFixedUnscaledDeltaTime() => NativeCallbacks.Bindings.Application_GetFixedUnscaledDeltaTime();
@@ -882,6 +883,16 @@ internal static unsafe class InternalCalls
         }
     }
 
+    // ── EntityPicker ─────────────────────────────────────────────────
+
+    internal static bool EntityPicker_TryPickEntity(float worldX, float worldY, out ulong entityID)
+    {
+        ulong id;
+        int result = NativeCallbacks.Bindings.EntityPicker_TryPickEntity(worldX, worldY, &id);
+        entityID = id;
+        return result != 0 && id != 0;
+    }
+
     // ── UI: RectTransform2D ──────────────────────────────────────────
 
     internal static void RectTransform_GetAnchorMin(ulong id, out float x, out float y)
@@ -1513,4 +1524,29 @@ internal static unsafe class InternalCalls
     {
         NativeCallbacks.Bindings.Component_UnregisterAllDynamic();
     }
+
+    // ── Scene load-by-GUID ───────────────────────────────────────────
+    // Wrap the native Scene_*ByGuid entry points (no string buffer
+    // marshalling — GUIDs are blittable ulongs, so these are the leanest
+    // path between managed code and the native scene loader).
+    internal static bool Scene_LoadByGuid(ulong sceneGuid)
+        => NativeCallbacks.Bindings.Scene_LoadByGuid(sceneGuid) != 0;
+
+    internal static bool Scene_LoadAdditiveByGuid(ulong sceneGuid)
+        => NativeCallbacks.Bindings.Scene_LoadAdditiveByGuid(sceneGuid) != 0;
+
+    internal static void Scene_UnloadByGuid(ulong sceneGuid)
+        => NativeCallbacks.Bindings.Scene_UnloadByGuid(sceneGuid);
+
+    internal static bool Scene_SetActiveByGuid(ulong sceneGuid)
+        => NativeCallbacks.Bindings.Scene_SetActiveByGuid(sceneGuid) != 0;
+
+    internal static bool Scene_ReloadByGuid(ulong sceneGuid)
+        => NativeCallbacks.Bindings.Scene_ReloadByGuid(sceneGuid) != 0;
+
+    internal static bool Scene_DoesSceneExistByGuid(ulong sceneGuid)
+        => NativeCallbacks.Bindings.Scene_DoesSceneExistByGuid(sceneGuid) != 0;
+
+    internal static ulong Scene_GetActiveSceneGuid()
+        => NativeCallbacks.Bindings.Scene_GetActiveSceneGuid();
 }

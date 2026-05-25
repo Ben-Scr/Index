@@ -1055,8 +1055,32 @@ internal static class ScriptInstanceManager
             string fullPath = System.IO.Path.GetFullPath(path);
             s_UserLoadContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
             byte[] assemblyBytes = System.IO.File.ReadAllBytes(fullPath);
+
+            // Load the PDB alongside the assembly so exceptions thrown from
+            // user code carry file/line info in their stack traces. Without
+            // symbols the user frames appear bare ("at NewGame7.OnStart()"),
+            // and the editor's log-link parser falls back to the first .cs
+            // in the trace — the catch frame here in ScriptInstanceManager —
+            // sending the user to the harness instead of their own script.
+            System.IO.MemoryStream? symbolsStream = null;
+            string pdbPath = System.IO.Path.ChangeExtension(fullPath, ".pdb");
+            if (System.IO.File.Exists(pdbPath))
+            {
+                try
+                {
+                    symbolsStream = new System.IO.MemoryStream(
+                        System.IO.File.ReadAllBytes(pdbPath));
+                }
+                catch (Exception pdbEx)
+                {
+                    Log.Warn($"User assembly PDB load failed ({pdbEx.Message}); stack traces will lack source info.");
+                    symbolsStream = null;
+                }
+            }
+
             s_UserAssembly = s_UserLoadContext.LoadFromStream(
-                new System.IO.MemoryStream(assemblyBytes));
+                new System.IO.MemoryStream(assemblyBytes),
+                symbolsStream);
 
             Log.Info($"User assembly loaded: {path}");
 

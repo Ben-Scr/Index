@@ -37,9 +37,9 @@ Index-Engine/src/Generated/IndexEntityBitsConfig.h
 *.opendb
 *.VC.db
 *.ini
-!Axiom-Editor/imgui.ini
-!Axiom-Launcher/imgui.ini
-!Axiom-Runtime/imgui.ini
+!Index-Editor/imgui.ini
+!Index-Launcher/imgui.ini
+!Index-Runtime/imgui.ini
 *.sln
 *.vcxproj
 *.vcxproj.filters
@@ -47,6 +47,7 @@ Index-Engine/src/Generated/IndexEntityBitsConfig.h
 *.lastbuildstate
 *.tlog
 .claude/
+.agents/
 
 # User-specific files
 *.rsuser

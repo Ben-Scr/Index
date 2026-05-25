@@ -522,7 +522,12 @@ namespace Index {
 			}
 		}
 		if (uuid != 0) {
-			text.ResolvedFont = FontManager::LoadFontByUUID(uuid, bakeRequest);
+			// Async load: returns immediately with a handle whose Font may still
+			// be baking on a worker. GetFont() returns nullptr until the bake
+			// publishes (one or more frames later) — for those frames we fall
+			// through to the default-font branch below so the text renders with
+			// the bundled GoogleSans atlas instead of disappearing.
+			text.ResolvedFont = FontManager::LoadFontByUUIDAsync(uuid, bakeRequest);
 			if (Font* f = FontManager::GetFont(text.ResolvedFont)) return f;
 		}
 
@@ -863,6 +868,7 @@ namespace Index {
 		passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetVertexBuffer(0, inst.VertexBuffer);
 		pass.SetScissorRect(0, 0, target.Width, target.Height);
@@ -904,6 +910,11 @@ namespace Index {
 		m_LastFrameGlyphCount = 0;
 		m_LastFrameDrawCalls = 0;
 		if (!m_IsInitialized) return;
+
+		// Publish any async font bakes that finished since last frame, so a
+		// newly-rasterized atlas can be sampled by this frame's text rather
+		// than waiting one more frame to flip from the default fallback.
+		FontManager::PollAsync();
 
 		m_PendingDrawCmds.clear();
 

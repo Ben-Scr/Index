@@ -7,24 +7,18 @@
 #include "Editor/EditorPreferences.hpp"
 #include "Events/IndexEvent.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include "Gui/ImGuiContextSetup.hpp"
 #include "Gui/ImGuiFonts.hpp"
-#include "Packages/PackageImGuiBridge.hpp"
 #include "Serialization/Path.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
-#include <backends/imgui_impl_glfw.h>
-// ImGui backend lives inside Index-Engine.dll
-// (Index-Engine/src/Gui/ImGuiImplWebGPU.{hpp,cpp}). The editor previously
-// static-linked imgui_impl_opengl3, but the engine's window has no GL
-// context (GLFW_NO_API) so that path can't init. Going through engine.dll's
-// INDEX_API exports keeps editor and engine sharing one wgpu::Device.
-#include "Gui/ImGuiImplWebGPU.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <filesystem>
+#include <utility>
 
 namespace Index {
 
@@ -168,22 +162,7 @@ namespace Index {
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 
-		// Publish our ImGui context + allocator to package DLLs. Without
-		// this, any package that links ImGui statically (every engine_core
-		// package today) gets its own null GImGui and crashes on the first
-		// inspector ImGui call. Packages pick this up lazily on first use
-		// via PackageImGuiBridge::GetContext.
-		{
-			ImGuiMemAllocFunc allocFn = nullptr;
-			ImGuiMemFreeFunc  freeFn = nullptr;
-			void* userData = nullptr;
-			ImGui::GetAllocatorFunctions(&allocFn, &freeFn, &userData);
-			PackageImGuiBridge::Publish(
-				reinterpret_cast<void*>(ImGui::GetCurrentContext()),
-				reinterpret_cast<void*>(allocFn),
-				reinterpret_cast<void*>(freeFn),
-				userData);
-		}
+		EditorRuntime::ImGuiContextSetup::PublishImGuiContextToPackages();
 
 		ImGuiIO& io = ImGui::GetIO();
 		m_IniFilePath = ResolveEditorIniFilePath();
@@ -199,43 +178,13 @@ namespace Index {
 		// (ImGui only re-evaluates layout state on widget completion,
 		// not on every mouse move).
 		io.IniSavingRate = 1.0f;
-		// Enable docking BEFORE LoadIniSettingsFromDisk. The ini's
-		// [Docking][Data] section parses its dock-node tree through
-		// the SettingsHandler that's only registered when the docking
-		// config flag is set. Loading first leaves every window's
-		// saved DockId orphaned — the windows fall back to floating
-		// placement and the next save scrubs the [Docking][Data]
-		// section, silently destroying the persisted layout. This
-		// must run before the load below; the rest of the docking-
-		// adjacent config (resize grips, etc.) can stay where it is.
-		io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-		// Same ordering rule for multi-viewport: the [Viewport] /
-		// per-window viewport-state sections in imgui.ini are parsed
-		// by handlers that are only registered when ViewportsEnable is
-		// set. Loading first would silently scrub the persisted floating-
-		// window positions/sizes that ImGui restored across launches.
-		// The matching RendererHasViewports flag tells ImGui's per-frame
-		// UpdatePlatformWindows traversal that ImGuiImplWebGPU is ready
-		// to drive secondary viewports (handlers registered just below
-		// after ImGuiImplWebGPU::Init); imgui_impl_glfw sets the
-		// PlatformHasViewports flag in its own Init.
-		//
-		// Effect on the editor: undocking any panel that doesn't sit
-		// fully inside the editor's main window spawns a real OS window
-		// (taskbar + Alt+Tab visible). Panels with their own ImGuiWindowClass
-		// can set ViewportFlagsOverrideSet = NoAutoMerge to always be
-		// their own viewport. Secondary viewports use the native OS
-		// titlebar (Win32Titlebar's WndProc subclass only attaches to
-		// the main window) — fine here because CustomTitlebar = false
-		// in EditorApplication anyway.
-		io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-		io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
-		// Taskbar hiding is handled by the owner-window relationship that
-		// MultiViewport_CreateWindow sets on each viewport HWND (Windows
-		// excludes owned windows from the taskbar automatically). We do NOT
-		// set io.ConfigViewportsNoTaskBarIcon here for the same reason
-		// documented in the launcher's ImGuiContextLayer — it would force
-		// WS_EX_TOOLWINDOW back on, breaking the close-button chrome.
+		// Docking + multi-viewport flags MUST be applied BEFORE the
+		// LoadIniSettingsFromDisk below. The ini's [Docking][Data] and
+		// [Viewport] sections parse through SettingsHandlers that are
+		// only registered when those config flags are set; loading first
+		// orphans the dock IDs / viewport positions and the next save
+		// scrubs them, silently destroying the persisted layout.
+		EditorRuntime::ImGuiContextSetup::ApplyCommonIoConfigFlags(io);
 		// Belt-and-suspenders load. ImGui's NewFrame would auto-load
 		// on the first frame anyway, but doing it explicitly here
 		// (a) makes it easy to confirm via the log whether the file
@@ -256,17 +205,12 @@ namespace Index {
 			m_IniFilePath,
 			iniFileExists ? "loaded" : "missing — defaults will be used",
 			iniFileSize);
-		// Edge-resize left at default (true). Forcing it false combined with the
-		// transparent ResizeGrip colors below made undocked floating windows
-		// effectively non-resizable.
 
-		// One-time HiDPI scale captured from the window's monitor. Applied below
-		// to the UI font and to the theme via ScaleAllSizes. Mid-session
-		// monitor moves are not handled — wire glfwSetWindowContentScaleCallback
-		// if that becomes a real symptom.
-		float xScale = 1.0f, yScale = 1.0f;
-		glfwGetWindowContentScale(glfwWindow, &xScale, &yScale);
-		const float dpiScale = std::max(1.0f, xScale);
+		// One-time HiDPI scale captured from the window's monitor. Applied
+		// below to the UI font and to the theme via ScaleAllSizes. Mid-
+		// session monitor moves are not handled — wire
+		// glfwSetWindowContentScaleCallback if that becomes a real symptom.
+		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(glfwWindow);
 		s_DpiScale = dpiScale;
 
 		// Honor the user's Editor Font preference (typeface only — the
@@ -309,19 +253,7 @@ namespace Index {
 			}
 		}
 
-		// GLFW_NO_API means there's no GL context; use ImGui's "Other"
-		// GLFW init that doesn't bind one.
-		IDX_VERIFY(ImGui_ImplGlfw_InitForOther(glfwWindow, true),
-			"Failed to init glfw for imgui (WebGPU backend)!");
-		IDX_VERIFY(ImGuiImplWebGPU::Init(),
-			"Failed to init WebGPU imgui backend (device not ready?)");
-
-		// Wire renderer-side multi-viewport handlers AFTER ImGui_ImplWGPU
-		// is up. Binds Renderer_RenderWindow / SwapBuffers etc. on
-		// platform_io to ImGuiImplWebGPU's per-viewport surface code.
-		// imgui_impl_glfw installs its own platform-side handlers lazily
-		// on first NewFrame when ViewportsEnable is set.
-		ImGuiImplWebGPU::RegisterMultiViewportHandlers();
+		EditorRuntime::ImGuiContextSetup::InitBackends(glfwWindow);
 
 		ApplyIndexTheme();
 		// Must run after the theme — ScaleAllSizes is multiplicative on the
@@ -360,10 +292,7 @@ namespace Index {
 				exists ? "ok" : "WRITE FAILED — path not writable?");
 		}
 
-		ImGuiImplWebGPU::Shutdown();
-		ImGui_ImplGlfw_Shutdown();
-		PackageImGuiBridge::Clear();
-		ImGui::DestroyContext();
+		EditorRuntime::ImGuiContextSetup::ShutdownBackends();
 		m_IniFilePath.clear();
 
 		m_IsInitialized = false;
@@ -397,9 +326,7 @@ namespace Index {
 				"Applied deferred layout reload from '{}'.", path);
 		}
 
-		ImGuiImplWebGPU::NewFrame();
-		ImGui_ImplGlfw_NewFrame();
-		ImGui::NewFrame();
+		EditorRuntime::ImGuiContextSetup::NewFrame();
 	}
 
 	void ImGuiContextLayer::OnPostRender(Application& app) {
@@ -407,18 +334,7 @@ namespace Index {
 		if (!m_IsInitialized) {
 			return;
 		}
-		ImGui::Render();
-		// viewId is vestigial on WebGPU (preserved in the API signature
-		// for ABI stability). ImGuiImplWebGPU::RenderDrawData uses
-		// whatever framebuffer RenderApi::BindFramebuffer last bound.
-		ImGuiImplWebGPU::RenderDrawData(ImGui::GetDrawData(), /*viewId*/ 0xFFFFu);
-
-		// Pump secondary OS windows when multi-viewport is enabled. No-op
-		// otherwise. The engine.dll-side helper internally flushes the
-		// main encoder before walking viewports so per-frame WriteBuffer
-		// ordering across the shared ImGui_ImplWGPU FrameResources slot
-		// is correct — see ImGuiImplWebGPU.hpp for the full rationale.
-		ImGuiImplWebGPU::RenderPlatformWindowsDefault();
+		EditorRuntime::ImGuiContextSetup::RenderAndPresent();
 
 		// Belt-and-suspenders settings flush — runs after ImGui::Render
 		// has finalised the frame's settings state, so any dock split,

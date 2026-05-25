@@ -40,6 +40,12 @@ namespace Index {
 		// on older builds.
 		bool TitlebarDarkMode{ true };
 
+		// Target aspect for the rendered game area. 0.0f = no lock; any
+		// positive value letterboxes/pillarboxes the swap chain so the
+		// game always renders at this aspect with black bars filling
+		// whatever the OS window adds.
+		float AspectLock{ 0.0f };
+
 		WindowSpecification() = default;
 
 		WindowSpecification(int width, int height, const std::string& title)

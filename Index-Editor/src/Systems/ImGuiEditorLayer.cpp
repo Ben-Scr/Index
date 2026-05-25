@@ -34,6 +34,7 @@
 #include "Graphics/GizmoRenderer.hpp"
 #include "Profiling/Profiler.hpp"
 #include "Graphics/Gizmo.hpp"
+#include "Gui/CustomTitlebar.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
@@ -301,6 +302,12 @@ namespace Index {
 			std::string FilePath;
 			std::string LinkText;
 			int Line = 0;
+			// Byte-offset span within the source message where the clickable
+			// "<path>:line N" substring lives. The console renderer uses this
+			// to style that exact substring as the link inline within the
+			// message text — no separate "Open …" prefix widget required.
+			size_t MessageStart = 0;
+			size_t MessageEnd = 0;
 		};
 
 		bool IsLineBoundary(std::string_view text, size_t pos) {
@@ -351,7 +358,7 @@ namespace Index {
 			return value > 0;
 		}
 
-		bool TryParseLineNumber(std::string_view text, size_t pos, int& outLine) {
+		bool TryParseLineNumber(std::string_view text, size_t pos, int& outLine, size_t* outEnd = nullptr) {
 			SkipWhitespace(text, pos);
 			if (pos >= text.size() || IsLineBoundary(text, pos)) {
 				return false;
@@ -359,7 +366,10 @@ namespace Index {
 
 			if (text[pos] == '(') {
 				pos++;
-				return ParsePositiveInt(text, pos, outLine);
+				if (!ParsePositiveInt(text, pos, outLine)) return false;
+				if (pos < text.size() && text[pos] == ')') pos++;
+				if (outEnd) *outEnd = pos;
+				return true;
 			}
 
 			if (text[pos] == ':' || text[pos] == ',') {
@@ -372,7 +382,9 @@ namespace Index {
 				SkipWhitespace(text, pos);
 			}
 
-			return ParsePositiveInt(text, pos, outLine);
+			if (!ParsePositiveInt(text, pos, outLine)) return false;
+			if (outEnd) *outEnd = pos;
+			return true;
 		}
 
 		std::string ToLowerCopy(std::string value) {
@@ -464,7 +476,7 @@ namespace Index {
 			return {};
 		}
 
-		std::string ExtractRawSourcePath(std::string_view message, size_t extStart, size_t extEnd) {
+		std::string ExtractRawSourcePath(std::string_view message, size_t extStart, size_t extEnd, size_t* outPathStart = nullptr) {
 			size_t lineStart = message.rfind('\n', extStart);
 			lineStart = (lineStart == std::string_view::npos) ? 0 : lineStart + 1;
 
@@ -501,6 +513,7 @@ namespace Index {
 				start++;
 			}
 
+			if (outPathStart) *outPathStart = start;
 			return std::string(message.substr(start, extEnd - start));
 		}
 
@@ -521,11 +534,13 @@ namespace Index {
 					}
 
 					int line = 0;
-					if (!TryParseLineNumber(message, extEnd, line)) {
+					size_t lineEndPos = 0;
+					if (!TryParseLineNumber(message, extEnd, line, &lineEndPos)) {
 						continue;
 					}
 
-					std::string rawPath = ExtractRawSourcePath(message, pos, extEnd);
+					size_t pathStartPos = 0;
+					std::string rawPath = ExtractRawSourcePath(message, pos, extEnd, &pathStartPos);
 					if (rawPath.empty()) {
 						continue;
 					}
@@ -546,8 +561,10 @@ namespace Index {
 					LogSourceLocation location;
 					location.FilePath = resolved;
 					location.Line = line;
-					location.LinkText = "Open " + std::filesystem::path(resolved).filename().string()
+					location.LinkText = std::filesystem::path(resolved).filename().string()
 						+ ":" + std::to_string(line);
+					location.MessageStart = pathStartPos;
+					location.MessageEnd = lineEndPos;
 					return location;
 				}
 			}
@@ -765,6 +782,15 @@ namespace Index {
 	void ImGuiEditorLayer::OnUpdate(Application& app, float dt) {
 		DrainPendingLogEntries();
 		RunAutoSaveTick(app, dt);
+		// If the prefab source file was deleted while editing (e.g. via the
+		// asset browser), bail out of edit mode before auto-save runs —
+		// otherwise the auto-save tick would silently re-create the file at
+		// the now-stale path and the editor would stay stuck on a phantom
+		// asset. Run BEFORE RunPrefabAutoSaveTick so auto-save doesn't fire
+		// on a path we're about to abandon.
+		if (m_PrefabEditScene && !m_PrefabEditPath.empty() && !File::Exists(m_PrefabEditPath)) {
+			ClosePrefabEditing(false);
+		}
 		RunPrefabAutoSaveTick();
 
 		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
@@ -993,6 +1019,8 @@ namespace Index {
 				entry.SourceFilePath = std::move(location->FilePath);
 				entry.SourceLinkText = std::move(location->LinkText);
 				entry.SourceLine = location->Line;
+				entry.SourceLinkStart = location->MessageStart;
+				entry.SourceLinkEnd = location->MessageEnd;
 			}
 		}
 
@@ -1110,7 +1138,7 @@ namespace Index {
 		// Offset below the custom titlebar row (0 when disabled). The
 		// titlebar window pinned at viewport->Pos owns the top rows;
 		// the dockspace takes the remaining client area.
-		const float titlebarH = GetCustomTitlebarHeight();
+		const float titlebarH = EditorRuntime::GetTitlebarRowHeight();
 		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + titlebarH));
 		ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y - titlebarH));
 		ImGui::SetNextWindowViewport(viewport->ID);
@@ -1783,6 +1811,7 @@ namespace Index {
 
 	void ImGuiEditorLayer::ResetEditorFocusCycle() {
 		m_EditorCameraFocusActive = false;
+		m_EditorCameraFocusElapsed = 0.0f;
 		m_FocusLastEntity = entt::null;
 		m_FocusNextPressTight = false;
 	}
@@ -1792,20 +1821,29 @@ namespace Index {
 			return;
 		}
 
-		const float alpha = 1.0f - std::exp(-std::max(0.0f, dt) * 10.0f);
-		const Vec2 currentPosition = m_EditorCamera.GetPosition();
-		const float currentSize = m_EditorCamera.GetOrthographicSize();
-		const Vec2 nextPosition = Lerp(currentPosition, m_EditorCameraFocusTarget, alpha);
-		const float nextSize = currentSize + (m_EditorCameraFocusOrthoSize - currentSize) * alpha;
+		// Fixed-duration animation so framing an entity takes the same
+		// wall-clock time whether the camera is two units away or two
+		// hundred. The previous exponential-decay version converged with
+		// a distance-independent half-life, but the absolute completion
+		// threshold meant the perceived duration grew with distance and
+		// with how zoomed-out the start state was.
+		constexpr float k_FocusDuration = 0.25f;
+		m_EditorCameraFocusElapsed += Max(0.0f, dt);
+		const float t = Min(1.0f, m_EditorCameraFocusElapsed / k_FocusDuration);
+		const float eased = t * t * (3.0f - 2.0f * t);
+
+		const Vec2 nextPosition = Lerp(m_EditorCameraFocusStartPosition, m_EditorCameraFocusTarget, eased);
+		const float nextSize = m_EditorCameraFocusStartOrthoSize
+			+ (m_EditorCameraFocusOrthoSize - m_EditorCameraFocusStartOrthoSize) * eased;
 
 		m_EditorCamera.SetPosition(nextPosition);
 		m_EditorCamera.SetOrthographicSize(nextSize);
 
-		if (DistanceSquared(nextPosition, m_EditorCameraFocusTarget) < 0.0001f
-			&& std::abs(nextSize - m_EditorCameraFocusOrthoSize) < 0.001f) {
+		if (t >= 1.0f) {
 			m_EditorCamera.SetPosition(m_EditorCameraFocusTarget);
 			m_EditorCamera.SetOrthographicSize(m_EditorCameraFocusOrthoSize);
 			m_EditorCameraFocusActive = false;
+			m_EditorCameraFocusElapsed = 0.0f;
 		}
 	}
 
@@ -1914,7 +1952,11 @@ namespace Index {
 		const float zoom = std::max(m_EditorCamera.GetZoom(), 0.0001f);
 
 		m_EditorCameraFocusTarget = center;
-		m_EditorCameraFocusOrthoSize = std::max(0.5f, targetHalfHeight / zoom);
+		m_EditorCameraFocusOrthoSize = Clamp(targetHalfHeight / zoom,
+			EditorCamera::k_MinOrthographicSize, EditorCamera::k_MaxOrthographicSize);
+		m_EditorCameraFocusStartPosition = m_EditorCamera.GetPosition();
+		m_EditorCameraFocusStartOrthoSize = m_EditorCamera.GetOrthographicSize();
+		m_EditorCameraFocusElapsed = 0.0f;
 		m_EditorCameraFocusActive = true;
 		m_FocusLastEntity = m_SelectedEntity;
 		m_FocusNextPressTight = !tightFocus;
@@ -3286,6 +3328,17 @@ namespace Index {
 				// size_hint() is only available on in_place policies and
 				// won't compile here.
 				const auto registryCount = static_cast<std::size_t>(view.size());
+				// Scene-swap detection: if the iterated scene differs from the
+				// one m_EntityOrder was last built for, force a rebuild. Without
+				// this, a script-driven LoadScene that happens to produce the
+				// same entity count as the previous scene leaves
+				// m_VisibleEntityOrder pointing at destroyed handles — the
+				// clipper below then fires "Failed to calculate item height"
+				// because every row is skipped by the IsValid filter.
+				if (m_EntityOrderSceneId != sceneIdValue) {
+					m_EntityOrderDirty = true;
+					m_EntityOrderSceneId = sceneIdValue;
+				}
 				const bool needsRebuild = m_EntityOrderDirty
 					|| m_EntityOrder.size() != registryCount;
 
@@ -3706,7 +3759,16 @@ namespace Index {
 							EntityHandle primaryDraggedHandle = static_cast<EntityHandle>(dragData->EntityHandle);
 							const uint64_t targetSceneIdValue = static_cast<uint64_t>(scene.GetSceneId());
 							const bool sameScene = dragData->SourceSceneId == targetSceneIdValue;
-							if (!sameScene) {
+							// Prefab edit mode is a detached single-scene workspace.
+							// Allowing a cross-scene migration into it would import
+							// foreign entities (and their PrefabGUID/origin metadata)
+							// into the asset, breaking the "this prefab owns exactly
+							// these entities" invariant at save time. Reject the
+							// gesture rather than silently corrupting the asset.
+							if (!sameScene && IsInPrefabEditMode()) {
+								// drop ignored
+							}
+							else if (!sameScene) {
 								// Cross-scene drop on an entity row: migrate the
 								// dragged entities into `scene`, then either reparent
 								// under `entity` (middle zone) or sibling-insert next
@@ -3842,11 +3904,21 @@ namespace Index {
 							std::string ext = std::filesystem::path(droppedPath).extension().string();
 							std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 							if (ext == ".prefab") {
-								EntityHandle loaded = SceneSerializer::LoadEntityFromFile(scene, droppedPath);
-								if (loaded != entt::null) {
-									EnsureEditorUniqueEntityNames(scene, { loaded });
+								// Nested-prefab drop into prefab edit mode would
+								// create a second root inside a single-rooted
+								// prefab asset, and would also let a prefab be
+								// dragged into itself (infinite recursion at the
+								// next instantiation pass). Reject the gesture
+								// while editing a prefab; script (.cs/.cpp) drops
+								// continue to work because they attach to the
+								// existing entity rather than spawn a new one.
+								if (!IsInPrefabEditMode()) {
+									EntityHandle loaded = SceneSerializer::LoadEntityFromFile(scene, droppedPath);
+									if (loaded != entt::null) {
+										EnsureEditorUniqueEntityNames(scene, { loaded });
+									}
+									m_EntityOrder.clear(); m_EntityOrderDirty = true;
 								}
-								m_EntityOrder.clear(); m_EntityOrderDirty = true;
 							}
 							else {
 								// Mirror the Add Component button drop: a .cs (managed
@@ -3881,6 +3953,19 @@ namespace Index {
 						}
 						ImGui::EndDragDropTarget();
 					}
+
+					// Pop the row text-tint pushes BEFORE opening the context
+					// menu — popups inherit the live style stack at open time,
+					// so without this the menu items render in prefab-blue /
+					// disabled-gray / cut-gray instead of the default text
+					// color. Everything that needed the tint (selectable,
+					// rename, drag source/target) has already drawn above.
+					if (entityIsCutMarked)
+						ImGui::PopStyleColor();
+					if (entityIsPrefabTinted)
+						ImGui::PopStyleColor();
+					if (entityIsDisabled)
+						ImGui::PopStyleColor();
 
 					if (ImGui::BeginPopupContextItem())
 					{
@@ -3932,13 +4017,6 @@ namespace Index {
 
 						ImGui::EndPopup();
 					}
-
-					if (entityIsCutMarked)
-						ImGui::PopStyleColor();
-					if (entityIsPrefabTinted)
-						ImGui::PopStyleColor();
-					if (entityIsDisabled)
-						ImGui::PopStyleColor();
 
 					ImGui::PopID();
 
@@ -4072,12 +4150,17 @@ namespace Index {
 						std::string droppedPath(static_cast<const char*>(payload->Data));
 						std::string ext = std::filesystem::path(droppedPath).extension().string();
 						std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-						if (ext == ".scene") {
-							// Loading a .scene only makes sense in scene-edit
-							// mode — silently ignored while editing a prefab.
-							if (!IsInPrefabEditMode()) {
-								m_PendingSceneFileDrop = droppedPath;
-							}
+						// All scene-level asset drops below create NEW root entities
+						// in the context scene. In prefab edit mode that violates the
+						// single-root invariant of a prefab asset (and a nested .prefab
+						// drop could recurse if the dropped asset is the one being
+						// edited). Reject the gesture wholesale; the user can still
+						// drop scripts onto an existing entity row to attach them.
+						if (IsInPrefabEditMode()) {
+							// drop ignored
+						}
+						else if (ext == ".scene") {
+							m_PendingSceneFileDrop = droppedPath;
 						}
 						else if (ext == ".prefab") {
 							Scene* dropScene = GetContextScene();
@@ -4473,31 +4556,56 @@ namespace Index {
 			&& scene.GetEntityOrigin(entity.GetHandle()) == EntityOrigin::Prefab
 			&& static_cast<uint64_t>(scene.GetPrefabGUID(entity.GetHandle())) != 0;
 		bool prefabSourceResolvable = false;
+		// `prefabInstanceRoot` is the entity Apply All / Revert All operate
+		// on — always the actual prefab root, even when the user has a
+		// child of the instance selected. Without this resolution Apply All
+		// would write the selected child as if it were the prefab root,
+		// silently overwriting the prefab file with that subtree.
+		EntityHandle prefabInstanceRoot = entt::null;
+		// True iff ANY entity in the prefab instance subtree differs from
+		// its source — drives the Apply/Revert button enable state. The
+		// per-entity `prefabOverrides` map only captures THIS entity's diff,
+		// so a child-only edit would leave the root's button disabled
+		// without this subtree-wide check.
+		bool hasSubtreeOverrides = false;
 		if (isSinglePrefabInstance) {
 			prefabSourceResolvable = SceneSerializer::ComputeInstanceOverrides(
 				scene, entity.GetHandle(), prefabOverrides);
+			if (prefabSourceResolvable) {
+				prefabInstanceRoot = SceneSerializer::GetPrefabInstanceRoot(scene, entity.GetHandle());
+				hasSubtreeOverrides = SceneSerializer::HasPrefabInstanceOverrides(scene, entity.GetHandle());
+			}
 		}
 
 		// Top-of-inspector prefab actions (only when the source resolves; orphans
 		// can't apply or revert because we have no source to diff against).
-		if (isSinglePrefabInstance && prefabSourceResolvable) {
-			// No overrides == nothing to apply or revert. Without this gate the
-			// buttons happily fire on a clean instance: Apply All rewrites the
-			// source prefab to a structurally-equivalent file (still triggers
-			// a disk write, asset re-bake, and live-instance refresh pass on
-			// every other open scene), and Revert All destroys + rebuilds the
-			// entity for no semantic change — both visible as "the editor did
+		if (isSinglePrefabInstance && prefabSourceResolvable && prefabInstanceRoot != entt::null) {
+			// No overrides anywhere in the subtree == nothing to apply or
+			// revert. Without this gate the buttons happily fire on a clean
+			// instance: Apply All rewrites the source prefab to a
+			// structurally-equivalent file (still triggers a disk write,
+			// asset re-bake, and live-instance refresh pass on every other
+			// open scene), and Revert All destroys + rebuilds the entity
+			// for no semantic change — both visible as "the editor did
 			// something for no reason" to the user.
-			const bool hasOverrides = !prefabOverrides.GetObject().empty();
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.42f, 0.66f, 0.95f, 1.0f));
-			ImGui::TextUnformatted("Prefab Instance");
+			ImGui::TextUnformatted(entity.GetHandle() == prefabInstanceRoot
+				? "Prefab Instance"
+				: "Prefab Instance (child)");
 			ImGui::PopStyleColor();
-			ImGui::BeginDisabled(!hasOverrides);
+			ImGui::BeginDisabled(!hasSubtreeOverrides);
 			if (ImGui::SmallButton("Apply All")) {
-				// Capture old source BEFORE the apply, then push instance state to disk
-				// and propagate to other live instances preserving their overrides.
+				// Apply / Revert always act on the prefab ROOT, never the
+				// currently-selected entity — applying a child as if it were
+				// the root would overwrite the prefab file with that child's
+				// serialized tree and silently delete the prefab's other
+				// branches.
+				//
+				// Capture old source BEFORE the apply, then push instance
+				// state to disk and propagate to other live instances
+				// preserving their overrides.
 				const std::string prefabPath = AssetRegistry::ResolvePath(
-					static_cast<uint64_t>(scene.GetPrefabGUID(entity.GetHandle())));
+					static_cast<uint64_t>(scene.GetPrefabGUID(prefabInstanceRoot)));
 				Json::Value previousSourceEntity;
 				bool havePrev = false;
 				if (!prefabPath.empty() && File::Exists(prefabPath)) {
@@ -4508,16 +4616,20 @@ namespace Index {
 						else if (const Json::Value* lb = previousRoot.FindMember("prefab")) { previousSourceEntity = *lb; havePrev = true; }
 					}
 				}
-				if (SceneSerializer::ApplyPrefabInstanceOverrides(scene, entity.GetHandle()) && havePrev) {
-					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity.GetHandle()));
+				if (SceneSerializer::ApplyPrefabInstanceOverrides(scene, prefabInstanceRoot) && havePrev) {
+					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(prefabInstanceRoot));
 					SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
 						std::vector<EntityHandle> targets;
-						auto view = s.GetRegistry().view<EntityMetaDataComponent>();
+						// Only the ROOT carries PrefabInstanceComponent — gating
+						// the iteration on it skips child entities that also
+						// have Origin=Prefab + matching PrefabGUID but would be
+						// refreshed transitively when their root rebuilds.
+						auto view = s.GetRegistry().view<EntityMetaDataComponent, PrefabInstanceComponent>();
 						for (entt::entity e2 : view) {
 							const auto& meta = view.get<EntityMetaDataComponent>(e2).MetaData;
 							if (meta.Origin != EntityOrigin::Prefab) continue;
 							if (static_cast<uint64_t>(meta.PrefabGUID) != prefabGuid) continue;
-							if (e2 == entity.GetHandle() && &s == &scene) continue; // skip the just-applied entity
+							if (e2 == prefabInstanceRoot && &s == &scene) continue; // skip the just-applied root
 							targets.push_back(e2);
 						}
 						bool anyRefreshed = false;
@@ -4532,19 +4644,19 @@ namespace Index {
 			}
 			ImGui::SameLine();
 			if (ImGui::SmallButton("Revert All")) {
-				// RevertPrefabInstanceOverride destroys the current entity and
+				// RevertPrefabInstanceOverride destroys the current root and
 				// returns a freshly-built replacement — every cached handle
 				// derived from `entity` (selectedEntities, entitySpan, the
 				// prefab-edit root) is stale after this point. Capture the
-				// pre-revert handle, dispatch the revert, then patch every
+				// pre-revert root, dispatch the revert, then patch every
 				// editor-side reference and bail out of the inspector body
 				// this frame so we don't run the component loop against
 				// destroyed memory (which manifested as the editor's UI
 				// freezing to the clear colour after one click).
-				const EntityHandle revertedHandle = entity.GetHandle();
-				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, revertedHandle, {});
+				const EntityHandle revertedRoot = prefabInstanceRoot;
+				EntityHandle replacement = SceneSerializer::RevertPrefabInstanceOverride(scene, revertedRoot, {});
 				if (replacement != entt::null) {
-					if (m_PrefabEditRootEntity == revertedHandle) {
+					if (m_PrefabEditRootEntity == revertedRoot) {
 						m_PrefabEditRootEntity = replacement;
 					}
 					SelectEntity(replacement); // also bumps m_SelectionVersion
