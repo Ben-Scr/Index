@@ -3,17 +3,18 @@ Index is a lightweight C++20 2D game engine mainly focused on performance and mo
 
 ## Preview
 
-### Game
-
-<p align="center">
-  <img src="Docs/Preview/Preview_2.png" width="48%" alt="Gameplay">
-  <img src="Docs/Preview/Preview_3.png" width="48%" alt="Gameplay">
-</p>
-
 ### Editor
 
 <p align="center">
-  <img src="Docs/Preview/Preview-Editor.png" width="60%" alt="Level Editor">
+  <img src="Docs/Preview/Editor.png" width="48%" alt="Editor Preview">
+  <img src="Docs/Preview/Editor2.png" width="48%" alt="Editor Preview">
+</p>
+
+### Launcher
+
+<p align="center">
+  <img src="Docs/Preview/Launcher.png" width="60%" alt="Launcher Preview">
+  <img src="Docs/Preview/Launcher2.png" width="60%" alt="Launcher Preview">
 </p>
 
 ## External Libraries / APIs
