@@ -2,6 +2,7 @@
 #include "Graphics/TextureManager.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/TextureMeta.hpp"
 #include "Core/Log.hpp"
 #include "Graphics/TextureEntry.hpp"
 #include "Serialization/Path.hpp"
@@ -230,7 +231,68 @@ namespace Index {
 			path = AssetRegistry::ResolvePath(assetId);
 		}
 		if (path.empty()) return TextureHandle{};
+
+		// The asset's `.meta` is the authoring surface — its import block
+		// wins over caller-supplied defaults. Falling back to the caller's
+		// values when the meta has no import block keeps every existing
+		// LoadTextureByUUID call site working unchanged.
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
+		if (meta.HasImportBlock) {
+			filter = meta.Import.FilterMode;
+			u      = meta.Import.WrapU;
+			v      = meta.Import.WrapV;
+		}
 		return LoadTexture(path, filter, u, v);
+	}
+
+	size_t TextureManager::ApplyMetaSamplerToLoaded(const std::string& path) {
+		if (!s_IsInitialized || path.empty()) return 0;
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
+		if (!meta.HasImportBlock) return 0;
+
+		const std::string targetKey = CanonicalPathKey(path);
+		size_t count = 0;
+		const std::size_t end = std::min<std::size_t>(s_Textures.size(), g_CanonicalKeys.size());
+		for (size_t i = 0; i < end; ++i) {
+			TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid || slot.Name.empty()) continue;
+			if (g_CanonicalKeys[i] != targetKey) continue;
+			if (slot.SamplerFilter == meta.Import.FilterMode
+				&& slot.WrapU == meta.Import.WrapU
+				&& slot.WrapV == meta.Import.WrapV)
+			{
+				// Already aligned with the meta — no GPU sampler rebuild,
+				// no index re-key, no count bump (the editor doesn't need
+				// to know "0 changed" vs "0 matched").
+				continue;
+			}
+
+			// Re-key g_PathIndex: the lookup hash bakes (path, filter, wrapU,
+			// wrapV), so leaving the old key in place would make a later
+			// LoadTexture(path, oldFilter, ...) find this slot but with the
+			// new sampler — surprising. Drop the old key and insert under
+			// the new combination so subsequent loads with the original
+			// caller defaults spin up a fresh slot (or hit-cache to this
+			// one when those defaults also happen to match the meta).
+			g_PathIndex.erase(HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV));
+
+			// Update the per-slot cached sampler so any later ReloadTexture
+			// pass (which copies these onto the freshly-decoded Texture2D)
+			// also picks up the new values. SetSampler rebuilds the GPU
+			// sampler immediately — entities rendering this texture next
+			// frame see the new Filter/Wrap.
+			slot.SamplerFilter = meta.Import.FilterMode;
+			slot.WrapU         = meta.Import.WrapU;
+			slot.WrapV         = meta.Import.WrapV;
+			slot.Texture.SetSampler(meta.Import.FilterMode, meta.Import.WrapU, meta.Import.WrapV);
+
+			// Match LoadTexture's value convention: (idx + 1) so the
+			// reverse index reserves 0 as "no entry".
+			g_PathIndex[HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV)] =
+				static_cast<std::uint32_t>(i) + 1u;
+			++count;
+		}
+		return count;
 	}
 
 	TextureHandle TextureManager::GetDefaultTexture(DefaultTexture type) {

@@ -1235,6 +1235,14 @@ namespace Index {
 		passDesc.depthStencilAttachment = nullptr;
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+		// Honour the cached RenderApi::SetViewport rect. For the runtime
+		// aspect-lock composite, the caller (Renderer2D::RenderSceneWithVP)
+		// sets it to the centered sub-rect of the swap chain so this blit's
+		// fullscreen triangle gets clipped to that rect — preserving the
+		// BLACK bars painted by Renderer2D::BeginFrame's swap-chain clear.
+		// In every non-aspect-locked path the cached viewport already
+		// matches the full destination, so this is a no-op.
+		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetBindGroup(0, bindGroup);
 		pass.Draw(/*vertexCount=*/3, /*instanceCount=*/1, /*firstVertex=*/0, /*firstInstance=*/0);

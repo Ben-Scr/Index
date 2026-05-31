@@ -349,12 +349,9 @@ namespace Index::ImGuiImplWebGPU {
 
 	namespace {
 
-		// Forward declarations so MultiViewport_CreateWindow below can wire
-		// up the refresh callback (defined further down — it calls the
-		// render+swap pair).
+		// Forward declaration so MultiViewport_CreateWindow below can wire
+		// up the refresh callback (defined further down).
 #if defined(IDX_PLATFORM_WINDOWS)
-		void MultiViewport_RenderWindow(ImGuiViewport* viewport, void* render_arg);
-		void MultiViewport_SwapBuffers(ImGuiViewport* viewport, void* render_arg);
 		void MultiViewport_RefreshCallback(GLFWwindow* glfwWindow);
 #endif
 
@@ -463,20 +460,19 @@ namespace Index::ImGuiImplWebGPU {
 				&useDarkMode,
 				sizeof(useDarkMode));
 
-			// (4) Install GLFW window-refresh callback so we re-present
+			// (4) Install GLFW window-refresh callback so we re-render
 			// during Win32's modal sizing loop (WM_ENTERSIZEMOVE..WM_EXIT-
 			// SIZEMOVE). The main thread is blocked in DefWindowProc during
 			// that loop, so our normal frame loop doesn't run, and the OS
 			// just stretches the last-rendered framebuffer to fit the new
 			// window size — the "UI gets stretched while dragging" artifact.
 			// Windows still dispatches WM_PAINT periodically inside the
-			// modal loop, which GLFW routes to this callback. We use it to
-			// reconfigure the WebGPU surface to the current size and
-			// re-present the viewport's last DrawData. Content stays "old"
-			// (ImGui doesn't re-layout from here — that would need a full
-			// frame), but at correct geometry: any new space created by
-			// growing the window appears as the clear color instead of as
-			// stretched bitmap.
+			// modal loop, which GLFW routes to this callback. The callback
+			// runs a full Application::RenderOnceForRefresh so ImGui re-
+			// lays-out the popup for the new size and emits fresh DrawData;
+			// the standard RenderPlatformWindowsDefault path inside Render-
+			// OnceForRefresh then resizes this viewport's WebGPU surface
+			// and re-renders it. See MultiViewport_RefreshCallback below.
 			// imgui_impl_glfw does not install a refresh callback, so we
 			// don't have to chain — we own this slot.
 			GLFWwindow* viewportGlfw =
@@ -573,54 +569,29 @@ namespace Index::ImGuiImplWebGPU {
 		// would otherwise be blocked in DefWindowProc and our normal
 		// frame loop wouldn't run. Without this, dragging a viewport
 		// edge shows the last-rendered framebuffer stretched to the new
-		// window size. With this, the surface is reconfigured to the
-		// current size and the last DrawData is re-presented — content
-		// stays "old layout" (we don't re-run ImGui::NewFrame from here,
-		// that would need full app cooperation), but at correct geometry.
-		void MultiViewport_RefreshCallback(GLFWwindow* glfwWindow) {
-			// Resolve the ImGuiViewport for this GLFW handle. ImGui's
-			// FindViewportByPlatformHandle matches against PlatformHandle,
-			// which imgui_impl_glfw sets to the GLFWwindow*.
-			SyncImGuiContextFromBridge();
-			if (ImGui::GetCurrentContext() == nullptr) return;
-			ImGuiViewport* viewport =
-				ImGui::FindViewportByPlatformHandle(glfwWindow);
-			if (!viewport || !viewport->RendererUserData) return;
-			// First-frame guard: no DrawData yet means the viewport has
-			// never completed a render. Skip — nothing to re-present.
-			if (!viewport->DrawData) return;
-
-			int w = 0;
-			int h = 0;
-			glfwGetWindowSize(glfwWindow, &w, &h);
-			if (w <= 0 || h <= 0) return;
-
-			// Shrink-guard: the cached DrawData's scissor rects reference
-			// positions inside its original DisplaySize. If we render it
-			// onto a smaller surface (user is dragging the window edge
-			// INWARD), Dawn validation fires:
-			//   "Scissor rect ... is not contained in the render area
-			//    dimensions {...}"
-			// On growth the scissor stays inside bounds (the render area
-			// is bigger than the scissor source), so growth is safe.
-			// On shrink: skip the re-render and fall back to the OS
-			// scaling the existing surface. The next normal frame after
-			// the modal loop ends will re-layout for the smaller size.
-			const int drawW =
-				static_cast<int>(viewport->DrawData->DisplaySize.x);
-			const int drawH =
-				static_cast<int>(viewport->DrawData->DisplaySize.y);
-			if (w < drawW || h < drawH) return;
-
-			// Growth path: reconfigure the WebGPU surface to the new
-			// (larger) size and re-present.
-			auto* vs = static_cast<WebGPUBackend::ViewportSurface*>(
-				viewport->RendererUserData);
-			WebGPUBackend::ResizeViewportSurface(
-				vs, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
-
-			MultiViewport_RenderWindow(viewport, nullptr);
-			MultiViewport_SwapBuffers(viewport, nullptr);
+		// window size.
+		//
+		// We delegate to Application::RenderOnceForRefresh — the same
+		// entry point Window::RefreshCallback uses for the main window —
+		// so the resizing secondary viewport gets a full re-layout pass
+		// through ImGui::NewFrame, not just a re-present of stale Draw-
+		// Data. ImGui picks up the new GLFW window size via Platform-
+		// RequestResize (set by ImGui_ImplGlfw_WindowSizeCallback), the
+		// popup window inside the viewport resizes to match (see
+		// imgui.cpp's `if (window->Viewport->PlatformRequestResize)`
+		// path), and the resulting frame emits fresh DrawData sized to
+		// the new surface. The standard RenderPlatformWindowsDefault
+		// path inside the ImGuiContextLayer's OnPostRender then resizes
+		// the per-viewport WebGPU surface (Renderer_SetWindowSize →
+		// ResizeViewportSurface) and re-renders each viewport with its
+		// freshly-laid-out DrawData. This fixes both shrink (which the
+		// previous re-present path skipped entirely because the cached
+		// scissor rects no longer fit) and grow (which previously left
+		// the old layout in the upper-left with clear-color elsewhere).
+		void MultiViewport_RefreshCallback(GLFWwindow* /*glfwWindow*/) {
+			Application* app = Application::GetInstance();
+			if (!app) return;
+			app->RenderOnceForRefresh();
 		}
 #endif
 

@@ -5,6 +5,7 @@
 #include "Collections/Color.hpp"
 
 #include <cstdint>
+#include <string>
 
 namespace Index {
 	struct ImageComponent {
@@ -18,12 +19,14 @@ namespace Index {
 		// when explicit sort fields tie).
 		int16_t SortingOrder{ 0 };
 		uint8_t SortingLayer{ 0 };
-		// Sampler filter applied to the bound texture (Point/Bilinear/...).
-		// Bilinear is the UI-friendly default — pixel-art workflows can
-		// switch to Point per-image. The filter is applied to the underlying
-		// Texture2D via TextureManager when the inspector setter / scripting
-		// API mutates this value, so cross-references with the same texture
-		// see a consistent sampler.
+		// Legacy per-entity sampler filter. The Sprite Editor's `.meta`
+		// import block is now the authoritative source; this field still
+		// loads/saves for back-compat but is no longer the authoring
+		// surface.
 		Filter FilterMode{ Filter::Bilinear };
+
+		// Slice name in the bound texture's `.meta`. Empty = full texture.
+		// Same semantics as SpriteRendererComponent::SpriteName.
+		std::string SpriteName;
 	};
 }

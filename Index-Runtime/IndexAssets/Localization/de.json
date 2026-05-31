@@ -23,8 +23,9 @@
     "launcher.sort.tooltip.descending": "Absteigend sortieren",
     "launcher.sort.tooltip.refresh": "Projektliste aktualisieren",
 
-    "launcher.action.create_new_project": "Neues Projekt erstellen",
-    "launcher.action.add_existing_project": "Vorhandenes Projekt hinzufügen",
+    "launcher.action.add_project": "Projekt hinzufügen",
+    "launcher.action.new_blank": "Neues Projekt",
+    "launcher.action.new_from_disk": "Von Datenträger",
     "launcher.action.settings": "Einstellungen",
     "launcher.action.open_selected": "Im Editor Öffnen",
     "launcher.action.rename_selected": "Umbenennen",

@@ -48,6 +48,14 @@ namespace Index {
 		// caller decodes it back into a PropertyValue using PropertyValue::FromString.
 		// IsBuiltIn marks engine-shipped assets (default font, built-in
 		// shaders) so the picker's eye toggle can hide them from search.
+		//
+		// IsSlice + SliceX/Y/W/H are only meaningful for texture sub-entries
+		// authored in a sprite-sheet's `.meta`. They tell the thumbnail
+		// layout to crop the parent texture's preview to the slice's rect
+		// instead of showing the whole sheet — so visually picking
+		// "undead.png > undead_4" previews undead_4, not the full sheet.
+		// Non-slice entries leave IsSlice=false; the rect fields are then
+		// ignored.
 		struct Entry {
 			std::string Label;
 			std::string Secondary;
@@ -55,6 +63,11 @@ namespace Index {
 			std::string Value;
 			std::string UniqueId;
 			bool IsBuiltIn = false;
+			bool IsSlice = false;
+			int SliceX = 0;
+			int SliceY = 0;
+			int SliceW = 0;
+			int SliceH = 0;
 		};
 
 		// Build entry lists for the standard reference kinds. Each list is

@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Export.hpp"
+#include "Core/WindowSpecification.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include <cstdint>
 #include <string>
@@ -47,6 +48,12 @@ namespace Index {
 		int BuildMaxWidth = 0;
 		int BuildMaxHeight = 0;
 		bool BuildFullscreen = true;
+		// Which fullscreen realisation Window::Create uses when
+		// BuildFullscreen is true. Ignored otherwise. Persists in
+		// index-project.json as a string label ("Exclusive",
+		// "BorderlessWindowed", "Maximized"); unknown labels fall back to
+		// Exclusive on load.
+		FullscreenMode BuildFullscreenMode = FullscreenMode::Exclusive;
 		bool BuildResizable = true;
 		bool BuildRunInBackground = true;
 
@@ -323,6 +330,13 @@ namespace Index {
 		static ProjectAssetSerializationFormat ProjectAssetSerializationFormatFromString(std::string_view value);
 		static const char* EditorEntityNameSuffixStyleToString(EditorEntityNameSuffixStyle style);
 		static EditorEntityNameSuffixStyle EditorEntityNameSuffixStyleFromString(std::string_view value);
+
+		// String <-> enum conversion for the runtime fullscreen realisation
+		// chosen in Build settings. Persisted as a label in
+		// index-project.json so the file remains human-readable; unknown
+		// labels fall back to Exclusive on load.
+		static const char* FullscreenModeToString(FullscreenMode mode);
+		static FullscreenMode FullscreenModeFromString(std::string_view value);
 
 		std::string GetNativeDllPath() const;
 		std::string GetSceneFilePath(const std::string& sceneName) const;

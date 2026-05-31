@@ -8,8 +8,13 @@ namespace Index.Native;
 // underlying data; this struct is the zero-marshal hot-path view used by
 // Entity.GetRef<NativeSpriteRenderer>() / scene.QueryRef<...>.
 //
-// Layout MUST match Index-Engine/src/Components/Graphics/SpriteRendererComponent.hpp.
-// Total size = 40 bytes (verified by Entity_GetComponentSize at script host init).
+// PREFIX VIEW: the C++ SpriteRendererComponent carries additional trailing
+// fields the mirror deliberately does NOT expose (currently a `std::string
+// SpriteName` for sprite-sheet slicing). Those bytes live past offset 40 and
+// are accessed only through C++ code or dedicated InternalCalls (e.g.
+// SpriteRenderer_GetSpriteName). The first 40 bytes of the C++ struct MUST
+// match the layout below; the layout-drift guard in ComponentTypes<T>
+// verifies `sizeof(SpriteRendererComponent) >= 40` at script host init.
 //
 // Field offsets (Windows x64, MSVC natural alignment):
 //   00: short SortingOrder
@@ -20,7 +25,7 @@ namespace Index.Native;
 //   16: Color (4 × float)
 //   32: int  FilterMode (TextureFilter enum, 4 bytes)
 //   36: 4-byte tail pad (struct rounded up to UUID's 8-byte alignment)
-//   40: struct end
+//   40: end of mirror prefix — C++ struct continues with std::string SpriteName
 //
 // The texture is identified two ways:
 //   - `TextureAssetId` (UUID) is the persistent identity that survives scene

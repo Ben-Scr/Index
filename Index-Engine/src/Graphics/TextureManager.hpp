@@ -25,7 +25,23 @@ namespace Index {
             static void Shutdown();
 
             static TextureHandle LoadTexture(const std::string_view& path, Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
+            // Resolves UUID → path → LoadTexture. When the asset's companion
+            // `.meta` file carries an `import` block (authored via the Sprite
+            // Editor / texture asset inspector), its Filter/Wrap WIN over the
+            // caller-supplied defaults — same loaded-from-disk values
+            // therefore behave identically in editor previews, scene loads,
+            // and standalone builds.
             static TextureHandle LoadTextureByUUID(uint64_t assetId, Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
+
+            // Re-apply the sampler settings from a texture's `.meta` to every
+            // currently-loaded slot whose canonical path matches. Used by the
+            // asset inspector so changing Filter or Wrap takes effect
+            // immediately for live entities — without this the new sampler
+            // only kicks in on the next process restart (or on an explicit
+            // ReloadTexture, which costs a re-decode we don't actually need).
+            // Returns the number of slots updated. Safe to call before
+            // Initialize / after Shutdown (no-op).
+            static size_t ApplyMetaSamplerToLoaded(const std::string& path);
             static TextureHandle GetDefaultTexture(DefaultTexture type);
             static void UnloadTexture(TextureHandle handle);
             // Look up an already-loaded texture by name. The filter/wrap

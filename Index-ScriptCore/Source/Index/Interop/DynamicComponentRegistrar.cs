@@ -88,22 +88,22 @@ internal static class DynamicComponentRegistrar
             return false;
         }
 
-        int size;
-        try
-        {
-            size = Marshal.SizeOf(type);
-        }
-        catch (Exception ex)
-        {
-            Log.Error(
-                $"DynamicComponentRegistrar: '{type.FullName}' is not blittable: {ex.Message}. " +
-                "Only blittable structs (no managed references, no auto layout) can be ECS components.");
-            return false;
-        }
-
+        // Use Unsafe.SizeOf<T>() (managed layout) — NOT Marshal.SizeOf (which
+        // applies P/Invoke marshalling rules and disagrees on bool, char, etc.:
+        // Marshal sees bool as 4-byte Win32 BOOL, Unsafe sees it as 1-byte
+        // managed bool). ComponentTypes<T>'s layout-drift guard compares
+        // Unsafe.SizeOf<T>() on the C# side against the size we registered
+        // here on the C++ side, so they MUST agree — using Marshal.SizeOf
+        // bricked any component with a `bool` (or similarly-marshalled type)
+        // with a "C++ sizeof = 4, C# sizeof = 1" mismatch.
+        //
+        // Unsafe.SizeOf<T>() also handles empty structs (returns 1) and
+        // non-blittable-by-marshal types that are still memcpy-safe in the
+        // managed runtime, so the old "is blittable" gate disappears too.
+        int size = ComputeManagedSize(type);
         if (size <= 0)
         {
-            Log.Error($"DynamicComponentRegistrar: '{type.FullName}' has non-positive size {size}.");
+            Log.Error($"DynamicComponentRegistrar: '{type.FullName}' has non-positive managed size {size}.");
             return false;
         }
 
@@ -137,6 +137,28 @@ internal static class DynamicComponentRegistrar
         }
 
         return true;
+    }
+
+    // Match the managed Unsafe.SizeOf<T>() layout the runtime uses for the
+    // struct, NOT the P/Invoke marshalled layout Marshal.SizeOf returns.
+    // Invoked via reflection because Unsafe.SizeOf is a generic method and we
+    // only have a Type at this point. Returns -1 on failure (e.g. the method
+    // moved or returned a non-int box, both vanishingly unlikely).
+    private static int ComputeManagedSize(Type structType)
+    {
+        try
+        {
+            MethodInfo? sizeOf = typeof(System.Runtime.CompilerServices.Unsafe)
+                .GetMethod(nameof(System.Runtime.CompilerServices.Unsafe.SizeOf),
+                    BindingFlags.Public | BindingFlags.Static, types: Type.EmptyTypes);
+            if (sizeOf == null) return -1;
+            object? boxed = sizeOf.MakeGenericMethod(structType).Invoke(null, null);
+            return boxed is int i ? i : -1;
+        }
+        catch
+        {
+            return -1;
+        }
     }
 
     // Whitelist of primitive field types and their alignment in bytes.

@@ -44,6 +44,13 @@ namespace Index {
 		// Whether the field is read-only in the inspector.
 		bool ReadOnly = false;
 
+		// Vector-field stepper toggle. The default DragFloat/DragInt row for
+		// Vec2/Vec3/Vec4/IntVec* draws a `[-] [drag] [+]` triple per channel;
+		// setting this true drops the +/- buttons so the row is just the
+		// drag/input field — useful for component fields where the steppers
+		// would crowd the inspector (e.g. collider sizes/offsets).
+		bool HideStepperButtons = false;
+
 		// PropertyType::String only: when true the drawer renders a
 		// resizable multi-line text box instead of the default single
 		// line. MultiLineRows controls the visible row count (defaults
@@ -99,6 +106,10 @@ namespace Index {
 		}
 		PropertyMetadata& WithReadOnly(bool ro = true) {
 			ReadOnly = ro;
+			return *this;
+		}
+		PropertyMetadata& WithHideStepperButtons(bool hide = true) {
+			HideStepperButtons = hide;
 			return *this;
 		}
 		PropertyMetadata& WithHeader(std::string content, int size = 5) {

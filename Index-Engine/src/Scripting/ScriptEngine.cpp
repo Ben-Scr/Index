@@ -2,7 +2,11 @@
 #include "Scripting/ScriptEngine.hpp"
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptBindings.hpp"
+#include "Scripting/ScriptComponent.hpp"
 #include "Scene/Scene.hpp"
+#include "Scene/SceneManager.hpp"
+#include "Scene/ComponentRegistry.hpp"
+#include "Core/Application.hpp"
 #include "Core/Log.hpp"
 
 #include <algorithm>
@@ -179,8 +183,51 @@ namespace Index {
 			IDX_CORE_INFO_TAG("ScriptEngine", "LoadUserAssembly callback returned: {}", ok);
 			s_HasUserAssembly = (ok != 0);
 
-			if (s_HasUserAssembly)
+			if (s_HasUserAssembly) {
 				IDX_CORE_INFO_TAG("ScriptEngine", "User assembly loaded: {}", path);
+
+				// Re-attach dynamic component storage rows that were dropped
+				// when UnregisterAllDynamic ran on the previous unload. The
+				// ScriptComponent.Scripts list survives hot-reload (it's just
+				// strings on entt-typed storage), so it's the source of truth
+				// for "which entities were carrying which dynamic component
+				// before the assembly was swapped". Without this pass an
+				// in-editor add of a `:IComponent` tag would survive a
+				// .cs save (which triggers UnloadUserAssembly → RegisterAll)
+				// only in the inspector — Entity.HasNativeComponent<T>() and
+				// GetRef<T>() would silently start returning false because
+				// the new DynamicComponentStorage instances are empty.
+				if (auto* app = Application::GetInstance()) {
+					if (auto* sceneManager = app->GetSceneManager()) {
+						ComponentRegistry& registry = sceneManager->GetComponentRegistry();
+						std::size_t restoredCount = 0;
+						sceneManager->ForeachLoadedScene([&](Scene& scene) {
+							auto& reg = scene.GetRegistry();
+							auto view = reg.view<ScriptComponent>();
+							for (EntityHandle entity : view) {
+								if (!reg.valid(entity)) continue;
+								const auto& scriptComp = reg.get<ScriptComponent>(entity);
+								Entity entityWrapper = scene.GetEntity(entity);
+								for (const ScriptInstance& instance : scriptComp.Scripts) {
+									const std::string& className = instance.GetClassName();
+									if (className.empty()) continue;
+									const ComponentInfo* info = registry.FindBySerializedName(className);
+									if (!info || !info->isDynamic || !info->add || !info->has) continue;
+									if (!info->has(entityWrapper)) {
+										info->add(entityWrapper);
+										++restoredCount;
+									}
+								}
+							}
+						});
+						if (restoredCount > 0) {
+							IDX_CORE_INFO_TAG("ScriptEngine",
+								"Restored {} dynamic component row(s) from ScriptComponent.Scripts after assembly reload.",
+								restoredCount);
+						}
+					}
+				}
+			}
 			else
 				IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to load user assembly: {}", path);
 		}

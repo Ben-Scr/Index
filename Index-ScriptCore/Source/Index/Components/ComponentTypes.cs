@@ -14,9 +14,12 @@ namespace Index.Components;
 // Also performs the one-time layout-size verification in the static
 // constructor: the first time C# touches `ComponentTypes<T>` we compare
 // sizeof(T) against the C++ `sizeof(ComponentT)` reported by
-// Entity_GetComponentSize. A mismatch throws, which propagates up through
-// the script host's assembly-load path and makes the user's user.dll fail
-// to load — preferable to silent memory corruption.
+// Entity_GetComponentSize. The C# mirror is a PREFIX VIEW — C++ may
+// carry trailing fields the mirror deliberately ignores (e.g.
+// `std::string SpriteName` on SpriteRendererComponent). The guard
+// throws only when the C++ struct is SMALLER than the mirror, which is
+// the dangerous direction (GetRef<T> would read past the end of the
+// pool entry). C++ larger than C# is fine.
 internal static class ComponentTypes
 {
     // Registry filled at module init. Add a line here when migrating each
@@ -146,16 +149,28 @@ internal static class ComponentTypes<T> where T : unmanaged, IComponent
                 "declare `internal const string NativeName = \"Display Name\";` on the struct.");
         }
 
-        // Layout drift guard: the C++ component is the source of truth. Any
-        // change there (added/removed/reordered field) MUST be mirrored in
-        // the C# struct or this check fires. Catches the failure mode where
-        // a header edit lands without the matching C# update.
-        if (nativeSize != 0 && nativeSize != managedSize)
+        // Layout drift guard: the C++ component is the source of truth for
+        // the FIRST managedSize bytes — the C# mirror is a prefix view used
+        // by GetRef<T>, so as long as the C++ struct is at least as large
+        // as the mirror, reading those bytes through the mirror is safe.
+        // C++ may carry additional *trailing* fields the C# side never
+        // touches (e.g. `std::string`, owner pointers, dirty flags) without
+        // tripping this guard — those bytes live past the mirror's end and
+        // are accessed only through C++-side code or dedicated InternalCalls.
+        //
+        // The check still catches the dangerous direction (C++ smaller than
+        // C#), which would otherwise read past the end of the native pool
+        // entry. It does NOT catch field-order changes inside the shared
+        // prefix — that remains a manual programmer responsibility, same as
+        // every other zero-marshal layout contract in the engine.
+        if (nativeSize != 0 && nativeSize < managedSize)
         {
             throw new InvalidOperationException(
                 $"Layout mismatch for component '{typeof(T).Name}' (native '{name}'): " +
-                $"C++ sizeof = {nativeSize}, C# sizeof = {managedSize}. " +
-                "Mirror the C++ struct's fields (in order) in the C# struct and rebuild.");
+                $"C++ sizeof = {nativeSize} is SMALLER than C# sizeof = {managedSize}. " +
+                "Reading via GetRef<T> would walk past the end of the native component. " +
+                "Either trim the C# mirror's fields or extend the C++ struct so its size " +
+                "matches or exceeds the mirror.");
         }
 
         NativeName = name;

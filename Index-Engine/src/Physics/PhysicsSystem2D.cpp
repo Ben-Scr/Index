@@ -5,6 +5,8 @@
 #include <Components/Physics/BoxCollider2DComponent.hpp>
 #include <Components/Physics/CircleCollider2DComponent.hpp>
 #include <Components/Physics/PolygonCollider2DComponent.hpp>
+#include <Components/Physics/FastBoxCollider2DComponent.hpp>
+#include <Components/Physics/FastCircleCollider2DComponent.hpp>
 #include <Components/General/Transform2DComponent.hpp>
 #include <Components/General/HierarchyComponent.hpp>
 #include <Components/Tags.hpp>
@@ -49,6 +51,37 @@ namespace Index {
 			tf.Rotation = parentTf->Rotation + tf.LocalRotation;
 			tf.Scale = { parentTf->Scale.x * tf.LocalScale.x,
 						 parentTf->Scale.y * tf.LocalScale.y };
+		}
+
+		// Inverse of ComposeBodyOwnedWorldFromLocal — derive Local* from the
+		// physics-driven world transform after a step so a later inspector
+		// read or ComposeBodyOwnedWorldFromLocal call sees the new authored
+		// value instead of the stale pre-step one. Without this, the
+		// LocalPosition / LocalRotation / LocalScale fields drift away from
+		// the visible world transform whenever the body is moved by physics,
+		// which breaks the "Transform2D follows the body and vice versa"
+		// invariant the inspector and user scripts rely on.
+		void DecomposeBodyOwnedWorldToLocal(entt::registry& registry, EntityHandle entity, Transform2DComponent& tf) {
+			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
+			const EntityHandle parent = hierarchy ? hierarchy->Parent : entt::null;
+			const Transform2DComponent* parentTf = (parent != entt::null)
+				? registry.try_get<Transform2DComponent>(parent) : nullptr;
+			if (!parentTf) {
+				tf.LocalPosition = tf.Position;
+				tf.LocalRotation = tf.Rotation;
+				tf.LocalScale = tf.Scale;
+				return;
+			}
+			const Vec2 translated{ tf.Position.x - parentTf->Position.x,
+								   tf.Position.y - parentTf->Position.y };
+			const Vec2 unrotated = Rotate(translated, -parentTf->Rotation);
+			tf.LocalPosition = {
+				std::abs(parentTf->Scale.x) > 0.00001f ? unrotated.x / parentTf->Scale.x : unrotated.x,
+				std::abs(parentTf->Scale.y) > 0.00001f ? unrotated.y / parentTf->Scale.y : unrotated.y };
+			tf.LocalRotation = tf.Rotation - parentTf->Rotation;
+			tf.LocalScale = {
+				std::abs(parentTf->Scale.x) > 0.00001f ? tf.Scale.x / parentTf->Scale.x : tf.Scale.x,
+				std::abs(parentTf->Scale.y) > 0.00001f ? tf.Scale.y / parentTf->Scale.y : tf.Scale.y };
 		}
 	}
 
@@ -98,6 +131,21 @@ namespace Index {
 				}
 			}
 
+			// Mirror the Box2D collider scale-sync for AxiomPhys colliders so
+			// the Fast* variants resize when the Transform2D scale changes,
+			// matching the standard collider behaviour the user expects.
+			for (auto [ent, box, tf] : registry.view<FastBoxCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+				if (tf.IsDirty() && box.IsValid()) {
+					box.SyncWithTransform(scene);
+				}
+			}
+
+			for (auto [ent, circle, tf] : registry.view<FastCircleCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
+				if (tf.IsDirty() && circle.IsValid()) {
+					circle.SyncWithTransform(scene);
+				}
+			}
+
 			for (auto [ent, rb, tf] : registry.view<Rigidbody2DComponent, Transform2DComponent>(entt::exclude<DisabledTag>).each()) {
 				if (tf.IsDirty() && rb.IsValid()) {
 					rb.SetTransform(tf);
@@ -124,6 +172,18 @@ namespace Index {
 				}
 			}
 			for (auto [ent, poly, tf] : registry.view<PolygonCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent, FastBody2DComponent>).each()) {
+				if (tf.IsDirty()) {
+					tf.ClearDirty();
+				}
+			}
+			// Fast* collider-only entities follow the same pattern — clear dirty
+			// after the size sync above has run.
+			for (auto [ent, box, tf] : registry.view<FastBoxCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent, FastBody2DComponent>).each()) {
+				if (tf.IsDirty()) {
+					tf.ClearDirty();
+				}
+			}
+			for (auto [ent, circle, tf] : registry.view<FastCircleCollider2DComponent, Transform2DComponent>(entt::exclude<DisabledTag, Rigidbody2DComponent, FastBody2DComponent>).each()) {
 				if (tf.IsDirty()) {
 					tf.ClearDirty();
 				}
@@ -175,6 +235,11 @@ namespace Index {
 				if (!rb.IsValid()) continue;
 				tf.Position = rb.GetPosition();
 				tf.Rotation = rb.GetRotation();
+				// Push the new world transform back into Local* so future
+				// reads of LocalPosition / LocalRotation (inspector, scripts,
+				// pre-step compose) see the physics-driven value, not the
+				// stale authored one.
+				DecomposeBodyOwnedWorldToLocal(registry, ent, tf);
 				tf.ClearDirty();
 			}
 
@@ -182,6 +247,9 @@ namespace Index {
 				if (body.m_Body) {
 					auto pos = body.m_Body->GetPosition();
 					tf.Position = { pos.x, pos.y };
+					// Mirror the Rigidbody2D path: keep LocalPosition in sync
+					// with the physics-driven world position.
+					DecomposeBodyOwnedWorldToLocal(registry, ent, tf);
 					tf.ClearDirty();
 				}
 			}
@@ -212,6 +280,28 @@ namespace Index {
 			[&dispatchToCollisionScenes](const Collision2D& collision) {
 				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
 					ScriptSystem::DispatchCollisionStay2D(scene, c);
+				});
+			});
+
+		// Fast* colliders / FastBody2D live in the AxiomPhys world. Without
+		// this dispatch the OnCollisionEnter2D / OnCollisionStay2D /
+		// OnCollisionExit2D script events never fire for them — the per-entity
+		// IndexContactCallback path that IndexPhysicsWorld2D::Step uses
+		// isn't wired up to ScriptSystem.
+		s_IndexWorld->DispatchScriptContacts(
+			[&dispatchToCollisionScenes](const Collision2D& collision) {
+				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
+					ScriptSystem::DispatchCollisionEnter2D(scene, c);
+				});
+			},
+			[&dispatchToCollisionScenes](const Collision2D& collision) {
+				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
+					ScriptSystem::DispatchCollisionStay2D(scene, c);
+				});
+			},
+			[&dispatchToCollisionScenes](const Collision2D& collision) {
+				dispatchToCollisionScenes(collision, [](Scene& scene, const Collision2D& c) {
+					ScriptSystem::DispatchCollisionExit2D(scene, c);
 				});
 			});
 	}

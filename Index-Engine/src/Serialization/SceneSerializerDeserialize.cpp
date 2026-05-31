@@ -1106,6 +1106,9 @@ namespace Index {
 			if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
 				tex->SetFilter(spriteRenderer.FilterMode);
 			}
+			// SpriteName key is optional. Empty/missing = full texture (the
+			// default behaviour every pre-Phase-D scene relied on).
+			spriteRenderer.SpriteName = GetStringMember(*spriteValue, "spriteName", std::string{});
 		}
 
 		if (const Value* textValue = GetObjectMember(entityValue, "TextRenderer")) {
@@ -1143,6 +1146,12 @@ namespace Index {
 			rigidbody.SetBodyType(static_cast<BodyType>(GetIntMember(*rigidbodyValue, "bodyType", static_cast<int>(BodyType::Dynamic))));
 			rigidbody.SetGravityScale(GetFloatMember(*rigidbodyValue, "gravityScale", 1.0f));
 			rigidbody.SetMass(GetFloatMember(*rigidbodyValue, "mass", 1.0f));
+			// Constraints. Missing keys default to false so older scenes
+			// load with no surprises (`SetFreeze*` no-ops the body when the
+			// flag is already false, which it is on a freshly-created body).
+			rigidbody.SetFreezePositionX(GetBoolMember(*rigidbodyValue, "freezePositionX", false));
+			rigidbody.SetFreezePositionY(GetBoolMember(*rigidbodyValue, "freezePositionY", false));
+			rigidbody.SetFreezeRotation(GetBoolMember(*rigidbodyValue, "freezeRotation", false));
 		}
 
 		if (const Value* colliderValue = GetObjectMember(entityValue, "BoxCollider2D")) {
@@ -1403,6 +1412,7 @@ namespace Index {
 			if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
 				tex->SetFilter(image.FilterMode);
 			}
+			image.SpriteName = GetStringMember(*imageValue, "spriteName", std::string{});
 		}
 
 		ScriptComponent* scriptComponent = nullptr;
@@ -1722,6 +1732,7 @@ namespace Index {
 			if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
 				tex->SetFilter(spriteRenderer.FilterMode);
 			}
+			spriteRenderer.SpriteName = GetStringMember(componentValue, "spriteName", std::string{});
 			return true;
 		}
 
@@ -1765,6 +1776,9 @@ namespace Index {
 			rigidbody.SetBodyType(static_cast<BodyType>(GetIntMember(componentValue, "bodyType", static_cast<int>(BodyType::Dynamic))));
 			rigidbody.SetGravityScale(GetFloatMember(componentValue, "gravityScale", 1.0f));
 			rigidbody.SetMass(GetFloatMember(componentValue, "mass", 1.0f));
+			rigidbody.SetFreezePositionX(GetBoolMember(componentValue, "freezePositionX", false));
+			rigidbody.SetFreezePositionY(GetBoolMember(componentValue, "freezePositionY", false));
+			rigidbody.SetFreezeRotation(GetBoolMember(componentValue, "freezeRotation", false));
 			return true;
 		}
 
@@ -2066,6 +2080,7 @@ namespace Index {
 			if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
 				tex->SetFilter(image.FilterMode);
 			}
+			image.SpriteName = GetStringMember(componentValue, "spriteName", std::string{});
 			return true;
 		}
 

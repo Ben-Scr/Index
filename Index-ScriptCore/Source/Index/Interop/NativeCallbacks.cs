@@ -865,6 +865,13 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> SpriteRenderer_GetFilter;
     public delegate* unmanaged<ulong, int, void> SpriteRenderer_SetFilter;
 
+    // Sprite slice name binding. The getter writes into a caller-allocated
+    // buffer and returns the required length (truncating writes when the
+    // buffer is too small, matching the Entity_GetName / Scene_GetActiveName
+    // pattern). Empty string = full texture (default).
+    public delegate* unmanaged<ulong, byte*, int, int>     SpriteRenderer_GetSpriteNameBuffer;
+    public delegate* unmanaged<ulong, byte*, void>         SpriteRenderer_SetSpriteName;
+
     // ── Dynamic component registration (appended for binary compat) ──
     // Called from DynamicComponentRegistrar at user-assembly load. The
     // managed registrar reflects [NativeComponent(..., Generate = true)]
@@ -887,6 +894,19 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int>  Scene_ReloadByGuid;
     public delegate* unmanaged<ulong, int>  Scene_DoesSceneExistByGuid;
     public delegate* unmanaged<ulong>       Scene_GetActiveSceneGuid;
+
+    // ── Rigidbody2D motion locks (appended for binary compat) ──
+    // Unity-style FreezePosition/FreezeRotation constraints. The C++ side
+    // routes these through Box2D's b2MotionLocks; setting any of them
+    // re-derives the body's effective mass / inertia so changes are picked
+    // up on the next physics step. Bools travel as int (0/1) to avoid
+    // platform-ABI ambiguity on bool width across the FFI.
+    public delegate* unmanaged<ulong, int>          Rigidbody2D_GetFreezePositionX;
+    public delegate* unmanaged<ulong, int, void>    Rigidbody2D_SetFreezePositionX;
+    public delegate* unmanaged<ulong, int>          Rigidbody2D_GetFreezePositionY;
+    public delegate* unmanaged<ulong, int, void>    Rigidbody2D_SetFreezePositionY;
+    public delegate* unmanaged<ulong, int>          Rigidbody2D_GetFreezeRotation;
+    public delegate* unmanaged<ulong, int, void>    Rigidbody2D_SetFreezeRotation;
 }
 
 internal static unsafe class NativeCallbacks

@@ -72,6 +72,8 @@ namespace Index {
 		m_DiskInstallTask = std::make_shared<DiskInstallTaskState>();
 		m_RegistryFetchTask = std::make_shared<RegistryFetchTaskState>();
 		m_CloudInstallTask = std::make_shared<CloudInstallTaskState>();
+		m_GitInstallTask = std::make_shared<GitInstallTaskState>();
+		m_NewPackageTask = std::make_shared<NewPackageTaskState>();
 	}
 
 	void PackageManagerPanel::Shutdown() {
@@ -87,6 +89,12 @@ namespace Index {
 		}
 		if (m_CloudInstallWorker.joinable()) {
 			m_CloudInstallWorker.join();
+		}
+		if (m_GitInstallWorker.joinable()) {
+			m_GitInstallWorker.join();
+		}
+		if (m_NewPackageWorker.joinable()) {
+			m_NewPackageWorker.join();
 		}
 		// std::async-policy futures join in their destructors, so a still-running
 		// search or install would otherwise stall the UI thread on shutdown by
@@ -108,6 +116,8 @@ namespace Index {
 		m_DiskInstallTask.reset();
 		m_RegistryFetchTask.reset();
 		m_CloudInstallTask.reset();
+		m_GitInstallTask.reset();
+		m_NewPackageTask.reset();
 	}
 
 	void PackageManagerPanel::Render() {
@@ -159,37 +169,16 @@ namespace Index {
 		PollDiskInstallTask();
 		PollRegistryFetchTask();
 		PollCloudInstallTask();
+		PollGitInstallTask();
+		PollNewPackageTask();
 		RefreshManifestsIfDirty();
 		RefreshRegistryIfDirty();
 
-		// Progress strip — above tab bar so it's visible from any tab.
-		// The cloud-install task takes precedence because it carries a real
-		// stage string and progress fraction; the post-install automation
-		// task is shorter-lived and follows it.
-		auto drawProgress = [](std::string_view stage, float progress) {
-			ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "%.*s",
-				static_cast<int>(stage.size()), stage.data());
-			ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f));
-			ImGui::Separator();
-		};
-		if (m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire)) {
-			std::string stage; float progress = 0.0f;
-			{
-				std::scoped_lock lock(m_CloudInstallTask->Mutex);
-				stage = m_CloudInstallTask->Stage;
-				progress = m_CloudInstallTask->Progress;
-			}
-			drawProgress(stage, progress);
-		}
-		else if (m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire)) {
-			std::string stage; float progress = 0.0f;
-			{
-				std::scoped_lock lock(m_AutomationTask->Mutex);
-				stage = m_AutomationTask->Stage;
-				progress = m_AutomationTask->Progress;
-			}
-			drawProgress(stage, progress);
-		}
+		// Cloud-install + post-install automation no longer paint an in-panel
+		// progress strip — the editor chrome polls GetActiveLoadingPopup each
+		// frame and routes the status into the shared Win32BuildProgressWindow
+		// (the same OS-level popup the build / script-compile pipelines drive),
+		// matching the Launcher's "Downloading <Project>..." indicator.
 
 		// Tab bar + content. The tab body used to be wrapped in BeginChild
 		// for an "anchored bar / scrolling content" effect, but in ImGui
@@ -228,6 +217,29 @@ namespace Index {
 		RenderNuGetInstallWindow();
 		RenderNewPackageWindow();
 		RenderInstallErrorPopup();
+	}
+
+	bool PackageManagerPanel::GetActiveLoadingPopup(std::string& outTitle,
+		std::string& outStage, float& outProgress) {
+		// Cloud-install runs first; post-install automation chains after it
+		// when the download succeeds. Probe in the same order so the popup
+		// transitions smoothly from "Downloading <Name>..." to "Installing
+		// <Name>..." without a single-frame disappearance in between.
+		if (m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire)) {
+			std::scoped_lock lock(m_CloudInstallTask->Mutex);
+			outTitle = m_CloudInstallTask->Title;
+			outStage = m_CloudInstallTask->Stage;
+			outProgress = m_CloudInstallTask->Progress;
+			return true;
+		}
+		if (m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire)) {
+			std::scoped_lock lock(m_AutomationTask->Mutex);
+			outTitle = m_AutomationTask->Title;
+			outStage = m_AutomationTask->Stage;
+			outProgress = m_AutomationTask->Progress;
+			return true;
+		}
+		return false;
 	}
 
 	void PackageManagerPanel::RenderInstallErrorPopup() {
@@ -601,7 +613,7 @@ namespace Index {
 			IndexPackageInstaller::InstallToProject(*project, result.PackageName);
 		}
 		m_ManifestsDirty = true;
-		StartPostInstallAutomation();
+		StartPostInstallAutomation(result.PackageName);
 	}
 
 	// ── New-Package wizard ──────────────────────────────────────────────────────
@@ -751,45 +763,47 @@ namespace Index {
 			command.emplace_back(m_NewPackageDescriptionBuffer);
 		}
 
+		if (!m_NewPackageTask || m_NewPackageTask->Running.load(std::memory_order_acquire)) {
+			return; // a creation is already in flight
+		}
+
+		// Capture the package name before the worker runs — the continuation in
+		// PollNewPackageTask() clears the wizard buffer on success.
+		const std::string newPackageName = m_NewPackageNameBuffer;
+		{
+			std::scoped_lock lock(m_NewPackageTask->Mutex);
+			m_NewPackageTask->Finished = false;
+			m_NewPackageTask->Success = false;
+			m_NewPackageTask->Output.clear();
+			m_NewPackageTask->PackageName = newPackageName;
+		}
+		m_NewPackageTask->Running.store(true, std::memory_order_release);
 		m_NewPackageIsCreating = true;
-		m_StatusMessage = std::string("Creating package '") + m_NewPackageNameBuffer + "'...";
+		m_StatusMessage = std::string("Creating package '") + newPackageName + "'...";
 		m_StatusIsError = false;
 
-		// Synchronous: --no-premake makes this sub-second; one frame skip is fine.
-		Process::Result result = Process::Run(command, std::filesystem::path(engineRoot));
-		m_NewPackageIsCreating = false;
-
-		if (!result.Succeeded()) {
-			m_NewPackageError = "Scaffolder failed (exit " + std::to_string(result.ExitCode) +
-				"). Output:\n" + result.Output;
-			IDX_ERROR_TAG("IndexPackages", "{}", m_NewPackageError);
-			m_StatusMessage = "Package creation failed.";
-			m_StatusIsError = true;
-			return;
-		}
-
-		IDX_INFO_TAG("IndexPackages", "Created package '{}'.", m_NewPackageNameBuffer);
-
-		// Project-local package creation should update the project allow-list and props,
-		// but the editor must not regenerate the engine solution.
-		m_ManifestsDirty = true;
-		if (project) {
-			auto installResult = IndexPackageInstaller::InstallToProject(*project, m_NewPackageNameBuffer);
-			m_StatusMessage = installResult.Message;
-			m_StatusIsError = !installResult.Success;
-			if (installResult.Success) {
-				StartPostInstallAutomation();
+		// NewPackage.py shells out to Python; its startup is environment-dependent
+		// (cold disk / CI can take seconds), so run it on a worker to keep the
+		// editor responsive. The InstallToProject + automation continuation runs
+		// on the main thread in PollNewPackageTask().
+		if (m_NewPackageWorker.joinable()) m_NewPackageWorker.join();
+		auto state = m_NewPackageTask;
+		const auto engineRootCopy = engineRoot;
+		m_NewPackageWorker = std::thread([state, command, engineRootCopy]() {
+			Process::Result result = Process::Run(command, std::filesystem::path(engineRootCopy));
+			{
+				std::scoped_lock lock(state->Mutex);
+				state->Success = result.Succeeded();
+				if (result.Succeeded()) {
+					state->Output.clear();
+				} else {
+					state->Output = "Scaffolder failed (exit " + std::to_string(result.ExitCode) +
+						"). Output:\n" + result.Output;
+				}
+				state->Finished = true;
 			}
-		}
-		else {
-			m_StatusMessage = std::string("Package '") + m_NewPackageNameBuffer +
-				"' created. Run premake5 vs2022 + rebuild the engine solution to pick it up.";
-			m_StatusIsError = false;
-		}
-
-		m_ShowNewPackageWindow = false;
-		m_NewPackageNameBuffer[0] = '\0';
-		m_NewPackageDescriptionBuffer[0] = '\0';
+			state->Running.store(false, std::memory_order_release);
+		});
 	}
 
 	void PackageManagerPanel::RenderGitInstallWindow() {
@@ -808,22 +822,41 @@ namespace Index {
 
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			const bool automating = m_AutomationTask && m_AutomationTask->Running.load(std::memory_order_acquire);
-			const bool canInstall = project && std::strlen(m_GitHubUrlBuffer) > 0 && !m_IsOperating && !automating;
+			const bool cloning = m_GitInstallTask && m_GitInstallTask->Running.load(std::memory_order_acquire);
+			const bool canInstall = project && std::strlen(m_GitHubUrlBuffer) > 0 && !m_IsOperating && !automating && !cloning;
 
 			if (!canInstall) ImGui::BeginDisabled();
 			if (ImGui::Button("Install", ImVec2(120, 0))) {
+				// `git clone` is a network op that can take many seconds — run it on
+				// a worker so the editor stays responsive. PollGitInstallTask() runs
+				// the InstallToProject + automation continuation on the main thread
+				// once the clone finishes (project state is main-thread-only).
 				const std::string url = m_GitHubUrlBuffer;
-				auto result = IndexPackageInstaller::InstallFromGitHub(url, project->PackagesDirectory);
-				m_StatusMessage = result.Message;
-				m_StatusIsError = !result.Success;
-				if (result.Success) {
-					if (!result.PackageName.empty()) {
-						IndexPackageInstaller::InstallToProject(*project, result.PackageName);
+				const std::string packagesDir = project->PackagesDirectory;
+				if (m_GitInstallTask && !m_GitInstallTask->Running.load(std::memory_order_acquire)) {
+					{
+						std::scoped_lock lock(m_GitInstallTask->Mutex);
+						m_GitInstallTask->Finished = false;
+						m_GitInstallTask->Success = false;
+						m_GitInstallTask->Message.clear();
+						m_GitInstallTask->PackageName.clear();
 					}
-					m_ManifestsDirty = true;
-					m_GitHubUrlBuffer[0] = '\0';
-					m_ShowGitInstallWindow = false;
-					StartPostInstallAutomation();
+					m_GitInstallTask->Running.store(true, std::memory_order_release);
+					m_StatusMessage = "Cloning " + url + "...";
+					m_StatusIsError = false;
+					if (m_GitInstallWorker.joinable()) m_GitInstallWorker.join();
+					auto state = m_GitInstallTask;
+					m_GitInstallWorker = std::thread([state, url, packagesDir]() {
+						auto result = IndexPackageInstaller::InstallFromGitHub(url, packagesDir);
+						{
+							std::scoped_lock lock(state->Mutex);
+							state->Success = result.Success;
+							state->Message = result.Message;
+							state->PackageName = result.PackageName;
+							state->Finished = true;
+						}
+						state->Running.store(false, std::memory_order_release);
+					});
 				}
 			}
 			if (!canInstall) ImGui::EndDisabled();
@@ -1088,6 +1121,7 @@ namespace Index {
 				m_StatusIsError = !result.Success;
 				if (result.Success) {
 					m_ManifestsDirty = true;
+					// Uninstall — no package being added, so no rollback check.
 					StartPostInstallAutomation();
 				}
 			}
@@ -1104,7 +1138,7 @@ namespace Index {
 				m_StatusIsError = !result.Success;
 				if (result.Success) {
 					m_ManifestsDirty = true;
-					StartPostInstallAutomation();
+					StartPostInstallAutomation(manifest.Name);
 				}
 			}
 			ImGui::PopStyleColor();
@@ -1235,15 +1269,27 @@ namespace Index {
 #endif
 	}
 
-	void PackageManagerPanel::StartPostInstallAutomation() {
+	void PackageManagerPanel::StartPostInstallAutomation(const std::string& justInstalledPackageName) {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) return;
 		if (!m_AutomationTask) return;
 		if (m_AutomationTask->Running.load(std::memory_order_acquire)) return;
 
-		// Reset task state.
+		// Remember which package (if any) is being added so PollAutomationTask
+		// can verify it actually loaded after PackageHost::LoadInstalled() and
+		// roll back the project mutation on failure. Empty for uninstalls /
+		// generic refreshes — no rollback in that case.
+		m_PendingPostInstallPackageName = justInstalledPackageName;
+
+		// Reset task state. Title is the OS-popup header — "Installing <Name>..."
+		// while a package is being added, "Refreshing Packages..." for the
+		// uninstall / generic-refresh paths where no specific package is
+		// being introduced.
 		{
 			std::scoped_lock lock(m_AutomationTask->Mutex);
+			m_AutomationTask->Title = justInstalledPackageName.empty()
+				? std::string("Refreshing Packages...")
+				: ("Installing " + justInstalledPackageName + "...");
 			m_AutomationTask->Stage = "Refreshing package state...";
 			m_AutomationTask->Progress = 0.05f;
 			m_AutomationTask->Finished = false;
@@ -1317,19 +1363,65 @@ namespace Index {
 			m_AutomationWorker.join();
 		}
 
+		// Snapshot + clear the pending-install state up-front: even if
+		// LoadInstalled throws (it shouldn't — the SEH guard in PackageHost
+		// keeps faults contained) we don't want the name to linger and
+		// cause a phantom rollback on a later automation.
+		const std::string pendingInstall = std::move(m_PendingPostInstallPackageName);
+		m_PendingPostInstallPackageName.clear();
+
 		if (success) {
 			// Hot-load new package DLLs so their components appear in the Add Component popup without a restart.
 			const size_t newlyLoaded = PackageHost::LoadInstalled();
-			if (newlyLoaded > 0) {
+
+			// Crash-safety rollback: if we just installed a package and it
+			// didn't make it into PackageHost's loaded list, PackageHost's
+			// SEH guard caught a fault (or LoadLibrary returned null) and
+			// skipped it. Without rollback the broken package stays in
+			// index-project.json's `packages` array and PackageHost::LoadAll()
+			// would attempt to load it again on every editor relaunch — the
+			// "destroyed project" symptom we're fixing. Roll it back so the
+			// user's project keeps working, then surface a clear error.
+			bool didRollback = false;
+			if (!pendingInstall.empty() && !PackageHost::IsPackageLoaded(pendingInstall)) {
+				IndexProject* project = ProjectManager::GetCurrentProject();
+				if (project) {
+					IndexPackageInstaller::UninstallFromProject(*project, pendingInstall);
+					didRollback = true;
+				}
+			}
+
+			if (didRollback) {
+				// LoadInstalled's failure modes are: incompatible ABI (most
+				// common — package built against a different engine), missing
+				// import (the engine the package references doesn't export
+				// what it expects), or an OnLoad that returned-and-immediately-
+				// faulted. The host's IDX_CORE_ERROR log carries the precise
+				// diagnostic; this popup tells the user "your project is OK,
+				// here's what happened".
+				m_StatusMessage.clear();
+				m_StatusIsError = false;
+				m_InstallErrorMessage =
+					"The package '" + pendingInstall + "' was downloaded and verified, but failed to load "
+					"into the running editor. The most common cause is a binary-compatibility mismatch — "
+					"the package's published DLL was built against a different version of Index-Engine.\n\n"
+					"The package has been removed from this project's allow-list, so your project is safe "
+					"and will open normally next time. To install it, ask the publisher to rebuild against "
+					"the current engine, or check the package's release notes for a compatible version.\n\n"
+					"See the editor's log for the exact failure mode (see lines tagged [PackageHost]).";
+				m_OpenInstallErrorPopup = true;
+			}
+			else if (newlyLoaded > 0) {
 				m_StatusMessage = "Package operation complete; loaded " +
 					std::to_string(newlyLoaded) + " new package(s). "
 					"Reload the .csproj in your C# IDE if a new namespace doesn't resolve.";
+				m_StatusIsError = false;
 			}
 			else {
 				m_StatusMessage = "Package operation complete; project package references refreshed. "
 					"Reload the .csproj in your C# IDE if a new namespace doesn't resolve.";
+				m_StatusIsError = false;
 			}
-			m_StatusIsError = false;
 		}
 		else {
 			// Premake/MSBuild output can be hundreds of lines — surface the full
@@ -1342,6 +1434,95 @@ namespace Index {
 		}
 
 		m_ManifestsDirty = true;
+	}
+
+	void PackageManagerPanel::PollGitInstallTask() {
+		if (!m_GitInstallTask) return;
+
+		bool finished = false, success = false;
+		std::string message, packageName;
+		{
+			std::scoped_lock lock(m_GitInstallTask->Mutex);
+			finished = m_GitInstallTask->Finished;
+			success = m_GitInstallTask->Success;
+			message = m_GitInstallTask->Message;
+			packageName = m_GitInstallTask->PackageName;
+		}
+		if (!finished) return;
+		{
+			std::scoped_lock lock(m_GitInstallTask->Mutex);
+			m_GitInstallTask->Finished = false;
+		}
+		if (m_GitInstallWorker.joinable()) m_GitInstallWorker.join();
+
+		m_StatusMessage = message;
+		m_StatusIsError = !success;
+		if (success) {
+			// Continuation on the main thread, mirroring the old inline flow:
+			// register the cloned package with the project + kick automation.
+			IndexProject* project = ProjectManager::GetCurrentProject();
+			if (project && !packageName.empty()) {
+				IndexPackageInstaller::InstallToProject(*project, packageName);
+			}
+			m_ManifestsDirty = true;
+			m_GitHubUrlBuffer[0] = '\0';
+			m_ShowGitInstallWindow = false;
+			StartPostInstallAutomation(packageName);
+		}
+	}
+
+	void PackageManagerPanel::PollNewPackageTask() {
+		if (!m_NewPackageTask) return;
+
+		bool finished = false, success = false;
+		std::string output, packageName;
+		{
+			std::scoped_lock lock(m_NewPackageTask->Mutex);
+			finished = m_NewPackageTask->Finished;
+			success = m_NewPackageTask->Success;
+			output = m_NewPackageTask->Output;
+			packageName = m_NewPackageTask->PackageName;
+		}
+		if (!finished) return;
+		{
+			std::scoped_lock lock(m_NewPackageTask->Mutex);
+			m_NewPackageTask->Finished = false;
+		}
+		if (m_NewPackageWorker.joinable()) m_NewPackageWorker.join();
+
+		m_NewPackageIsCreating = false;
+
+		if (!success) {
+			m_NewPackageError = output.empty() ? std::string("Package creation failed.") : output;
+			IDX_ERROR_TAG("IndexPackages", "{}", m_NewPackageError);
+			m_StatusMessage = "Package creation failed.";
+			m_StatusIsError = true;
+			return;
+		}
+
+		IDX_INFO_TAG("IndexPackages", "Created package '{}'.", packageName);
+
+		// Project-local package creation updates the project allow-list + props,
+		// but the editor must not regenerate the engine solution.
+		m_ManifestsDirty = true;
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (project) {
+			auto installResult = IndexPackageInstaller::InstallToProject(*project, packageName);
+			m_StatusMessage = installResult.Message;
+			m_StatusIsError = !installResult.Success;
+			if (installResult.Success) {
+				StartPostInstallAutomation(packageName);
+			}
+		}
+		else {
+			m_StatusMessage = std::string("Package '") + packageName +
+				"' created. Run premake5 vs2022 + rebuild the engine solution to pick it up.";
+			m_StatusIsError = false;
+		}
+
+		m_ShowNewPackageWindow = false;
+		m_NewPackageNameBuffer[0] = '\0';
+		m_NewPackageDescriptionBuffer[0] = '\0';
 	}
 
 	// ── Cloud Registry ─────────────────────────────────────────────────────────────
@@ -1604,6 +1785,10 @@ namespace Index {
 
 		{
 			std::scoped_lock lock(m_CloudInstallTask->Mutex);
+			// Title drives the OS-level Win32BuildProgressWindow header; stays
+			// "Downloading <Name>..." across both download + verify phases so
+			// the popup label matches what the user clicked Install on.
+			m_CloudInstallTask->Title = "Downloading " + entry.Name + "...";
 			m_CloudInstallTask->Stage = "Downloading " + entry.Name + " v" + entry.Version + "...";
 			m_CloudInstallTask->Progress = 0.1f;
 			m_CloudInstallTask->Finished = false;
@@ -1666,19 +1851,6 @@ namespace Index {
 		});
 	}
 
-	bool PackageManagerPanel::IsCloudInstallRunning() const {
-		return m_CloudInstallTask
-			&& m_CloudInstallTask->Running.load(std::memory_order_acquire);
-	}
-
-	bool PackageManagerPanel::TryGetCloudInstallProgress(std::string& outStage, float& outProgress) const {
-		if (!IsCloudInstallRunning()) return false;
-		std::scoped_lock lock(m_CloudInstallTask->Mutex);
-		outStage = m_CloudInstallTask->Stage;
-		outProgress = m_CloudInstallTask->Progress;
-		return true;
-	}
-
 	void PackageManagerPanel::PollCloudInstallTask() {
 		if (!m_CloudInstallTask) return;
 
@@ -1732,7 +1904,10 @@ namespace Index {
 		m_ManifestsDirty = true;
 		m_StatusMessage = "Installed " + packageName + " from registry.";
 		m_StatusIsError = false;
-		StartPostInstallAutomation();
+		// Pass the package name so the SEH-guarded LoadInstalled() can roll
+		// back the project's allow-list if the just-downloaded DLL fails to
+		// load (the Tilemap2D ABI-mismatch scenario this safety net targets).
+		StartPostInstallAutomation(packageName);
 	}
 
 }

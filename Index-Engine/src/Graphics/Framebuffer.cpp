@@ -157,6 +157,7 @@ namespace Index {
 		, m_ColorTextureId(other.m_ColorTextureId)
 		, m_DepthRenderbuffer(other.m_DepthRenderbuffer)
 		, m_Viewport(other.m_Viewport)
+		, m_ColorFormat(other.m_ColorFormat)
 	{
 		other.m_BackendId         = 0;
 		other.m_ColorTextureId    = 0;
@@ -170,6 +171,7 @@ namespace Index {
 		m_BackendId         = other.m_BackendId;
 		m_ColorTextureId    = other.m_ColorTextureId;
 		m_DepthRenderbuffer = other.m_DepthRenderbuffer;
+		m_ColorFormat       = other.m_ColorFormat;
 		m_Viewport          = other.m_Viewport;
 		other.m_BackendId         = 0;
 		other.m_ColorTextureId    = 0;
@@ -189,12 +191,13 @@ namespace Index {
 
 		const bool sizeMatches = m_Viewport.GetWidth() == width
 			&& m_Viewport.GetHeight() == height;
-		if (m_BackendId != 0 && sizeMatches) {
+		if (m_BackendId != 0 && sizeMatches && m_ColorFormat == colorFormat) {
 			return true;
 		}
 
 		Destroy();
 		m_Viewport.SetSize(width, height);
+		m_ColorFormat = colorFormat;
 
 		if (!WebGPUBackend::IsInitialized()) {
 			IDX_CORE_ERROR_TAG("Framebuffer",

@@ -715,6 +715,8 @@ endforeach()
 		root.AddMember("buildMaxWidth", project.BuildMaxWidth);
 		root.AddMember("buildMaxHeight", project.BuildMaxHeight);
 		root.AddMember("buildFullscreen", project.BuildFullscreen);
+		root.AddMember("buildFullscreenMode",
+			std::string(IndexProject::FullscreenModeToString(project.BuildFullscreenMode)));
 		root.AddMember("buildResizable", project.BuildResizable);
 		root.AddMember("buildRunInBackground", project.BuildRunInBackground);
 		root.AddMember("buildAspect", project.BuildAspect);
@@ -999,6 +1001,24 @@ endforeach()
 		if (value == "Metal"      || value == "metal")                        return RenderBackend::Metal;
 		if (value == "OpenGLES"   || value == "opengles" || value == "GLES")  return RenderBackend::OpenGLES;
 		return RenderBackend::Auto;
+	}
+
+	const char* IndexProject::FullscreenModeToString(FullscreenMode mode) {
+		switch (mode) {
+			case FullscreenMode::Exclusive:          return "Exclusive";
+			case FullscreenMode::BorderlessWindowed: return "BorderlessWindowed";
+			case FullscreenMode::Maximized:          return "Maximized";
+		}
+		return "Exclusive";
+	}
+
+	FullscreenMode IndexProject::FullscreenModeFromString(std::string_view value) {
+		if (value == "BorderlessWindowed" || value == "Borderless" || value == "borderless")
+			return FullscreenMode::BorderlessWindowed;
+		if (value == "Maximized" || value == "maximized")
+			return FullscreenMode::Maximized;
+		// Default + "Exclusive" / "exclusive" / unknown.
+		return FullscreenMode::Exclusive;
 	}
 
 	const char* IndexProject::ProjectAssetSerializationFormatToString(ProjectAssetSerializationFormat format) {
@@ -1321,6 +1341,10 @@ endforeach()
 				}
 				if (const Json::Value* fullscreenValue = root.FindMember("buildFullscreen")) {
 					project.BuildFullscreen = fullscreenValue->AsBoolOr(true);
+				}
+				if (const Json::Value* v = root.FindMember("buildFullscreenMode")) {
+					project.BuildFullscreenMode =
+						IndexProject::FullscreenModeFromString(v->AsStringOr("Exclusive"));
 				}
 				if (const Json::Value* resizableValue = root.FindMember("buildResizable")) {
 					project.BuildResizable = resizableValue->AsBoolOr(true);

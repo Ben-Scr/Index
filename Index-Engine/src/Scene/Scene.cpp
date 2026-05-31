@@ -1782,7 +1782,7 @@ namespace Index {
 		auto& comp = registry.get<FastBody2DComponent>(entity);
 		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
 
-		comp.m_Body = indexWorld.CreateBody(entity, comp.Type);
+		comp.m_Body = indexWorld.CreateBody(entity, comp.Type, this);
 		if (comp.m_Body) {
 			comp.m_Body->SetMass(comp.Mass);
 			comp.m_Body->SetGravityEnabled(comp.UseGravity);
@@ -1805,7 +1805,17 @@ namespace Index {
 		if (m_IsDetached) return;
 		auto& comp = registry.get<FastBoxCollider2DComponent>(entity);
 		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
-		comp.m_Collider = indexWorld.CreateBoxCollider(entity, comp.HalfExtents);
+		// Compose initial half-extents with the entity's Transform2D.Scale so
+		// the collider starts at the right size. PhysicsSystem2D's per-frame
+		// SyncWithTransform pass keeps it in sync as the scale changes.
+		Vec2 scale{ 1.0f, 1.0f };
+		if (registry.all_of<Transform2DComponent>(entity)) {
+			scale = registry.get<Transform2DComponent>(entity).Scale;
+		}
+		const Vec2 scaledHalfExtents{ comp.HalfExtents.x * scale.x, comp.HalfExtents.y * scale.y };
+		comp.m_EntityHandle = entity;
+		comp.m_LastAppliedScale = scale;
+		comp.m_Collider = indexWorld.CreateBoxCollider(entity, scaledHalfExtents);
 	}
 
 	void Scene::OnFastBoxCollider2DDestroy(entt::registry& registry, EntityHandle entity) {
@@ -1817,7 +1827,14 @@ namespace Index {
 		if (m_IsDetached) return;
 		auto& comp = registry.get<FastCircleCollider2DComponent>(entity);
 		auto& indexWorld = PhysicsSystem2D::GetIndexPhysicsWorld();
-		comp.m_Collider = indexWorld.CreateCircleCollider(entity, comp.Radius);
+		float scale = 1.0f;
+		if (registry.all_of<Transform2DComponent>(entity)) {
+			const Vec2 tfScale = registry.get<Transform2DComponent>(entity).Scale;
+			scale = std::max(std::abs(tfScale.x), std::abs(tfScale.y));
+		}
+		comp.m_EntityHandle = entity;
+		comp.m_LastAppliedScale = scale;
+		comp.m_Collider = indexWorld.CreateCircleCollider(entity, comp.Radius * scale);
 	}
 
 	void Scene::OnFastCircleCollider2DDestroy(entt::registry& registry, EntityHandle entity) {

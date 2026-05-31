@@ -200,6 +200,19 @@ public class SpriteRenderer : Component
         get => (TextureFilter)InternalCalls.SpriteRenderer_GetFilter(RequireComponent<SpriteRenderer>());
         set => InternalCalls.SpriteRenderer_SetFilter(RequireComponent<SpriteRenderer>(), (int)value);
     }
+
+    /// <summary>
+    /// Name of the sprite slice to render, from the bound texture's `.meta`.
+    /// Empty (or null) = render the full texture (default). Set to one of
+    /// the slice names authored in the Sprite Editor to draw only that
+    /// rectangle of the texture. Stale names silently fall back to the full
+    /// texture with a one-shot warning in the editor log.
+    /// </summary>
+    public string SpriteName
+    {
+        get => InternalCalls.SpriteRenderer_GetSpriteName(RequireComponent<SpriteRenderer>());
+        set => InternalCalls.SpriteRenderer_SetSpriteName(RequireComponent<SpriteRenderer>(), value);
+    }
 }
 
 
@@ -363,7 +376,15 @@ public class Camera2D : Component
 
     private void GetCameraBasis(float viewportWidth, float viewportHeight, out Vector2 position, out float cos, out float sin, out float halfWidth, out float halfHeight)
     {
-        Transform2D transform = Entity.Transform;
+        // Camera2D math has no meaningful answer without a host
+        // Transform2D — short-circuit with a descriptive message.
+        // Entity.Transform itself returns null instead of throwing
+        // (so user scripts can probe for it on tag entities); this
+        // throw preserves the diagnostic at the one site inside the
+        // engine that genuinely requires the component.
+        Transform2D transform = Entity.Transform
+            ?? throw new InvalidOperationException(
+                "Camera2DComponent.GetCameraBasis: host entity has no Transform2D component.");
         position = transform.Position;
 
         float rotation = transform.Rotation * Mathf.Deg2Rad;
@@ -378,6 +399,27 @@ public class Camera2D : Component
 // ── Rigidbody2D ─────────────────────────────────────────────────────
 
 public enum BodyType { Static = 0, Kinematic = 1, Dynamic = 2 }
+
+/// <summary>
+/// Bitmask of physics constraints for <see cref="Rigidbody2D"/>. Mirrors
+/// Unity's RigidbodyConstraints2D so scripts ported from Unity read
+/// almost-verbatim. The flag values match Box2D's b2MotionLocks order so
+/// the bridge is a one-shot bitwise check per axis on the native side.
+///
+/// Composite values (<see cref="FreezePosition"/>, <see cref="FreezeAll"/>)
+/// are convenience aliases; setting them is exactly equivalent to OR-ing
+/// the individual flags.
+/// </summary>
+[Flags]
+public enum RigidbodyConstraints2D
+{
+    None            = 0,
+    FreezePositionX = 1 << 0,
+    FreezePositionY = 1 << 1,
+    FreezeRotation  = 1 << 2,
+    FreezePosition  = FreezePositionX | FreezePositionY,
+    FreezeAll       = FreezePosition  | FreezeRotation,
+}
 
 public class Rigidbody2D : Component
 {
@@ -414,6 +456,69 @@ public class Rigidbody2D : Component
     {
         get => InternalCalls.Rigidbody2D_GetMass(RequireComponent<Rigidbody2D>());
         set => InternalCalls.Rigidbody2D_SetMass(RequireComponent<Rigidbody2D>(), value);
+    }
+
+    /// <summary>
+    /// Lock translation along the world X axis. Routed through Box2D's
+    /// native motion-locks; the solver treats a locked axis as infinite
+    /// mass, so an external force / impulse on that axis is discarded
+    /// without changing the body's linear velocity on the other axis.
+    /// </summary>
+    public bool FreezePositionX
+    {
+        get => InternalCalls.Rigidbody2D_GetFreezePositionX(RequireComponent<Rigidbody2D>());
+        set => InternalCalls.Rigidbody2D_SetFreezePositionX(RequireComponent<Rigidbody2D>(), value);
+    }
+
+    /// <summary>
+    /// Lock translation along the world Y axis. See <see cref="FreezePositionX"/>.
+    /// </summary>
+    public bool FreezePositionY
+    {
+        get => InternalCalls.Rigidbody2D_GetFreezePositionY(RequireComponent<Rigidbody2D>());
+        set => InternalCalls.Rigidbody2D_SetFreezePositionY(RequireComponent<Rigidbody2D>(), value);
+    }
+
+    /// <summary>
+    /// Lock rotation around the Z axis. Same effect as Unity's
+    /// Rigidbody2D.constraints.FreezeRotation — the body keeps its angular
+    /// velocity at zero regardless of torques / impacts, but linear motion
+    /// is unchanged.
+    /// </summary>
+    public bool FreezeRotation
+    {
+        get => InternalCalls.Rigidbody2D_GetFreezeRotation(RequireComponent<Rigidbody2D>());
+        set => InternalCalls.Rigidbody2D_SetFreezeRotation(RequireComponent<Rigidbody2D>(), value);
+    }
+
+    /// <summary>
+    /// All constraints as a bitmask — the convenience overload over the three
+    /// individual <see cref="FreezePositionX"/>, <see cref="FreezePositionY"/>,
+    /// <see cref="FreezeRotation"/> properties. Reads compose a fresh bitmask
+    /// from the live body's motion locks; writes set each flag explicitly so
+    /// `rb.Constraints = RigidbodyConstraints2D.FreezePosition` not only
+    /// enables the two position locks but also clears any rotation lock that
+    /// was previously set — same idempotent-replace semantics as Unity's
+    /// equivalent setter.
+    /// </summary>
+    public RigidbodyConstraints2D Constraints
+    {
+        get
+        {
+            ulong entityId = RequireComponent<Rigidbody2D>();
+            RigidbodyConstraints2D c = RigidbodyConstraints2D.None;
+            if (InternalCalls.Rigidbody2D_GetFreezePositionX(entityId)) c |= RigidbodyConstraints2D.FreezePositionX;
+            if (InternalCalls.Rigidbody2D_GetFreezePositionY(entityId)) c |= RigidbodyConstraints2D.FreezePositionY;
+            if (InternalCalls.Rigidbody2D_GetFreezeRotation(entityId))  c |= RigidbodyConstraints2D.FreezeRotation;
+            return c;
+        }
+        set
+        {
+            ulong entityId = RequireComponent<Rigidbody2D>();
+            InternalCalls.Rigidbody2D_SetFreezePositionX(entityId, (value & RigidbodyConstraints2D.FreezePositionX) != 0);
+            InternalCalls.Rigidbody2D_SetFreezePositionY(entityId, (value & RigidbodyConstraints2D.FreezePositionY) != 0);
+            InternalCalls.Rigidbody2D_SetFreezeRotation (entityId, (value & RigidbodyConstraints2D.FreezeRotation)  != 0);
+        }
     }
 
     public void ApplyForce(Vector2 force, bool wake = true)

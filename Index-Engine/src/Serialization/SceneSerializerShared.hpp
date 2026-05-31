@@ -80,23 +80,30 @@ namespace Index::SceneSerializerShared {
 
 		if (value->IsString()) {
 			const std::string valueStr = value->AsStringOr();
+			std::size_t parseEnd = 0;
 			try {
-				return static_cast<uint64_t>(std::stoull(valueStr));
+				const uint64_t parsed = static_cast<uint64_t>(std::stoull(valueStr, &parseEnd));
+				// Full-parse check: reject trailing garbage ("123abc" -> 123). A
+				// partially-parsed GUID/id is worse than the fallback because it
+				// silently resolves to the WRONG asset instead of warning.
+				if (parseEnd == valueStr.size()) {
+					return parsed;
+				}
 			}
 			catch (...) {
-				// Logged at warn level so corrupt asset/scene IDs (overflow,
-				// non-numeric, garbage) are visible during load instead of
-				// silently collapsing to the fallback. Most production data
-				// has well-formed numeric strings, so this only triggers on
-				// genuinely malformed input.
-				const std::string memberName(key);
-				IDX_CORE_WARN_TAG(
-					"Serialization",
-					"Failed to parse uint64 member '{}' (value: '{}')",
-					memberName,
-					valueStr);
-				return fallback;
+				// non-numeric / overflow: handled by the shared warn+fallback below
 			}
+			// Logged at warn level so corrupt asset/scene IDs (overflow,
+			// non-numeric, trailing garbage) are visible during load instead of
+			// silently collapsing to the fallback. Most production data has
+			// well-formed numeric strings, so this only triggers on malformed input.
+			const std::string memberName(key);
+			IDX_CORE_WARN_TAG(
+				"Serialization",
+				"Failed to parse uint64 member '{}' (value: '{}')",
+				memberName,
+				valueStr);
+			return fallback;
 		}
 
 		return value->AsUInt64Or(fallback);

@@ -7,6 +7,7 @@
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Inspector/ReferencePicker.hpp"
 #include "Gui/AddComponentPopup.hpp"
+#include "Gui/Icons.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Entity.hpp"
@@ -156,7 +157,7 @@ namespace Index {
 		// the auto-save logic below picks up to flush to disk.
 		ImGui::Separator();
 		const float buttonWidth = ImGui::GetContentRegionAvail().x;
-		if (ImGui::Button("Add Component", ImVec2(buttonWidth, 0))) {
+		if (Icons::ButtonWithIcon(Icons::Type::Plus, "Add Component", ImVec2(buttonWidth, 0), true)) {
 			ImGui::OpenPopup("AddPrefabComponentPopup");
 			m_AddComponentSearchBuffer[0] = '\0';
 		}

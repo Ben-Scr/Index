@@ -98,16 +98,21 @@ public class Entity : IEquatable<Entity>
     public bool IsEnabledInHierarchy
         => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabledInHierarchy(ID);
 
-    public Transform2D Transform
+    // Returns null when the entity has no Transform2D component instead
+    // of throwing. Scripts on entities that may not have a Transform2D —
+    // UI-only roots, scene-singleton scripts that live on a tag entity,
+    // hot-reload races where the component pool is mid-rebuild — need a
+    // way to detect absence without wrapping every access in try / catch.
+    // For "I require a Transform2D and want to fail loudly" contracts,
+    // use `GetRefOrThrow<NativeTransform2D>` (hot-path, throws on miss)
+    // or an explicit `?? throw new InvalidOperationException(...)` in
+    // the calling script.
+    public Transform2D? Transform
     {
         get
         {
             if (m_TransformComponent == null)
-            {
                 m_TransformComponent = GetComponent<Transform2D>();
-                if (m_TransformComponent == null)
-                    throw new InvalidOperationException("Entity does not have a Transform2D component");
-            }
             return m_TransformComponent;
         }
         set => m_TransformComponent = value;

@@ -2,11 +2,13 @@
 #include "Inspector/ReferencePicker.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Assets/TextureMeta.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Gui/AssetType.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/Icons.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Gui/ThumbnailCache.hpp"
@@ -225,6 +227,38 @@ namespace Index::ReferencePicker {
 			entry.UniqueId = entry.Value;
 			entry.IsBuiltIn = AssetRegistry::IsBuiltIn(record.Id);
 			entries.push_back(std::move(entry));
+
+			// Slice sub-entries for sprite sheets. Surfaces every authored
+			// SpriteSlice as its own pickable entry so a user can assign a
+			// sub-rect directly from the picker — same UX as expanding the
+			// sheet in the Asset Browser, just routed through the modal.
+			// The encoded Value (<textureUUID>|slice|<sliceName>) is parsed
+			// by PropertyValue::FromString for PropertyType::TextureRef so
+			// slice-aware setters (SpriteRenderer / Image) apply both fields
+			// atomically; generic texture refs ignore the slice name.
+			if (kind != AssetKind::Texture) continue;
+			TextureMeta meta = AssetRegistry::ReadTextureMeta(record.Path);
+			if (meta.Sprites.empty()) continue;
+			const std::string parentName = std::filesystem::path(record.Path).filename().string();
+			for (const SpriteSlice& slice : meta.Sprites) {
+				Entry sliceEntry;
+				sliceEntry.Label = parentName + " > " + slice.Name;
+				sliceEntry.Secondary = record.Path;
+				sliceEntry.SearchKey = ToLowerCopy(sliceEntry.Label + " " + record.Path);
+				sliceEntry.Value = std::to_string(record.Id) + "|slice|" + slice.Name;
+				sliceEntry.UniqueId = "slice:" + std::to_string(record.Id) + ":" + slice.Name;
+				sliceEntry.IsBuiltIn = AssetRegistry::IsBuiltIn(record.Id);
+				// Carry the slice's pixel rect so the thumbnail layout below
+				// can crop the parent texture preview to just this slice
+				// (UVs computed from rect / texture-size at draw time, so we
+				// don't need the texture's dimensions in CollectAssetsByKind).
+				sliceEntry.IsSlice = true;
+				sliceEntry.SliceX = slice.X;
+				sliceEntry.SliceY = slice.Y;
+				sliceEntry.SliceW = slice.W;
+				sliceEntry.SliceH = slice.H;
+				entries.push_back(std::move(sliceEntry));
+			}
 		}
 		std::sort(entries.begin() + 1, entries.end(), [](const Entry& a, const Entry& b) {
 			if (a.Label == b.Label) return a.Secondary < b.Secondary;
@@ -406,33 +440,39 @@ namespace Index::ReferencePicker {
 			return;
 		}
 
-		// Eye toggle on the right; search bar fills the remainder. Uses
-		// the engine-shipped visibility_eye icon (IndexAssets/Textures/
-		// Editor/visibility_eye/) at 16 px. Tint mirrors the log panel's
-		// filter pattern: full-white when showing, dim grey when hiding.
-		// If the icon fails to load (icon dir missing on disk), fall
-		// back to an ASCII-labelled button so the toggle stays usable.
+		// Eye toggle on the right; search bar fills the remainder. The icon
+		// itself carries the state — eye_open when built-ins are visible,
+		// eye_closed when hidden — so we use the full-white tint in both
+		// cases instead of the brightness-as-state convention the older
+		// single-icon (visibility_eye) version used. Both PNGs live at
+		// IndexAssets/Textures/Editor/General/{eye_open,eye_closed}/ at
+		// the standard 16/32/64/128 snap sizes. If the icon fails to
+		// load (asset dir missing on a fresh build before postbuild copy
+		// ran) we fall back to an ASCII-labelled button so the toggle
+		// stays usable during dev iteration.
 		const ImGuiStyle& style = ImGui::GetStyle();
-		const uint64_t eyeIcon = EditorIcons::Get("visibility_eye", 16);
+		const bool showingBuiltIns = s_State.IncludeBuiltIns;
+		const uint64_t eyeIcon = EditorIcons::Get(
+			showingBuiltIns ? "eye_open" : "eye_closed", 16);
 		const ImVec2 eyeIconSize(16.0f, 16.0f);
 		const float toggleWidth = (eyeIcon != 0)
 			? eyeIconSize.x + style.FramePadding.x * 2.0f
 			: ImGui::CalcTextSize("(o)").x + style.FramePadding.x * 2.0f;
+		Icons::TextIcon(Icons::Type::Search);
 		const float searchWidth = std::max(60.0f,
 			ImGui::GetContentRegionAvail().x - toggleWidth - style.ItemSpacing.x);
 		ImGui::SetNextItemWidth(searchWidth);
 		ImGui::InputTextWithHint("##ReferenceSearch", "Search...", s_State.Search, sizeof(s_State.Search));
 		ImGui::SameLine();
-		const bool showingBuiltIns = s_State.IncludeBuiltIns;
 		bool toggleClicked = false;
 		if (eyeIcon != 0) {
-			const ImVec4 tint = showingBuiltIns
-				? ImVec4(1.0f, 1.0f, 1.0f, 1.0f)
-				: ImVec4(0.4f, 0.4f, 0.4f, 0.5f);
+			// Full-white tint in both states — the open/closed glyph swap
+			// is what communicates the state, not the brightness.
+			constexpr ImVec4 k_Tint(1.0f, 1.0f, 1.0f, 1.0f);
 			toggleClicked = ImGui::ImageButton("##BuiltInToggle",
 				static_cast<ImTextureID>(static_cast<intptr_t>(eyeIcon)),
 				eyeIconSize, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
-				ImVec4(0.0f, 0.0f, 0.0f, 0.0f), tint);
+				ImVec4(0.0f, 0.0f, 0.0f, 0.0f), k_Tint);
 		}
 		else {
 			if (showingBuiltIns) {
@@ -521,12 +561,40 @@ namespace Index::ReferencePicker {
 						const uint64_t thumbnail = s_State.Thumbnails.GetThumbnail(entry.Secondary);
 						Texture2D* texture = s_State.Thumbnails.GetCacheEntry(entry.Secondary);
 						if (thumbnail != 0 && texture && texture->IsValid()) {
-							float drawWidth = thumbnailSize;
-							float drawHeight = thumbnailSize;
 							const float texW = static_cast<float>(texture->GetWidth());
 							const float texH = static_cast<float>(texture->GetHeight());
-							if (texW > 0.0f && texH > 0.0f) {
-								const float aspect = texW / texH;
+
+							// Slice entries crop the parent texture preview to
+							// the slice's pixel rect so the user sees what
+							// they'd actually be picking ("undead_4"), not the
+							// whole sheet that contains it. Aspect-fitting
+							// uses the slice's own dimensions; UVs are
+							// computed against the parent texture's full
+							// size. Non-slice entries keep (0,1)→(1,0) UVs
+							// and aspect-fit on the full texture, which is
+							// the existing browser preview convention
+							// (thumbnails are uploaded bottom-up, hence the
+							// Y-axis flip in both branches).
+							float aspectW = texW;
+							float aspectH = texH;
+							float u0 = 0.0f, u1 = 1.0f;
+							float v0 = 1.0f, v1 = 0.0f;
+							if (entry.IsSlice
+								&& texW > 0.0f && texH > 0.0f
+								&& entry.SliceW > 0 && entry.SliceH > 0)
+							{
+								aspectW = static_cast<float>(entry.SliceW);
+								aspectH = static_cast<float>(entry.SliceH);
+								u0 = static_cast<float>(entry.SliceX) / texW;
+								u1 = static_cast<float>(entry.SliceX + entry.SliceW) / texW;
+								v0 = 1.0f - static_cast<float>(entry.SliceY) / texH;
+								v1 = 1.0f - static_cast<float>(entry.SliceY + entry.SliceH) / texH;
+							}
+
+							float drawWidth = thumbnailSize;
+							float drawHeight = thumbnailSize;
+							if (aspectW > 0.0f && aspectH > 0.0f) {
+								const float aspect = aspectW / aspectH;
 								if (aspect > 1.0f) drawHeight = thumbnailSize / aspect;
 								else               drawWidth  = thumbnailSize * aspect;
 							}
@@ -536,7 +604,7 @@ namespace Index::ReferencePicker {
 							const ImVec2 imageMax(imageMin.x + drawWidth, imageMin.y + drawHeight);
 							drawList->AddImage(
 								static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail)),
-								imageMin, imageMax, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+								imageMin, imageMax, ImVec2(u0, v0), ImVec2(u1, v1));
 						}
 						else {
 							ThumbnailCache::DrawAssetIcon(AssetType::Image, thumbMin, thumbnailSize);

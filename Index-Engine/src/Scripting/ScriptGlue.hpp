@@ -984,6 +984,15 @@ namespace Index {
 		int  (*SpriteRenderer_GetFilter)(uint64_t entityID);
 		void (*SpriteRenderer_SetFilter)(uint64_t entityID, int filter);
 
+		// Sprite-slice name. Empty string ("") = render the full texture
+		// (legacy behaviour). Non-empty string = render only the named
+		// SpriteSlice authored in the bound texture's `.meta`. The renderer
+		// resolves the name → UV rect via SpriteUVResolver every frame;
+		// stale references silently fall back to the full texture with a
+		// one-shot warning in the editor log.
+		int  (*SpriteRenderer_GetSpriteNameBuffer)(uint64_t entityID, char* outBuffer, int capacity);
+		void (*SpriteRenderer_SetSpriteName)(uint64_t entityID, const char* name);
+
 		// ── Dynamic component registration (appended for binary compat) ──
 		// Called from the C# host (DynamicComponentRegistrar) at user-
 		// assembly load. Reflects over every struct annotated
@@ -1026,6 +1035,21 @@ namespace Index {
 		// Returns 0 when the active scene's source file isn't asset-
 		// tracked (freshly created and unsaved, etc.).
 		uint64_t (*Scene_GetActiveSceneGuid)();
+
+		// ── Rigidbody2D motion locks (appended for binary compat) ──
+		// Unity-style FreezePosition/FreezeRotation constraints, routed
+		// through Box2D's native b2MotionLocks. Setting any of these
+		// re-derives the body's effective mass / inertia in the solver, so
+		// changes are picked up on the next physics step without an extra
+		// dirty flag. Bool flags travel as int (0/1) across the FFI for the
+		// same reason every other bool-typed binding in this struct does:
+		// platform ABI agreement on `bool` width is fiddly.
+		int  (*Rigidbody2D_GetFreezePositionX)(uint64_t entityID);
+		void (*Rigidbody2D_SetFreezePositionX)(uint64_t entityID, int freeze);
+		int  (*Rigidbody2D_GetFreezePositionY)(uint64_t entityID);
+		void (*Rigidbody2D_SetFreezePositionY)(uint64_t entityID, int freeze);
+		int  (*Rigidbody2D_GetFreezeRotation)(uint64_t entityID);
+		void (*Rigidbody2D_SetFreezeRotation)(uint64_t entityID, int freeze);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

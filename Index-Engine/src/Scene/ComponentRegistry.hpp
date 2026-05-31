@@ -505,6 +505,73 @@ namespace Index {
                 return count;
             };
 
+            // ── Serialize / deserialize for dynamic components ────────────
+            // Round-trip the raw bytes as a hex string so the registry-driven
+            // SceneSerializer / DeserializeFullEntity sweep persists the
+            // component across save/load. Without these, every save loses the
+            // dynamic component's presence on disk — the editor's Inspector
+            // would still show the entry (it reads ScriptComponent.Scripts),
+            // but `Entity.HasNativeComponent<T>()` would return false on the
+            // next reload (and on entering Play mode after BeginPlayModeRequest
+            // writes the snapshot, AND in any standalone build that loads the
+            // shipped scene from disk).
+            //
+            // Tag-style components (size=1, no fields) serialize as `"00"`;
+            // the on-disk presence of the key is the actual marker — the byte
+            // contents don't matter because the C# struct has no fields. For
+            // structs with real fields the hex preserves the exact byte image
+            // so post-deserialize reads see the editor-time values.
+            info.serialize = [storagePtr](Entity e) -> Json::Value {
+                if (!e.IsValid() || !storagePtr) return Json::Value::MakeObject();
+                const void* bytes = storagePtr->Get(e.GetHandle());
+                if (!bytes || storagePtr->ElementSize() == 0) {
+                    // Component present but no payload (shouldn't normally
+                    // happen — Add allocates ElementSize bytes). Persist an
+                    // empty marker so deserialize still emplaces it.
+                    return Json::Value::MakeObject();
+                }
+                static constexpr char kHex[] = "0123456789abcdef";
+                std::string hex;
+                const uint32_t n = storagePtr->ElementSize();
+                hex.resize(static_cast<std::size_t>(n) * 2);
+                const std::uint8_t* src = static_cast<const std::uint8_t*>(bytes);
+                for (uint32_t i = 0; i < n; ++i) {
+                    hex[i * 2 + 0] = kHex[(src[i] >> 4) & 0x0F];
+                    hex[i * 2 + 1] = kHex[(src[i] >> 0) & 0x0F];
+                }
+                Json::Value out = Json::Value::MakeObject();
+                out.AddMember("data", Json::Value(std::move(hex)));
+                return out;
+            };
+
+            info.deserialize = [storagePtr](Entity e, const Json::Value& v) {
+                if (!e.IsValid() || !storagePtr) return;
+                // Presence of the component key in the JSON is enough — the
+                // outer sweep already calls info->add(entity) before us. We
+                // just restore the byte payload when the saved object carries
+                // a "data" hex string.
+                if (!v.IsObject()) return;
+                const Json::Value* dataNode = v.FindMember("data");
+                if (!dataNode || !dataNode->IsString()) return;
+                const std::string hex = dataNode->AsStringOr();
+                const std::size_t byteCount = hex.size() / 2;
+                if (byteCount == 0 || byteCount != storagePtr->ElementSize()) return;
+                std::vector<std::uint8_t> bytes(byteCount);
+                auto fromHex = [](char c) -> int {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+                    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+                    return -1;
+                };
+                for (std::size_t i = 0; i < byteCount; ++i) {
+                    const int hi = fromHex(hex[i * 2 + 0]);
+                    const int lo = fromHex(hex[i * 2 + 1]);
+                    if (hi < 0 || lo < 0) return; // malformed hex — leave zero-init
+                    bytes[i] = static_cast<std::uint8_t>((hi << 4) | lo);
+                }
+                storagePtr->EmplaceOrReplace(e.GetHandle(), bytes.data());
+            };
+
             // Assign typeIdU32. Slot 0 stays reserved as the null sentinel.
             if (m_byTypeId.empty()) m_byTypeId.push_back(nullptr);
             info.typeIdU32 = static_cast<uint32_t>(m_byTypeId.size());

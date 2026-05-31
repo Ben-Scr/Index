@@ -1046,8 +1046,39 @@ namespace Index {
 			{
 				auto userDll = std::filesystem::path(project->GetUserAssemblyOutputPath());
 				m_UserAssemblyPath = userDll.string();
-				if (std::filesystem::exists(userDll))
+				if (std::filesystem::exists(userDll)) {
 					m_UserAssemblyPath = std::filesystem::canonical(userDll).string();
+				}
+				else {
+					// Standalone build path: the editor copies the user DLL into
+					// `<exeDir>/bin/<editorConfig>/<Name>.dll`, but the runtime
+					// computes its expected path with its OWN compile-time
+					// IDX_BUILD_CONFIG_NAME — and that's often a different
+					// configuration than the one the editor was compiled with
+					// (Editor=Debug, Runtime=Release/Dist). When the configured
+					// path misses, scan every bin/<config>/ subdirectory for a
+					// matching `<Name>.dll` so the shipped runtime can find the
+					// user's scripts regardless of which config the editor used
+					// to build them.
+					std::filesystem::path binRoot = std::filesystem::path(project->RootDirectory) / "bin";
+					std::error_code binEc;
+					if (std::filesystem::exists(binRoot, binEc) && !binEc) {
+						const std::string targetFile = project->Name + ".dll";
+						for (const auto& entry : std::filesystem::directory_iterator(binRoot, binEc)) {
+							std::error_code itEc;
+							if (binEc) { binEc.clear(); break; }
+							if (!entry.is_directory(itEc) || itEc) continue;
+							const std::filesystem::path candidate = entry.path() / targetFile;
+							if (std::filesystem::exists(candidate, itEc) && !itEc) {
+								m_UserAssemblyPath = std::filesystem::canonical(candidate).string();
+								IDX_INFO_TAG("ScriptSystem",
+									"User assembly resolved via bin/ scan: {} (configured path '{}' did not exist)",
+									m_UserAssemblyPath, userDll.string());
+								break;
+							}
+						}
+					}
+				}
 			}
 			else
 			{
@@ -1522,6 +1553,14 @@ namespace Index {
 
 		InvokeManagedScriptTeardown(*scene, managedState);
 		InvokeNativeScriptTeardown(*scene, nativeState, m_NativeHost);
+
+		// The Scripts vector and the paired DynamicComponentStorage row both
+		// changed — the scene now serialises differently than it did before
+		// this call. Mark dirty so the editor's "unsaved changes" indicator
+		// (and the auto-save timer) react to script removals the same way
+		// they already react to native-component removals via
+		// pendingRemoval / scene.MarkDirty in the inspector loop.
+		scene->MarkDirty();
 		return true;
 	}
 

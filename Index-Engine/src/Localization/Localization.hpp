@@ -107,7 +107,16 @@ namespace Index {
 		template <typename... Args>
 		std::string Format(std::string_view key, Args&&... args) {
 			const std::string& tmpl = Get(key);
-			return std::vformat(tmpl, std::make_format_args(args...));
+			try {
+				return std::vformat(tmpl, std::make_format_args(args...));
+			}
+			catch (const std::format_error&) {
+				// A malformed translation string (stray '{', wrong placeholder
+				// index, type mismatch) must not crash the app — downloaded
+				// language packs are untrusted input. Degrade to the raw
+				// template instead of throwing through every call site.
+				return tmpl;
+			}
 		}
 
 	}

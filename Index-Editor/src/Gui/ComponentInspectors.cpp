@@ -1,6 +1,7 @@
 #include <pch.hpp>
 #include "Gui/ComponentInspectors.hpp"
 
+#include "Assets/AssetRegistry.hpp"
 #include "Components/Forward.hpp"
 #include "Components/General/General.hpp"
 #include "Components/UI/UI.hpp"
@@ -259,15 +260,23 @@ namespace Index {
 				const float texHeight = texture->GetHeight();
 				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight);
 				ImGui::Text("%.0f x %.0f", texWidth, texHeight);
-
-				ImGui::PushID("TextureSettings");
-				ImGuiUtils::DrawEnumCombo<Filter>("Filter", texture->GetFilter(),
-					[&texture](Filter newFilter) { texture->SetFilter(newFilter); });
-				ImGuiUtils::DrawEnumCombo<Wrap>("Wrap U", texture->GetWrapU(),
-					[&texture](Wrap wrapU) { texture->SetWrapU(wrapU); });
-				ImGuiUtils::DrawEnumCombo<Wrap>("Wrap V", texture->GetWrapV(),
-					[&texture](Wrap wrapV) { texture->SetWrapV(wrapV); });
-				ImGui::PopID();
+				// Filter / Wrap dropdowns are no longer authored here. They
+				// never persisted to disk from this surface (they mutated
+				// the live Texture2D and the change was lost on reload),
+				// which silently confused users who thought the per-entity
+				// value was authoritative. The texture asset inspector
+				// (selecting the .png in the Asset Browser) is now the only
+				// authoring surface; its values round-trip through `.meta`
+				// and re-apply to every loaded entity.
+				//
+				// The per-entity "Sprite" combo that used to live here is
+				// retired too. Slices are picked through the unified texture
+				// reference path now — drag a slice tile from the Asset
+				// Browser onto the Texture row, or open the Texture picker
+				// and choose a `texture.png > slice_name` sub-entry. Both
+				// routes set SpriteName atomically with the texture, which
+				// the legacy combo could only do for the texture that was
+				// already assigned.
 			}
 		}
 		else if (!textureUniform) {

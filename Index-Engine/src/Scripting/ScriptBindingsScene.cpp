@@ -495,12 +495,18 @@ namespace Index {
 		auto* app = Application::GetInstance();
 		if (!CanReadScriptInput()) { *outX = 0.0f; *outY = 0.0f; return; }
 
-		// Editor: rebase to the Game View panel's pixel rect so scripts see
-		// (0,0) at the visible viewport's top-left, not the OS window's.
-		// The editor publishes the panel rect via Window::SetUIRegion every
-		// frame the Game View is open; standalone runtime builds leave the
-		// region inactive, so we fall through to raw OS-window coords —
-		// which IS the game viewport in a shipped build.
+		// Rebase to the visible viewport's top-left so scripts see (0, 0)
+		// where the game actually renders, not the OS-window origin.
+		// Two cases both publish through Window::UIRegion:
+		//   * Editor: Game View panel writes its panel rect every frame.
+		//   * Standalone with a build aspect lock: Window::SyncViewport
+		//     FromFramebuffer publishes the centered sub-rect, so cursor
+		//     positions inside the black-bar surround read as negative or
+		//     out-of-bounds — which is the right semantics for a script
+		//     asking "where is the cursor inside the game?".
+		// When neither path is active (standalone, no aspect lock), the
+		// region stays inactive and we fall through to raw OS-window
+		// coords — which IS the game viewport.
 		Vec2 pos = app->GetInput().GetMousePosition();
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		if (uiRegion.IsActive()) {

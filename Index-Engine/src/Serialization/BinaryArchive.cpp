@@ -545,6 +545,14 @@ namespace Index::Serialization {
 			BeginScope(/*indexFields=*/false);
 			std::uint32_t storedCount = 0;
 			if (!RawReadU32(storedCount)) { EndScope(); m_ReadCursor = savedCursor; count = 0; return; }
+			// Guard against a malformed/hostile element count. Each element scope
+			// carries at least a 4-byte length prefix, so a count far past the
+			// buffer can only be corruption — looping over e.g. 0xFFFFFFFF would
+			// be a multi-billion-iteration CPU DoS before the reads run dry. Cap
+			// to the same 16M ceiling the JSON array parser uses and treat
+			// anything larger as malformed.
+			constexpr std::uint32_t kMaxArrayElements = 16u * 1024u * 1024u;
+			if (storedCount > kMaxArrayElements) { EndScope(); m_ReadCursor = savedCursor; count = 0; return; }
 			count = storedCount;
 			for (std::uint32_t i = 0; i < storedCount; ++i) {
 				BeginScope(/*indexFields=*/true);

@@ -62,10 +62,21 @@ public:
 		editorScene.OnLoad([](Scene& scene) {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			if (project) {
-				const std::string scenePath = project->GetSceneFilePath(project->LastOpenedScene);
+				const std::string sceneName = project->LastOpenedScene;
+				const std::string scenePath = project->GetSceneFilePath(sceneName);
 				if (File::Exists(scenePath)) {
 					SceneSerializer::LoadFromFile(scene, scenePath);
 					return;
+				}
+				if (!sceneName.empty()) {
+					// LastOpenedScene was set to a scene that no longer
+					// resolves (renamed, deleted, moved out of the
+					// project's Assets/ tree). Surface that to the editor
+					// log so the user understands why they got a fresh
+					// scene instead of their last one.
+					IDX_WARN_TAG("Editor",
+						"Last opened scene '{}' could not be loaded — no scene file resolves under the project. Starting a fresh scene.",
+						sceneName);
 				}
 			}
 

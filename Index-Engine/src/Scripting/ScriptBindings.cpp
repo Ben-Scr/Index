@@ -862,9 +862,20 @@ namespace Index {
 
 		if (!hasDefinition) {
 			auto& definition = sm.RegisterScene(name);
-			definition.OnLoad([scenePath](Scene& scene) {
+			definition.OnLoad([scenePath, name](Scene& scene) {
 				if (File::Exists(scenePath)) {
 					SceneSerializer::LoadFromFile(scene, scenePath);
+				}
+				else {
+					// The .scene file the definition captured no longer
+					// resolves (deleted/renamed between LoadScene calls).
+					// We're committed to instantiating an empty scene at
+					// this point — surface it so the user understands why
+					// their entities vanished instead of silently swapping
+					// in an empty world.
+					IDX_CORE_WARN_TAG("ScriptBindings",
+						"LoadScene: '{}' was loaded as an empty scene because '{}' is no longer on disk.",
+						name, scenePath);
 				}
 			});
 		}
@@ -2054,6 +2065,23 @@ namespace Index {
 		}
 	}
 
+	static int Index_SpriteRenderer_GetSpriteNameBuffer(uint64_t entityID, char* outBuffer, int capacity)
+	{
+		GET_COMPONENT(SpriteRendererComponent, entityID, CopyCStringToBuffer("", outBuffer, capacity));
+		return CopyStringToBuffer(comp.SpriteName, outBuffer, capacity);
+	}
+
+	static void Index_SpriteRenderer_SetSpriteName(uint64_t entityID, const char* name)
+	{
+		GET_COMPONENT(SpriteRendererComponent, entityID, );
+		comp.SpriteName = name ? std::string(name) : std::string{};
+		// No need to invalidate the renderer-side resolver cache from here —
+		// SpriteName changes go through entity state, which the next
+		// Renderer2D frame pack reads directly. The slice-epoch counter
+		// only invalidates the per-asset slice list, which the user didn't
+		// touch by scripting this field.
+	}
+
 	// ── Dynamic component registration (runtime, reflection-driven) ─────
 	// Pendant to Index_Component_GetTypeId — the only register/unregister
 	// callable from managed code. Bodies are thin: marshal the strings and
@@ -2356,6 +2384,41 @@ namespace Index {
 	{
 		GET_COMPONENT(Rigidbody2DComponent, entityID, );
 		comp.SetMass(mass);
+	}
+
+	// ── Rigidbody2D constraints (motion locks) ─────────────────────────
+	// Wire format mirrors the binding-struct declarations: bools travel as
+	// int (0/1) so the C++/C# ABI agreement on bool width can't trip us up
+	// across the FFI boundary.
+	static int Index_Rigidbody2D_GetFreezePositionX(uint64_t entityID)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
+		return comp.GetFreezePositionX() ? 1 : 0;
+	}
+	static void Index_Rigidbody2D_SetFreezePositionX(uint64_t entityID, int freeze)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		comp.SetFreezePositionX(freeze != 0);
+	}
+	static int Index_Rigidbody2D_GetFreezePositionY(uint64_t entityID)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
+		return comp.GetFreezePositionY() ? 1 : 0;
+	}
+	static void Index_Rigidbody2D_SetFreezePositionY(uint64_t entityID, int freeze)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		comp.SetFreezePositionY(freeze != 0);
+	}
+	static int Index_Rigidbody2D_GetFreezeRotation(uint64_t entityID)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
+		return comp.GetFreezeRotation() ? 1 : 0;
+	}
+	static void Index_Rigidbody2D_SetFreezeRotation(uint64_t entityID, int freeze)
+	{
+		GET_COMPONENT(Rigidbody2DComponent, entityID, );
+		comp.SetFreezeRotation(freeze != 0);
 	}
 
 	// ── BoxCollider2D ───────────────────────────────────────────────────
@@ -4284,6 +4347,10 @@ namespace Index {
 		b.SpriteRenderer_GetFilter = &Index_SpriteRenderer_GetFilter;
 		b.SpriteRenderer_SetFilter = &Index_SpriteRenderer_SetFilter;
 
+		// ── SpriteRenderer slice name (appended for binary compat) ──
+		b.SpriteRenderer_GetSpriteNameBuffer = &Index_SpriteRenderer_GetSpriteNameBuffer;
+		b.SpriteRenderer_SetSpriteName       = &Index_SpriteRenderer_SetSpriteName;
+
 		// ── Dynamic component registration (appended for binary compat) ──
 		b.Component_RegisterDynamic       = &Index_Component_RegisterDynamic;
 		b.Component_UnregisterAllDynamic  = &Index_Component_UnregisterAllDynamic;
@@ -4296,6 +4363,14 @@ namespace Index {
 		b.Scene_ReloadByGuid         = &Index_Scene_ReloadByGuid;
 		b.Scene_DoesSceneExistByGuid = &Index_Scene_DoesSceneExistByGuid;
 		b.Scene_GetActiveSceneGuid   = &Index_Scene_GetActiveSceneGuid;
+
+		// Rigidbody2D motion locks (appended for binary compat).
+		b.Rigidbody2D_GetFreezePositionX = &Index_Rigidbody2D_GetFreezePositionX;
+		b.Rigidbody2D_SetFreezePositionX = &Index_Rigidbody2D_SetFreezePositionX;
+		b.Rigidbody2D_GetFreezePositionY = &Index_Rigidbody2D_GetFreezePositionY;
+		b.Rigidbody2D_SetFreezePositionY = &Index_Rigidbody2D_SetFreezePositionY;
+		b.Rigidbody2D_GetFreezeRotation  = &Index_Rigidbody2D_GetFreezeRotation;
+		b.Rigidbody2D_SetFreezeRotation  = &Index_Rigidbody2D_SetFreezeRotation;
 	}
 
 } // namespace Index

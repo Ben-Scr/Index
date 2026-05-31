@@ -127,13 +127,14 @@ namespace Index::WebGPUSpriteResources {
 		{
 			// Two vertex buffers:
 			//   Buffer 0 (per-vertex):   position vec3<f32>, stride 12
-			//   Buffer 1 (per-instance): three vec4<f32>, stride 48
+			//   Buffer 1 (per-instance): four vec4<f32>, stride 64
+			//                             ^^^ +1 (Uv rect for sprite slicing)
 			wgpu::VertexAttribute vertexAttrs[1] = {};
 			vertexAttrs[0].format         = wgpu::VertexFormat::Float32x3;
 			vertexAttrs[0].offset         = 0;
 			vertexAttrs[0].shaderLocation = 0;
 
-			wgpu::VertexAttribute instanceAttrs[3] = {};
+			wgpu::VertexAttribute instanceAttrs[4] = {};
 			instanceAttrs[0].format         = wgpu::VertexFormat::Float32x4;
 			instanceAttrs[0].offset         = 0;
 			instanceAttrs[0].shaderLocation = 1;
@@ -143,6 +144,9 @@ namespace Index::WebGPUSpriteResources {
 			instanceAttrs[2].format         = wgpu::VertexFormat::Float32x4;
 			instanceAttrs[2].offset         = 32;
 			instanceAttrs[2].shaderLocation = 3;
+			instanceAttrs[3].format         = wgpu::VertexFormat::Float32x4;
+			instanceAttrs[3].offset         = 48;
+			instanceAttrs[3].shaderLocation = 4;
 
 			wgpu::VertexBufferLayout buffers[2] = {};
 			buffers[0].arrayStride    = sizeof(QuadVertex);
@@ -152,7 +156,7 @@ namespace Index::WebGPUSpriteResources {
 
 			buffers[1].arrayStride    = sizeof(SpriteInstance);
 			buffers[1].stepMode       = wgpu::VertexStepMode::Instance;
-			buffers[1].attributeCount = 3;
+			buffers[1].attributeCount = 4;
 			buffers[1].attributes     = instanceAttrs;
 
 			// Alpha-blended colour target — engine default for sprites and UI.
@@ -375,6 +379,14 @@ namespace Index::WebGPUSpriteResources {
 		dst.Rot[1] = 0.0f;
 		dst.Rot[2] = 0.0f;
 		dst.Rot[3] = 0.0f;
+		// Sprite slice UV rect. The default-constructed Instance44 carries
+		// IsFullTexture=true with U/V = (0,0,1,1); the shader's mix-against-
+		// unit-quad produces the natural full-texture sampling for every
+		// legacy SpriteRenderer that hasn't set SpriteName.
+		dst.Uv[0] = src.UvRect.U0;
+		dst.Uv[1] = src.UvRect.V0;
+		dst.Uv[2] = src.UvRect.U1;
+		dst.Uv[3] = src.UvRect.V1;
 	}
 
 }  // namespace Index::WebGPUSpriteResources

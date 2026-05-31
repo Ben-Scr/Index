@@ -42,31 +42,41 @@ namespace Index {
 			return IndexProject::RenderBackendToString(backend);
 		}
 
+		// Native dimensions travel with the handle so the draw call can
+		// fit-with-aspect instead of stretching every icon into a square —
+		// shipped icons range from 1:1 (macOS, Linux) through 3:2 (iOS) to
+		// nearly 16:9 (Android), and force-fitting warps the non-square ones.
+		struct PlatformIcon {
+			uint64_t handle = 0;
+			float width = 0.0f;
+			float height = 0.0f;
+		};
+
 		// Resolves the GPU handle for a platform's icon under
 		// IndexAssets/Textures/Editor/PlatformIcons/<name>.png. Goes through
 		// TextureManager so repeated lookups hit the existing texture cache
 		// (and the icons survive PurgeUnreferenced via TextureManager's own
-		// retention of explicitly-loaded handles). Returns 0 when the
-		// platform ships no icon or the file is missing, in which case the
-		// caller falls back to a text-only row.
-		uint64_t LoadPlatformIconHandle(BuildPlatform platform) {
+		// retention of explicitly-loaded handles). Returns a zero-handle
+		// PlatformIcon when the platform ships no icon or the file is missing,
+		// in which case the caller falls back to a text-only row.
+		PlatformIcon LoadPlatformIcon(BuildPlatform platform) {
 			const char* iconName = IndexBuildProfile::PlatformIconName(platform);
-			if (!iconName) return 0;
+			if (!iconName) return {};
 
 			static std::string platformIconsDir = []() {
 				const std::string editorTexturesDir = Path::ResolveIndexAssets("Textures");
 				if (editorTexturesDir.empty()) return std::string{};
 				return (std::filesystem::path(editorTexturesDir) / "Editor" / "PlatformIcons").string();
 			}();
-			if (platformIconsDir.empty()) return 0;
+			if (platformIconsDir.empty()) return {};
 
 			const std::string fullPath = (std::filesystem::path(platformIconsDir) /
 				(std::string(iconName) + ".png")).string();
 			TextureHandle handle = TextureManager::LoadTexture(
 				fullPath, Filter::Bilinear, Wrap::Clamp, Wrap::Clamp);
 			Texture2D* tex = TextureManager::GetTexture(handle);
-			if (tex && tex->IsValid()) return tex->GetHandle();
-			return 0;
+			if (tex && tex->IsValid()) return { tex->GetHandle(), tex->GetWidth(), tex->GetHeight() };
+			return {};
 		}
 	}
 
@@ -437,7 +447,7 @@ namespace Index {
 			for (BuildPlatform p : allPlatforms) {
 				const bool isSelected = (profile.Platform == p);
 				const bool available = BuildPlatformSupport::IsAvailable(p);
-				const uint64_t iconHandle = LoadPlatformIconHandle(p);
+				const PlatformIcon icon = LoadPlatformIcon(p);
 
 				ImGui::PushID(static_cast<int>(p));
 
@@ -459,14 +469,25 @@ namespace Index {
 				const ImVec2 nextRowCursor = ImGui::GetCursorScreenPos();
 
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
-				const float iconY = rowStart.y + (rowHeight - iconSize) * 0.5f;
-				if (iconHandle != 0) {
+				if (icon.handle != 0 && icon.width > 0.0f && icon.height > 0.0f) {
+					// Fit icon inside iconSize×iconSize while preserving source
+					// aspect, then center it in the bounding box. Label X stays
+					// based on the full iconSize so text doesn't jump per row.
 					// TextureManager loads with flipVertical=false (top-left
 					// origin), so the default 0,0→1,1 UV renders right-side up.
+					float drawW = iconSize;
+					float drawH = iconSize;
+					if (icon.width > icon.height) {
+						drawH = iconSize * (icon.height / icon.width);
+					} else if (icon.height > icon.width) {
+						drawW = iconSize * (icon.width / icon.height);
+					}
+					const float drawX = rowStart.x + iconPad + (iconSize - drawW) * 0.5f;
+					const float drawY = rowStart.y + (rowHeight - drawH) * 0.5f;
 					drawList->AddImage(
-						static_cast<ImTextureID>(static_cast<intptr_t>(iconHandle)),
-						ImVec2(rowStart.x + iconPad, iconY),
-						ImVec2(rowStart.x + iconPad + iconSize, iconY + iconSize));
+						static_cast<ImTextureID>(static_cast<intptr_t>(icon.handle)),
+						ImVec2(drawX, drawY),
+						ImVec2(drawX + drawW, drawY + drawH));
 				}
 
 				const float textY = rowStart.y + (rowHeight - ImGui::GetTextLineHeight()) * 0.5f;

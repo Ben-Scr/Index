@@ -179,6 +179,12 @@ namespace Index::Properties {
 			return PropertyMetadata{}.WithReadOnly(true);
 		}
 
+		// Drop the per-channel `[-] [drag] [+]` stepper buttons for
+		// Vec2/Vec3/Vec4/IntVec* rows — leaves only the drag widget.
+		inline PropertyMetadata NoSteppers() {
+			return PropertyMetadata{}.WithHideStepperButtons(true);
+		}
+
 		// Section header drawn above the row.
 		inline PropertyMetadata Header(std::string content, int size = 5) {
 			return PropertyMetadata{}.WithHeader(std::move(content), size);
@@ -314,6 +320,21 @@ namespace Index::Properties {
 	// the thumbnail-grid layout. `getter` returns the current asset UUID
 	// (uint64); `setter` receives the new UUID and is responsible for
 	// reloading the texture handle, marking dirty, etc.
+	//
+	// Setter arity dispatch — two signatures are accepted:
+	//   • `void(Entity&, uint64_t assetId)` — legacy, the slice name (if any)
+	//     is silently discarded. Use for fields that don't care about sprite-
+	//     sheet slices (most texture refs).
+	//   • `void(Entity&, uint64_t assetId, const std::string& sliceName)` —
+	//     slice-aware. Receives the slice name from drag-drop / picker
+	//     selections sourced from a sliced sprite sheet. Empty slice name
+	//     means "use the full texture" (the default). Use for components
+	//     that pair a texture reference with a sprite-name field
+	//     (SpriteRenderer, Image).
+	//
+	// The dispatch is `if constexpr` so existing call sites compile without
+	// modification and the wrong-signature mistake surfaces as a compile error
+	// instead of a runtime silent drop.
 	template <typename Getter, typename Setter>
 	PropertyDescriptor MakeTextureRef(const std::string& name, const std::string& displayName,
 		Getter getter, Setter setter, PropertyMetadata metadata = {})
@@ -330,7 +351,12 @@ namespace Index::Properties {
 			return v;
 		};
 		desc.Set = [setter](Entity& e, const PropertyValue& v) {
-			setter(e, v.UIntValue);
+			if constexpr (std::is_invocable_v<Setter, Entity&, uint64_t, const std::string&>) {
+				setter(e, v.UIntValue, v.StringValue);
+			}
+			else {
+				setter(e, v.UIntValue);
+			}
 		};
 		return desc;
 	}

@@ -34,6 +34,7 @@
 #include "Utils/Process.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -2131,10 +2132,81 @@ namespace Index {
 			if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
 			if (ImGui::CollapsingHeader("Window", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Indent(8);
+
+				// ── Startup ────────────────────────────────────────────
+				// Applied once when the runtime opens its OS window. The
+				// user can't change these mid-game without a restart, so
+				// they live above the runtime-mutable section below.
+				ImGui::TextDisabled("Startup");
+				ImGui::Separator();
+
 				changed |= ImGui::InputInt("Width", &project.BuildWidth);
 				changed |= ImGui::InputInt("Height", &project.BuildHeight);
 				if (project.BuildWidth < 320) project.BuildWidth = 320;
 				if (project.BuildHeight < 240) project.BuildHeight = 240;
+
+				changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
+
+				// Fullscreen Mode combo — disabled when Fullscreen is off
+				// (the value is ignored by Window::Create then, so editing
+				// it would be misleading). Labels mirror the
+				// FullscreenMode enum: Exclusive (true fullscreen),
+				// Borderless Windowed (monitor-sized undecorated window),
+				// Maximized (decorated, maximised).
+				struct FullscreenModeOption {
+					const char* Label;
+					FullscreenMode Mode;
+				};
+				static constexpr std::array<FullscreenModeOption, 3> k_FullscreenModeOptions = {{
+					{ "Exclusive",          FullscreenMode::Exclusive },
+					{ "Borderless Windowed", FullscreenMode::BorderlessWindowed },
+					{ "Maximized",          FullscreenMode::Maximized },
+				}};
+				const bool fullscreenEnabled = project.BuildFullscreen;
+				if (!fullscreenEnabled) ImGui::BeginDisabled();
+				const char* currentLabel = "Exclusive";
+				for (const auto& opt : k_FullscreenModeOptions) {
+					if (opt.Mode == project.BuildFullscreenMode) {
+						currentLabel = opt.Label;
+						break;
+					}
+				}
+				ImGui::SetNextItemWidth(220.0f);
+				if (ImGui::BeginCombo("Fullscreen Mode", currentLabel)) {
+					for (const auto& opt : k_FullscreenModeOptions) {
+						const bool selected = (opt.Mode == project.BuildFullscreenMode);
+						if (ImGui::Selectable(opt.Label, selected)) {
+							project.BuildFullscreenMode = opt.Mode;
+							changed = true;
+						}
+						if (selected) ImGui::SetItemDefaultFocus();
+					}
+					ImGui::EndCombo();
+				}
+				if (!fullscreenEnabled) ImGui::EndDisabled();
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+					ImGui::SetTooltip(
+						"How the runtime realises fullscreen at launch:\n"
+						"  Exclusive — true fullscreen, takes over the display.\n"
+						"  Borderless Windowed — undecorated window sized to the\n"
+						"      monitor; Alt-Tab is instant.\n"
+						"  Maximized — decorated, maximised window.\n"
+						"\n"
+						"Disabled when 'Fullscreen' is off — the value is\n"
+						"ignored in windowed launches.");
+				}
+
+				// ── Runtime ───────────────────────────────────────────
+				// Behaviour the runtime keeps honouring after startup. The
+				// user can toggle these via Window APIs at runtime too; the
+				// values here are just the launch defaults.
+				ImGui::Spacing();
+				ImGui::TextDisabled("Runtime");
+				ImGui::Separator();
+
+				changed |= ImGui::Checkbox("Resizable", &project.BuildResizable);
+				changed |= ImGui::Checkbox("Run in background", &project.BuildRunInBackground);
+
 				ImGui::Spacing();
 				ImGui::TextDisabled("Resize Limits (0 = unbounded)");
 				changed |= ImGui::InputInt("Min Width",  &project.BuildMinWidth);
@@ -2149,10 +2221,6 @@ namespace Index {
 					ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Min Width > Max Width");
 				if (project.BuildMaxHeight > 0 && project.BuildMinHeight > project.BuildMaxHeight)
 					ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Min Height > Max Height");
-				ImGui::Spacing();
-				changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
-				changed |= ImGui::Checkbox("Resizable", &project.BuildResizable);
-				changed |= ImGui::Checkbox("Run in background", &project.BuildRunInBackground);
 
 				ImGui::Spacing();
 				int aspectIndex = AspectRatioPresetIndexFromLabel(project.BuildAspect);
@@ -2338,15 +2406,24 @@ namespace Index {
 		// imgui.ini would override the Appearing-condition center and pin
 		// the dialog to whatever spot it was last seen at.
 		if (s_RenderBackendChangePopup) {
-			ImGui::OpenPopup("Restart Renderer?");
+			ImGui::OpenPopup("Restart Editor");
 			s_RenderBackendChangePopup = false;
 		}
-		ImGuiUtils::CenterNextModal();
+		// Re-apply the centering every frame (ImGuiCond_Always) rather
+		// than only on appear. With ImGui multi-viewport + NoAutoMerge
+		// (SetNextWindowAsNativeDialog below), the Appearing-cond Pos
+		// hint doesn't reliably translate to the OS window's initial
+		// placement — the dialog ends up pinned to the editor's top
+		// instead of its centre. Re-pivoting every frame uses the
+		// AlwaysAutoResize-measured size so frame 2 onward lands the
+		// dialog's centre exactly at the editor viewport's centre.
+		const ImVec2 viewportCenter = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(viewportCenter, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Restart Renderer?", nullptr,
+		if (ImGui::BeginPopupModal("Restart Editor", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::TextWrapped(
-				"Changing the rendering API from %s to %s requires the renderer to be reinitialized.",
+				"Changing the rendering API from %s to %s requires the editor to restart.",
 				RenderBackendLabel(project.ActiveRenderBackend),
 				RenderBackendLabel(s_PendingRenderBackend));
 			ImGui::Spacing();
@@ -3599,6 +3676,59 @@ namespace Index {
 				// regardless of the texture's load-time flipVertical flag.
 				ImGuiUtils::DrawTexturePreview(*tex, 128.0f);
 				ImGui::Text("%.0f x %.0f", tex->GetWidth(), tex->GetHeight());
+
+				// Persistent import settings live in the asset's companion
+				// `.meta`. First open: meta has no import block — seed the
+				// dropdowns from the live Texture2D's sampler so the UI
+				// reflects what's currently loaded rather than always
+				// showing the struct defaults. Edits write back to .meta
+				// AND immediately re-sampler every loaded slot of this
+				// path so the change is visible in the viewport this frame.
+				ImGui::Spacing();
+				ImGui::Separator();
+				ImGui::Spacing();
+
+				TextureMeta meta = AssetRegistry::ReadTextureMeta(selectedPath);
+				if (!meta.HasImportBlock) {
+					meta.Import.FilterMode = tex->GetFilter();
+					meta.Import.WrapU      = tex->GetWrapU();
+					meta.Import.WrapV      = tex->GetWrapV();
+				}
+
+				const auto persist = [&](TextureMeta updated) {
+					updated.HasImportBlock = true;
+					if (AssetRegistry::WriteTextureMeta(selectedPath, updated)) {
+						TextureManager::ApplyMetaSamplerToLoaded(selectedPath);
+					}
+				};
+
+				ImGui::PushID("TextureImportSettings");
+				ImGuiUtils::DrawEnumCombo<Filter>("Filter Mode", meta.Import.FilterMode,
+					[&](Filter newFilter) {
+						TextureMeta updated = meta;
+						updated.Import.FilterMode = newFilter;
+						persist(updated);
+					});
+				ImGuiUtils::DrawEnumCombo<Wrap>("Wrap U", meta.Import.WrapU,
+					[&](Wrap newWrap) {
+						TextureMeta updated = meta;
+						updated.Import.WrapU = newWrap;
+						persist(updated);
+					});
+				ImGuiUtils::DrawEnumCombo<Wrap>("Wrap V", meta.Import.WrapV,
+					[&](Wrap newWrap) {
+						TextureMeta updated = meta;
+						updated.Import.WrapV = newWrap;
+						persist(updated);
+					});
+				ImGui::PopID();
+
+				ImGui::Spacing();
+				if (ImGui::Button("Open Sprite Editor", ImVec2(-FLT_MIN, 0.0f))) {
+					m_PendingSpriteEditorPath    = selectedPath;
+					m_PendingSpriteEditorAssetId = AssetRegistry::GetOrCreateAssetUUID(selectedPath);
+					m_ShowSpriteEditor           = true;
+				}
 			}
 		}
 	}

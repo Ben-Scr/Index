@@ -21,11 +21,17 @@ project "Index-EditorRuntime"
     -- Pulls Index-Engine + ImGui + GLFW so this lib's TUs can see the engine
     -- headers (Core/Application.hpp, Core/Window.hpp, Gui/ImGuiImplWebGPU.hpp,
     -- Packages/PackageImGuiBridge.hpp) and the imgui headers used by the
-    -- titlebar and context-setup code. As a StaticLib we don't actually link
-    -- anything — the final consumer .exe (Launcher / Editor) resolves the
-    -- symbols. DependsOn is what we need; the Links list rides along
-    -- harmlessly because StaticLib kind ignores it.
-    UseDependencySet(Dependency.EngineSelectedModules)
+    -- titlebar and context-setup code. The consumer .exe (Launcher / Editor /
+    -- Runtime / Sandbox) resolves the actual link-time symbols via its own
+    -- UseDependencySet(EditorRuntimeCommon) — webgpu_dawn / nethost / etc.
+    -- are pulled in there during link.exe.
+    --
+    -- Use the *NoLink* variant deliberately: MSVC's lib.exe ARCHIVES every
+    -- input .lib's object members into the output, so if links() ran here
+    -- the ~185 MB webgpu_dawn.lib (and the 1.36 GB Debug variant) would be
+    -- merged wholesale into Index-EditorRuntime.lib. We need only the
+    -- includes / defines / build-order from the dep set.
+    UseDependencySetNoLink(Dependency.EngineSelectedModules)
     defines(GetIndexModuleDefines())
 
     -- INDEX_API resolves to __declspec(dllimport) here so this lib's TUs
@@ -63,10 +69,6 @@ project "Index-EditorRuntime"
 
     filter {}
 
-    -- Per-config libdirs for webgpu_dawn.lib (inherited via EngineCore-
-    -- Render's Links). Premake propagates the dep set's Links list into
-    -- this StaticLib's <Lib>/AdditionalDependencies, so the libdirs need
-    -- to be set per-config the same way the editor / launcher do — see
-    -- ApplyDawnLibDirs in the root premake5.lua for the LNK2038
-    -- runtime-mismatch rationale.
-    ApplyDawnLibDirs("../")
+    -- No ApplyDawnLibDirs call: this StaticLib intentionally does not link
+    -- (see UseDependencySetNoLink above), so it has no use for Dawn's per-
+    -- config libdirs. The consumer .exe applies ApplyDawnLibDirs itself.

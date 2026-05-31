@@ -26,7 +26,19 @@ namespace Index;
 /// </summary>
 public abstract class EntityScript : Component
 {
-    public Transform2D Transform => Entity.Transform;
+    // Non-nullable Transform shorthand. EntityScript subclasses overwhelmingly
+    // run on entities that have a Transform2D (CameraFollow, Player movement,
+    // physics-driven sprites, …) and expect to write `Transform.Position = …`
+    // without null-fork-juggling — a nullable type here forces every existing
+    // user script through `Transform?.Position` or `Transform!`. We therefore
+    // throw on the rare tag-entity case rather than propagate Entity.Transform's
+    // nullability. Scripts that legitimately run on tag entities (UI roots,
+    // singleton tag scripts) should probe `Entity.Transform` directly — that
+    // accessor still returns Transform2D? for exactly that case.
+    public Transform2D Transform => Entity.Transform
+        ?? throw new InvalidOperationException(
+            $"EntityScript '{GetType().Name}' accessed `Transform` on an entity without a Transform2D. " +
+            "Probe `Entity.Transform` (nullable) when the script may run on tag entities.");
 
     // ── Coroutine destroy lifetime ───────────────────────────────
     // Lazy-initialised so scripts that never use coroutines pay zero cost.

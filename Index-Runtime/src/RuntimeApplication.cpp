@@ -57,6 +57,9 @@ public:
 			config.WindowSpecification.MinHeight = project->BuildMinHeight;
 			config.WindowSpecification.MaxWidth  = project->BuildMaxWidth;
 			config.WindowSpecification.MaxHeight = project->BuildMaxHeight;
+			// Selects how Window::Create realises fullscreen when
+			// BuildFullscreen is true. Has no effect for windowed builds.
+			config.WindowSpecification.FullscreenMode = project->BuildFullscreenMode;
 			// Resolves the stored preset label ("16:9" etc.) to a float
 			// aspect. "Free Aspect" / unknown labels resolve to 0.0f
 			// which the Window treats as "no lock".

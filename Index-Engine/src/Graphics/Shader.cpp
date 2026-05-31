@@ -71,6 +71,7 @@ struct VertexInput {
 	@location(1) i_data0: vec4<f32>,  // Pos.xy, Scale.xy
 	@location(2) i_data1: vec4<f32>,  // Color RGBA
 	@location(3) i_data2: vec4<f32>,  // rotation (radians), _, _, _
+	@location(4) i_data3: vec4<f32>,  // Sprite slice UV rect: (u0, v0, u1, v1)
 };
 
 struct VertexOutput {
@@ -98,10 +99,17 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	var out: VertexOutput;
 	out.clip_position = u.viewProj * vec4<f32>(world, 0.0, 1.0);
 	out.color = in.i_data1;
-	// UV maps [-0.5, 0.5] -> [0, 1] on X, and flips Y so texture top-left
+	// Unit-quad UV: [-0.5, 0.5] -> [0, 1] on X, Y flipped so texture top-left
 	// shows at the quad's visual top (engine has Y-up world space; textures
 	// are top-left origin per stb's load).
-	out.uv = vec2<f32>(in.position.x + 0.5, 0.5 - in.position.y);
+	let baseUV = vec2<f32>(in.position.x + 0.5, 0.5 - in.position.y);
+	// Remap unit-quad UV into the sprite-slice rect via mix(). For the
+	// default full-texture case (UvRect = 0,0,1,1) this collapses to
+	// identity — every legacy SpriteRenderer renders exactly as before.
+	out.uv = vec2<f32>(
+		mix(in.i_data3.x, in.i_data3.z, baseUV.x),
+		mix(in.i_data3.y, in.i_data3.w, baseUV.y)
+	);
 	return out;
 }
 

@@ -23,8 +23,9 @@
     "launcher.sort.tooltip.descending": "降順で並べ替え",
     "launcher.sort.tooltip.refresh": "プロジェクト一覧を更新",
 
-    "launcher.action.create_new_project": "新規プロジェクトを作成",
-    "launcher.action.add_existing_project": "既存のプロジェクトを追加",
+    "launcher.action.add_project": "プロジェクトを追加",
+    "launcher.action.new_blank": "新規プロジェクト",
+    "launcher.action.new_from_disk": "ディスクから",
     "launcher.action.settings": "設定",
     "launcher.action.open_selected": "エディタで開く",
     "launcher.action.rename_selected": "名前を変更",

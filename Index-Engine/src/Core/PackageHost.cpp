@@ -23,9 +23,6 @@
 namespace Index {
 
 	namespace {
-		using OnLoadFn   = int (*)();
-		using OnUnloadFn = void (*)();
-
 		std::vector<LoadedPackage> s_LoadedPackages;
 		bool s_LoadAllRan = false;
 
@@ -50,6 +47,86 @@ namespace Index {
 			FreeLibrary(static_cast<HMODULE>(module));
 #else
 			dlclose(module);
+#endif
+		}
+
+		// SEH-guarded LoadLibrary. A package whose static-init or DllMain
+		// raises an access violation (e.g. it was built against a different
+		// Index-Engine ABI and the link-time-resolved imports land at the
+		// wrong offsets) would otherwise tear down the entire editor with
+		// no warning. We catch the structured exception here, return
+		// nullptr, and let the caller log + skip the package.
+		//
+		// MSVC constraint: functions using __try/__except can't have local
+		// C++ objects with destructors, hence the bare-pointer signature.
+		void* LoadLibraryGuarded(const char* path) {
+#ifdef IDX_PLATFORM_WINDOWS
+			__try {
+				return reinterpret_cast<void*>(::LoadLibraryA(path));
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {
+				return nullptr;
+			}
+#else
+			return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+#endif
+		}
+
+		// SEH-guarded IndexPackage_OnLoad call. Same rationale as
+		// LoadLibraryGuarded — a package's OnLoad may call back into the
+		// engine (registering components, contributors, etc.) and a stale
+		// ABI lands the call on the wrong offset. Without SEH a single
+		// broken package would crash the editor on every launch (LoadAll
+		// runs at startup) and effectively brick the user's project.
+		//
+		// Out-params carry the result; the return is the int from OnLoad
+		// when it returned cleanly, or 0 + *outCrashed = true when SEH
+		// trapped a fault. Caller distinguishes the two via *outCrashed
+		// (a package legitimately returning 0 is a clean success).
+		int InvokeOnLoadGuarded(void* moduleHandle, bool* outCrashed, bool* outHadExport) {
+			*outCrashed = false;
+			*outHadExport = false;
+			using OnLoadFn = int (*)();
+#ifdef IDX_PLATFORM_WINDOWS
+			OnLoadFn fn = reinterpret_cast<OnLoadFn>(
+				::GetProcAddress(static_cast<HMODULE>(moduleHandle), "IndexPackage_OnLoad"));
+			if (!fn) return 0;
+			*outHadExport = true;
+			__try {
+				return fn();
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {
+				*outCrashed = true;
+				return 0;
+			}
+#else
+			OnLoadFn fn = reinterpret_cast<OnLoadFn>(dlsym(moduleHandle, "IndexPackage_OnLoad"));
+			if (!fn) return 0;
+			*outHadExport = true;
+			return fn();
+#endif
+		}
+
+		// SEH-guarded IndexPackage_OnUnload symmetric counterpart. A
+		// package whose OnUnload faults shouldn't take down the rest of
+		// shutdown — we log and continue tearing down the remaining
+		// packages.
+		void InvokeOnUnloadGuarded(void* moduleHandle, bool* outCrashed) {
+			*outCrashed = false;
+			using OnUnloadFn = void (*)();
+#ifdef IDX_PLATFORM_WINDOWS
+			OnUnloadFn fn = reinterpret_cast<OnUnloadFn>(
+				::GetProcAddress(static_cast<HMODULE>(moduleHandle), "IndexPackage_OnUnload"));
+			if (!fn) return;
+			__try {
+				fn();
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {
+				*outCrashed = true;
+			}
+#else
+			OnUnloadFn fn = reinterpret_cast<OnUnloadFn>(dlsym(moduleHandle, "IndexPackage_OnUnload"));
+			if (fn) fn();
 #endif
 		}
 
@@ -237,29 +314,52 @@ namespace Index {
 					continue;
 				}
 
-				void* module = PlatformLoad(pathStr);
+				// SEH-guarded load. A broken package (built against a
+				// different engine ABI, missing imports, etc.) can fault
+				// during static-init / DllMain — without the guard that
+				// kills the entire editor and, because LoadAll runs at
+				// startup, locks the user out of their project on every
+				// relaunch.
+				void* module = LoadLibraryGuarded(pathStr.c_str());
 				if (!module) {
-					IDX_CORE_WARN_TAG("PackageHost", "Failed to load package: {}", pathStr);
+					IDX_CORE_WARN_TAG("PackageHost",
+						"Failed to load package '{}' from '{}' (LoadLibrary returned null — likely binary "
+						"incompatibility with the running engine, or a static-init crash). Skipping.",
+						packageName, pathStr);
 					continue;
+				}
+
+				bool onLoadCrashed = false;
+				bool onLoadHadExport = false;
+				const int onLoadResult = InvokeOnLoadGuarded(module, &onLoadCrashed, &onLoadHadExport);
+				if (onLoadCrashed) {
+					// The package's OnLoad raised an SEH fault (commonly an
+					// access violation from a stale-ABI cross-DLL call into
+					// the engine). Unload the module and skip this package
+					// rather than letting the fault propagate and crash the
+					// editor. The package stays in the project's allow-list
+					// — the editor's package manager surfaces this state so
+					// the user can uninstall + reinstall a rebuilt version.
+					IDX_CORE_ERROR_TAG("PackageHost",
+						"Package '{}' crashed during IndexPackage_OnLoad (likely binary incompatibility "
+						"with the running engine — try uninstalling and reinstalling). Unloaded; editor continues.",
+						packageName);
+					PlatformUnload(module);
+					continue;
+				}
+				if (onLoadHadExport && onLoadResult != 0) {
+					IDX_CORE_WARN_TAG("PackageHost",
+						"Package '{}' IndexPackage_OnLoad returned {} (non-zero); keeping module loaded.",
+						packageName, onLoadResult);
+				}
+				else if (!onLoadHadExport) {
+					IDX_CORE_INFO_TAG("PackageHost", "Loaded package '{}' (no IndexPackage_OnLoad export).", packageName);
 				}
 
 				LoadedPackage loaded;
 				loaded.Name = packageName;
 				loaded.ModulePath = pathStr;
 				loaded.ModuleHandle = module;
-
-				if (auto* onLoad = reinterpret_cast<OnLoadFn>(PlatformResolve(module, "IndexPackage_OnLoad"))) {
-					const int result = onLoad();
-					if (result != 0) {
-						IDX_CORE_WARN_TAG("PackageHost",
-							"Package '{}' IndexPackage_OnLoad returned {} (non-zero); keeping module loaded.",
-							loaded.Name, result);
-					}
-				}
-				else {
-					IDX_CORE_INFO_TAG("PackageHost", "Loaded package '{}' (no IndexPackage_OnLoad export).", loaded.Name);
-				}
-
 				s_LoadedPackages.push_back(std::move(loaded));
 				++newlyLoaded;
 			}
@@ -295,8 +395,12 @@ namespace Index {
 
 	void PackageHost::UnloadAll() {
 		for (auto it = s_LoadedPackages.rbegin(); it != s_LoadedPackages.rend(); ++it) {
-			if (auto* onUnload = reinterpret_cast<OnUnloadFn>(PlatformResolve(it->ModuleHandle, "IndexPackage_OnUnload"))) {
-				onUnload();
+			bool onUnloadCrashed = false;
+			InvokeOnUnloadGuarded(it->ModuleHandle, &onUnloadCrashed);
+			if (onUnloadCrashed) {
+				IDX_CORE_ERROR_TAG("PackageHost",
+					"Package '{}' crashed during IndexPackage_OnUnload; continuing teardown.",
+					it->Name);
 			}
 			PlatformUnload(it->ModuleHandle);
 		}
@@ -306,6 +410,13 @@ namespace Index {
 
 	const std::vector<LoadedPackage>& PackageHost::GetLoaded() {
 		return s_LoadedPackages;
+	}
+
+	bool PackageHost::IsPackageLoaded(const std::string& packageName) {
+		for (const LoadedPackage& loaded : s_LoadedPackages) {
+			if (loaded.Name == packageName) return true;
+		}
+		return false;
 	}
 
 }

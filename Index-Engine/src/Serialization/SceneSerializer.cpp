@@ -1022,6 +1022,11 @@ namespace Index {
 				spriteValue.AddMember("sortOrder", Value(static_cast<int>(spriteRenderer.SortingOrder)));
 				spriteValue.AddMember("sortLayer", Value(static_cast<int>(spriteRenderer.SortingLayer)));
 				spriteValue.AddMember("filterMode", Value(static_cast<int>(spriteRenderer.FilterMode)));
+				// Persisted slice ref. Missing key on load = full texture
+				// (the default-constructed empty string).
+				if (!spriteRenderer.SpriteName.empty()) {
+					spriteValue.AddMember("spriteName", Value(spriteRenderer.SpriteName));
+				}
 
 				uint64_t textureAssetId = static_cast<uint64_t>(spriteRenderer.TextureAssetId);
 				if (textureAssetId == 0) {
@@ -1073,6 +1078,12 @@ namespace Index {
 				rigidbodyValue.AddMember("bodyType", Value(static_cast<int>(rigidbody.GetBodyType())));
 				rigidbodyValue.AddMember("gravityScale", Value(rigidbody.GetGravityScale()));
 				rigidbodyValue.AddMember("mass", Value(rigidbody.GetMass()));
+				// Constraints. Defaults to false on the deserializer side when
+				// the key is missing, so existing scene files keep loading
+				// without modification.
+				rigidbodyValue.AddMember("freezePositionX", Value(rigidbody.GetFreezePositionX()));
+				rigidbodyValue.AddMember("freezePositionY", Value(rigidbody.GetFreezePositionY()));
+				rigidbodyValue.AddMember("freezeRotation", Value(rigidbody.GetFreezeRotation()));
 				entityValue.AddMember("Rigidbody2D", std::move(rigidbodyValue));
 			}
 
@@ -1313,6 +1324,9 @@ namespace Index {
 				imageValue.AddMember("sortOrder", Value(static_cast<int>(image.SortingOrder)));
 				imageValue.AddMember("sortLayer", Value(static_cast<int>(image.SortingLayer)));
 				imageValue.AddMember("filterMode", Value(static_cast<int>(image.FilterMode)));
+				if (!image.SpriteName.empty()) {
+					imageValue.AddMember("spriteName", Value(image.SpriteName));
+				}
 
 				uint64_t textureAssetId = static_cast<uint64_t>(image.TextureAssetId);
 				if (textureAssetId == 0) {

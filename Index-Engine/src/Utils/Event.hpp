@@ -9,6 +9,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include "Collections/Ids.hpp"
 
@@ -65,11 +66,18 @@ namespace Index {
             // throws std::logic_error from the offending call site in every build
             // configuration instead of stalling a release process.
             std::shared_lock lock(m_Mutex);
-            const std::thread::id prev = m_DispatchThread.exchange(std::this_thread::get_id(), std::memory_order_acq_rel);
+            auto& depths = DispatchDepth();
+            ++depths[this];
+            // RAII so the depth is decremented even if a listener throws.
+            struct DepthGuard {
+                std::unordered_map<const void*, int>& Map;
+                const void* Key;
+                ~DepthGuard() { if (--Map[Key] <= 0) Map.erase(Key); }
+            } guard{ depths, this };
             for (const auto& e : m_Listeners) {
                 e.cb(args...);
             }
-            m_DispatchThread.store(prev, std::memory_order_release);
+            // dispatch depth is restored by DepthGuard above (throw-safe).
         }
 
 
@@ -79,8 +87,21 @@ namespace Index {
             Callback cb;
         };
 
+        // Per-thread, per-instance dispatch depth. A single shared
+        // atomic<thread::id> couldn't track multiple threads dispatching the
+        // same Event concurrently (Invoke's shared_lock permits that) —
+        // saving/restoring one id left a stale id under interleaving and caused
+        // spurious throws from Add/Remove/Clear. A thread_local depth map is
+        // correct under concurrency, recursion, and throwing listeners.
+        static std::unordered_map<const void*, int>& DispatchDepth() {
+            thread_local std::unordered_map<const void*, int> depths;
+            return depths;
+        }
+
         bool CallerIsDispatchingThisEvent() const {
-            return m_DispatchThread.load(std::memory_order_acquire) == std::this_thread::get_id();
+            auto& depths = DispatchDepth();
+            auto it = depths.find(this);
+            return it != depths.end() && it->second > 0;
         }
 
         void ThrowIfDispatchingThisEvent(const char* op) const {
@@ -96,8 +117,8 @@ namespace Index {
         mutable std::shared_mutex m_Mutex;
         std::vector<Entry> m_Listeners;
         EventId m_NextId;
-        // Tracks which thread (if any) is currently dispatching, so Add/Remove/Clear
-        // can detect (and throw on) the documented self-deadlock pattern.
-        std::atomic<std::thread::id> m_DispatchThread{ std::thread::id{} };
+        // Self-deadlock detection lives in the thread_local DispatchDepth()
+        // map (see CallerIsDispatchingThisEvent / Invoke) — no per-instance
+        // member is needed, and it stays correct under concurrent Invoke.
     };
 }

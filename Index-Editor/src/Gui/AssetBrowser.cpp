@@ -13,10 +13,14 @@
 #include "Editor/ExternalEditor.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/HierarchyDragData.hpp"
+#include "Gui/SpriteSliceDragPayload.hpp"
+#include "Gui/ThumbnailCache.hpp"
+#include "Graphics/Texture2D.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include "Gui/EditorIcons.hpp"
+#include "Gui/Icons.hpp"
 #include <cctype>
 #include <ctime>
 #include <filesystem>
@@ -252,7 +256,28 @@ namespace Index {
 		AssetRegistry::MarkDirty();
 		AssetRegistry::Sync();
 		m_Entries = Directory::GetEntries(m_CurrentDirectory);
+		RebuildSliceCache();
 		m_NeedsRefresh = false;
+	}
+
+	void AssetBrowser::RebuildSliceCache() {
+		// Wholesale rebuild over the freshly-loaded entry list. Slice metadata
+		// lives in the texture's `.meta` companion file, which the Sprite
+		// Editor writes through AssetRegistry::WriteTextureMeta. We don't try
+		// to be incremental here — Refresh() already costs a directory walk +
+		// asset-registry sync, and reading a handful of small JSON files on
+		// top of that is well under a millisecond.
+		m_SliceCache.clear();
+		for (const DirectoryEntry& entry : m_Entries) {
+			if (entry.IsDirectory) continue;
+			const AssetType type = ThumbnailCache::GetAssetType(
+				std::filesystem::path(entry.Path).extension().string());
+			if (type != AssetType::Image) continue;
+
+			TextureMeta meta = AssetRegistry::ReadTextureMeta(entry.Path);
+			if (meta.Sprites.empty()) continue;
+			m_SliceCache.emplace(entry.Path, std::move(meta.Sprites));
+		}
 	}
 
 	void AssetBrowser::ClearAssetSelection() {
@@ -404,6 +429,61 @@ namespace Index {
 			DeleteSelectedAssets();
 			return;
 		}
+
+		// Backspace: navigate up one directory. NavigateUp already guards
+		// against escaping the project's Assets root, so pressing Backspace
+		// while there is a no-op (no need for a separate root check here).
+		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
+			&& ImGui::IsKeyPressed(ImGuiKey_Backspace, false)) {
+			NavigateUp();
+			return;
+		}
+
+		// Enter: open the currently selected asset (same path as double-click).
+		// Folders navigate into; files route through OpenAssetExternal which
+		// scenes/prefabs/scripts all hook for their specialised open flow.
+		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
+			&& (ImGui::IsKeyPressed(ImGuiKey_Enter, false)
+				|| ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) {
+			if (!m_SelectedPath.empty()) {
+				OpenAssetPath(m_SelectedPath);
+			}
+			return;
+		}
+
+		// Arrow keys: Left = previous tile (one step lower in the row-major
+		// visible list), Right = next tile. Matches the visual layout — the
+		// arrow direction equals the direction the selection moves.
+		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
+			&& !m_VisibleEntryPaths.empty()) {
+			const int count = static_cast<int>(m_VisibleEntryPaths.size());
+			int currentIndex = -1;
+			if (!m_SelectedPath.empty()) {
+				for (int i = 0; i < count; ++i) {
+					if (m_VisibleEntryPaths[static_cast<std::size_t>(i)] == m_SelectedPath) {
+						currentIndex = i;
+						break;
+					}
+				}
+			}
+
+			auto select = [&](int index) {
+				if (index < 0) index = 0;
+				if (index >= count) index = count - 1;
+				SetSingleSelection(m_VisibleEntryPaths[static_cast<std::size_t>(index)], index);
+				m_SelectionActivated = true;
+			};
+
+			if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
+				select(currentIndex < 0 ? 0 : currentIndex - 1);
+				return;
+			}
+			if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
+				select(currentIndex < 0 ? 0 : currentIndex + 1);
+				return;
+			}
+		}
+
 		if (!io.KeyCtrl) {
 			return;
 		}
@@ -583,9 +663,11 @@ namespace Index {
 
 		// Back button (when not at root). Sits before the breadcrumb proper —
 		// budget computation happens AFTER it so the back button doesn't eat
-		// into the breadcrumb's width budget.
+		// into the breadcrumb's width budget. SmallButton-sized so it visually
+		// matches the breadcrumb segment buttons that follow.
 		if (m_CurrentDirectory != m_RootDirectory) {
-			if (ImGui::SmallButton("<")) {
+			const float h = ImGui::GetFrameHeight() - 2.0f * ImGui::GetStyle().FramePadding.y;
+			if (Icons::IconButton("##AssetBrowserBack", Icons::Type::ArrowLeft, ImVec2(h, h))) {
 				NavigateUp();
 				return;
 			}
@@ -725,7 +807,7 @@ namespace Index {
 		// Refresh button (right-aligned, unchanged).
 		ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 30.0f);
 		{
-			uint64_t refreshIcon = EditorIcons::Get("redo", 16);
+			uint64_t refreshIcon = EditorIcons::Get("reset", 16);
 			bool clicked = false;
 			if (refreshIcon) {
 				clicked = ImGui::ImageButton("##Refresh",
@@ -782,11 +864,37 @@ namespace Index {
 			m_VisibleEntryPaths.push_back(entry.Path);
 		}
 
+		// Tile placement uses a running column index that increments per tile
+		// we actually emit — including the synthetic slice tiles spliced in
+		// after an expanded sprite sheet. We can't key off the source entry
+		// index because the slice tiles between two source entries shift the
+		// grid wrap point, and using `i % columns` against the entry index
+		// would clump siblings into the wrong row.
+		int tilesPlaced = 0;
 		for (int i = 0; i < static_cast<int>(visibleEntries.size()); i++) {
-			if (i % columns != 0) {
+			if (tilesPlaced > 0 && tilesPlaced % columns != 0) {
 				ImGui::SameLine();
 			}
 			RenderAssetTile(visibleEntries[i], i);
+			++tilesPlaced;
+
+			// Splice in the slice tiles for an expanded sprite sheet so they
+			// visually live next to the parent texture, like Unity's
+			// expanded-sprite rows. The slices themselves emit a slice-aware
+			// drag payload (ASSET_SPRITE_SLICE) so drop targets can apply both
+			// texture-and-slice atomically.
+			auto sliceIt = m_SliceCache.find(visibleEntries[i].Path);
+			if (sliceIt == m_SliceCache.end()) continue;
+			if (m_ExpandedTextures.find(visibleEntries[i].Path) == m_ExpandedTextures.end()) continue;
+
+			const std::vector<SpriteSlice>& slices = sliceIt->second;
+			for (int s = 0; s < static_cast<int>(slices.size()); ++s) {
+				if (tilesPlaced % columns != 0) {
+					ImGui::SameLine();
+				}
+				RenderSliceTile(visibleEntries[i], slices[s], s, /*tileIndex*/ -1 - s);
+				++tilesPlaced;
+			}
 		}
 
 		if (visibleEntries.empty()) {
@@ -1026,12 +1134,90 @@ namespace Index {
 			ImGui::PopStyleVar();
 		}
 
-		if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+		// Expand triangle on textures that carry SpriteSlice metadata.
+		// IMPORTANT: this path must NOT submit any ImGui items. Adding an
+		// InvisibleButton here makes the button the "last item" — IsItemHovered
+		// below would silently switch to checking the button instead of the
+		// tile group, and the button's bbox can shift the current line's
+		// max-X / max-Y trackers so the next SameLine() lands at the wrong
+		// column. Both effects manifested as adjacent tiles visually
+		// overlapping. We draw the glyph via the window's ImDrawList and do
+		// hit-testing manually with IsMouseHoveringRect, which doesn't touch
+		// the layout cursor or LastItem state at all.
+		//
+		// `expanderHovered` is hoisted to function scope below because every
+		// downstream tile-level click handler (press, release/select, double-
+		// click → OpenAssetExternal) has to skip when the cursor is over the
+		// triangle — otherwise a double-click on the triangle would expand
+		// the sheet AND open the asset externally on the same gesture.
+		bool expanderHovered = false;
+		if (!entry.IsDirectory) {
+			auto sliceIt = m_SliceCache.find(entry.Path);
+			if (sliceIt != m_SliceCache.end() && !sliceIt->second.empty()) {
+				// Middle-right of the tile's image area. The glyph reads as
+				// "open this drawer" when collapsed (▶) and as "close it
+				// back into the sheet" when expanded (◀) — both motions
+				// implicitly point at where the slices will appear/disappear
+				// (to the right of the tile), so the affordance matches the
+				// inline-expansion direction.
+				const float triHit = 16.0f;
+				const ImVec2 triMin(
+					cursorPos.x + m_TileSize - 2.0f - triHit,
+					cursorPos.y + (m_TileSize - triHit) * 0.5f);
+				const ImVec2 triMax(triMin.x + triHit, triMin.y + triHit);
+				expanderHovered =
+					ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByPopup
+						| ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)
+					&& ImGui::IsMouseHoveringRect(triMin, triMax, /*clip*/ true);
+
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				const bool isExpanded = m_ExpandedTextures.find(entry.Path) != m_ExpandedTextures.end();
+				// Background pill so the glyph stays readable on light textures.
+				dl->AddRectFilled(triMin, triMax,
+					IM_COL32(0, 0, 0, expanderHovered ? 160 : 110), 4.0f);
+				// Use the editor's standard arrow icons (arrow_left / arrow_right
+				// under IndexAssets/Textures/Editor/General/) so the affordance
+				// looks like every other directional glyph in the editor instead
+				// of a one-off hand-drawn triangle. EditorIcons::Get picks the
+				// nearest snap size (16 / 32 / 64 / 128); the 16px variant is
+				// the closest match for a 16px hit area. UVs flip the Y axis —
+				// editor textures are uploaded bottom-up, same convention as
+				// the tile thumbnails right above.
+				const uint64_t arrowIcon = EditorIcons::Get(
+					isExpanded ? "arrow_left" : "arrow_right", 16);
+				if (arrowIcon != 0) {
+					const ImU32 tint = expanderHovered
+						? IM_COL32(255, 255, 255, 255)
+						: IM_COL32(220, 220, 220, 200);
+					dl->AddImage(
+						static_cast<ImTextureID>(static_cast<intptr_t>(arrowIcon)),
+						triMin, triMax,
+						ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
+						tint);
+				}
+
+				if (expanderHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+					if (isExpanded) m_ExpandedTextures.erase(entry.Path);
+					else            m_ExpandedTextures.insert(entry.Path);
+				}
+			}
+		}
+
+		// Every tile click path below must bail when the cursor is on the
+		// expander — otherwise a press/release on the triangle would also
+		// select the tile, and a double-click would expand AND open the
+		// asset externally. The expander already handled the click above; we
+		// just have to keep the rest of the tile from acting on the same
+		// mouse event.
+		if (!expanderHovered
+			&& ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
 			m_PressedPath = entry.Path;
 		}
 
 		if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-			if (ImGui::IsItemHovered() && m_PressedPath == entry.Path && !IsLeftMouseDragPastClickThreshold()) {
+			if (!expanderHovered
+				&& ImGui::IsItemHovered() && m_PressedPath == entry.Path
+				&& !IsLeftMouseDragPastClickThreshold()) {
 				const ImGuiIO& io = ImGui::GetIO();
 				if (io.KeyShift) {
 					SelectRange(index);
@@ -1052,7 +1238,8 @@ namespace Index {
 			}
 		}
 
-		if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+		if (!expanderHovered
+			&& ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
 			if (entry.IsDirectory) {
 				NavigateTo(entry.Path);  // deferred via m_NeedsRefresh
 			} else {
@@ -1266,6 +1453,133 @@ namespace Index {
 
 			ImGui::EndPopup();
 		}
+	}
+
+	void AssetBrowser::RenderSliceTile(const DirectoryEntry& parentEntry,
+		const SpriteSlice& slice, int sliceIndex, int tileIndex)
+	{
+		ImGui::PushID(tileIndex);
+		ImGui::BeginGroup();
+
+		const ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+
+		// Reserve the FULL tile area (m_TileSize × m_TileSize) up-front via a
+		// Dummy. The thumbnail itself is then drawn on top via ImDrawList so
+		// we can pass per-slice UVs and aspect-fit the crop. Critically: the
+		// Dummy is what extends the group's bbox to a full tile width —
+		// without it the group would only be as wide as the label text below
+		// (since ImDrawList rendering doesn't grow the bbox), and the next
+		// SameLine() would tuck the following tile right next to the label,
+		// causing the visible overlap we just fixed.
+		ImGui::Dummy(ImVec2(m_TileSize, m_TileSize));
+
+		// Tile background — distinguishes slice tiles from regular file tiles
+		// at a glance. Slightly tinted so a row of expanded slices reads as a
+		// related group rather than a string of unrelated assets.
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+		const ImVec2 bgMin = cursorPos;
+		const ImVec2 bgMax(cursorPos.x + m_TileSize, cursorPos.y + m_TileSize);
+		dl->AddRectFilled(bgMin, bgMax, IM_COL32(35, 38, 46, 200), 3.0f);
+		dl->AddRect(bgMin, bgMax, IM_COL32(70, 80, 100, 180), 3.0f);
+
+		// Render the slice crop using the parent texture's live thumbnail.
+		// UVs map (slice.X, slice.Y)..(slice.X + slice.W, slice.Y + slice.H)
+		// to the parent's normalised texture coords. The Y axis is flipped
+		// (V0 < V1 reverses) because the asset browser thumbnails are
+		// uploaded bottom-up to match the engine's renderer convention; we
+		// match the same flip the regular RenderAssetTile path uses.
+		const uint64_t parentThumb = m_Thumbnails.GetThumbnail(parentEntry.Path);
+		Texture2D* parentTex = m_Thumbnails.GetCacheEntry(parentEntry.Path);
+		if (parentThumb != 0 && parentTex && parentTex->IsValid()
+			&& parentTex->GetWidth() > 0 && parentTex->GetHeight() > 0
+			&& slice.W > 0 && slice.H > 0)
+		{
+			const float texW = static_cast<float>(parentTex->GetWidth());
+			const float texH = static_cast<float>(parentTex->GetHeight());
+			const float u0 = static_cast<float>(slice.X) / texW;
+			const float u1 = static_cast<float>(slice.X + slice.W) / texW;
+			// Y-flip: the textured quad is drawn with (V=1) at the top, so the
+			// slice's `y` (measured from the texture's top in pixel space) maps
+			// to V = 1 - (y / texH).
+			const float v0 = 1.0f - static_cast<float>(slice.Y) / texH;
+			const float v1 = 1.0f - static_cast<float>(slice.Y + slice.H) / texH;
+
+			// Aspect-correct fit inside the tile so a tall sub-rect doesn't
+			// stretch horizontally. 8px margin keeps the slice visually
+			// distinct from the tile border.
+			const float margin = 8.0f;
+			const float maxDim = m_TileSize - margin * 2.0f;
+			const float sliceAspect = static_cast<float>(slice.W) / static_cast<float>(slice.H);
+			float drawW = maxDim;
+			float drawH = maxDim;
+			if (sliceAspect > 1.0f) drawH = maxDim / sliceAspect;
+			else                    drawW = maxDim * sliceAspect;
+			const ImVec2 imgMin(
+				cursorPos.x + (m_TileSize - drawW) * 0.5f,
+				cursorPos.y + (m_TileSize - drawH) * 0.5f);
+			const ImVec2 imgMax(imgMin.x + drawW, imgMin.y + drawH);
+
+			dl->AddImage(
+				static_cast<ImTextureID>(static_cast<intptr_t>(parentThumb)),
+				imgMin, imgMax,
+				ImVec2(u0, v0), ImVec2(u1, v1));
+		}
+		else {
+			// Parent thumbnail not loaded yet — touch the path so the
+			// thumbnail cache starts loading it. Next frame the image will
+			// show. Meanwhile draw a placeholder so the tile isn't blank.
+			m_Thumbnails.GetThumbnail(parentEntry.Path);
+			const ImVec2 phMin(cursorPos.x + 12.0f, cursorPos.y + 12.0f);
+			const ImVec2 phMax(cursorPos.x + m_TileSize - 12.0f, cursorPos.y + m_TileSize - 12.0f);
+			dl->AddRectFilled(phMin, phMax, IM_COL32(60, 60, 60, 200), 4.0f);
+		}
+
+		// Position the label right below the tile area. Dummy() above advanced
+		// the cursor to (cursorPos.x, cursorPos.y + m_TileSize + ItemSpacing.y);
+		// pinning it explicitly removes the spacing gap so the slice tile's
+		// label hugs the bottom of the image area exactly like a regular tile.
+		ImGui::SetCursorScreenPos(ImVec2(cursorPos.x, cursorPos.y + m_TileSize));
+
+		const float maxWidth = m_TileSize;
+		bool truncated = false;
+		const std::string display = ImGuiUtils::Ellipsize(slice.Name, maxWidth, &truncated);
+		const float textWidth = ImGui::CalcTextSize(display.c_str()).x;
+		const float offsetX = (maxWidth - textWidth) * 0.5f;
+		if (offsetX > 0.0f) {
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offsetX);
+		}
+		ImGui::TextUnformatted(display.c_str());
+		if (truncated && ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", slice.Name.c_str());
+		}
+
+		ImGui::EndGroup();
+
+		// Drag source — emit the slice-aware payload. We deliberately don't
+		// make slice tiles into drop targets: dragging an entity / file onto
+		// a slice has no meaningful semantics, and inheriting the parent
+		// folder's drop behaviour here would be a footgun.
+		if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+			SpriteSliceDragPayload payload;
+			payload.Reset();
+			payload.SetTexturePath(parentEntry.Path);
+			payload.SetSliceName(slice.Name);
+			ImGui::SetDragDropPayload(k_SpriteSliceDragPayloadType,
+				&payload, sizeof(payload));
+			ImGui::Text("Sprite: %s > %s",
+				std::filesystem::path(parentEntry.Path).filename().string().c_str(),
+				slice.Name.c_str());
+			ImGui::EndDragDropSource();
+		}
+
+		ImGui::PopID();
+
+		// Match the regular tile's trailing horizontal padding so columns
+		// stay aligned when the next tile lands via SameLine().
+		ImGui::SameLine(0, 0);
+		ImGui::Dummy(ImVec2(m_TilePadding, 0));
+
+		(void)sliceIndex;
 	}
 
 	void AssetBrowser::HandleDragSource(const DirectoryEntry& entry) {

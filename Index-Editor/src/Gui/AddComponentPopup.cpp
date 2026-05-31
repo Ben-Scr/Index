@@ -1,6 +1,7 @@
 #include <pch.hpp>
 #include "Gui/AddComponentPopup.hpp"
 
+#include "Gui/Icons.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
@@ -49,11 +50,11 @@ namespace Index {
 			}
 
 			auto& scriptComponent = entity.GetComponent<ScriptComponent>();
-			if (scriptComponent.HasScript(scriptEntry.ClassName, scriptEntry.Type)) {
-				return false;
-			}
+			const bool alreadyHadScript = scriptComponent.HasScript(scriptEntry.ClassName, scriptEntry.Type);
 
-			scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type);
+			if (!alreadyHadScript) {
+				scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type);
+			}
 
 			// For `: IComponent` structs (DynamicComponentRegistrar registered
 			// these at user-assembly load), also populate the backing
@@ -62,13 +63,23 @@ namespace Index {
 			// inspector renders fine (it reads the managed instance), but a
 			// user script's Entity.HasNativeComponent<T>() / GetRef<T>() looks
 			// at the storage and sees nothing.
+			//
+			// Run unconditionally so a re-attach after a prior failed dynamic
+			// registration (empty-struct tag, assembly-load race) still seeds
+			// the storage when the registry catches up.
+			bool storageAdded = false;
 			if (scriptEntry.IsNativeComponent) {
 				auto& componentRegistry = SceneManager::Get().GetComponentRegistry();
 				if (const ComponentInfo* info = componentRegistry.FindBySerializedName(scriptEntry.ClassName)) {
 					if (info->isDynamic && info->add && (!info->has || !info->has(entity))) {
 						info->add(entity);
+						storageAdded = true;
 					}
 				}
+			}
+
+			if (alreadyHadScript && !storageAdded) {
+				return false;
 			}
 
 			scene.MarkDirty();
@@ -147,6 +158,7 @@ namespace Index {
 
 		const ComponentRegistry& registry = SceneManager::Get().GetComponentRegistry();
 
+		Icons::TextIcon(Icons::Type::Search);
 		ImGui::SetNextItemWidth(-1);
 		ImGui::InputTextWithHint("##CompSearch", "Search components...",
 			searchBuffer, searchBufferSize);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Assets/AssetKind.hpp"
+#include "Assets/TextureMeta.hpp"
 #include "Core/UUID.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <magic_enum/magic_enum.hpp>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -718,14 +720,180 @@ namespace Index {
 			return parsed;
 		}
 
-		static void WriteMeta(const std::string& assetPath, uint64_t id, AssetKind kind) {
-			Json::Value meta = Json::Value::MakeObject();
-			meta.AddMember("AssetGUID", Json::Value(std::to_string(id)));
-			meta.AddMember("uuid", Json::Value(std::to_string(id)));
-			meta.AddMember("kind", Json::Value(ToString(kind)));
-			(void)File::WriteAllText(GetMetaPath(assetPath), Json::Stringify(meta, true));
+		// Insert OR overwrite a top-level member. `Json::Value::AddMember`
+		// alone is append-only — calling it twice for the same key would
+		// silently produce two entries. Used by both WriteMeta and
+		// WriteTextureMeta so the on-disk meta is read-modify-write rather
+		// than blind overwrite.
+		static void SetOrAddMember(Json::Value& object, const std::string& key, Json::Value value) {
+			if (Json::Value* existing = object.FindMember(key)) {
+				*existing = std::move(value);
+				return;
+			}
+			object.AddMember(key, std::move(value));
 		}
 
+		// Read the raw JSON of a `.meta` file into a `Value`. Returns an
+		// empty Object value when the file is absent or unparseable —
+		// callers should treat both cases identically (start from a fresh
+		// object and overwrite fields). The empty-object fallback is what
+		// makes the merge pattern below safe: a corrupted meta becomes a
+		// fresh write instead of a failure.
+		static Json::Value LoadMetaJson(const std::string& metaPath) {
+			Json::Value root = Json::Value::MakeObject();
+			if (!File::Exists(metaPath)) {
+				return root;
+			}
+			Json::Value parsed;
+			std::string parseError;
+			if (!Json::TryParse(File::ReadAllText(metaPath), parsed, &parseError) || !parsed.IsObject()) {
+				return root;
+			}
+			return parsed;
+		}
+
+		// Rewritten as a merge: load any existing meta JSON, overwrite the
+		// three identity fields in place, leave any other keys (`import`,
+		// `sprites`, future schema additions) untouched. Without this, a
+		// registry rebuild or rename pass would silently nuke the user's
+		// Sprite Editor work the next time it called WriteMeta.
+		static void WriteMeta(const std::string& assetPath, uint64_t id, AssetKind kind) {
+			const std::string metaPath = GetMetaPath(assetPath);
+			Json::Value meta = LoadMetaJson(metaPath);
+			if (!meta.IsObject()) {
+				meta = Json::Value::MakeObject();
+			}
+			SetOrAddMember(meta, "AssetGUID", Json::Value(std::to_string(id)));
+			SetOrAddMember(meta, "uuid",      Json::Value(std::to_string(id)));
+			SetOrAddMember(meta, "kind",      Json::Value(ToString(kind)));
+			(void)File::WriteAllText(metaPath, Json::Stringify(meta, true));
+		}
+
+	public:
+		// Read the texture-specific blocks (`import`, `sprites`) from a meta
+		// file. Tolerant of every absence/malformation: a missing import
+		// block leaves `HasImportBlock = false` so the loader keeps caller-
+		// supplied defaults, and a malformed slice entry is skipped rather
+		// than aborting the whole list. Enum strings accepted in any case
+		// (magic_enum::enum_cast); integers also accepted for legacy meta
+		// files that may have stored raw values.
+		static TextureMeta ReadTextureMeta(const std::string& assetPath) {
+			TextureMeta meta;
+			const std::string metaPath = GetMetaPath(assetPath);
+			if (!File::Exists(metaPath)) {
+				return meta;
+			}
+			Json::Value root;
+			std::string parseError;
+			if (!Json::TryParse(File::ReadAllText(metaPath), root, &parseError) || !root.IsObject()) {
+				return meta;
+			}
+
+			if (const Json::Value* importNode = root.FindMember("import"); importNode && importNode->IsObject()) {
+				meta.HasImportBlock = true;
+				if (const Json::Value* filterNode = importNode->FindMember("filter")) {
+					if (filterNode->IsString()) {
+						if (auto parsed = magic_enum::enum_cast<Filter>(filterNode->AsStringOr()); parsed.has_value()) {
+							meta.Import.FilterMode = parsed.value();
+						}
+					}
+					else if (filterNode->IsNumber()) {
+						meta.Import.FilterMode = static_cast<Filter>(filterNode->AsIntOr(static_cast<int>(meta.Import.FilterMode)));
+					}
+				}
+				auto readWrap = [&](const char* key, Wrap& outWrap) {
+					if (const Json::Value* node = importNode->FindMember(key)) {
+						if (node->IsString()) {
+							if (auto parsed = magic_enum::enum_cast<Wrap>(node->AsStringOr()); parsed.has_value()) {
+								outWrap = parsed.value();
+							}
+						}
+						else if (node->IsNumber()) {
+							outWrap = static_cast<Wrap>(node->AsInt64Or(static_cast<int64_t>(outWrap)));
+						}
+					}
+				};
+				readWrap("wrapU", meta.Import.WrapU);
+				readWrap("wrapV", meta.Import.WrapV);
+			}
+
+			if (const Json::Value* spritesNode = root.FindMember("sprites"); spritesNode && spritesNode->IsArray()) {
+				for (const Json::Value& spriteValue : spritesNode->GetArray()) {
+					if (!spriteValue.IsObject()) continue;
+					SpriteSlice slice;
+					if (const Json::Value* n = spriteValue.FindMember("name"); n && n->IsString()) {
+						slice.Name = n->AsStringOr();
+					}
+					if (slice.Name.empty()) continue;
+					if (const Json::Value* r = spriteValue.FindMember("rect"); r && r->IsArray() && r->GetArray().size() >= 4) {
+						const auto& a = r->GetArray();
+						slice.X = a[0].AsIntOr(0);
+						slice.Y = a[1].AsIntOr(0);
+						slice.W = a[2].AsIntOr(0);
+						slice.H = a[3].AsIntOr(0);
+					}
+					if (slice.W <= 0 || slice.H <= 0) continue;
+					if (const Json::Value* p = spriteValue.FindMember("pivot"); p && p->IsArray() && p->GetArray().size() >= 2) {
+						const auto& a = p->GetArray();
+						slice.PivotX = static_cast<float>(a[0].AsDoubleOr(0.5));
+						slice.PivotY = static_cast<float>(a[1].AsDoubleOr(0.5));
+					}
+					meta.Sprites.push_back(std::move(slice));
+				}
+			}
+
+			return meta;
+		}
+
+		// Write the texture-specific blocks back. Merges with whatever's
+		// already on disk so the AssetGUID / uuid / kind set by WriteMeta
+		// (and any future top-level meta fields) survive a Sprite Editor
+		// Apply. Returns false when the write fails; the Sprite Editor
+		// surfaces that to the user instead of silently dropping edits.
+		static bool WriteTextureMeta(const std::string& assetPath, const TextureMeta& meta) {
+			const std::string metaPath = GetMetaPath(assetPath);
+			Json::Value root = LoadMetaJson(metaPath);
+			if (!root.IsObject()) {
+				root = Json::Value::MakeObject();
+			}
+
+			if (meta.HasImportBlock) {
+				Json::Value importValue = Json::Value::MakeObject();
+				importValue.AddMember("filter", Json::Value(std::string(magic_enum::enum_name(meta.Import.FilterMode))));
+				importValue.AddMember("wrapU",  Json::Value(std::string(magic_enum::enum_name(meta.Import.WrapU))));
+				importValue.AddMember("wrapV",  Json::Value(std::string(magic_enum::enum_name(meta.Import.WrapV))));
+				SetOrAddMember(root, "import", std::move(importValue));
+			}
+
+			Json::Value spritesValue = Json::Value::MakeArray();
+			for (const SpriteSlice& slice : meta.Sprites) {
+				Json::Value spriteValue = Json::Value::MakeObject();
+				spriteValue.AddMember("name", Json::Value(slice.Name));
+				Json::Value rectValue = Json::Value::MakeArray();
+				rectValue.Append(Json::Value(slice.X));
+				rectValue.Append(Json::Value(slice.Y));
+				rectValue.Append(Json::Value(slice.W));
+				rectValue.Append(Json::Value(slice.H));
+				spriteValue.AddMember("rect", std::move(rectValue));
+				Json::Value pivotValue = Json::Value::MakeArray();
+				pivotValue.Append(Json::Value(static_cast<double>(slice.PivotX)));
+				pivotValue.Append(Json::Value(static_cast<double>(slice.PivotY)));
+				spriteValue.AddMember("pivot", std::move(pivotValue));
+				spritesValue.Append(std::move(spriteValue));
+			}
+			SetOrAddMember(root, "sprites", std::move(spritesValue));
+
+			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));
+			if (wrote) {
+				// Invalidate the (mtime, size) fingerprint cache so the next
+				// ReadMetaId pass on this file sees the new bytes — we just
+				// rewrote it but the cache entry's stat values are stale.
+				s_MetaIdCache.erase(metaPath);
+			}
+			return wrote;
+		}
+
+	private:
 		static std::string ToString(AssetKind kind) {
 			switch (kind) {
 			case AssetKind::Texture: return "Texture";

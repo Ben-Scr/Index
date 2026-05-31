@@ -453,6 +453,30 @@ function UseDependencySet(dep)
     end
 end
 
+-- Variant for intermediate StaticLib projects whose consumer .exe handles
+-- the linking. Skips LibDirs and Links because MSVC's lib.exe MERGES input
+-- .lib files into the output archive (it doesn't just record references).
+-- Routing Links onto a StaticLib's <Lib><AdditionalDependencies> bloats the
+-- resulting .lib by the combined size of every transitively-listed static
+-- lib — e.g. webgpu_dawn.lib is ~185 MB Release / ~1.36 GB Debug, and ends
+-- up archived wholesale inside the consuming StaticLib if links() is called.
+-- Headers, dependson() (build-order), and defines() are still applied so the
+-- TUs in this lib see the same include paths / preprocessor surface as the
+-- consumer .exes that link the actual dependencies.
+function UseDependencySetNoLink(dep)
+    if dep.IncludeDirs then
+        includedirs(NormalizeRootPaths(dep.IncludeDirs))
+    end
+
+    if dep.DependsOn then
+        dependson(dep.DependsOn)
+    end
+
+    if dep.Defines then
+        defines(dep.Defines)
+    end
+end
+
 group "Dependencies"
 if IndexModules.Editor then
     project "ImGui"

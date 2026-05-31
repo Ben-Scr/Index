@@ -532,6 +532,22 @@ internal static unsafe class InternalCalls
     internal static int SpriteRenderer_GetFilter(ulong id) => NativeCallbacks.Bindings.SpriteRenderer_GetFilter(id);
     internal static void SpriteRenderer_SetFilter(ulong id, int filter) => NativeCallbacks.Bindings.SpriteRenderer_SetFilter(id, filter);
 
+    internal static string SpriteRenderer_GetSpriteName(ulong id)
+        => ReadNativeString(NativeCallbacks.Bindings.SpriteRenderer_GetSpriteNameBuffer, id);
+
+    internal static void SpriteRenderer_SetSpriteName(ulong id, string? name)
+    {
+        // Reuse the EncodeUtf8Z helper above so the marshalled buffer ends
+        // in a null terminator — the C++ side takes the buffer as a plain
+        // `const char*` and assumes C-string semantics.
+        name ??= "";
+        int len = Encoding.UTF8.GetByteCount(name);
+        Span<byte> buf = len <= 256 ? stackalloc byte[len + 1] : new byte[len + 1];
+        Encoding.UTF8.GetBytes(name, buf);
+        buf[len] = 0;
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.SpriteRenderer_SetSpriteName(id, ptr);
+    }
+
     // ── TextRenderer ────────────────────────────────────────────────
 
     internal static string TextRenderer_GetText(ulong entityID)
@@ -590,6 +606,21 @@ internal static unsafe class InternalCalls
     internal static void Rigidbody2D_SetGravityScale(ulong id, float scale) => NativeCallbacks.Bindings.Rigidbody2D_SetGravityScale(id, scale);
     internal static float Rigidbody2D_GetMass(ulong id) => NativeCallbacks.Bindings.Rigidbody2D_GetMass(id);
     internal static void Rigidbody2D_SetMass(ulong id, float mass) => NativeCallbacks.Bindings.Rigidbody2D_SetMass(id, mass);
+
+    // Constraints. Bool ↔ int (0/1) at the FFI boundary so the C# side never
+    // depends on platform-ABI bool width — same encoding the C++ binding uses.
+    internal static bool Rigidbody2D_GetFreezePositionX(ulong id)
+        => NativeCallbacks.Bindings.Rigidbody2D_GetFreezePositionX(id) != 0;
+    internal static void Rigidbody2D_SetFreezePositionX(ulong id, bool freeze)
+        => NativeCallbacks.Bindings.Rigidbody2D_SetFreezePositionX(id, freeze ? 1 : 0);
+    internal static bool Rigidbody2D_GetFreezePositionY(ulong id)
+        => NativeCallbacks.Bindings.Rigidbody2D_GetFreezePositionY(id) != 0;
+    internal static void Rigidbody2D_SetFreezePositionY(ulong id, bool freeze)
+        => NativeCallbacks.Bindings.Rigidbody2D_SetFreezePositionY(id, freeze ? 1 : 0);
+    internal static bool Rigidbody2D_GetFreezeRotation(ulong id)
+        => NativeCallbacks.Bindings.Rigidbody2D_GetFreezeRotation(id) != 0;
+    internal static void Rigidbody2D_SetFreezeRotation(ulong id, bool freeze)
+        => NativeCallbacks.Bindings.Rigidbody2D_SetFreezeRotation(id, freeze ? 1 : 0);
 
     // ── BoxCollider2D ───────────────────────────────────────────────
 

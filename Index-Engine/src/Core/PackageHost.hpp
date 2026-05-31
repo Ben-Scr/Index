@@ -39,6 +39,14 @@ namespace Index {
 		static void UnloadAll();
 
 		static const std::vector<LoadedPackage>& GetLoaded();
+
+		// True if a package by this name is currently loaded. Used by the
+		// editor after an install attempt to detect packages that were on disk
+		// + in the allow-list but failed (or crashed) during LoadLibrary /
+		// IndexPackage_OnLoad — the host SEH-catches the crash and skips them,
+		// so the post-install path can roll back the allow-list mutation
+		// instead of leaving the user's project in a wedged state.
+		static bool IsPackageLoaded(const std::string& packageName);
 	};
 
 }

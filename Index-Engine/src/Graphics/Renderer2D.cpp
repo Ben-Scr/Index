@@ -15,6 +15,7 @@
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/StaticRenderData.hpp"
 #include "Graphics/SpriteResources.hpp"
+#include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Graphics/Text/TextRenderer.hpp"
@@ -190,7 +191,16 @@ namespace Index {
 			char Padding[64];
 		};
 		constexpr size_t k_MaxWorkers = 64;
-		std::array<WorkerCollectScratch, k_MaxWorkers> g_WorkerScratch;
+		// One extra trailing slot reserved for the *calling* thread. Job::Wait()
+		// work-steals (Job.cpp), so the thread that invoked ParallelFor (the
+		// render thread, whose GetWorkerIndex() is -1) runs chunks INLINE,
+		// concurrently with the real workers. Folding that caller onto slot 0
+		// (the previous behaviour) raced it against worker index 0 — two threads
+		// doing emplace_back on the same std::vector, i.e. heap corruption that
+		// surfaces as a __fastfail / access violation on a non-main thread. The
+		// caller now owns its own slot past the worker range.
+		constexpr size_t k_CallerSlot = k_MaxWorkers;
+		std::array<WorkerCollectScratch, k_MaxWorkers + 1> g_WorkerScratch;
 
 		// Below this candidate count the parallel path's overhead (job
 		// dispatch + per-worker buffer concat) dominates the wins from
@@ -385,6 +395,25 @@ namespace Index {
 			return grid;
 		}
 
+		// Sprite-slice UV pack helper. Short-circuits when SpriteName is
+		// empty — that's the common path (every legacy SpriteRenderer that
+		// hasn't been pointed at a slice), so the per-frame cost is one
+		// branch for the slice-free case. The UV rect is written into the
+		// just-emplaced Instance44; the shader's mix() against the unit
+		// quad collapses to identity when UvRect = (0,0,1,1) so the
+		// default constructor's full-texture rect remains a no-op.
+		inline void ApplySpriteSliceTo(Instance44& dst,
+			const SpriteRendererComponent& sprite)
+		{
+			if (sprite.SpriteName.empty()) return;
+			Texture2D* tex = TextureManager::GetTexture(sprite.TextureHandle);
+			if (!tex) return;
+			dst.UvRect = ResolveSpriteUVRect(sprite.TextureAssetId,
+				sprite.SpriteName,
+				static_cast<int>(tex->GetWidth()),
+				static_cast<int>(tex->GetHeight()));
+		}
+
 		void AppendStaticSpriteInstance(Scene& scene,
 			StaticSpriteGrid& grid,
 			uint32_t entryIndex,
@@ -419,6 +448,7 @@ namespace Index {
 				sprite.SortingOrder,
 				sprite.SortingLayer,
 				entry.DrawIndex);
+			ApplySpriteSliceTo(outInstances.back(), sprite);
 		}
 
 		void CollectStaticSpriteInstances(Scene& scene,
@@ -571,11 +601,11 @@ namespace Index {
 				ParallelFor(0, candidateCount, [&](size_t lo, size_t hi) {
 					int wi = JobSystem::GetWorkerIndex();
 					if (wi < 0 || wi >= static_cast<int>(k_MaxWorkers)) {
-						// Caller thread (not a worker): write into slot 0.
-						// JobSystem::TryPopAndRun executes inline on the
-						// calling thread when nested, so this can happen
-						// even though Job::Wait normally yields to workers.
-						wi = 0;
+						// Caller thread (not a worker): Job::Wait() work-steals, so this
+						// chunk runs inline on the calling thread, concurrently
+						// with the real workers, so it MUST use its own slot —
+						// sharing worker 0's slot raced two threads on one vector.
+						wi = static_cast<int>(k_CallerSlot);
 					}
 					auto& localInst = g_WorkerScratch[wi].Instances;
 
@@ -615,6 +645,7 @@ namespace Index {
 							spr.SortingOrder,
 							spr.SortingLayer,
 							cand.DrawIndex);
+						ApplySpriteSliceTo(localInst.back(), spr);
 					}
 				}, /*grainSize*/ 2048);
 
@@ -645,6 +676,7 @@ namespace Index {
 						s.SortingOrder,
 						s.SortingLayer,
 						cand.DrawIndex);
+					ApplySpriteSliceTo(outInstances.back(), s);
 				}
 			}
 
@@ -1075,36 +1107,45 @@ namespace Index {
 
 		RenderApi::BindDefaultFramebuffer();
 
-		// Aspect-locked runtime builds render into a centered sub-rect of
-		// the swap-chain framebuffer; the surround letterbox/pillarbox
-		// must be black. WebGPU's loadOp=Clear is always full-attachment
-		// (no scissor / no sub-rect), so we can only do one Clear here —
-		// pick black when locked. The sprite, UI, text, and gizmo passes
-		// below all call WebGPUBackend::ApplyCachedViewportToPass on the
-		// pass they open, which honours the sub-rect viewport that
-		// Window::UpdateViewport cached during the last framebuffer
-		// resize. Result: bars stay black, sprites rasterise into the
-		// sub-rect only.
-		//
-		// Side effect: the camera's clear color is replaced by BLACK
-		// inside the sub-rect too, since WebGPU has no API to clear only
-		// a region. 2D projects typically cover the render area with a
-		// background sprite or tiled layer, so this is rarely visible.
-		// If a project really needs a coloured background under sprites,
-		// it can place a fullscreen-sized background sprite at the lowest
-		// sorting layer.
+		// Aspect-locked runtime builds render the scene into an
+		// intermediate FBO sized to the centered sub-rect (see
+		// RenderSceneWithVP's m_SceneFbo path) and composite it back to
+		// the swap chain via PostProcessor::Blit with a sub-rect viewport.
+		// The surround letterbox/pillarbox is whatever the swap chain was
+		// cleared to before the blit — clear it to BLACK here so the
+		// bars are black. The camera's clear color is restored
+		// immediately after so the FBO clear inside RenderSceneWithVP
+		// (which reads g_ClearColor) still paints the in-game background
+		// with the camera's color, matching how the editor's Game View
+		// panel shows the same camera clear color centered with black
+		// borders around it.
 		Viewport* mainViewport = Window::GetMainViewport();
 		const bool hasLetterbox = mainViewport && mainViewport->HasLetterbox();
 		if (hasLetterbox) {
 			RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 1.0f });
-		} else {
-			// Pull the per-frame clear colour from the active main camera so
-			// the runtime visually matches what the Game View panel shows in
-			// the editor (which threads the same camera's GetClearColor()
-			// into RenderSceneIntoFBO).
+			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+			// Re-arm g_ClearColor so the m_SceneFbo Clear in
+			// RenderSceneWithVP's PostProcessor-redirect block paints the
+			// FBO interior (= the rendered sub-rect on the final
+			// composite) with the camera's color, not black.
 			RenderApi::SetClearColor(cam->GetClearColor());
+		} else {
+			// Standard path: clear swap chain to camera color.
+			RenderApi::SetClearColor(cam->GetClearColor());
+			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 		}
-		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+
+		// Refresh the cached view (and projection) from the current
+		// Transform2D before reading the matrix. Camera2DComponent only
+		// rebuilds m_ViewMat from its own setters — scripts that move
+		// the camera entity through Transform.Position (the standard
+		// Transform2D binding, not Camera2DComponent::SetPosition) mark
+		// the transform dirty but never reach the camera's cache, so
+		// without this call the runtime renders against the previous
+		// frame's view matrix and the camera appears frozen. The
+		// editor's Game View path already does the same refresh — this
+		// closes the gap so standalone behaves identically.
+		cam->UpdateViewport();
 
 		const glm::mat4 vp = cam->GetViewProjectionMatrix();
 		const AABB viewAABB = cam->GetViewportAABB();
@@ -1198,29 +1239,71 @@ namespace Index {
 			return;
 		}
 
-		// Decide whether to route through PostProcessor. Skip when:
-		//   * PostProcessor init failed (logged once at startup).
-		//   * Project setting EnablePostProcessing is false.
-		//   * Intermediate FBO Recreate fails for the current caller size.
-		// Any of these falls through to the legacy direct-to-caller render
-		// path with zero overhead — visually identical to pre-PP behaviour.
-		bool usePostProcess = m_PostProcessor.IsInitialized();
-		if (usePostProcess) {
+		// Two related but distinct decisions:
+		//   runEffects     — actually execute the effect passes (bloom,
+		//                    grading, grain, ...). Gated on PostProcessor
+		//                    init, the project's EnablePostProcessing, and
+		//                    the active camera's per-camera PP toggle.
+		//   usePostProcess — route the sprite pass through the intermediate
+		//                    HDR FBO and then composite back to caller. We
+		//                    need this whenever runEffects is true OR the
+		//                    swap chain is aspect-locked (letterbox needs
+		//                    the composite path to clip to the sub-rect).
+		//                    When aspect-locked but !runEffects we pass
+		//                    ppSettings = nullptr below, so the composite
+		//                    collapses to PostProcessor::Blit (passthrough)
+		//                    — visually identical to direct rendering plus
+		//                    the centered sub-rect clip.
+		//
+		// Splitting these is what makes "disable PP on a camera" actually
+		// turn the effects off in the shipped runtime: the old single-flag
+		// model forced usePostProcess back on for aspect-locked games and
+		// dragged the effects in with it, so disabling PP on the camera was
+		// silently ignored in standalone builds even though the editor (FBO-
+		// based GameView render, never IsSwapChain) respected the flag.
+		bool runEffects = m_PostProcessor.IsInitialized();
+		if (runEffects) {
 			if (IndexProject* proj = ProjectManager::GetCurrentProject()) {
-				usePostProcess = proj->EnablePostProcessing;
+				runEffects = proj->EnablePostProcessing;
 			}
 		}
-		if (usePostProcess) {
+		if (runEffects) {
 			if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
-				usePostProcess = mainCam->IsPostProcessingEnabled();
+				runEffects = mainCam->IsPostProcessingEnabled();
 			}
 		}
+		bool usePostProcess = runEffects;
+
+		// Aspect-locked runtime path: even when no effects will run, we
+		// HAVE to go through the intermediate-FBO + final-Blit flow so the
+		// scene renders into a sub-rect-sized FBO and the composite back
+		// to the swap chain can be clipped to the centered sub-rect via
+		// the cached viewport (PostProcessor::Blit applies it on its
+		// pass). Without this, the swap chain would receive sprites at
+		// full window dimensions — the stretched look that was the bug.
+		// Detection mirrors Renderer2D::BeginFrame.
+		Viewport* mvp = Window::GetMainViewport();
+		const bool aspectLocked = callerInfo.IsSwapChain && mvp && mvp->HasLetterbox()
+			&& m_PostProcessor.IsInitialized();
+		if (aspectLocked) {
+			usePostProcess = true;
+		}
+
+		// Size the intermediate FBO: sub-rect dims when aspect-locked,
+		// caller dims otherwise. The sprite pass below writes the entire
+		// FBO with the locked aspect built into the camera projection (the
+		// camera reads Window::GetMainViewport()->GetAspect(), which IS
+		// the sub-rect aspect when locked), so there's no stretching at
+		// the rasterisation stage.
+		const int fboWidth  = aspectLocked
+			? mvp->GetWidth()
+			: static_cast<int>(callerInfo.Width);
+		const int fboHeight = aspectLocked
+			? mvp->GetHeight()
+			: static_cast<int>(callerInfo.Height);
+
 		if (usePostProcess) {
-			if (!m_SceneFbo.Recreate(
-				static_cast<int>(callerInfo.Width),
-				static_cast<int>(callerInfo.Height),
-				TextureFormat::RGBA16F))
-			{
+			if (!m_SceneFbo.Recreate(fboWidth, fboHeight, TextureFormat::RGBA16F)) {
 				usePostProcess = false;
 			}
 		}
@@ -1251,9 +1334,7 @@ namespace Index {
 		// visually identical to the previous overwrite behaviour.
 		if (usePostProcess) {
 			RenderApi::BindFramebuffer(m_SceneFbo);
-			RenderApi::SetViewport(0, 0,
-				static_cast<int>(callerInfo.Width),
-				static_cast<int>(callerInfo.Height));
+			RenderApi::SetViewport(0, 0, fboWidth, fboHeight);
 			if (RenderApi::GetPolygonMode() == PolygonMode::Wireframe) {
 				const Color savedClear = RenderApi::GetClearColor();
 				RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 0.0f });
@@ -1463,23 +1544,114 @@ namespace Index {
 		// subsequent renderers in the same frame (editor's UI / gizmo
 		// passes after Renderer2D) keep writing to the right surface.
 		if (usePostProcess) {
+			// ppSettings = nullptr forces PostProcessor::Run into its
+			// passthrough Blit fallback (no effect passes, just the FBO →
+			// caller composite). That's exactly what we want when
+			// usePostProcess was forced on purely for aspect-locked
+			// letterboxing while the camera (or project) has effects off
+			// — we still need the composite to clip to the sub-rect, but
+			// every effect pass must be skipped to honour the toggle.
 			const PostProcessing2DComponent* ppSettings = nullptr;
-			if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
-				if (Scene* camScene = mainCam->GetOwnerScene()) {
-					const EntityHandle camEnt = mainCam->GetOwnerEntity();
-					if (camEnt != entt::null
-						&& camScene->HasComponent<PostProcessing2DComponent>(camEnt))
-					{
-						ppSettings = &camScene->GetComponent<PostProcessing2DComponent>(camEnt);
+			if (runEffects) {
+				if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
+					if (Scene* camScene = mainCam->GetOwnerScene()) {
+						const EntityHandle camEnt = mainCam->GetOwnerEntity();
+						if (camEnt != entt::null
+							&& camScene->HasComponent<PostProcessing2DComponent>(camEnt))
+						{
+							ppSettings = &camScene->GetComponent<PostProcessing2DComponent>(camEnt);
+						}
 					}
 				}
 			}
-			m_PostProcessor.Run(m_SceneFbo,
-				callerInfo.ColorView,
-				callerInfo.ColorFormat,
-				callerInfo.Width,
-				callerInfo.Height,
-				ppSettings);
+			// Aspect-locked composite: set the cached viewport to the
+			// swap-chain sub-rect BEFORE Run so PostProcessor::Blit's
+			// fullscreen-triangle pass gets clipped to (offsetX, offsetY,
+			// subW, subH) of the swap chain — leaving the surround bars
+			// painted by the BeginFrame BLACK clear untouched.
+			// dstWidth/dstHeight are forwarded as the sub-rect dims so
+			// any PingPong intermediates the PP allocates match the
+			// source FBO size.
+			uint32_t dstW = callerInfo.Width;
+			uint32_t dstH = callerInfo.Height;
+			if (aspectLocked) {
+				RenderApi::SetViewport(
+					mvp->GetOffsetX(), mvp->GetOffsetY(),
+					mvp->GetWidth(),   mvp->GetHeight());
+				dstW = static_cast<uint32_t>(mvp->GetWidth());
+				dstH = static_cast<uint32_t>(mvp->GetHeight());
+			}
+
+			// Aspect-locked + at least one effect enabled is the only
+			// branch where PostProcessor::Run takes its multi-pass
+			// dispatch path — and the FINAL effect (RunEffectPass) does
+			// NOT apply the cached viewport, so a direct Run-to-swap-
+			// chain would smear the chain's output across the full window
+			// and undo the letterbox. Route the chain into a sub-rect
+			// sized intermediate, then composite to the swap chain via
+			// Blit (which DOES apply the cached viewport). The no-effects
+			// passthrough already lands through Blit, so it doesn't need
+			// the indirection.
+			//
+			// HasEnabledEffect mirrors the enabled-set inside
+			// PostProcessor::Run. If a new effect type is added there,
+			// add it here too — otherwise the new effect would smear in
+			// aspect-locked standalone builds.
+			auto HasEnabledEffect = [](const PostProcessing2DComponent* s) {
+				if (!s) return false;
+				return s->Bloom.Enabled
+					|| s->ColorGrading.Enabled
+					|| s->GaussianBlur.Enabled
+					|| s->LensDistortion.Enabled
+					|| s->ChromaticAberration.Enabled
+					|| s->Vignette.Enabled
+					|| s->Grain.Enabled
+					|| s->Pixelated.Enabled;
+			};
+			const bool routeThroughLetterboxFbo = aspectLocked
+				&& HasEnabledEffect(ppSettings)
+				&& m_LetterboxOutputFbo.Recreate(
+					static_cast<int>(dstW), static_cast<int>(dstH),
+					TextureFormat::RGBA16F);
+
+			if (routeThroughLetterboxFbo) {
+				const auto outLook = WebGPUBackend::LookupFramebufferByFboId(
+					m_LetterboxOutputFbo.GetBackendId());
+				if (outLook.Valid) {
+					// 1) Full effect chain into the sub-rect intermediate.
+					m_PostProcessor.Run(m_SceneFbo,
+						outLook.ColorView,
+						outLook.ColorFormat,
+						dstW, dstH,
+						ppSettings);
+					// 2) Composite intermediate -> swap chain. Blit honours
+					//    the cached viewport (sub-rect of swap chain) so
+					//    the surround stays black.
+					m_PostProcessor.Blit(m_LetterboxOutputFbo,
+						callerInfo.ColorView,
+						callerInfo.ColorFormat,
+						callerInfo.Width,
+						callerInfo.Height);
+				}
+				else {
+					// FBO created but view lookup failed — extremely rare.
+					// Fall back to the direct Run path so the build still
+					// renders (effects will stretch, but better than a
+					// black screen).
+					m_PostProcessor.Run(m_SceneFbo,
+						callerInfo.ColorView,
+						callerInfo.ColorFormat,
+						dstW, dstH,
+						ppSettings);
+				}
+			}
+			else {
+				m_PostProcessor.Run(m_SceneFbo,
+					callerInfo.ColorView,
+					callerInfo.ColorFormat,
+					dstW, dstH,
+					ppSettings);
+			}
 			WebGPUBackend::RestoreBoundTarget(callerSnap);
 		}
 

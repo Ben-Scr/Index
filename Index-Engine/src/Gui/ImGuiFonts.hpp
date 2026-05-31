@@ -32,7 +32,7 @@ namespace Index {
 
 		ImFont* primary = nullptr;
 		const std::string googleSansPath = Path::Combine(
-			Path::ResolveIndexAssets("Fonts"), "GoogleSans", "GoogleSans-Regular.ttf");
+			Path::ResolveIndexAssets("Fonts"), "GoogleSans-Regular.ttf");
 		if (std::filesystem::exists(googleSansPath)) {
 			primary = io.Fonts->AddFontFromFileTTF(
 				googleSansPath.c_str(), fontSize, &primaryCfg,
@@ -66,12 +66,14 @@ namespace Index {
 		cjkCfg.SizePixels = fontSize;
 		cjkCfg.PixelSnapH = true;
 		cjkCfg.MergeMode = true;
-		if (!cjkPath.empty()) {
+		// MergeMode requires an already-added base font; with no primary
+		// ImGui reads Fonts.back() of an empty vector → 0xC0000005.
+		if (primary && !cjkPath.empty()) {
 			io.Fonts->AddFontFromFileTTF(
 				cjkPath.c_str(), fontSize, &cjkCfg,
 				io.Fonts->GetGlyphRangesJapanese());
 		}
-		else {
+		else if (cjkPath.empty()) {
 			IDX_CORE_WARN_TAG("Localization",
 				"CJK font not installed; CJK characters will render as boxes. "
 				"It will be downloaded the first time you select a CJK language.");

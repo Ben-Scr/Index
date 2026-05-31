@@ -260,7 +260,8 @@ project "Index-Engine"
         -- dwmapi: Win32Titlebar uses DwmExtendFrameIntoClientArea for
         -- custom-titlebar shadows and DwmSetWindowAttribute for native
         -- titlebar dark mode/colors. user32 / gdi32 come through GLFW.
-        links { "dwmapi.lib" }
+        -- dbghelp: CrashReporter writes minidumps via MiniDumpWriteDump.
+        links { "dwmapi.lib", "dbghelp.lib" }
 
     filter "system:linux"
         pic "On"

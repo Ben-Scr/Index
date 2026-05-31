@@ -237,8 +237,13 @@ namespace Index {
 		// `serializeArchive` body instead; SceneSerializer's JSON path will
 		// route the call through JsonArchive and produce the same on-disk
 		// shape automatically.
-		Json::Value (*serialize)(Entity) = nullptr;
-		void (*deserialize)(Entity, const Json::Value&) = nullptr;
+		// std::function (not raw fn ptr) so dynamic-component registrations can
+		// capture their owning DynamicComponentStorage* — non-capturing lambdas
+		// have no way to find their component's storage from inside the body.
+		// Hand-written built-ins still work because std::function trivially
+		// holds a `+[](Entity){...}` decay.
+		std::function<Json::Value(Entity)> serialize;
+		std::function<void(Entity, const Json::Value&)> deserialize;
 
 		// ── Serialization callbacks (true-binary / unified path) ──────────
 		// Optional. When set, SceneSerializer uses this single bidirectional

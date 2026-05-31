@@ -1,8 +1,11 @@
 #pragma once
+#include "Assets/TextureMeta.hpp"
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Directory.hpp"
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Index {
@@ -67,6 +70,21 @@ namespace Index {
 
 		void HandleDragSource(const DirectoryEntry& entry);
 		void HandleDropTarget(const DirectoryEntry& entry);
+
+		// Render one slice tile for an expanded sprite sheet. The tile reuses
+		// the parent texture's thumbnail with UVs clipped to the slice's
+		// rect, so the visual reflects what the renderer will actually draw.
+		// Emits an ASSET_SPRITE_SLICE drag payload so drop targets distinguish
+		// it from a regular texture drag (which carries only the path).
+		void RenderSliceTile(const DirectoryEntry& parentEntry,
+			const SpriteSlice& slice, int sliceIndex, int tileIndex);
+
+		// Refresh helper: re-read every sliced sprite sheet's `.meta` into
+		// m_SliceCache. Called by Refresh() once the entry list is rebuilt.
+		// The cache is keyed on absolute path; entries that no longer exist
+		// (file moved / deleted) age out naturally because Refresh() builds
+		// from m_Entries.
+		void RebuildSliceCache();
 
 		// Decode a HIERARCHY_ENTITY payload, save the entity as a `.prefab` in
 		// `targetDirectory`, and convert the source entity into a prefab
@@ -154,6 +172,15 @@ namespace Index {
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;
 
 		ThumbnailCache m_Thumbnails;
+
+		// Sprite-sheet expansion state. m_SliceCache is rebuilt on every
+		// Refresh() so a slice authored in the Sprite Editor surfaces in the
+		// browser the next time the file watcher kicks. m_ExpandedTextures
+		// remembers which sheets the user has clicked open; we leave entries
+		// for paths that no longer exist alone (cheap, and re-expanding the
+		// same path later "just works" again if the user puts a sheet back).
+		std::unordered_map<std::string, std::vector<SpriteSlice>> m_SliceCache;
+		std::unordered_set<std::string> m_ExpandedTextures;
 	};
 
 }

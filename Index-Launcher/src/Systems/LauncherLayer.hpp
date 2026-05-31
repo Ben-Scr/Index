@@ -133,37 +133,6 @@ namespace Index {
 			bool Success = false;
 		};
 
-		// Stages of the publish pipeline. Same shape as AssetLibraryStage but
-		// runs in the opposite direction (pack → hash → emit instead of
-		// download → verify → extract).
-		enum class PublishStage : std::uint8_t {
-			Idle = 0,
-			Zipping,
-			Hashing,
-			WritingEntry,
-			Done,
-			Error,
-		};
-
-		// Async task for "publish a project as an asset-library entry". The
-		// main thread reads under the mutex each frame; the worker calls
-		// PackageTool zip → Hash::Sha256OfFile → writes entry.json. Failure
-		// modes are reported via Error; on success TargetZipPath +
-		// TargetEntryPath point at the artifacts the user should upload.
-		struct PublishProjectTaskState {
-			std::mutex Mutex;
-			std::thread Worker;
-			PublishStage Stage = PublishStage::Idle;
-			float Progress = 0.0f;
-			std::string Error;
-			std::string TargetZipPath;
-			std::string TargetEntryPath;
-			std::string EntryJsonForDisplay;  // pretty-printed, paste-ready
-			bool Running = false;
-			bool Finished = false;
-			bool Success = false;
-		};
-
 		struct AssetLibraryIndex {
 			int SchemaVersion = 0;
 			std::string GeneratedAt;
@@ -221,7 +190,6 @@ namespace Index {
 		void RenderAssetLibraryTab();
 		void RenderAssetLibraryDetailModal();
 		void RenderAssetLibraryTrustModal();
-		void RenderPublishProjectModal();
 		void RenderProjectList();
 		void RenderCreateProjectPopup();
 		void RenderDeleteProjectPopups();
@@ -253,17 +221,14 @@ namespace Index {
 		void OpenProjectWorkerBody(const LauncherProjectEntry& entry, bool launchRuntime);
 		void PollOpenProjectTask();
 
-		// Publish flow: spawn the pack/hash/entry-write worker.
-		void RequestPublishProject(const LauncherProjectEntry& entry);
-		void StartPublishProject();
-		void PublishProjectWorkerBody(std::string projectPath, std::string outputDir,
-			std::string id, std::string version, std::string name, std::string author,
-			std::string shortDesc, std::string description, std::string tags,
-			std::string category, std::string license, std::string archiveRepo,
-			std::string archiveTag, std::string engineMin, std::string requiredPackages);
-		void PollPublishProjectTask();
-		// Sanitize a display name into a kebab-case-ish id.
-		static std::string SanitizeId(std::string_view name);
+		// Per-frame decision point that drives the shared OS-level progress
+		// popup (Win32BuildProgressWindow). Walks each task in priority order
+		// (Open > Create > AssetLibrary), builds title/stage/progress for
+		// the first active one, and calls Show/Update or Hide accordingly.
+		// Mirrors the editor's pattern in ImGuiEditorLayerChrome.cpp so the
+		// user sees the same "Compiling Scripts..." style indicator across
+		// every long-running operation in both apps.
+		void UpdateProgressPopup();
 
 		// Asset library: fetch index, queue downloads, poll worker.
 		void StartFetchAssetLibraryIndex();
@@ -340,7 +305,10 @@ namespace Index {
 		// the user has open in the Detail modal (empty = closed).
 		AssetLibraryIndex m_AssetLibrary;
 		AssetLibraryTaskState m_AssetLibraryTask;
-		std::string m_AssetLibrarySearch;
+		// Free-text filter for the My Projects tab; the search bar that
+		// drives it lives inside RenderMyProjectsTab. Not persisted to
+		// launcher_settings.json — resets between launcher runs.
+		std::string m_LauncherSearch;
 		std::string m_AssetLibrarySelectedTag;     // empty = "All tags"
 		std::string m_AssetLibraryDetailEntryId;
 		int m_AssetLibraryDetailScreenshot = 0;
@@ -353,25 +321,6 @@ namespace Index {
 		std::optional<AssetLibraryEntry> m_PendingTrustedDownload;
 		bool m_OpenAssetLibraryDetailPopup = false;
 		bool m_OpenAssetLibraryTrustPopup = false;
-
-		// Publish-to-Library modal. Form buffers live here so they survive
-		// re-opens. m_PublishSourceProject is the entry the user clicked
-		// Publish on; cleared when the modal closes.
-		PublishProjectTaskState m_PublishTask;
-		std::optional<LauncherProjectEntry> m_PublishSourceProject;
-		bool m_OpenPublishPopup = false;
-		char m_PublishId[128]{};
-		char m_PublishVersion[32]{};
-		char m_PublishName[256]{};
-		char m_PublishShort[256]{};
-		char m_PublishDescription[1024]{};
-		char m_PublishTags[256]{};
-		char m_PublishAuthor[128]{};
-		char m_PublishLicense[64]{};
-		char m_PublishArchiveRepo[256]{};
-		char m_PublishArchiveTag[128]{};
-		int  m_PublishCategoryIndex = 0;  // 0=Template, 1=Sample, 2=Demo
-		std::string m_PublishFormError;
 
 		std::optional<LauncherProjectEntry> m_PendingDeleteProject;
 		bool m_OpenDeleteConfirmPopup = false;

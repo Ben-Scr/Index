@@ -5,7 +5,9 @@
 #include "Core/Application.hpp"
 #include <Core/Version.hpp>
 #include <Core/Log.hpp>
+#include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Gui/CustomTitlebar.hpp"
+#include "Gui/Icons.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Localization/Localization.hpp"
@@ -526,6 +528,12 @@ artifacts/
 		const std::string titlebarText = IDX_TR("launcher.title") + std::string(" ") + std::string(IDX_VERSION);
 		EditorRuntime::RenderTitlebar(EditorRuntime::TitlebarConfig{ titlebarText, /*Centered=*/false });
 		RenderLauncherPanel();
+
+		// Drive the OS-level progress popup last: every Poll*Task above has
+		// run for this frame, so task state is current. Single decision point
+		// keeps the popup's title/stage/progress consistent regardless of
+		// which task is in flight.
+		UpdateProgressPopup();
 	}
 
 	float LauncherLayer::GetEffectiveFontScale() const {
@@ -578,9 +586,6 @@ artifacts/
 		if (m_AssetLibraryTask.Worker.joinable()) {
 			m_AssetLibraryTask.Worker.join();
 		}
-		if (m_PublishTask.Worker.joinable()) {
-			m_PublishTask.Worker.join();
-		}
 		// Signal stop to all size-calc workers before clearing. Each task's jthread
 		// destructor will block until the worker observes the stop or finishes, so
 		// asking them all to stop first lets the joins overlap rather than serializing.
@@ -590,6 +595,11 @@ artifacts/
 			}
 		}
 		m_ProjectSizeTasks.clear();
+
+		// Drop the shared icon cache before the renderer winds down. Each
+		// cached Texture2D talks to engine.dll's WebGPU device on destruct;
+		// running these destructors here keeps that sequencing safe.
+		Icons::Shutdown();
 	}
 
 	void LauncherLayer::ResetCreateProjectTask(bool clearWorker) {
@@ -794,8 +804,14 @@ artifacts/
 		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + titlebarH));
 		ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y - titlebarH));
 
+		// NoBringToFrontOnFocus keeps the panel pinned at the back of the
+		// window z-stack so the floating settings gear (created later
+		// below) stays visually on top. Without it, the panel reclaims
+		// the front on its first Begin and any subsequent click, and
+		// the full-viewport panel then covers the gear's hit rect.
 		ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-			| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
+			| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
+			| ImGuiWindowFlags_NoBringToFrontOnFocus;
 
 		ImGui::Begin("##Launcher", nullptr, flags);
 
@@ -808,109 +824,40 @@ artifacts/
 			ImGui::Spacing();
 		}
 
-		// Snapshot async open-task state for the floating progress strip.
-		// Reading under lock so the worker thread's writes are observed
-		// coherently.
+		// Open-project / execute-project progress is surfaced via the shared
+		// OS-level popup (Win32BuildProgressWindow), driven from
+		// UpdateProgressPopup() at the end of OnPreRender. Same indicator the
+		// editor uses for "Compiling Scripts...", so the experience is
+		// consistent across launcher and editor.
+		//
+		// We still own the post-launch grace period here: once the worker
+		// reports success the popup hides immediately (Running flips to
+		// false), but m_IsOpening keeps the launcher in its "just launched"
+		// state for 1.5s before the registry's LastOpened timestamp is
+		// committed. Without this, a fast launch could update the registry
+		// before the OS even brings the spawned editor's window forward.
 		bool taskRunning = false;
-		std::string taskStage;
-		float taskProgress = 0.0f;
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
 			taskRunning = m_OpenTask.Running;
-			taskStage = m_OpenTask.Stage;
-			taskProgress = m_OpenTask.Progress;
 		}
-
-		// Centered progress overlay with a dim backdrop, matching the editor's
-		// ##BuildDim + ##BuildOverlay pattern (see ImGuiEditorLayerChrome.cpp).
-		// The dim covers only the launcher's panel area — the custom titlebar
-		// stays live so the OS-window controls remain reachable if a compile
-		// genuinely hangs. We previously rendered a small bottom-right card so
-		// the project list stayed usable during a compile, but users reported
-		// missing it entirely; matching the editor is the canonical, hard-to-miss
-		// indication that a long-running task is in flight.
-		if (m_IsOpening || taskRunning) {
-			// Dismiss the post-launch grace period 1.5 s after the worker
-			// reports success. While the worker is still running we never
-			// dismiss — the user can't cancel a running build.
-			if (!taskRunning) {
-				float elapsed = std::chrono::duration<float>(
-					std::chrono::steady_clock::now() - m_OpenStartTime).count();
-				if (elapsed >= 1.5f) {
-					m_IsOpening = false;
-					if (!m_DeferredUpdatePath.empty()) {
-						m_Registry.UpdateLastOpened(m_DeferredUpdatePath);
-						m_Registry.Save();
-						m_DeferredUpdatePath.clear();
-					}
+		if (m_IsOpening && !taskRunning) {
+			float elapsed = std::chrono::duration<float>(
+				std::chrono::steady_clock::now() - m_OpenStartTime).count();
+			if (elapsed >= 1.5f) {
+				m_IsOpening = false;
+				if (!m_DeferredUpdatePath.empty()) {
+					m_Registry.UpdateLastOpened(m_DeferredUpdatePath);
+					m_Registry.Save();
+					m_DeferredUpdatePath.clear();
 				}
 			}
-
-			// Dim sits over the panel area only — offset by titlebarH so the
-			// OS-window controls remain interactive above the dim.
-			const ImVec2 dimPos{ viewport->Pos.x, viewport->Pos.y + titlebarH };
-			const ImVec2 dimSize{ viewport->Size.x, viewport->Size.y - titlebarH };
-
-			ImGui::SetNextWindowPos(dimPos);
-			ImGui::SetNextWindowSize(dimSize);
-			ImGuiWindowFlags dimFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
-				| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse
-				| ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav
-				| ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus;
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-			ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.5f));
-			ImGui::SetNextWindowFocus();
-			ImGui::Begin("##LauncherOpenDim", nullptr, dimFlags);
-			ImGui::End();
-			ImGui::PopStyleColor();
-			ImGui::PopStyleVar(3);
-
-			const ImVec2 center{ dimPos.x + dimSize.x * 0.5f, dimPos.y + dimSize.y * 0.5f };
-			ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-			ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
-			ImGui::SetNextWindowBgAlpha(0.92f);
-			ImGui::SetNextWindowFocus();
-			ImGuiWindowFlags overlayFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse
-				| ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing
-				| ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
-
-			if (ImGui::Begin("##LauncherOpenStatus", nullptr, overlayFlags)) {
-				ImGui::TextUnformatted(m_OpenTask.LaunchRuntime
-					? IDX_TR("launcher.progress.executing_project").c_str()
-					: IDX_TR("launcher.progress.opening_project").c_str());
-				ImGui::TextDisabled("%s", m_OpeningProjectName.c_str());
-				ImGui::Separator();
-				if (taskRunning) {
-					ImGui::TextUnformatted(taskStage.empty()
-						? IDX_TR("launcher.progress.working").c_str()
-						: taskStage.c_str());
-					ImGui::ProgressBar(taskProgress, ImVec2(-1, 0), "");
-				}
-				else {
-					ImGui::TextUnformatted(m_OpenTask.LaunchRuntime
-						? IDX_TR("launcher.progress.launching_runtime").c_str()
-						: IDX_TR("launcher.progress.launching_editor").c_str());
-					float elapsed = std::chrono::duration<float>(
-						std::chrono::steady_clock::now() - m_OpenStartTime).count();
-					ImGui::ProgressBar(fmodf(elapsed * 0.3f, 1.0f), ImVec2(-1, 0), "");
-				}
-			}
-			ImGui::End();
-
-			// Don't return — the rest of the launcher UI (project list, popups,
-			// error dialog) still wants to submit its windows. The dim blocks
-			// pointer interaction with everything underneath; modal popups
-			// (e.g. the error dialog at PollOpenProjectTask's failure path)
-			// still render above the dim because of their own SetNextWindowFocus.
 		}
 
 		// Poll the asset-library download worker once per frame; it writes
 		// progress under m_AssetLibraryTask.Mutex and the overlay reads the
 		// same fields below the BeginTabBar block.
 		PollAssetLibraryTask();
-		PollPublishProjectTask();
 
 		// Tab bar: My Projects (existing UX) and Asset Library (community
 		// downloads). The tab bar pulls a few px below the panel's top edge,
@@ -944,9 +891,53 @@ artifacts/
 		RenderRenameProjectPopup();
 		RenderAssetLibraryDetailModal();
 		RenderAssetLibraryTrustModal();
-		RenderPublishProjectModal();
 
 		ImGui::End();
+
+		// Floating settings gear anchored to the bottom-right of the
+		// viewport. Lives in its own borderless, transparent overlay
+		// window because SetCursorScreenPos inside the launcher panel
+		// — after the tabs' BeginChild scopes ended — left the hit
+		// rect being shadowed by the tab-content child windows, so
+		// the button rendered but wouldn't accept clicks. A standalone
+		// overlay window is the standard ImGui pattern for this and
+		// guarantees proper input ownership.
+		{
+			const ImGuiViewport* vp = ImGui::GetMainViewport();
+			constexpr float k_GearSize = 32.0f;
+			constexpr float k_Margin   = 12.0f;
+			ImGui::SetNextWindowPos(ImVec2(
+				vp->Pos.x + vp->Size.x - k_GearSize - k_Margin,
+				vp->Pos.y + vp->Size.y - k_GearSize - k_Margin));
+			ImGui::SetNextWindowSize(ImVec2(k_GearSize, k_GearSize));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+			// No NoBringToFrontOnFocus here — we *want* this overlay to
+			// reach the front on first appearance so it lands on top of
+			// the launcher panel (which has NoBringToFrontOnFocus and is
+			// thus pinned to the back). NoFocusOnAppearing stays so it
+			// doesn't steal keyboard focus from modals that may open.
+			constexpr ImGuiWindowFlags k_GearFlags =
+				ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+				ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+				ImGuiWindowFlags_NoFocusOnAppearing |
+				ImGuiWindowFlags_NoBackground;
+			if (ImGui::Begin("##LauncherGearOverlay", nullptr, k_GearFlags)) {
+				if (Icons::IconButton("##LauncherSettingsGear",
+					Icons::Type::Settings,
+					ImVec2(k_GearSize, k_GearSize)))
+				{
+					m_OpenSettingsPopup = true;
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("%s",
+						IDX_TR("launcher.action.settings").c_str());
+				}
+			}
+			ImGui::End();
+			ImGui::PopStyleVar(2);
+		}
 	}
 
 	// ── My Projects Tab ──────────────────────────────────────────────
@@ -954,6 +945,25 @@ artifacts/
 	void LauncherLayer::RenderMyProjectsTab() {
 		float panelWidth = ImGui::GetContentRegionAvail().x;
 		float rightColWidth = 200.0f;
+
+		// Search bar above the sort strip. Drives m_LauncherSearch which
+		// RenderProjectList reads when filtering. Lives inside this tab
+		// (rather than at panel scope) so the affordance only appears on
+		// the tab that actually uses it; the Asset Library tab has its
+		// own tag filter and doesn't need a free-text search.
+		{
+			Icons::TextIcon(Icons::Type::Search);
+			char searchBuf[256];
+			std::snprintf(searchBuf, sizeof(searchBuf), "%s", m_LauncherSearch.c_str());
+			ImGui::SetNextItemWidth(-1.0f);
+			if (ImGui::InputTextWithHint("##LauncherSearch",
+				IDX_TR("launcher.search.placeholder").c_str(),
+				searchBuf, sizeof(searchBuf)))
+			{
+				m_LauncherSearch = searchBuf;
+			}
+			ImGui::Spacing();
+		}
 
 		// Sort + refresh strip above the project list. The combo controls
 		// the sort axis (Last Opened, Name, Created), the arrow button
@@ -983,8 +993,8 @@ artifacts/
 			SaveLauncherSettings();
 		}
 		ImGui::SameLine();
-		const char* arrow = m_SortReverse ? "^" : "v";
-		if (ImGui::Button(arrow, ImVec2(reverseW, strip_h))) {
+		const Icons::Type sortArrow = m_SortReverse ? Icons::Type::ArrowUp : Icons::Type::ArrowDown;
+		if (Icons::IconButton("##SortReverse", sortArrow, ImVec2(reverseW, strip_h))) {
 			m_SortReverse = !m_SortReverse;
 			SaveLauncherSettings();
 		}
@@ -994,7 +1004,9 @@ artifacts/
 				: IDX_TR("launcher.sort.tooltip.descending").c_str());
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("R", ImVec2(refreshW, strip_h))) {
+		if (Icons::IconButton("##LauncherRefresh", Icons::Type::Refresh,
+			ImVec2(refreshW, strip_h)))
+		{
 			RefreshProjectsList();
 		}
 		if (ImGui::IsItemHovered()) {
@@ -1012,33 +1024,43 @@ artifacts/
 		// Right column: actions (L4: removed selection-dependent buttons)
 		ImGui::BeginChild("##Actions", ImVec2(rightColWidth, 0));
 
-		if (ImGui::Button(IDX_TR("launcher.action.create_new_project").c_str(), ImVec2(-1, 0))) {
-			m_OpenCreatePopup = true;
-			m_CreateError.clear();
-			m_IsCreating = false;
-			// Pre-fill the name field so a one-click "Create" works without
-			// the user typing — matches Unity Hub / Godot defaults.
-			std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
-				IDX_TR("launcher.create.default_project_name").c_str());
-			// Re-snap the location to whatever the user has set in
-			// settings — they may have changed it since OnAttach.
-			const std::string defaultLocation = m_DefaultProjectsLocation.empty()
-				? IndexProject::GetDefaultProjectsDir()
-				: m_DefaultProjectsLocation;
-			std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
-				defaultLocation.c_str());
+		// "+" entry point — opens a small popup with the two ways to
+		// add a project ("New Project" creates an empty one in the
+		// default location; "From Disk" picks an existing folder via
+		// the OS file dialog). Settings used to live here too but
+		// moved to the bottom-right gear; the only remaining
+		// non-selection action on this column is the +.
+		if (Icons::IconButton("##LauncherAddProject", Icons::Type::Plus)) {
+			ImGui::OpenPopup("##LauncherAddProjectPopup");
 		}
-
-		ImGui::Spacing();
-
-		if (ImGui::Button(IDX_TR("launcher.action.add_existing_project").c_str(), ImVec2(-1, 0))) {
-			BrowseForExistingProject();
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("%s", IDX_TR("launcher.action.add_project").c_str());
 		}
-
-		ImGui::Spacing();
-
-		if (ImGui::Button(IDX_TR("launcher.action.settings").c_str(), ImVec2(-1, 0))) {
-			m_OpenSettingsPopup = true;
+		if (ImGui::BeginPopup("##LauncherAddProjectPopup")) {
+			if (Icons::MenuItemWithIcon(Icons::Type::Plus,
+				IDX_TR("launcher.action.new_blank").c_str()))
+			{
+				m_OpenCreatePopup = true;
+				m_CreateError.clear();
+				m_IsCreating = false;
+				// Pre-fill the name field so a one-click "Create" works without
+				// the user typing — matches Unity Hub / Godot defaults.
+				std::snprintf(m_NewProjectName, sizeof(m_NewProjectName), "%s",
+					IDX_TR("launcher.create.default_project_name").c_str());
+				// Re-snap the location to whatever the user has set in
+				// settings — they may have changed it since OnAttach.
+				const std::string defaultLocation = m_DefaultProjectsLocation.empty()
+					? IndexProject::GetDefaultProjectsDir()
+					: m_DefaultProjectsLocation;
+				std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
+					defaultLocation.c_str());
+			}
+			if (Icons::MenuItemWithIcon(Icons::Type::FileManager,
+				IDX_TR("launcher.action.new_from_disk").c_str()))
+			{
+				BrowseForExistingProject();
+			}
+			ImGui::EndPopup();
 		}
 
 		// Selection-dependent buttons. Disabled (greyed) when no row is
@@ -1053,23 +1075,27 @@ artifacts/
 		const bool hasSelection = (selected != nullptr);
 		if (!hasSelection) ImGui::BeginDisabled();
 
-		if (ImGui::Button(IDX_TR("launcher.action.open_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+		if (Icons::ButtonWithIcon(Icons::Type::Pen,
+			IDX_TR("launcher.action.open_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
+		{
 			OpenProject(*selected);
 		}
 		ImGui::Spacing();
-		if (ImGui::Button(IDX_TR("launcher.action.execute_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+		if (Icons::ButtonWithIcon(Icons::Type::Play,
+			IDX_TR("launcher.action.execute_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
+		{
 			ExecuteProject(*selected);
 		}
 		ImGui::Spacing();
-		if (ImGui::Button(IDX_TR("launcher.action.rename_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+		if (Icons::ButtonWithIcon(Icons::Type::Caret,
+			IDX_TR("launcher.action.rename_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
+		{
 			RequestProjectRename(*selected);
 		}
 		ImGui::Spacing();
-		if (ImGui::Button(IDX_TR("launcher.action.publish_to_library").c_str(), ImVec2(-1, 0)) && hasSelection) {
-			RequestPublishProject(*selected);
-		}
-		ImGui::Spacing();
-		if (ImGui::Button(IDX_TR("launcher.action.delete_selected").c_str(), ImVec2(-1, 0)) && hasSelection) {
+		if (Icons::ButtonWithIcon(Icons::Type::Delete,
+			IDX_TR("launcher.action.delete_selected").c_str(), ImVec2(-1, 0)) && hasSelection)
+		{
 			RequestProjectDelete(*selected);
 		}
 
@@ -1089,10 +1115,35 @@ artifacts/
 			return;
 		}
 
+		// Case-insensitive match against the panel-level search field.
+		// Empty search matches everything, so the existing "no projects
+		// yet" path above still runs only when the registry itself is
+		// empty — a search miss falls through to the "no matches" line at
+		// the bottom of this function instead.
+		const std::string lowerSearch = [&]() {
+			std::string s = m_LauncherSearch;
+			std::transform(s.begin(), s.end(), s.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			return s;
+		}();
+		auto matchesSearch = [&](const LauncherProjectEntry& e) {
+			if (lowerSearch.empty()) return true;
+			auto containsCI = [&](std::string_view hay) {
+				std::string h(hay);
+				std::transform(h.begin(), h.end(), h.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				return h.find(lowerSearch) != std::string::npos;
+			};
+			return containsCI(e.Name) || containsCI(e.Path);
+		};
+
 		std::string removePath;
+		int shownCount = 0;
 
 		for (int i = 0; i < static_cast<int>(sortedProjects.size()); i++) {
 			const auto& entry = *sortedProjects[i];
+			if (!matchesSearch(entry)) continue;
+			++shownCount;
 
 			ImGui::PushID(i);
 
@@ -1131,31 +1182,56 @@ artifacts/
 
 			// Right-click context menu per item
 			if (ImGui::BeginPopupContextItem("##RowCtx")) {
-				if (ImGui::MenuItem(IDX_TR("launcher.context.info").c_str())) {
+				if (Icons::MenuItemWithIcon(Icons::Type::Pen,
+					IDX_TR("launcher.context.open_in_editor").c_str()))
+				{
+					OpenProject(entry);
+				}
+
+				if (Icons::MenuItemWithIcon(Icons::Type::Play,
+					IDX_TR("launcher.context.execute_project").c_str()))
+				{
+					ExecuteProject(entry);
+				}
+
+				ImGui::Separator();
+
+				if (Icons::MenuItemWithIcon(Icons::Type::FileManager,
+					IDX_TR("launcher.context.open_in_explorer").c_str()))
+				{
+					OpenProjectInExplorer(entry);
+				}
+
+				if (Icons::MenuItemWithIcon(Icons::Type::Copy,
+					IDX_TR("launcher.context.copy_path").c_str()))
+				{
+					ImGui::SetClipboardText(entry.Path.c_str());
+				}
+
+				ImGui::Separator();
+
+				if (Icons::MenuItemWithIcon(Icons::Type::Caret,
+					IDX_TR("launcher.context.rename").c_str()))
+				{
+					RequestProjectRename(entry);
+				}
+
+				if (Icons::MenuItemWithIcon(Icons::Type::Info,
+					IDX_TR("launcher.context.info").c_str()))
+				{
 					m_PendingInfoProject = entry;
 					m_OpenInfoPopup = true;
 				}
 
-				ImGui::Separator();
-
-				if (ImGui::MenuItem(IDX_TR("launcher.context.open_in_explorer").c_str())) {
-					OpenProjectInExplorer(entry);
-				}
-
-				if (ImGui::MenuItem(IDX_TR("launcher.context.copy_path").c_str())) {
-					ImGui::SetClipboardText(entry.Path.c_str());
-				}
-
-				if (ImGui::MenuItem(IDX_TR("launcher.context.rename").c_str())) {
-					RequestProjectRename(entry);
-				}
-
-				if (ImGui::MenuItem(IDX_TR("launcher.context.remove_from_list").c_str())) {
+				if (Icons::MenuItemWithIcon(Icons::Type::Minus,
+					IDX_TR("launcher.context.remove_from_list").c_str()))
+				{
 					removePath = entry.Path;
 				}
 
-				ImGui::Separator();
-				if (ImGui::MenuItem(IDX_TR("launcher.context.delete_project").c_str())) {
+				if (Icons::MenuItemWithIcon(Icons::Type::Delete,
+					IDX_TR("launcher.context.delete_project").c_str()))
+				{
 					RequestProjectDelete(entry);
 				}
 				ImGui::EndPopup();
@@ -1218,6 +1294,12 @@ artifacts/
 			ImGui::SetCursorScreenPos(ImVec2(cursorPos.x, cursorPos.y + rowHeight));
 
 			ImGui::PopID();
+		}
+
+		// Search produced no matches — surface the same "empty" copy the
+		// asset library tab uses so the UX stays consistent across tabs.
+		if (shownCount == 0 && !lowerSearch.empty()) {
+			ImGui::TextDisabled("%s", IDX_TR("launcher.asset_library.empty").c_str());
 		}
 
 		// Deferred removal to avoid modifying the list during iteration.
@@ -1511,16 +1593,6 @@ artifacts/
 
 		const std::string createTitle = IDX_TR("launcher.create.title") + k_CreateId;
 		if (ImGui::BeginPopupModal(createTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-			float createProgress = 0.0f;
-			std::string createStage;
-			bool createTaskRunning = false;
-			{
-				std::scoped_lock lock(m_CreateTask.Mutex);
-				createProgress = m_CreateTask.Progress;
-				createStage = m_CreateTask.Stage;
-				createTaskRunning = m_CreateTask.Running;
-			}
-
 			if (m_CloseCreatePopup) {
 				m_CloseCreatePopup = false;
 				ImGui::CloseCurrentPopup();
@@ -1559,13 +1631,8 @@ artifacts/
 				ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_CreateError.c_str());
 			}
 
-			if (m_IsCreating || createTaskRunning) {
-				ImGui::Spacing();
-				ImGui::TextDisabled("%s", createStage.empty()
-					? IDX_TR("launcher.create.default_stage").c_str()
-					: createStage.c_str());
-				ImGui::ProgressBar(createProgress, ImVec2(-1, 0));
-			}
+			// Create-project progress is surfaced via the shared OS-level
+			// popup (Win32BuildProgressWindow), driven from UpdateProgressPopup.
 
 			ImGui::Spacing();
 			ImGui::Separator();
@@ -1872,6 +1939,76 @@ artifacts/
 			IDX_ERROR_TAG("Launcher", "{} project failed: {}",
 				launchRuntime ? "Execute" : "Open", msg);
 			ShowError(msg);
+		}
+	}
+
+	void LauncherLayer::UpdateProgressPopup() {
+		// Priority: Open > Create > AssetLibrary. The popup carries one
+		// task at a time; the user can only initiate one of these per
+		// click anyway (each task disables its own trigger button while
+		// Running), so prioritising on display is purely cosmetic — whoever
+		// is in flight wins.
+		std::string title;
+		std::string stage;
+		float progress = 0.0f;
+		bool show = false;
+
+		// ── Open / Execute project ─────────────────────────────────
+		{
+			std::scoped_lock lock(m_OpenTask.Mutex);
+			if (m_OpenTask.Running) {
+				show = true;
+				title = m_OpenTask.LaunchRuntime
+					? IDX_TR("launcher.progress.executing_project")
+					: IDX_TR("launcher.progress.opening_project");
+				stage = m_OpenTask.Stage.empty()
+					? IDX_TR("launcher.progress.working")
+					: m_OpenTask.Stage;
+				progress = m_OpenTask.Progress;
+			}
+		}
+
+		// ── Create project ─────────────────────────────────────────
+		if (!show) {
+			std::scoped_lock lock(m_CreateTask.Mutex);
+			if (m_CreateTask.Running) {
+				show = true;
+				title = IDX_TR("launcher.progress.creating_project");
+				stage = m_CreateTask.Stage.empty()
+					? IDX_TR("launcher.progress.working")
+					: m_CreateTask.Stage;
+				progress = m_CreateTask.Progress;
+			}
+		}
+
+		// ── Asset library download ─────────────────────────────────
+		if (!show) {
+			AssetLibraryStage assetStage;
+			std::string displayName;
+			bool running;
+			float assetProgress;
+			{
+				std::scoped_lock lock(m_AssetLibraryTask.Mutex);
+				assetStage = m_AssetLibraryTask.Stage;
+				displayName = m_AssetLibraryTask.DisplayName;
+				running = m_AssetLibraryTask.Running;
+				assetProgress = m_AssetLibraryTask.Progress;
+			}
+			if (running) {
+				show = true;
+				title = IDX_TR("launcher.progress.downloading_project");
+				stage = AssetLibraryStageText(assetStage, displayName);
+				if (stage.empty()) stage = IDX_TR("launcher.progress.working");
+				progress = assetProgress;
+			}
+		}
+
+		if (show) {
+			Win32BuildProgressWindow::Show(title);
+			Win32BuildProgressWindow::Update(progress, stage);
+		}
+		else if (Win32BuildProgressWindow::IsVisible()) {
+			Win32BuildProgressWindow::Hide();
 		}
 	}
 
@@ -3294,21 +3431,15 @@ artifacts/
 		const float strip_h = ImGui::GetFrameHeight();
 		ImGui::BeginGroup();
 
-		// Refresh button (top-right of strip)
+		// Refresh button (right-aligned). Free-text search lives on the
+		// My Projects tab only; the Asset Library uses its tag filter
+		// instead, so the only thing in this strip is the refresh action.
 		const float refreshW = 90.0f;
-		const float searchW = ImGui::GetContentRegionAvail().x - refreshW - ImGui::GetStyle().ItemSpacing.x;
-
-		// Search box
-		char searchBuf[256];
-		std::snprintf(searchBuf, sizeof(searchBuf), "%s", m_AssetLibrarySearch.c_str());
-		ImGui::SetNextItemWidth(searchW);
-		if (ImGui::InputTextWithHint("##AssetLibrarySearch",
-			IDX_TR("launcher.asset_library.search").c_str(),
-			searchBuf, sizeof(searchBuf)))
-		{
-			m_AssetLibrarySearch = searchBuf;
+		const float availW = ImGui::GetContentRegionAvail().x;
+		if (availW > refreshW) {
+			ImGui::Dummy(ImVec2(availW - refreshW, 0.0f));
+			ImGui::SameLine();
 		}
-		ImGui::SameLine();
 		if (fetchInFlight) ImGui::BeginDisabled();
 		if (ImGui::Button(IDX_TR("launcher.asset_library.refresh").c_str(),
 			ImVec2(refreshW, strip_h)))
@@ -3334,23 +3465,6 @@ artifacts/
 		// (that's task #8). The Selectable opens the detail modal.
 		ImGui::BeginChild("##AssetLibraryList", ImVec2(0, 0), true);
 
-		const std::string lowerSearch = [&]() {
-			std::string s = m_AssetLibrarySearch;
-			std::transform(s.begin(), s.end(), s.begin(),
-				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			return s;
-		}();
-
-		auto containsCI = [](std::string_view haystack, std::string_view needle) {
-			if (needle.empty()) return true;
-			std::string h(haystack), n(needle);
-			std::transform(h.begin(), h.end(), h.begin(),
-				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			std::transform(n.begin(), n.end(), n.begin(),
-				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			return h.find(n) != std::string::npos;
-		};
-
 		std::vector<AssetLibraryEntry> snapshot;
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
@@ -3359,16 +3473,6 @@ artifacts/
 
 		size_t shown = 0;
 		for (const auto& entry : snapshot) {
-			if (!m_AssetLibrarySearch.empty()) {
-				const bool matches = containsCI(entry.Name, lowerSearch)
-					|| containsCI(entry.Author, lowerSearch)
-					|| containsCI(entry.ShortDescription, lowerSearch);
-				bool tagMatches = false;
-				for (const auto& tag : entry.Tags) {
-					if (containsCI(tag, lowerSearch)) { tagMatches = true; break; }
-				}
-				if (!matches && !tagMatches) continue;
-			}
 			++shown;
 
 			ImGui::PushID(entry.Id.c_str());
@@ -3409,29 +3513,23 @@ artifacts/
 
 		ImGui::EndChild();
 
-		// Bottom status: in-flight download progress.
+		// Bottom status: terminal outcomes only (error / done). In-flight
+		// download progress is surfaced via the shared OS-level popup
+		// (Win32BuildProgressWindow), driven from UpdateProgressPopup.
 		AssetLibraryStage stage;
-		float taskProgress = 0.0f;
-		std::string displayName;
 		std::string taskError;
-		bool taskRunning = false;
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			stage = m_AssetLibraryTask.Stage;
-			taskProgress = m_AssetLibraryTask.Progress;
-			displayName = m_AssetLibraryTask.DisplayName;
 			taskError = m_AssetLibraryTask.Error;
-			taskRunning = m_AssetLibraryTask.Running;
 		}
-		if (taskRunning || stage == AssetLibraryStage::Error || stage == AssetLibraryStage::Done) {
+		if (stage == AssetLibraryStage::Error || stage == AssetLibraryStage::Done) {
 			ImGui::Separator();
 			if (stage == AssetLibraryStage::Error) {
 				ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", taskError.c_str());
 			}
 			else {
-				const std::string text = AssetLibraryStageText(stage, displayName);
-				ImGui::TextUnformatted(text.c_str());
-				ImGui::ProgressBar(taskProgress, ImVec2(-1.0f, 0.0f), "");
+				ImGui::TextUnformatted(IDX_TR("launcher.asset_library.progress.done").c_str());
 			}
 		}
 	}
@@ -3578,516 +3676,6 @@ artifacts/
 			ImVec2(120, 0)))
 		{
 			m_PendingTrustedDownload.reset();
-			ImGui::CloseCurrentPopup();
-		}
-
-		ImGui::EndPopup();
-	}
-
-	// ── Publish to Library ───────────────────────────────────────────
-
-	namespace {
-		// Path to the cache dir where the publish worker writes the zip and
-		// entry JSON. Co-located with launcher_settings.json under
-		// %LOCALAPPDATA%\Index\ so a future "list previous publishes"
-		// feature can find them.
-		std::filesystem::path PublishOutputDir() {
-			return std::filesystem::path(
-				Path::GetSpecialFolderPath(SpecialFolder::LocalAppData))
-				/ "Index" / "asset-library-publish";
-		}
-
-		// Cheap kebab-case validator matching the script's regex:
-		//   ^[a-z][a-z0-9-]*$  (lowercase letters/digits/hyphens, starts with letter)
-		bool IsValidEntryId(std::string_view s) {
-			if (s.empty()) return false;
-			if (!(s.front() >= 'a' && s.front() <= 'z')) return false;
-			for (char c : s) {
-				const bool ok = (c >= 'a' && c <= 'z')
-					|| (c >= '0' && c <= '9')
-					|| c == '-';
-				if (!ok) return false;
-			}
-			return true;
-		}
-
-		// Tolerant semver-ish check: at least X.Y.Z with optional `-suffix`.
-		bool IsValidSemverish(std::string_view s) {
-			int dots = 0;
-			int digitsThisGroup = 0;
-			for (size_t i = 0; i < s.size(); ++i) {
-				char c = s[i];
-				if (c == '-' || c == '+') break;   // ignore suffix
-				if (c == '.') {
-					if (digitsThisGroup == 0) return false;
-					++dots;
-					digitsThisGroup = 0;
-				}
-				else if (c >= '0' && c <= '9') {
-					++digitsThisGroup;
-				}
-				else {
-					return false;
-				}
-			}
-			return dots >= 2 && digitsThisGroup > 0;
-		}
-
-		// owner/repo: a single '/' separating two non-empty segments.
-		bool IsValidArchiveRepo(std::string_view s) {
-			auto slash = s.find('/');
-			if (slash == std::string_view::npos) return false;
-			if (slash == 0 || slash == s.size() - 1) return false;
-			return s.find('/', slash + 1) == std::string_view::npos;
-		}
-	}
-
-	std::string LauncherLayer::SanitizeId(std::string_view name) {
-		std::string out;
-		out.reserve(name.size());
-		bool lastDash = false;
-		for (char c : name) {
-			const char low = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			if ((low >= 'a' && low <= 'z') || (low >= '0' && low <= '9')) {
-				out.push_back(low);
-				lastDash = false;
-			}
-			else if (!lastDash && !out.empty()) {
-				out.push_back('-');
-				lastDash = true;
-			}
-		}
-		while (!out.empty() && out.back() == '-') out.pop_back();
-		// Must start with a letter — prepend if the sanitised id starts with
-		// a digit (rare but possible: a project named "2D Demo").
-		if (!out.empty() && (out.front() >= '0' && out.front() <= '9')) {
-			out.insert(out.begin(), 'p');
-		}
-		return out;
-	}
-
-	void LauncherLayer::RequestPublishProject(const LauncherProjectEntry& entry) {
-		// Refuse to open the modal if the project doesn't have a manifest —
-		// the worker would fail anyway and the form defaults rely on it.
-		const std::filesystem::path manifestPath
-			= std::filesystem::path(entry.Path) / "index-project.json";
-		std::error_code ec;
-		if (!std::filesystem::exists(manifestPath, ec) || ec) {
-			ShowError(IDX_TR("launcher.publish.error.no_project_manifest"));
-			return;
-		}
-
-		// Read the manifest for defaults: name, engineVersion, packages.
-		IndexProject loaded = IndexProject::Load(entry.Path);
-
-		m_PublishSourceProject = entry;
-		m_PublishFormError.clear();
-
-		// Reset task state so a previous run's "Done" overlay doesn't leak
-		// into the freshly-opened modal.
-		{
-			std::scoped_lock lock(m_PublishTask.Mutex);
-			if (m_PublishTask.Worker.joinable() && !m_PublishTask.Running) {
-				m_PublishTask.Worker.join();
-			}
-			m_PublishTask.Stage = PublishStage::Idle;
-			m_PublishTask.Progress = 0.0f;
-			m_PublishTask.Error.clear();
-			m_PublishTask.TargetZipPath.clear();
-			m_PublishTask.TargetEntryPath.clear();
-			m_PublishTask.EntryJsonForDisplay.clear();
-			m_PublishTask.Finished = false;
-			m_PublishTask.Success = false;
-		}
-
-		// Pre-fill form buffers with sensible defaults.
-		const std::string suggestedId = SanitizeId(loaded.Name.empty() ? entry.Name : loaded.Name);
-		std::snprintf(m_PublishId, sizeof(m_PublishId), "%s", suggestedId.c_str());
-		std::snprintf(m_PublishVersion, sizeof(m_PublishVersion), "%s", "1.0.0");
-		std::snprintf(m_PublishName, sizeof(m_PublishName), "%s",
-			(loaded.Name.empty() ? entry.Name : loaded.Name).c_str());
-		m_PublishShort[0] = '\0';
-		m_PublishDescription[0] = '\0';
-		m_PublishTags[0] = '\0';
-		std::snprintf(m_PublishAuthor, sizeof(m_PublishAuthor), "%s", "@your-github-handle");
-		std::snprintf(m_PublishLicense, sizeof(m_PublishLicense), "%s", "MIT");
-		std::snprintf(m_PublishArchiveRepo, sizeof(m_PublishArchiveRepo), "%s",
-			(std::string("your-handle/") + suggestedId).c_str());
-		std::snprintf(m_PublishArchiveTag, sizeof(m_PublishArchiveTag), "v%s", "1.0.0");
-		m_PublishCategoryIndex = 0;
-
-		m_OpenPublishPopup = true;
-	}
-
-	void LauncherLayer::StartPublishProject() {
-		if (!m_PublishSourceProject.has_value()) return;
-
-		// Validate form. Errors surface as a red line under the buttons; the
-		// modal stays open so the user can fix and retry.
-		const std::string id = m_PublishId;
-		const std::string version = m_PublishVersion;
-		const std::string archiveRepo = m_PublishArchiveRepo;
-		if (id.empty() || version.empty() || archiveRepo.empty()) {
-			m_PublishFormError = IDX_TR("launcher.publish.error.missing_field");
-			return;
-		}
-		if (!IsValidEntryId(id)) {
-			m_PublishFormError = IDX_TR("launcher.publish.error.invalid_id");
-			return;
-		}
-		if (!IsValidSemverish(version)) {
-			m_PublishFormError = IDX_TR("launcher.publish.error.invalid_version");
-			return;
-		}
-		if (!IsValidArchiveRepo(archiveRepo)) {
-			m_PublishFormError = IDX_TR("launcher.publish.error.invalid_archive_repo");
-			return;
-		}
-		m_PublishFormError.clear();
-
-		{
-			std::scoped_lock lock(m_PublishTask.Mutex);
-			if (m_PublishTask.Running) return;
-			m_PublishTask.Stage = PublishStage::Zipping;
-			m_PublishTask.Progress = 0.0f;
-			m_PublishTask.Error.clear();
-			m_PublishTask.TargetZipPath.clear();
-			m_PublishTask.TargetEntryPath.clear();
-			m_PublishTask.EntryJsonForDisplay.clear();
-			m_PublishTask.Running = true;
-			m_PublishTask.Finished = false;
-			m_PublishTask.Success = false;
-		}
-
-		if (m_PublishTask.Worker.joinable()) m_PublishTask.Worker.join();
-
-		const std::string categoryStr = (m_PublishCategoryIndex == 0) ? "Template"
-			: (m_PublishCategoryIndex == 1) ? "Sample"
-			: "Demo";
-
-		// Required-packages list: read from the project's manifest.
-		IndexProject loaded = IndexProject::Load(m_PublishSourceProject->Path);
-		std::string requiredPackages;
-		for (size_t i = 0; i < loaded.Packages.size(); ++i) {
-			if (i) requiredPackages.push_back(',');
-			requiredPackages += loaded.Packages[i];
-		}
-		const std::string engineMin = loaded.EngineVersion.empty() ? IDX_VERSION : loaded.EngineVersion;
-
-		const std::string outputDir = PublishOutputDir().string();
-
-		m_PublishTask.Worker = std::thread(
-			&LauncherLayer::PublishProjectWorkerBody, this,
-			m_PublishSourceProject->Path, outputDir,
-			id, version, std::string(m_PublishName), std::string(m_PublishAuthor),
-			std::string(m_PublishShort), std::string(m_PublishDescription),
-			std::string(m_PublishTags), categoryStr, std::string(m_PublishLicense),
-			archiveRepo, std::string(m_PublishArchiveTag), engineMin, requiredPackages);
-	}
-
-	void LauncherLayer::PublishProjectWorkerBody(
-		std::string projectPath, std::string outputDir,
-		std::string id, std::string version, std::string name, std::string author,
-		std::string shortDesc, std::string description, std::string tags,
-		std::string category, std::string license, std::string archiveRepo,
-		std::string archiveTag, std::string engineMin, std::string requiredPackages)
-	{
-		auto setStage = [&](PublishStage s, float p) {
-			std::scoped_lock lock(m_PublishTask.Mutex);
-			m_PublishTask.Stage = s;
-			m_PublishTask.Progress = p;
-		};
-		auto fail = [&](std::string err) {
-			std::scoped_lock lock(m_PublishTask.Mutex);
-			m_PublishTask.Stage = PublishStage::Error;
-			m_PublishTask.Error = std::move(err);
-			m_PublishTask.Running = false;
-			m_PublishTask.Finished = true;
-			m_PublishTask.Success = false;
-		};
-
-		const std::filesystem::path tool = PackageTool::ResolveExecutable();
-		if (tool.empty()) { fail("Index-PackageTool not found"); return; }
-
-		std::error_code ec;
-		std::filesystem::create_directories(outputDir, ec);
-
-		const std::string zipFilename = id + "-" + version + ".zip";
-		const std::filesystem::path zipPath = std::filesystem::path(outputDir) / zipFilename;
-		// Refuse the half-baked state of a previous run: if the file already
-		// exists, blow it away first. PackageTool zip refuses to overwrite.
-		std::filesystem::remove(zipPath, ec);
-
-		setStage(PublishStage::Zipping, 0.0f);
-
-		std::vector<std::string> zipCmd;
-		if (tool.extension() == ".dll") { zipCmd.push_back("dotnet"); zipCmd.push_back(tool.string()); }
-		else { zipCmd.push_back(tool.string()); }
-		zipCmd.push_back("zip");
-		zipCmd.push_back(projectPath);
-		zipCmd.push_back(zipPath.string());
-
-		const Process::Result zipResult = Process::Run(zipCmd, {}, std::chrono::milliseconds(0));
-		if (!zipResult.Succeeded()) {
-			fail("PackageTool zip failed (exit code "
-				+ std::to_string(zipResult.ExitCode) + ")");
-			return;
-		}
-
-		setStage(PublishStage::Hashing, 0.0f);
-		std::string sha, hashError;
-		if (!Hash::Sha256OfFile(zipPath, sha, hashError)) {
-			fail("SHA-256 failed: " + hashError);
-			return;
-		}
-		const std::uintmax_t size = std::filesystem::file_size(zipPath, ec);
-
-		setStage(PublishStage::WritingEntry, 0.0f);
-
-		// Build the entry JSON in the same shape PublishProject.py produces.
-		Json::Value entry = Json::Value::MakeObject();
-		entry.AddMember("id", Json::Value(id));
-		entry.AddMember("name", Json::Value(name.empty() ? id : name));
-		entry.AddMember("author", Json::Value(author));
-		entry.AddMember("shortDescription", Json::Value(shortDesc));
-		entry.AddMember("description", Json::Value(description));
-		{
-			Json::Value tagArr = Json::Value::MakeArray();
-			std::string buf;
-			for (char c : tags) {
-				if (c == ',') { if (!buf.empty()) { tagArr.Append(Json::Value(buf)); buf.clear(); } }
-				else if (c != ' ' || !buf.empty()) { buf.push_back(c); }
-			}
-			while (!buf.empty() && buf.back() == ' ') buf.pop_back();
-			if (!buf.empty()) tagArr.Append(Json::Value(buf));
-			entry.AddMember("tags", std::move(tagArr));
-		}
-		entry.AddMember("category", Json::Value(category));
-		entry.AddMember("version", Json::Value(version));
-		entry.AddMember("license", Json::Value(license));
-		entry.AddMember("thumbnail", Json::Value(std::string("")));
-		entry.AddMember("screenshots", Json::Value::MakeArray());
-
-		const std::string archiveUrl =
-			"https://github.com/" + archiveRepo
-			+ "/releases/download/" + archiveTag + "/" + zipFilename;
-
-		Json::Value archive = Json::Value::MakeObject();
-		archive.AddMember("url", Json::Value(archiveUrl));
-		archive.AddMember("sha256", Json::Value(sha));
-		archive.AddMember("sizeBytes", Json::Value(static_cast<uint64_t>(size)));
-		archive.AddMember("rootInZip", Json::Value(std::string("")));
-		entry.AddMember("archive", std::move(archive));
-
-		if (!engineMin.empty()) {
-			Json::Value engineObj = Json::Value::MakeObject();
-			engineObj.AddMember("minVersion", Json::Value(engineMin));
-			entry.AddMember("engine", std::move(engineObj));
-		}
-
-		Json::Value pkgArr = Json::Value::MakeArray();
-		{
-			std::string buf;
-			for (char c : requiredPackages) {
-				if (c == ',') { if (!buf.empty()) { pkgArr.Append(Json::Value(buf)); buf.clear(); } }
-				else { buf.push_back(c); }
-			}
-			if (!buf.empty()) pkgArr.Append(Json::Value(buf));
-		}
-		entry.AddMember("requiredPackages", std::move(pkgArr));
-
-		const std::string entryJson = Json::Stringify(entry, /*pretty=*/true);
-		const std::filesystem::path entryPath
-			= std::filesystem::path(outputDir) / (id + "-" + version + ".entry.json");
-		std::ofstream out(entryPath, std::ios::binary | std::ios::trunc);
-		if (!out.is_open()) {
-			fail("Couldn't write entry JSON to " + entryPath.string());
-			return;
-		}
-		out << entryJson << "\n";
-		out.close();
-
-		{
-			std::scoped_lock lock(m_PublishTask.Mutex);
-			m_PublishTask.Stage = PublishStage::Done;
-			m_PublishTask.Progress = 1.0f;
-			m_PublishTask.Running = false;
-			m_PublishTask.Finished = true;
-			m_PublishTask.Success = true;
-			m_PublishTask.TargetZipPath = zipPath.string();
-			m_PublishTask.TargetEntryPath = entryPath.string();
-			m_PublishTask.EntryJsonForDisplay = std::move(entryJson);
-		}
-		IDX_CORE_INFO_TAG("Publish", "Published '{}' v{} -> {}", id, version, zipPath.string());
-	}
-
-	void LauncherLayer::PollPublishProjectTask() {
-		// No cross-frame side effects beyond what the worker writes — the
-		// modal reads under the same mutex each frame. This stub exists so
-		// future "auto-update Index-AssetLibrary clone" steps have a hook.
-	}
-
-	void LauncherLayer::RenderPublishProjectModal() {
-		constexpr const char* k_PublishId = "###LauncherPublish";
-
-		if (m_OpenPublishPopup) {
-			ImGui::OpenPopup(k_PublishId);
-			m_OpenPublishPopup = false;
-		}
-
-		ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-		ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
-
-		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		const std::string title = IDX_TR("launcher.publish.title") + std::string(k_PublishId);
-		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
-			return;
-		}
-
-		// Snapshot task state under the lock.
-		PublishStage stage;
-		float progress;
-		std::string taskError, zipPath, entryPath, entryJson;
-		bool running, finished, success;
-		{
-			std::scoped_lock lock(m_PublishTask.Mutex);
-			stage = m_PublishTask.Stage;
-			progress = m_PublishTask.Progress;
-			taskError = m_PublishTask.Error;
-			zipPath = m_PublishTask.TargetZipPath;
-			entryPath = m_PublishTask.TargetEntryPath;
-			entryJson = m_PublishTask.EntryJsonForDisplay;
-			running = m_PublishTask.Running;
-			finished = m_PublishTask.Finished;
-			success = m_PublishTask.Success;
-		}
-
-		if (success && finished) {
-			// Success view: paths, entry JSON, next steps.
-			ImGui::TextUnformatted(IDX_TR("launcher.publish.success.header").c_str());
-			ImGui::TextDisabled("%s", zipPath.c_str());
-			ImGui::TextDisabled("%s", entryPath.c_str());
-			ImGui::Spacing();
-			ImGui::Separator();
-			ImGui::Spacing();
-			ImGui::TextUnformatted(IDX_TR("launcher.publish.success.next_steps").c_str());
-
-			const std::string archiveRepoStr = m_PublishArchiveRepo;
-			const std::string archiveTagStr = m_PublishArchiveTag;
-			const std::string zipName = std::filesystem::path(zipPath).filename().string();
-			ImGui::BulletText("%s", std::vformat(
-				IDX_TR("launcher.publish.success.step_release"),
-				std::make_format_args(archiveRepoStr, archiveTagStr)).c_str());
-			ImGui::BulletText("%s", std::vformat(
-				IDX_TR("launcher.publish.success.step_upload"),
-				std::make_format_args(zipName)).c_str());
-			ImGui::BulletText("%s", IDX_TR("launcher.publish.success.step_index").c_str());
-
-			ImGui::Spacing();
-			ImGui::TextDisabled("Entry JSON (also written to disk):");
-			// Multiline read-only display so the user can copy with right-click.
-			ImGui::InputTextMultiline("##PublishEntryView",
-				entryJson.data(), entryJson.size() + 1,
-				ImVec2(-1, 200),
-				ImGuiInputTextFlags_ReadOnly);
-
-			ImGui::Spacing();
-			ImGui::Separator();
-			if (ImGui::Button(IDX_TR("launcher.publish.open_dist").c_str(), ImVec2(180, 0))) {
-#ifdef IDX_PLATFORM_WINDOWS
-				ShellExecuteA(nullptr, "open",
-					std::filesystem::path(zipPath).parent_path().string().c_str(),
-					nullptr, nullptr, SW_SHOWDEFAULT);
-#endif
-			}
-			ImGui::SameLine();
-			if (ImGui::Button(IDX_TR("launcher.publish.close_button").c_str(), ImVec2(120, 0))) {
-				m_PublishSourceProject.reset();
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::EndPopup();
-			return;
-		}
-
-		if (running) {
-			// In-flight view.
-			const char* stageKey =
-				stage == PublishStage::Zipping ? "launcher.publish.progress.zipping" :
-				stage == PublishStage::Hashing ? "launcher.publish.progress.hashing" :
-				stage == PublishStage::WritingEntry ? "launcher.publish.progress.writing_entry" :
-				"launcher.publish.progress.done";
-			ImGui::TextUnformatted(IDX_TR(stageKey).c_str());
-			ImGui::ProgressBar(progress, ImVec2(-1, 0), "");
-			ImGui::EndPopup();
-			return;
-		}
-
-		// Form view.
-		ImGui::TextDisabled("%s", IDX_TR("launcher.publish.field.project").c_str());
-		ImGui::TextUnformatted(m_PublishSourceProject.has_value()
-			? m_PublishSourceProject->Name.c_str()
-			: "(none)");
-		ImGui::Separator();
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.id").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishId", m_PublishId, sizeof(m_PublishId));
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.version").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishVersion", m_PublishVersion, sizeof(m_PublishVersion));
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.name").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishName", m_PublishName, sizeof(m_PublishName));
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.short").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishShort", m_PublishShort, sizeof(m_PublishShort));
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.tags").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishTags", m_PublishTags, sizeof(m_PublishTags));
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.category").c_str());
-		ImGui::SetNextItemWidth(-1);
-		const char* k_Categories[] = { "Template", "Sample", "Demo" };
-		ImGui::Combo("##PublishCategory", &m_PublishCategoryIndex,
-			k_Categories, IM_ARRAYSIZE(k_Categories));
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.license").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishLicense", m_PublishLicense, sizeof(m_PublishLicense));
-
-		ImGui::Spacing();
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.archive_repo").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishArchiveRepo", m_PublishArchiveRepo, sizeof(m_PublishArchiveRepo));
-		ImGui::TextDisabled("%s", IDX_TR("launcher.publish.field.archive_repo_hint").c_str());
-
-		ImGui::TextUnformatted(IDX_TR("launcher.publish.field.archive_tag").c_str());
-		ImGui::SetNextItemWidth(-1);
-		ImGui::InputText("##PublishArchiveTag", m_PublishArchiveTag, sizeof(m_PublishArchiveTag));
-
-		if (!m_PublishFormError.empty()) {
-			ImGui::Spacing();
-			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", m_PublishFormError.c_str());
-		}
-		if (stage == PublishStage::Error && !taskError.empty()) {
-			ImGui::Spacing();
-			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", taskError.c_str());
-		}
-
-		ImGui::Spacing();
-		ImGui::Separator();
-		if (ImGui::Button(IDX_TR("launcher.publish.publish_button").c_str(), ImVec2(140, 0))) {
-			StartPublishProject();
-		}
-		ImGui::SameLine();
-		if (ImGui::Button(IDX_TR("launcher.publish.cancel_button").c_str(), ImVec2(120, 0))) {
-			m_PublishSourceProject.reset();
-			m_PublishFormError.clear();
 			ImGui::CloseCurrentPopup();
 		}
 

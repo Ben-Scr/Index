@@ -61,11 +61,11 @@ namespace Index {
 
 	void Rigidbody2DComponent::SetAngularVelocity(float velocity) {
 		IDX_RB_GUARD();
-		b2Body_SetAngularVelocity(m_BodyId, -velocity);
+		b2Body_SetAngularVelocity(m_BodyId, velocity);
 	}
 	float Rigidbody2DComponent::GetAngularVelocity() const {
 		if (!IsValid()) return 0.0f;
-		return -b2Body_GetAngularVelocity(m_BodyId);
+		return b2Body_GetAngularVelocity(m_BodyId);
 	}
 
 	void Rigidbody2DComponent::SetGravityScale(float gravityScale) {
@@ -112,8 +112,10 @@ namespace Index {
 
 	void Rigidbody2DComponent::SetRotation(float radians) {
 		IDX_RB_GUARD();
-		// Negate to match GetRotation's convention (see Transform2DComponent::GetB2Rotation).
-		b2Body_SetTransform(m_BodyId, b2Body_GetPosition(m_BodyId), b2Rot(std::cos(radians), -std::sin(radians)));
+		// Standard b2Rot encoding (cos, sin) — see Transform2DComponent::GetB2Rotation
+		// for the matching convention. Both sides of the boundary use the same
+		// CCW-positive frame.
+		b2Body_SetTransform(m_BodyId, b2Body_GetPosition(m_BodyId), b2Rot(std::cos(radians), std::sin(radians)));
 	}
 	void Rigidbody2DComponent::SetPosition(const Vec2& position) {
 		IDX_RB_GUARD();
@@ -128,7 +130,43 @@ namespace Index {
 
 	float Rigidbody2DComponent::GetRotation() const {
 		if (!IsValid()) return 0.0f;
-		return -b2Rot_GetAngle(b2Body_GetRotation(m_BodyId));
+		return b2Rot_GetAngle(b2Body_GetRotation(m_BodyId));
+	}
+
+	// ── Motion locks ────────────────────────────────────────────
+	// Mutate one axis / rotation without disturbing the others — round-
+	// trip through b2Body_GetMotionLocks so a partial set never silently
+	// clears flags the user enabled through a sibling setter, the C#
+	// binding, or the inspector earlier in the same frame.
+	void Rigidbody2DComponent::SetFreezePositionX(bool freeze) {
+		IDX_RB_GUARD();
+		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
+		locks.linearX = freeze;
+		b2Body_SetMotionLocks(m_BodyId, locks);
+	}
+	void Rigidbody2DComponent::SetFreezePositionY(bool freeze) {
+		IDX_RB_GUARD();
+		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
+		locks.linearY = freeze;
+		b2Body_SetMotionLocks(m_BodyId, locks);
+	}
+	void Rigidbody2DComponent::SetFreezeRotation(bool freeze) {
+		IDX_RB_GUARD();
+		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
+		locks.angularZ = freeze;
+		b2Body_SetMotionLocks(m_BodyId, locks);
+	}
+	bool Rigidbody2DComponent::GetFreezePositionX() const {
+		if (!IsValid()) return false;
+		return b2Body_GetMotionLocks(m_BodyId).linearX;
+	}
+	bool Rigidbody2DComponent::GetFreezePositionY() const {
+		if (!IsValid()) return false;
+		return b2Body_GetMotionLocks(m_BodyId).linearY;
+	}
+	bool Rigidbody2DComponent::GetFreezeRotation() const {
+		if (!IsValid()) return false;
+		return b2Body_GetMotionLocks(m_BodyId).angularZ;
 	}
 
 	void Rigidbody2DComponent::SetEnabled(bool enabled) {

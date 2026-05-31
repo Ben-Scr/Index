@@ -96,6 +96,11 @@ namespace Index {
 		uint32_t m_BackendId       = 0;
 		uint64_t m_ColorTextureId  = 0;
 		uint32_t m_DepthRenderbuffer = 0;
+		// Colour format of the live attachment, tracked so Recreate's same-size
+		// fast-path also detects a FORMAT change (e.g. RGBA8 -> RGBA16F at equal
+		// size). Without it the old-format texture would be kept and silently
+		// mismatch the render pass built for the requested format.
+		TextureFormat m_ColorFormat = TextureFormat::RGBA8;
 
 		Viewport m_Viewport{ 0, 0 };
 	};

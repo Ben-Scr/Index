@@ -245,6 +245,14 @@ namespace Index {
 		}
 
 		// ── Texture / audio ref helpers ─────────────────────────────
+		// `setHandle` arity dispatch matches the slice-aware overload in
+		// PropertyRegistration's MakeTextureRef: the inner assign can be
+		// either the legacy `(Component&, TextureHandle, UUID)` form or the
+		// slice-aware `(Component&, TextureHandle, UUID, const std::string&)`
+		// form. The wrapping lambda always receives the slice name from
+		// MakeTextureRef and forwards it only when the inner setter declares
+		// it accepts one — components that don't pair a texture with a
+		// sprite-name field stay on the 3-arg shape unchanged.
 		template <typename T, typename HandleAccessor, typename HandleAssign>
 		PropertyDescriptor MakeTextureRefDirect(const std::string& name, const std::string& displayName,
 			HandleAccessor getHandle, HandleAssign setHandle)
@@ -267,7 +275,7 @@ namespace Index {
 					const auto handle = getHandle(component);
 					return handle.IsValid() ? TextureManager::GetTextureAssetUUID(handle) : 0ull;
 				},
-				[setHandle](Entity& e, uint64_t uuid) {
+				[setHandle](Entity& e, uint64_t uuid, [[maybe_unused]] const std::string& sliceName) {
 					auto& component = e.GetComponent<T>();
 					TextureHandle h = uuid != 0
 						? TextureManager::LoadTextureByUUID(uuid)
@@ -277,7 +285,12 @@ namespace Index {
 						AssetRegistry::Sync();
 						h = TextureManager::LoadTextureByUUID(uuid);
 					}
-					setHandle(component, h, UUID(uuid));
+					if constexpr (std::is_invocable_v<HandleAssign, T&, TextureHandle, UUID, const std::string&>) {
+						setHandle(component, h, UUID(uuid), sliceName);
+					}
+					else {
+						setHandle(component, h, UUID(uuid));
+					}
 				});
 		}
 	}
@@ -350,9 +363,22 @@ namespace Index {
 					}),
 				MakeTextureRefDirect<SpriteRendererComponent>("Texture", "Texture",
 					[](const SpriteRendererComponent& s) { return s.TextureHandle; },
-					[](SpriteRendererComponent& s, TextureHandle h, UUID assetId) {
+					// Slice-aware setter. `sliceName` is non-empty when the
+					// source was a sprite-sheet slice (Asset Browser expanded
+					// tile drag, or a ReferencePicker slice entry). In that
+					// case we set SpriteName atomically with the texture so
+					// the renderer clips to the slice on the very next frame —
+					// otherwise the user would have to drop the texture, then
+					// open the slice combo and pick the slice manually.
+					//
+					// For a regular full-texture drop / pick, `sliceName` is
+					// empty and SpriteName is cleared so the prior slice (if
+					// any) doesn't dangle onto an unrelated texture and
+					// silently render a wrong-coordinate rect.
+					[](SpriteRendererComponent& s, TextureHandle h, UUID assetId, const std::string& sliceName) {
 						s.TextureHandle = h;
 						s.TextureAssetId = assetId;
+						s.SpriteName = sliceName;
 						if (auto* tex = TextureManager::GetTexture(h); tex) {
 							tex->SetFilter(s.FilterMode);
 						}
@@ -384,9 +410,12 @@ namespace Index {
 					}),
 				MakeTextureRefDirect<ImageComponent>("Texture", "Texture",
 					[](const ImageComponent& i) { return i.TextureHandle; },
-					[](ImageComponent& i, TextureHandle h, UUID assetId) {
+					// Slice-aware setter — see SpriteRenderer above for why
+					// SpriteName is written here too.
+					[](ImageComponent& i, TextureHandle h, UUID assetId, const std::string& sliceName) {
 						i.TextureHandle = h;
 						i.TextureAssetId = assetId;
+						i.SpriteName = sliceName;
 						if (auto* tex = TextureManager::GetTexture(h); tex) {
 							tex->SetFilter(i.FilterMode);
 						}
@@ -1086,6 +1115,24 @@ namespace Index {
 					[](Entity& e, BodyType v) {
 						e.GetComponent<Rigidbody2DComponent>().SetBodyType(v);
 					}),
+				// Constraints — route through Box2D motion-locks. The flags
+				// are stored on the live body, so changes are picked up by
+				// the solver on the next step without an extra dirty bit.
+				Properties::MakeWith<bool>("FreezePositionX", "Freeze Position X",
+					[](const Entity& e) { return e.GetComponent<Rigidbody2DComponent>().GetFreezePositionX(); },
+					[](Entity& e, bool v) {
+						e.GetComponent<Rigidbody2DComponent>().SetFreezePositionX(v);
+					}),
+				Properties::MakeWith<bool>("FreezePositionY", "Freeze Position Y",
+					[](const Entity& e) { return e.GetComponent<Rigidbody2DComponent>().GetFreezePositionY(); },
+					[](Entity& e, bool v) {
+						e.GetComponent<Rigidbody2DComponent>().SetFreezePositionY(v);
+					}),
+				Properties::MakeWith<bool>("FreezeRotation", "Freeze Rotation",
+					[](const Entity& e) { return e.GetComponent<Rigidbody2DComponent>().GetFreezeRotation(); },
+					[](Entity& e, bool v) {
+						e.GetComponent<Rigidbody2DComponent>().SetFreezeRotation(v);
+					}),
 			});
 
 		RegisterComponent<BoxCollider2DComponent>(sceneManager, "Box Collider 2D",
@@ -1098,7 +1145,7 @@ namespace Index {
 							e.GetComponent<BoxCollider2DComponent>().SetCenter(v, *s);
 						}
 					},
-					Properties::Meta::DragSpeed(0.05f)),
+					Properties::Meta::DragSpeed(0.05f).WithHideStepperButtons(true)),
 				Properties::MakeWith<Vec2>("Size", "Size",
 					[](const Entity& e) {
 						const Scene* s = e.GetScene();
@@ -1111,7 +1158,7 @@ namespace Index {
 						const Vec2 clamped{ std::max(localSize.x, 0.001f), std::max(localSize.y, 0.001f) };
 						e.GetComponent<BoxCollider2DComponent>().SetScale(clamped, *s);
 					},
-					Properties::Meta::Clamp(0.001, 1000.0, 0.05f)),
+					Properties::Meta::Clamp(0.001, 1000.0, 0.05f).WithHideStepperButtons(true)),
 				Properties::MakeWith<bool>("Sensor", "Sensor",
 					[](const Entity& e) { return e.GetComponent<BoxCollider2DComponent>().IsSensor(); },
 					[](Entity& e, bool v) {
@@ -1157,7 +1204,7 @@ namespace Index {
 							e.GetComponent<CircleCollider2DComponent>().SetCenter(v, *s);
 						}
 					},
-					Properties::Meta::DragSpeed(0.05f)),
+					Properties::Meta::DragSpeed(0.05f).WithHideStepperButtons(true)),
 				Properties::MakeWith<float>("Radius", "Radius",
 					[](const Entity& e) {
 						const Scene* s = e.GetScene();
@@ -1216,7 +1263,7 @@ namespace Index {
 							e.GetComponent<PolygonCollider2DComponent>().SetCenter(v, *s);
 						}
 					},
-					Properties::Meta::DragSpeed(0.05f)),
+					Properties::Meta::DragSpeed(0.05f).WithHideStepperButtons(true)),
 				Properties::MakeWith<int>("Sides", "Sides",
 					[](const Entity& e) { return e.GetComponent<PolygonCollider2DComponent>().GetSides(); },
 					[](Entity& e, int v) {
@@ -1243,7 +1290,7 @@ namespace Index {
 						const Vec2 clamped{ std::max(localSize.x, 0.001f), std::max(localSize.y, 0.001f) };
 						e.GetComponent<PolygonCollider2DComponent>().SetSize(clamped, *s);
 					},
-					Properties::Meta::Clamp(0.001, 1000.0, 0.05f)),
+					Properties::Meta::Clamp(0.001, 1000.0, 0.05f).WithHideStepperButtons(true)),
 				Properties::MakeWith<bool>("Sensor", "Sensor",
 					[](const Entity& e) { return e.GetComponent<PolygonCollider2DComponent>().IsSensor(); },
 					[](Entity& e, bool v) {
@@ -1323,7 +1370,7 @@ namespace Index {
 					[](Entity& e, const Vec2& v) {
 						e.GetComponent<FastBoxCollider2DComponent>().SetHalfExtents(v);
 					},
-					Properties::Meta::DragSpeed(0.05f)),
+					Properties::Meta::DragSpeed(0.05f).WithHideStepperButtons(true)),
 			});
 
 		RegisterComponent<FastCircleCollider2DComponent>(sceneManager, "Fast Circle Collider 2D",

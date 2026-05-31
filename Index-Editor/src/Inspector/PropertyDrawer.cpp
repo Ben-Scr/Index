@@ -4,6 +4,7 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/ImGuiUtils.hpp"
+#include "Gui/SpriteSliceDragPayload.hpp"
 #include "Inspector/PropertyType.hpp"
 #include "Inspector/PropertyValue.hpp"
 #include "Inspector/ReferencePicker.hpp"
@@ -397,18 +398,22 @@ namespace Index::PropertyDrawer {
 				// scales with MultiLineRows so authors get something
 				// closer to a textarea than a one-liner.
 				static constexpr int k_MultiLineCapacity = 4096;
-				std::vector<char> buf(k_MultiLineCapacity, '\0');
+				// Reused scratch: DrawString runs serially on the UI thread, so a
+				// static buffer avoids a 4 KB heap allocation per multi-line field
+				// every frame. Re-null each call (snprintf below fills it when uniform).
+				static char buf[k_MultiLineCapacity];
+				buf[0] = '\0';
 				if (uniform) {
-					std::snprintf(buf.data(), buf.size(), "%s", v.StringValue.c_str());
+					std::snprintf(buf, sizeof(buf), "%s", v.StringValue.c_str());
 				}
 				const int rows = std::max(2, d.Metadata.MultiLineRows);
 				const float lineHeight = ImGui::GetTextLineHeight();
 				const ImVec2 size{ -FLT_MIN, lineHeight * static_cast<float>(rows) + 8.0f };
-				changed = ImGui::InputTextMultiline("##Value", buf.data(), buf.size(), size);
+				changed = ImGui::InputTextMultiline("##Value", buf, sizeof(buf), size);
 				if (changed) {
 					PropertyValue out;
 					out.Type = PropertyType::String;
-					out.StringValue.assign(buf.data());
+					out.StringValue.assign(buf);
 					WriteAll(entities, d, out);
 				}
 			}
@@ -445,7 +450,10 @@ namespace Index::PropertyDrawer {
 			const float componentSpacing = style.ItemInnerSpacing.x;
 			const float componentWidth = std::max(1.0f,
 				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
-			const float buttonWidth = std::min(22.0f, std::max(16.0f, componentWidth * 0.22f));
+			const bool showSteppers = !d.Metadata.HideStepperButtons;
+			const float buttonWidth = showSteppers
+				? std::min(22.0f, std::max(16.0f, componentWidth * 0.22f))
+				: 0.0f;
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
@@ -458,19 +466,24 @@ namespace Index::PropertyDrawer {
 				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
 				bool channelChanged = false;
-				if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
-					channel -= speed;
-					channelChanged = true;
+				if (showSteppers) {
+					if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
+						channel -= speed;
+						channelChanged = true;
+					}
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 				}
-				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				const float inputWidth = std::max(1.0f,
-					componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f);
+				const float inputWidth = showSteppers
+					? std::max(1.0f, componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
+					: componentWidth;
 				ImGui::SetNextItemWidth(inputWidth);
 				channelChanged |= ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
-				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
-					channel += speed;
-					channelChanged = true;
+				if (showSteppers) {
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+					if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
+						channel += speed;
+						channelChanged = true;
+					}
 				}
 				const bool changed = channelChanged && channel != pre;
 				if (changed) {
@@ -496,7 +509,10 @@ namespace Index::PropertyDrawer {
 			const float componentSpacing = style.ItemInnerSpacing.x;
 			const float componentWidth = std::max(1.0f,
 				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
-			const float buttonWidth = std::min(22.0f, std::max(16.0f, componentWidth * 0.22f));
+			const bool showSteppers = !d.Metadata.HideStepperButtons;
+			const float buttonWidth = showSteppers
+				? std::min(22.0f, std::max(16.0f, componentWidth * 0.22f))
+				: 0.0f;
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
@@ -506,19 +522,24 @@ namespace Index::PropertyDrawer {
 				int channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%d";
 				bool channelChanged = false;
-				if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
-					channel -= std::max(1, static_cast<int>(speed));
-					channelChanged = true;
+				if (showSteppers) {
+					if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
+						channel -= std::max(1, static_cast<int>(speed));
+						channelChanged = true;
+					}
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 				}
-				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				const float inputWidth = std::max(1.0f,
-					componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f);
+				const float inputWidth = showSteppers
+					? std::max(1.0f, componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
+					: componentWidth;
 				ImGui::SetNextItemWidth(inputWidth);
 				channelChanged |= ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
-				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
-					channel += std::max(1, static_cast<int>(speed));
-					channelChanged = true;
+				if (showSteppers) {
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+					if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
+						channel += std::max(1, static_cast<int>(speed));
+						channelChanged = true;
+					}
 				}
 				const bool changed = channelChanged && channel != pre;
 				if (changed) {
@@ -773,10 +794,47 @@ namespace Index::PropertyDrawer {
 						ReferencePicker::CollectAssetsByKind(kind), style);
 				},
 				[kind](PropertyValue& outValue) {
+					// Slice payload first — when the source is a sprite-sheet
+					// slice tile from the Asset Browser, we want to set BOTH
+					// the texture UUID and the slice name. Generic texture
+					// refs ignore the slice name via the legacy 2-arg setter;
+					// SpriteRenderer / Image consume both via the slice-aware
+					// 3-arg setter. The slice payload is checked before the
+					// generic ASSET_BROWSER_ITEM so a slice drag never
+					// accidentally falls into the texture-only branch when
+					// ImGui's payload dispatcher tries them in registration
+					// order.
+					if (kind == AssetKind::Texture) {
+						if (const ImGuiPayload* slicePayload =
+							ImGui::AcceptDragDropPayload(k_SpriteSliceDragPayloadType))
+						{
+							if (slicePayload->DataSize == sizeof(SpriteSliceDragPayload)) {
+								const auto* p = static_cast<const SpriteSliceDragPayload*>(slicePayload->Data);
+								// Hardening: the payload struct is fixed-size but the
+								// strings inside may have been truncated on copy.
+								// Treat anything past the first NUL as the wire value
+								// and reject empty texture paths outright.
+								const std::string texturePath(p->TexturePath);
+								const std::string sliceName(p->SliceName);
+								if (!texturePath.empty()) {
+									const uint64_t assetId = AssetRegistry::GetOrCreateAssetUUID(texturePath);
+									if (assetId != 0 && AssetRegistry::GetKind(assetId) == AssetKind::Texture) {
+										outValue.UIntValue = assetId;
+										outValue.StringValue = sliceName;
+										return true;
+									}
+								}
+							}
+						}
+					}
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
 						const uint64_t assetId = ResolveDroppedAssetId(payload);
 						if (assetId != 0 && AssetRegistry::GetKind(assetId) == kind) {
 							outValue.UIntValue = assetId;
+							// Clear any stale slice from a previous drop on the
+							// same field so the slice-aware setter reverts the
+							// entity to "full texture" rendering.
+							outValue.StringValue.clear();
 							return true;
 						}
 					}

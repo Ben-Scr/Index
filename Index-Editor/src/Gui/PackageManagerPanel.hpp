@@ -27,13 +27,13 @@ namespace Index {
 		void Shutdown();
 		void Render();
 
-		// Cloud-install introspection — surfaced so the editor's unified
-		// loading popup (Win32BuildProgressWindow) can show a progress
-		// window without the panel depending on it directly.
-		bool IsCloudInstallRunning() const;
-		// Snapshots stage + progress under the task mutex. Returns false if
-		// the task isn't running (out-params left untouched).
-		bool TryGetCloudInstallProgress(std::string& outStage, float& outProgress) const;
+		// True if a cloud-install or post-install automation is currently in flight.
+		// Outputs the OS popup title ("Downloading <PackageName>...") plus the
+		// fine-grained stage label and 0..1 progress fraction the chrome should
+		// pipe into Win32BuildProgressWindow. The editor chrome owns the unified
+		// popup so build / script-compile / package work share one indicator
+		// instead of stacking multiple in-panel strips.
+		bool GetActiveLoadingPopup(std::string& outTitle, std::string& outStage, float& outProgress);
 
 	private:
 		// ── Top-level tabs ──────────────────────────────────────────────────────────
@@ -92,13 +92,35 @@ namespace Index {
 		// After a successful Index-package install or removal, refresh editor-side
 		// package state without touching the engine solution. The project allow-list
 		// and Packages/IndexPackages.props are updated by IndexPackageInstaller.
-		void StartPostInstallAutomation();
+		//
+		// `justInstalledPackageName` is the name of the package that was just added
+		// to the project's allow-list (empty on uninstall / cleanup paths). When
+		// non-empty, the post-load step calls PackageHost::IsPackageLoaded(name)
+		// after the LoadInstalled rescan — if the package failed to load (e.g.
+		// the published DLL was built against a different engine ABI and the
+		// SEH guard in PackageHost trapped a crash), the install is auto-rolled-
+		// back (UninstallFromProject), the user keeps a working project, and the
+		// error popup explains what happened.
+		void StartPostInstallAutomation(const std::string& justInstalledPackageName = {});
 
 		// Per-frame poll for the async automate worker; pulls completed results.
 		void PollAutomationTask();
 
+		// Set by StartPostInstallAutomation when an install (not an uninstall)
+		// triggered the automation. PollAutomationTask reads + clears this when
+		// the worker reports Finished so it can verify the package actually
+		// loaded; on failure it auto-uninstalls the package from the project
+		// allow-list. Empty string means "uninstall or other refresh; no
+		// load-success check required."
+		std::string m_PendingPostInstallPackageName;
+
 		struct AutomationTaskState {
 			std::mutex Mutex;
+			// Window-level title shown in the shared Win32BuildProgressWindow.
+			// Set once when StartPostInstallAutomation kicks the worker so the
+			// title stays stable across stage transitions (vs. the Stage field
+			// which the worker mutates as it advances).
+			std::string Title = "Refreshing Packages...";
 			std::string Stage = "Idle";
 			float Progress = 0.0f;
 			std::atomic<bool> Running{ false };
@@ -177,6 +199,12 @@ namespace Index {
 		// the newly-extracted directory and then StartPostInstallAutomation.
 		struct CloudInstallTaskState {
 			std::mutex Mutex;
+			// Window-level title for the shared Win32BuildProgressWindow —
+			// always "Downloading <Name>..." once HandleCloudInstall captures
+			// the registry entry. PackageName below is reserved for the
+			// post-download InstallToProject hand-off and stays empty until
+			// the worker actually verifies + extracts the archive.
+			std::string Title = "Downloading...";
 			std::string Stage = "Idle";
 			float Progress = 0.0f;
 			std::atomic<bool> Running{ false };
@@ -188,6 +216,38 @@ namespace Index {
 		std::shared_ptr<CloudInstallTaskState> m_CloudInstallTask;
 		std::thread m_CloudInstallWorker;
 		void PollCloudInstallTask();
+
+		// Background `git clone` for the "Install from git URL" flow. A clone is a
+		// network operation that can take many seconds; running it on the render
+		// thread froze the whole editor. The worker clones; PollGitInstallTask()
+		// runs the InstallToProject + StartPostInstallAutomation continuation on
+		// the main thread (project state must not be touched off-thread).
+		struct GitInstallTaskState {
+			std::mutex Mutex;
+			std::atomic<bool> Running{ false };
+			bool Finished = false;
+			bool Success = false;
+			std::string Message;
+			std::string PackageName;
+		};
+		std::shared_ptr<GitInstallTaskState> m_GitInstallTask;
+		std::thread m_GitInstallWorker;
+		void PollGitInstallTask();
+
+		// Background NewPackage.py scaffolder for the "Create new package" wizard.
+		// Python startup is environment-dependent (cold disk / CI can take seconds),
+		// so the synchronous Process::Run froze the editor mid-click.
+		struct NewPackageTaskState {
+			std::mutex Mutex;
+			std::atomic<bool> Running{ false };
+			bool Finished = false;
+			bool Success = false;
+			std::string Output;      // formatted scaffolder failure text (empty on success)
+			std::string PackageName; // captured at spawn for the install continuation
+		};
+		std::shared_ptr<NewPackageTaskState> m_NewPackageTask;
+		std::thread m_NewPackageWorker;
+		void PollNewPackageTask();
 
 		// Modal popup shown when a cloud install fails. Multi-line errors
 		// (network stack traces, SHA mismatches, malformed-zip messages)

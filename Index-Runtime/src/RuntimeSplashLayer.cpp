@@ -1,11 +1,13 @@
 #include "RuntimeSplashLayer.hpp"
 #include "RuntimeImGuiHost.hpp"
 
+#include "Collections/Color.hpp"
 #include "Collections/Viewport.hpp"
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Core/Time.hpp"
 #include "Core/Window.hpp"
+#include "Graphics/RenderApi.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Project/IndexProject.hpp"
@@ -167,13 +169,30 @@ namespace Index {
 			}
 		}
 
-		RuntimeImGuiHost::BeginFrame();
-
+		// Aspect-locked builds render the game inside a centered sub-rect
+		// of the swap chain. The splash uses ImGui (which manages its own
+		// per-draw scissor / viewport from ImDrawData), so the engine's
+		// cached-viewport plumbing in WebGPUBackend::ApplyCachedViewportToPass
+		// doesn't touch the splash's pass — it would land at the top-left
+		// of the OS window with whatever was previously in the surround
+		// pixels (typically dark grey / undefined). Renderer2D::BeginFrame
+		// also can't help here: at splash time no scenes are loaded, so
+		// it returns early without clearing.
+		//
+		// Paint the whole swap chain black first (full-attachment loadOp=
+		// Clear), then offset the splash's ImGui window to the sub-rect.
+		// For non-aspect-locked builds the offset is (0, 0) and the sub-
+		// rect IS the full window — visually identical to the legacy path.
 		int width = 0, height = 0;
+		int offsetX = 0, offsetY = 0;
+		bool hasLetterbox = false;
 		if (Window* window = app.GetWindow()) {
 			if (Viewport* vp = Window::GetMainViewport()) {
 				width = vp->GetWidth();
 				height = vp->GetHeight();
+				offsetX = vp->GetOffsetX();
+				offsetY = vp->GetOffsetY();
+				hasLetterbox = vp->HasLetterbox();
 			}
 			else {
 				width = window->GetWidth();
@@ -181,6 +200,14 @@ namespace Index {
 			}
 		}
 		if (width <= 0 || height <= 0) return;
+
+		if (hasLetterbox && RenderApi::IsInitialized()) {
+			RenderApi::BindDefaultFramebuffer();
+			RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 1.0f });
+			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
+		}
+
+		RuntimeImGuiHost::BeginFrame();
 
 		// Fade timeline. Alpha curves linearly from 0→1 over FadeIn,
 		// stays 1 during Hold, then 1→0 over FadeOut. The background
@@ -194,7 +221,12 @@ namespace Index {
 		}
 		alpha = std::clamp(alpha, 0.0f, 1.0f);
 
-		ImGui::SetNextWindowPos(ImVec2(0, 0));
+		// Anchor at the centered sub-rect's top-left in framebuffer coords.
+		// In non-aspect-locked builds the offset is (0, 0) so this is the
+		// historical "fill whole window" behaviour. In locked builds the
+		// splash now sits inside the sub-rect with the BLACK clear above
+		// showing through as letterbox / pillarbox bars.
+		ImGui::SetNextWindowPos(ImVec2(static_cast<float>(offsetX), static_cast<float>(offsetY)));
 		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);

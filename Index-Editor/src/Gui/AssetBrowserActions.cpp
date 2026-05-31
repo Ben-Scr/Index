@@ -3,6 +3,7 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Core/Log.hpp"
+#include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Project/IndexProject.hpp"
@@ -15,6 +16,7 @@
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/SceneSerializer.hpp"
+#include "Serialization/SceneSerializerShared.hpp"
 
 #include <imgui.h>
 
@@ -139,24 +141,25 @@ namespace Index {
 			}
 		}
 
-		// .scene files embed a "name" field in their JSON which Scene::SetName
-		// reads at load time. If the file is renamed but the embedded "name"
-		// keeps the old stem, reopening "Bar.scene" still shows "Foo" in the
-		// hierarchy — the bug case from the editor session. Rewrite the field
-		// in place so the on-disk file matches its filename. We preserve the
-		// pretty-printing convention SceneSerializer::SaveToFile uses.
+		// .scene files embed a "name" field which Scene::SetName reads at load
+		// time. If the file is renamed but the embedded "name" keeps the old
+		// stem, reopening "Bar.scene" still shows "Foo" in the hierarchy —
+		// the bug case from the editor session. Rewrite the field in place
+		// so the on-disk file matches its filename.
+		//
+		// Routed through SceneSerializerStorage so it works for BOTH the
+		// JSON and Binary scene formats — a binary-format scene used to
+		// silently fall through the Json::TryParse warning branch, so the
+		// embedded name stayed stale and the next reopen still loaded the
+		// pre-rename name. Re-writes in whatever format the file already
+		// uses (detected from the file's bytes) instead of forcing JSON.
 		void SyncSceneEmbeddedNameToFilename(const std::string& scenePath, const std::string& newStem) {
-			const std::string content = File::ReadAllText(scenePath);
-			if (content.empty()) {
-				return;
-			}
-
 			Json::Value root;
-			std::string parseError;
-			if (!Json::TryParse(content, root, &parseError) || !root.IsObject()) {
+			std::string readError;
+			if (!SceneSerializerStorage::ReadRootFromFile(scenePath, root, &readError) || !root.IsObject()) {
 				IDX_WARN_TAG("AssetBrowser",
-					"Renamed scene '{}' has unreadable JSON ({}); the embedded name was not updated.",
-					scenePath, parseError);
+					"Renamed scene '{}' could not be read for embedded-name sync ({}); the embedded name was not updated.",
+					scenePath, readError);
 				return;
 			}
 
@@ -170,24 +173,34 @@ namespace Index {
 				root.AddMember("name", Json::Value(newStem));
 			}
 
-			if (!File::WriteAllText(scenePath, Json::Stringify(root, true))) {
+			// Preserve the on-disk format. A binary scene rewritten as JSON
+			// would silently switch formats and break any tooling that
+			// checks the magic header.
+			const std::vector<std::uint8_t> rawBytes = File::ReadAllBytes(scenePath);
+			const SceneSerializationFormat format = SceneSerializerStorage::IsBinaryData(rawBytes)
+				? SceneSerializationFormat::Binary
+				: SceneSerializationFormat::Json;
+
+			if (!SceneSerializerStorage::WriteRootToFile(scenePath, root, format)) {
 				IDX_WARN_TAG("AssetBrowser",
 					"Failed to write renamed scene '{}' back to disk; embedded name remains stale.",
 					scenePath);
 			}
 		}
 
-		// If the renamed scene happens to be the one currently loaded, the
-		// hierarchy panel reads its name from Scene::GetName() — bring that
+		// If the renamed scene happens to be one of the currently loaded scenes,
+		// the hierarchy panel reads its name from Scene::GetName() — bring that
 		// in sync with the new filename so the user sees the change without
 		// reloading. Also nudge the project's LastOpenedScene pointer so
 		// the next launcher run loads the renamed file by its new stem.
+		// Walks every loaded scene (not just the active one) so renaming an
+		// additive / non-active scene also updates its hierarchy row.
 		void UpdateLoadedSceneNameAfterRename(const std::string& oldStem, const std::string& newStem) {
-			Scene* active = SceneManager::Get().GetActiveScene();
-			if (!active || active->GetName() != oldStem) {
-				return;
-			}
-			active->SetName(newStem);
+			SceneManager::Get().ForeachLoadedScene([&](Scene& scene) {
+				if (scene.GetName() == oldStem) {
+					scene.SetName(newStem);
+				}
+			});
 
 			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
 				if (project->LastOpenedScene == oldStem) {
@@ -1046,9 +1059,33 @@ namespace Index {
 
 	void AssetBrowser::OnExternalFileDrop(const std::vector<std::string>& paths) {
 		if (m_CurrentDirectory.empty()) return;
+		if (paths.empty()) return;
+
+		// Share the same OS-level loading popup the editor uses for
+		// "Compiling Scripts..." / "Building Project..." so the user
+		// gets identical feedback during a drag-drop import. The import
+		// is synchronous and blocks the editor's frame loop; the chrome
+		// layer's per-frame Show/Update therefore never runs while we're
+		// in here, so we drive the popup directly. Win32BuildProgressWindow
+		// calls UpdateWindow() after each InvalidateRect so the bar stays
+		// crisp even though our render thread is parked in this loop.
+		Win32BuildProgressWindow::Show("Importing Assets...");
+		const size_t total = paths.size();
 
 		int imported = 0;
-		for (const auto& sourcePath : paths) {
+		for (size_t i = 0; i < paths.size(); ++i) {
+			const std::string& sourcePath = paths[i];
+
+			// Per-item stage shows the filename being copied; progress
+			// advances at item granularity (one tick per dropped path,
+			// not per file inside a recursed directory).
+			std::string itemName;
+			try { itemName = std::filesystem::path(sourcePath).filename().string(); }
+			catch (...) { itemName = sourcePath; }
+			Win32BuildProgressWindow::Update(
+				static_cast<float>(i) / static_cast<float>(total),
+				itemName);
+
 			try {
 				std::filesystem::path src(sourcePath);
 				if (!std::filesystem::exists(src)) continue;
@@ -1090,6 +1127,11 @@ namespace Index {
 				IDX_CORE_WARN_TAG("AssetBrowser", "Failed to import '{}': {}", sourcePath, e.what());
 			}
 		}
+
+		// Snap to 1.0 so the user sees a completed bar for a moment if
+		// the post-import refresh below takes any time, then hide.
+		Win32BuildProgressWindow::Update(1.0f, "Done");
+		Win32BuildProgressWindow::Hide();
 
 		if (imported > 0) {
 			AssetRegistry::MarkDirty();

@@ -331,7 +331,31 @@ namespace Index {
 			}
 			break;
 		}
-		case PropertyType::TextureRef:
+		case PropertyType::TextureRef: {
+			// Slice-aware texture-ref encoding: the ReferencePicker emits
+			// `<textureUUID>|slice|<sliceName>` when the user picks a sprite-
+			// sheet sub-rect instead of the full texture. We split here so
+			// slice-aware setters (SpriteRenderer / Image) receive both halves
+			// in one PropertyValue: UIntValue = parent texture UUID,
+			// StringValue = slice name. Generic texture refs (Material slots,
+			// particle textures, …) ignore StringValue and behave identically
+			// to the legacy `<uuid>` form.
+			static constexpr std::string_view sliceSep = "|slice|";
+			const std::size_t sliceIdx = text.find(sliceSep);
+			if (sliceIdx != std::string::npos) {
+				v.UIntValue = ToUInt64(text.substr(0, sliceIdx));
+				v.StringValue = text.substr(sliceIdx + sliceSep.size());
+			}
+			else {
+				v.UIntValue = text.empty() ? 0 : ToUInt64(text);
+				// Explicit clear — the previous selection on the same field may
+				// have left a slice name in StringValue and a subsequent
+				// full-texture pick must wipe it so the slice-aware setter
+				// reverts the entity to "full texture" rendering.
+				v.StringValue.clear();
+			}
+			break;
+		}
 		case PropertyType::AudioRef:
 		case PropertyType::AssetRef:
 		case PropertyType::SceneRef:

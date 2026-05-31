@@ -15,6 +15,7 @@
 #include "Gui/PackageManagerPanel.hpp"
 #include "Gui/PrefabInspector.hpp"
 #include "Gui/ProfilerPanel.hpp"
+#include "Gui/SpriteEditorPanel.hpp"
 #include "Packages/PackageManager.hpp"
 #include "Editor/EditorCamera.hpp"
 #include "Graphics/Framebuffer.hpp"
@@ -35,6 +36,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <utility>
 #include <chrono>
 
 namespace Index {
@@ -97,6 +99,17 @@ namespace Index {
 		void RenderDockspaceRoot();
 		void RenderMainMenu(Scene& scene);
 		void RenderToolbar();
+
+		// Spawn Index-Runtime.exe detached against the current project
+		// without going through the Build panel. Sister to the in-editor
+		// Play button: gives the developer a one-click way to verify the
+		// scene in a real standalone window (window decorations, real OS
+		// input rebase, aspect-lock, no editor UI overlay) without baking
+		// a full project build. Saves the project to disk first so the
+		// runtime picks up the latest BuildAspect / scene-list / etc.
+		// Caller-context-only: noop with a warning if no project is loaded
+		// or Index-Runtime.exe can't be located near the editor binary.
+		void LaunchStandalone();
 		void RenderEntitiesPanel();
 		void RenderInspectorPanel(Scene& scene);
 		void RenderEditorView(Scene& scene);
@@ -490,6 +503,18 @@ namespace Index {
 		bool m_ShowPrefabSavePrompt = false;
 		std::string m_PendingPrefabSwitchPath;
 
+		// Sprite Editor panel + integration plumbing. The "Open Sprite Editor"
+		// button in the texture asset inspector flips m_ShowSpriteEditor and
+		// queues the asset path / UUID; the chrome's render dispatch drains
+		// the queue into m_SpriteEditorPanel.OpenTexture(...) the next frame.
+		// Queuing rather than calling directly keeps the OpenTexture →
+		// unsaved-changes-prompt flow happening at ImGui-render time, not
+		// mid-inspector-build.
+		bool m_ShowSpriteEditor = false;
+		std::string m_PendingSpriteEditorPath;
+		uint64_t m_PendingSpriteEditorAssetId = 0;
+		SpriteEditorPanel m_SpriteEditorPanel;
+
 		std::string m_PendingSceneFileDrop;
 		std::string m_PendingSceneSwitch;
 		std::string m_ConfirmDialogPendingPath;
@@ -502,7 +527,11 @@ namespace Index {
 		std::string m_ComponentClipboardJson;
 		std::string m_EntityClipboardJson;
 
-		std::string m_PlayModeScenePath;
+		// (scene name, on-disk path) for EVERY scene loaded at play-mode entry.
+		// Play mode is restored by reloading each scene from disk, so all loaded
+		// scenes must be snapshotted — not just the active one, or additive
+		// scenes leak their play-mode runtime state back into edit mode.
+		std::vector<std::pair<std::string, std::string>> m_PlayModeScenes;
 		bool m_PlayModeRecompilePending = false;
 		int m_StepFrames = 0;
 

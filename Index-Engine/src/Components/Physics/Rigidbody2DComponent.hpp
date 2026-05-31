@@ -44,6 +44,23 @@ namespace Index {
 
 		void SetEnabled(bool enabled);
 
+		// ── Motion locks (Freeze X / Y / Rotation) ──────────────────
+		// Routed through Box2D's native b2MotionLocks, which the solver
+		// applies by treating the locked axis / rotation as infinite mass /
+		// inertia. No per-step velocity clamping or auxiliary joints needed.
+		//
+		// Setters change the live body immediately and are safe to call from
+		// gameplay code mid-step (Box2D re-derives mass / inertia from the
+		// new locks). Getters return false when the body isn't valid yet so
+		// the inspector reads a sensible default before the physics system
+		// has spawned the body for a freshly-created entity.
+		void SetFreezePositionX(bool freeze);
+		void SetFreezePositionY(bool freeze);
+		void SetFreezeRotation(bool freeze);
+		bool GetFreezePositionX() const;
+		bool GetFreezePositionY() const;
+		bool GetFreezeRotation() const;
+
 		b2BodyId GetBodyHandle() const;
 		bool IsValid() const;
 

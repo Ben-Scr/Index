@@ -125,6 +125,18 @@ namespace Index {
 		// skips the redirect entirely and falls through to the legacy
 		// straight-to-caller render path.
 		Framebuffer    m_SceneFbo;
+		// Aspect-locked-only intermediate: when the runtime has a Window
+		// aspect lock active AND a PostProcessing2DComponent with at least
+		// one effect enabled, PostProcessor::Run's effect chain would
+		// otherwise dump its final pass straight onto the swap chain at
+		// full size (RunEffectPass doesn't apply the cached viewport).
+		// Route the final effect into this FBO instead, then do a
+		// PostProcessor::Blit composite to the swap chain — Blit applies
+		// the cached sub-rect viewport so the bars stay black and the
+		// content lands at the locked aspect. Sized to the sub-rect
+		// (matches m_SceneFbo); zero-cost when the runtime is not
+		// aspect-locked (Recreate is skipped).
+		Framebuffer    m_LetterboxOutputFbo;
 		PostProcessor  m_PostProcessor;
 
 		SceneProvider m_SceneProvider;

@@ -85,6 +85,16 @@ namespace Index {
 		void SetAspectLock(float aspect);
 		float GetAspectLock() const { return m_AspectLock; }
 
+		// One-shot reapply after the GPU surface comes up. RenderApi::Init
+		// re-configures the swap chain and resets the cached viewport to
+		// the full surface dimensions; the GLFW framebuffer-size callback
+		// — the only other path that applies the aspect-lock sub-rect —
+		// does not fire on initial window creation. Call this once after
+		// RenderApi::Init so frame 0 already renders into the locked
+		// sub-rect instead of having to wait for the first resize / focus
+		// event to retroactively apply it.
+		void ResyncViewportAfterRenderApiInit();
+
 		std::string GetTitle() const { return std::string(glfwGetWindowTitle(m_GLFWwindow)); }
 		int GetWidth()  const { return s_MainViewport->GetWidth(); }
 		int GetHeight() const { return s_MainViewport->GetHeight(); }

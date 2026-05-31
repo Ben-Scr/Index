@@ -1,6 +1,7 @@
 #pragma once
 #include "Collections/Vec2.hpp"
 #include "Core/Export.hpp"
+#include "Physics/Collision2D.hpp"
 #include "Physics/IndexContact2D.hpp"
 #include "Physics/IndexPhysicsInterop.hpp"
 #include "Scene/EntityHandle.hpp"
@@ -12,6 +13,7 @@
 #include <CircleCollider.hpp>
 
 #include <unordered_map>
+#include <unordered_set>
 #include <functional>
 #include <vector>
 
@@ -31,14 +33,29 @@ namespace Index {
 		void Step(float dt);
 		void Destroy();
 
+		// Per-contact dispatch hook for script collision callbacks. Called by
+		// PhysicsSystem2D::FixedUpdate after Step so the OnCollisionEnter2D /
+		// OnCollisionStay2D / OnCollisionExit2D events fire on Fast* colliders
+		// the same way they do on Box2D colliders. The Step method itself only
+		// fires per-entity callbacks registered via RegisterContactCallback.
+		using ScriptDispatchCallback = std::function<void(const Collision2D&)>;
+		void DispatchScriptContacts(
+			const ScriptDispatchCallback& onEnter,
+			const ScriptDispatchCallback& onStay,
+			const ScriptDispatchCallback& onExit);
+
 		AxiomPhys::PhysicsWorld& GetWorld() { return m_World; }
 		const AxiomPhys::PhysicsWorld& GetWorld() const { return m_World; }
 
 		void SetSettings(const AxiomPhys::WorldSettings& settings) { m_World.SetSettings(settings); }
 		const AxiomPhys::WorldSettings& GetSettings() const { return m_World.GetSettings(); }
 
-		// Body registration tied to an entity
-		AxiomPhys::Body* CreateBody(EntityHandle entity, AxiomPhys::BodyType type);
+		// Body registration tied to an entity. The optional `scene` pointer
+		// records which Scene owns the body so DispatchScriptContacts can
+		// route collision events back to the right ScriptSystem dispatch
+		// targets. Pre-existing call sites that omit `scene` keep working
+		// (the dispatch routes via SceneManager::GetActiveScene fallback).
+		AxiomPhys::Body* CreateBody(EntityHandle entity, AxiomPhys::BodyType type, Scene* scene = nullptr);
 		void DestroyBody(EntityHandle entity);
 		AxiomPhys::Body* GetBody(EntityHandle entity);
 
@@ -68,6 +85,13 @@ namespace Index {
 		// DestroyBody would dangle the raw m_Collider pointers stored
 		// inside FastBoxCollider2D / FastCircleCollider2D components.
 		void DestroyAllCollidersOnEntity(EntityHandle entity);
+
+		// Belt-and-suspenders scene teardown: destroy every body + collider whose
+		// owning Scene is `scene`. Mirrors Box2DWorld::DestroyAllBodiesForScene;
+		// SceneManager calls it after ClearEntities so a thrown-mid-clear pass
+		// can't leave a dangling Scene* in m_BodyToScene (read every frame by
+		// DispatchScriptContacts).
+		void PurgeBodiesForScene(Scene* scene);
 
 		// Contact callbacks per entity
 		void RegisterContactCallback(EntityHandle entity, IndexContactCallback callback);
@@ -113,9 +137,34 @@ namespace Index {
 
 		// Entity lookup from Body pointer (reverse map)
 		std::unordered_map<AxiomPhys::Body*, EntityHandle> m_BodyToEntity;
+		// Scene that owns each body. Looked up alongside m_BodyToEntity so
+		// DispatchScriptContacts can build the correct Collision2D{ sceneA/B }
+		// and ScriptSystem can route the event to the matching scene's
+		// ScriptComponent.
+		std::unordered_map<AxiomPhys::Body*, Scene*> m_BodyToScene;
 
 		// Contact callbacks per entity
 		std::unordered_map<uint32_t, IndexContactCallback> m_ContactCallbacks;
+
+		// Entity pairs that were in contact LAST frame — used by
+		// DispatchScriptContacts to derive Enter (in current but not last),
+		// Stay (in both), and Exit (in last but not current) events from the
+		// AxiomPhys world's raw contact list.
+		struct ContactPair {
+			uint32_t entityA = 0;
+			uint32_t entityB = 0;
+			bool operator==(const ContactPair& other) const noexcept {
+				return entityA == other.entityA && entityB == other.entityB;
+			}
+		};
+		struct ContactPairHash {
+			size_t operator()(const ContactPair& key) const noexcept {
+				return std::hash<uint64_t>{}(
+					(static_cast<uint64_t>(key.entityA) << 32) |
+					static_cast<uint64_t>(key.entityB));
+			}
+		};
+		std::unordered_set<ContactPair, ContactPairHash> m_PreviousContacts;
 	};
 
 }

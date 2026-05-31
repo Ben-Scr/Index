@@ -2,9 +2,31 @@
 
 #include "Collections/Color.hpp"
 
+#include <cstdint>
 #include <string>
 
 namespace Index {
+
+	// Selects how Window::Create realises the OS window when `Fullscreen`
+	// is true. Values are stable on disk (`buildFullscreenMode` in
+	// index-project.json maps via the labels in `k_FullscreenModeLabels`),
+	// so don't reorder — append new entries at the end.
+	enum class FullscreenMode : uint8_t {
+		// True exclusive fullscreen — glfwSetWindowMonitor takes over the
+		// display, swaps the desktop video mode, lowest input latency.
+		// Alt-Tab away has the usual exclusive-fullscreen cost (compositor
+		// has to restore the desktop mode).
+		Exclusive = 0,
+		// Decorated window sized to the monitor's video mode. Same look as
+		// Exclusive to the player but Alt-Tab is instant and the OS
+		// compositor stays in charge. Common default for desktop games.
+		BorderlessWindowed = 1,
+		// Decorated window, maximised via glfwMaximizeWindow. Keeps the
+		// title bar + taskbar visible — useful for in-engine dogfooding
+		// and for the legacy "Fullscreen=true, Windowed=true" behaviour
+		// that predates this enum.
+		Maximized = 2,
+	};
 
 	struct WindowSpecification {
 		int Width{ 800 }, Height{ 800 };
@@ -16,7 +38,14 @@ namespace Index {
 		bool Resizeable{ true };
 		bool Decorated{ true };
 		bool Fullscreen{ false };
+		// Legacy flag kept so older callers compile — superseded by
+		// FullscreenMode below. When the new enum is left at Exclusive
+		// (the default) but Windowed=true, Window::Create still routes to
+		// the Maximized path for backwards compatibility with code that
+		// pre-dates FullscreenMode.
 		bool Windowed{ false };
+		// Selected only when Fullscreen=true. Ignored otherwise.
+		Index::FullscreenMode FullscreenMode{ Index::FullscreenMode::Exclusive };
 		Color ClearColor;
 
 		// Replaces the native OS titlebar with a fully app-drawn one. Prefer

@@ -29,6 +29,7 @@
 #include "Core/Application.hpp"
 #include "Core/Window.hpp"
 #include "Events/EventDispatcher.hpp"
+#include "Events/SceneEvents.hpp"
 #include "Events/WindowFocusEvent.hpp"
 #include "Graphics/Renderer2D.hpp"
 #include "Graphics/GizmoRenderer.hpp"
@@ -59,6 +60,7 @@
 #include "Inspector/ReferencePicker.hpp"
 #include "Gui/AddComponentPopup.hpp"
 #include "Gui/EditorIcons.hpp"
+#include "Gui/Icons.hpp"
 #include "Gui/EditorTheme.hpp"
 #include "Gui/ImGuiContextLayer.hpp"
 #include "Gui/HierarchyDragData.hpp"
@@ -216,11 +218,11 @@ namespace Index {
 			}
 
 			auto& scriptComponent = entity.GetComponent<ScriptComponent>();
-			if (scriptComponent.HasScript(scriptEntry.ClassName, scriptEntry.Type)) {
-				return false;
-			}
+			const bool alreadyHadScript = scriptComponent.HasScript(scriptEntry.ClassName, scriptEntry.Type);
 
-			scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type);
+			if (!alreadyHadScript) {
+				scriptComponent.AddScript(scriptEntry.ClassName, scriptEntry.Type);
+			}
 
 			// For `: IComponent` structs (DynamicComponentRegistrar registered
 			// these at user-assembly load), also populate the backing
@@ -229,13 +231,25 @@ namespace Index {
 			// inspector renders fine (it reads the managed instance), but a
 			// user script's Entity.HasNativeComponent<T>() / GetRef<T>() looks
 			// at the storage and sees nothing.
+			//
+			// Done unconditionally (not gated on `!alreadyHadScript`) so a
+			// re-attach after a prior failed registration — e.g. the .cs
+			// added the script before the assembly successfully exposed the
+			// IComponent struct, then the user re-tried after fixing it —
+			// still seeds the dynamic storage on the second attempt.
+			bool storageAdded = false;
 			if (scriptEntry.IsNativeComponent) {
 				auto& componentRegistry = SceneManager::Get().GetComponentRegistry();
 				if (const ComponentInfo* info = componentRegistry.FindBySerializedName(scriptEntry.ClassName)) {
 					if (info->isDynamic && info->add && (!info->has || !info->has(entity))) {
 						info->add(entity);
+						storageAdded = true;
 					}
 				}
+			}
+
+			if (alreadyHadScript && !storageAdded) {
+				return false;
 			}
 
 			scene.MarkDirty();
@@ -651,6 +665,7 @@ namespace Index {
 		// Lazy first-render still loads project settings, so doing this
 		// before a project is loaded is fine.
 		m_ProfilerPanel.Initialize();
+		m_SpriteEditorPanel.Initialize();
 
 		// User-scoped preferences (theme, editor font, asset-browser /
 		// auto-save toggles). Load BEFORE ApplyTheme so the chosen mode
@@ -731,6 +746,7 @@ namespace Index {
 	void ImGuiEditorLayer::OnDetach(Application& app) {
 		(void)app;
 		m_ProfilerPanel.Shutdown();
+		m_SpriteEditorPanel.Shutdown();
 		m_EditorPreferencesPanel.Shutdown();
 		ApplicationEditorAccess::SetGameInputEnabled(true);
 		Gizmo::SetShowInRuntime(true);
@@ -764,6 +780,10 @@ namespace Index {
 		ReferencePicker::Shutdown();
 		ScriptComponentInspector::Shutdown();
 		EditorIcons::Shutdown();
+		// Drop the shared vector/PNG icon cache as well. Same rule as
+		// EditorIcons::Shutdown — Texture2D destructors need the WebGPU
+		// device still alive, so run this before the renderer winds down.
+		Icons::Shutdown();
 		// Framebuffers are RAII-managed; explicit destruction here mirrors
 		// the historical OnDetach order (drop GPU resources before any
 		// later teardown that might re-enter the renderer).
@@ -775,6 +795,48 @@ namespace Index {
 		EventDispatcher dispatcher(event);
 		dispatcher.Dispatch<WindowFocusEvent>([this](WindowFocusEvent&) {
 			m_AssetBrowser.RequestRefresh();
+			return false;
+			});
+
+		// Scene swaps invalidate every entity handle the editor was holding
+		// (selection, hierarchy order cache, inspector cache, drag/cut state).
+		// Without resetting these on Pre/Post stop, a script-driven LoadScene
+		// (or any path that destroys+rebuilds the active scene) leaves the
+		// hierarchy iterating destroyed EntityHandles — the IsValid guards
+		// filter every row, ImGuiListClipper asserts "Failed to calculate
+		// item height", and a downstream Scene::GetEntity hits its
+		// IDX_CORE_ASSERT.  Wired here so the reset runs synchronously inside
+		// SceneManager::LoadSceneInternal / ReleaseScene, before any consumer
+		// of the editor's cached state sees the new world.
+		auto resetEditorEntityState = [this]() {
+			m_SelectedEntity = entt::null;
+			m_SelectedEntities.clear();
+			m_SelectedEntitySet.clear();
+			m_PressedEntity = entt::null;
+			m_RenamingEntity = entt::null;
+			m_EntityRenameFrameCounter = 0;
+			m_EntityOrder.clear();
+			m_RenderedEntityOrder.clear();
+			m_RenderedEntityDepths.clear();
+			m_VisibleEntityOrder.clear();
+			m_VisibleEntityDepths.clear();
+			m_EntityOrderDirty = true;
+			m_EntityOrderSceneId = 0;
+			m_CollapsedHierarchyEntities.clear();
+			m_CutEntities.clear();
+			m_LastInteractedSceneName.clear();
+			++m_SelectionVersion;
+		};
+		dispatcher.Dispatch<ScenePreStopEvent>([&resetEditorEntityState](ScenePreStopEvent&) {
+			resetEditorEntityState();
+			return false;
+			});
+		dispatcher.Dispatch<ScenePostStartEvent>([&resetEditorEntityState](ScenePostStartEvent&) {
+			// Belt-and-braces: PreStop already cleared everything, but the
+			// load path can be called WITHOUT a prior unload (additive load,
+			// runtime-only scenes). PostStart guarantees the editor is back
+			// in a clean state regardless of how the scene reached "live".
+			resetEditorEntityState();
 			return false;
 			});
 	}
@@ -1265,13 +1327,25 @@ namespace Index {
 	void ImGuiEditorLayer::BeginPlayModeRequest(Scene& scene) {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (project) {
-			std::string scenePath = project->GetSceneFilePath(scene.GetName());
-			if (scene.IsDirty()) {
-				SceneSerializer::SaveToFile(scene, scenePath);
+			// Snapshot EVERY loaded scene, not just the active one. Play mode is
+			// restored by reloading each scene from its on-disk file (discarding
+			// runtime mutations), so every loaded scene's file must reflect the
+			// current editor state at entry. Skipping additive scenes here AND at
+			// restore is what let their play-mode state leak back into edit mode.
+			m_PlayModeScenes.clear();
+			bool savedAny = false;
+			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+				std::string scenePath = project->GetSceneFilePath(s.GetName());
+				if (s.IsDirty()) {
+					SceneSerializer::SaveToFile(s, scenePath);
+					savedAny = true;
+				}
+				m_PlayModeScenes.push_back({ s.GetName(), scenePath });
+			});
+			if (savedAny) {
 				project->LastOpenedScene = scene.GetName();
 				project->Save();
 			}
-			m_PlayModeScenePath = scenePath;
 		}
 
 		m_LogEntries.clear();
@@ -1421,6 +1495,38 @@ namespace Index {
 		}
 
 		ImGui::PopStyleVar();
+
+		// Launch Standalone — spawns Index-Runtime.exe pointed at the
+		// current project so the user can verify their game in a real OS
+		// window without going through Build & Play (no project-specific
+		// .exe build required). Available regardless of in-editor play
+		// state — it's a separate process. Disabled while a project
+		// build is running because that path also touches the runtime
+		// binary; co-launching mid-build can race the file-copy step.
+		//
+		// Text button (not the play icon) on purpose: the Play icon is
+		// already used a few pixels to the left for in-editor playmode,
+		// and using the same glyph twice in one row was visually
+		// confusing in early testing.
+		ImGui::SameLine();
+		const bool standaloneDisabled = (m_BuildState > 0)
+			|| !ProjectManager::GetCurrentProject();
+		if (standaloneDisabled) ImGui::BeginDisabled();
+		if (ImGui::Button("Launch Standalone")) {
+			LaunchStandalone();
+		}
+		if (standaloneDisabled) ImGui::EndDisabled();
+		if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+			if (m_BuildState > 0)
+				ImGui::SetTooltip("Launch Standalone (disabled — build in progress)");
+			else if (!ProjectManager::GetCurrentProject())
+				ImGui::SetTooltip("Launch Standalone (disabled — no project loaded)");
+			else
+				ImGui::SetTooltip(
+					"Saves the project and spawns Index-Runtime.exe in a separate\n"
+					"window. Use this to verify aspect-lock, OS input, fullscreen\n"
+					"mode, and other behaviour the Game View can't fully mirror.");
+		}
 		ImGui::SameLine();
 		const char* statusText = !isPlaying ? "Editor" : (isPaused ? "Paused" : "Playing");
 		ImGui::TextUnformatted(statusText);
@@ -1455,6 +1561,64 @@ namespace Index {
 					}
 				}
 			}
+		}
+	}
+
+	void ImGuiEditorLayer::LaunchStandalone() {
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			IDX_CORE_WARN_TAG("Editor",
+				"LaunchStandalone: no project loaded — nothing to launch.");
+			return;
+		}
+
+		// Locate Index-Runtime.exe. Two layouts we ship:
+		//   * Dev tree:    <bin>/Index-Editor/Index-Editor.exe
+		//                  <bin>/Index-Runtime/Index-Runtime.exe   (sibling)
+		//   * Distributed: <root>/Index-Editor.exe
+		//                  <root>/Index-Runtime.exe                 (same dir)
+		// Try both before bailing — neither path constant is hard-coded
+		// in the build pipeline, but Premake / package script invariably
+		// emits one of these two shapes.
+		const std::filesystem::path exeDir(Path::ExecutableDir());
+#ifdef IDX_PLATFORM_WINDOWS
+		constexpr const char* k_RuntimeExe = "Index-Runtime.exe";
+#else
+		constexpr const char* k_RuntimeExe = "Index-Runtime";
+#endif
+		std::filesystem::path runtimePath = exeDir.parent_path() / "Index-Runtime" / k_RuntimeExe;
+		if (!std::filesystem::exists(runtimePath)) {
+			runtimePath = exeDir / k_RuntimeExe;
+		}
+		if (!std::filesystem::exists(runtimePath)) {
+			IDX_CORE_ERROR_TAG("Editor",
+				"LaunchStandalone: Index-Runtime executable not found near editor "
+				"(tried '{}' and '{}'). Build the engine's Runtime project first.",
+				(exeDir.parent_path() / "Index-Runtime" / k_RuntimeExe).string(),
+				(exeDir / k_RuntimeExe).string());
+			return;
+		}
+
+		// Flush the project to disk so the runtime — which loads
+		// index-project.json fresh — sees the latest BuildAspect, scene
+		// list, etc. Scene files are NOT auto-saved (that's a deliberate
+		// user action; the standalone shows on-disk state, just like
+		// after a fresh editor restart).
+		project->Save();
+
+		const std::string runtimeStr = runtimePath.string();
+		const std::string projectArg = "--project=" + project->RootDirectory;
+		IDX_CORE_INFO_TAG("Editor",
+			"LaunchStandalone: spawning '{}' for project '{}'",
+			runtimeStr, project->Name);
+
+		if (!Process::LaunchDetached({ runtimeStr, projectArg },
+			runtimePath.parent_path()))
+		{
+			IDX_CORE_ERROR_TAG("Editor",
+				"LaunchStandalone: failed to spawn '{}' (Process::LaunchDetached "
+				"returned false). See earlier log for the OS-level reason.",
+				runtimeStr);
 		}
 	}
 
@@ -1496,12 +1660,28 @@ namespace Index {
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 		Application::SetIsPlaying(false);
 
-		if (!m_PlayModeScenePath.empty()) {
-			active = SceneManager::Get().GetActiveScene();
-			if (active) {
-				SceneSerializer::LoadFromFile(*active, m_PlayModeScenePath);
+		if (!m_PlayModeScenes.empty()) {
+			// Reload EVERY scene that was loaded at play-mode entry from its
+			// on-disk file, discarding all runtime mutations. Collect the
+			// targets first (matching the snapshot by name against the
+			// still-loaded set), then reload — so a reload can't perturb the
+			// loaded-scene set mid-iteration. A scene the game unloaded during
+			// play is skipped; a scene spawned during play isn't in the snapshot
+			// and is left untouched. LoadFromFile tears down play-mode entities
+			// (firing OnDisable thunks) before the OnPlayModeExited sweep below.
+			std::vector<std::pair<Scene*, std::string>> toReload;
+			SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+				for (const auto& [sceneName, scenePath] : m_PlayModeScenes) {
+					if (s.GetName() == sceneName) {
+						toReload.push_back({ &s, scenePath });
+						break;
+					}
+				}
+			});
+			for (auto& [scenePtr, scenePath] : toReload) {
+				SceneSerializer::LoadFromFile(*scenePtr, scenePath);
 			}
-			m_PlayModeScenePath.clear();
+			m_PlayModeScenes.clear();
 		}
 
 		// Sweep any static-event subscriber whose backing method lives in
@@ -3590,6 +3770,11 @@ namespace Index {
 							}
 							m_RenamingEntity = entt::null;
 							m_EntityRenameFrameCounter = 0;
+							// Inspector header reads the cached FirstName — without
+							// bumping the version, the name field keeps showing the
+							// pre-rename value until something else changes the
+							// selection.
+							++m_SelectionVersion;
 						}
 						else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
 							m_RenamingEntity = entt::null;
@@ -3613,6 +3798,8 @@ namespace Index {
 							}
 							m_RenamingEntity = entt::null;
 							m_EntityRenameFrameCounter = 0;
+							// Same cache-invalidation reason as the committed branch above.
+							++m_SelectionVersion;
 						}
 
 						ImGui::PopItemWidth();
@@ -4302,7 +4489,7 @@ namespace Index {
 
 		float buttonWidth = ImGui::GetContentRegionAvail().x;
 		if (!hasAvailableSystem) ImGui::BeginDisabled();
-		if (ImGui::Button("+ Add System", ImVec2(buttonWidth, 0))) {
+		if (Icons::ButtonWithIcon(Icons::Type::Plus, "Add System", ImVec2(buttonWidth, 0), true)) {
 			ImGui::OpenPopup("AddSystemPopup");
 			m_SystemSearchBuffer[0] = '\0';
 		}
@@ -4322,6 +4509,7 @@ namespace Index {
 		}
 
 		if (ImGui::BeginPopup("AddSystemPopup")) {
+			Icons::TextIcon(Icons::Type::Search);
 			ImGui::SetNextItemWidth(-1);
 			ImGui::InputTextWithHint("##SystemSearch", "Search systems...",
 				m_SystemSearchBuffer, sizeof(m_SystemSearchBuffer));
@@ -4713,7 +4901,17 @@ namespace Index {
 		// the user sees doesn't depend on hash bucket layout.
 		const std::vector<std::string>& hiddenPartialComponents = m_InspectorCache.PartialComponents;
 
+		// A prefab "Revert" destroys + recreates the entity and refreshes the
+		// selection (m_SelectedEntities), but the local `entity` / `entitySpan`
+		// captured below still point at the OLD (now-destroyed) handle. Because
+		// ForEachComponentInfo invokes this lambda once PER component, any
+		// component drawn after the reverted one would re-enter with that stale
+		// handle — a use-after-destroy against the EnTT registry. This latch
+		// makes every remaining invocation this frame a no-op; the next frame
+		// re-renders cleanly against the refreshed selection.
+		bool selectionInvalidatedByRevert = false;
 		registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
+			if (selectionInvalidatedByRevert) return;
 			if (info.category != ComponentCategory::Component) return;
 			if (info.displayName == "Name") return; // Shown in entity header
 
@@ -4890,6 +5088,10 @@ namespace Index {
 				if (replacement != entt::null) {
 					SelectEntity(replacement);
 					m_EntityOrder.clear(); m_EntityOrderDirty = true;
+					// Entity was recreated — `entity`/`entitySpan` are now stale.
+					// Stop iterating components this frame (see latch above).
+					selectionInvalidatedByRevert = true;
+					return;
 				}
 			}
 			if (revertComponentRequested) {
@@ -4910,6 +5112,10 @@ namespace Index {
 				}
 				SelectEntity(current);
 				m_EntityOrder.clear(); m_EntityOrderDirty = true;
+				// Entity may have been recreated by the reverts above — `entity`/
+				// `entitySpan` are now stale. Stop iterating components this frame.
+				selectionInvalidatedByRevert = true;
+				return;
 			}
 			if (applyComponentRequested) {
 				// "Apply Component" pushes the whole instance state to source
@@ -4992,7 +5198,7 @@ namespace Index {
 		ImGui::Spacing();
 
 		float buttonWidth = ImGui::GetContentRegionAvail().x;
-		if (ImGui::Button("Add Component", ImVec2(buttonWidth, 0))) {
+		if (Icons::ButtonWithIcon(Icons::Type::Plus, "Add Component", ImVec2(buttonWidth, 0), true)) {
 			ImGui::OpenPopup("AddComponentPopup");
 			m_ComponentSearchBuffer[0] = '\0';
 		}

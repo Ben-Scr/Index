@@ -42,7 +42,8 @@ namespace Index::WebGPUSpriteResources {
 		float Pos[2];        // matches i_data0.xy in vs_main
 		float Scale[2];      // matches i_data0.zw
 		float Color[4];      // matches i_data1
-		float Rot[4];        // matches i_data2 = (cos, sin, 0, 0)
+		float Rot[4];        // matches i_data2 = (rotation, 0, 0, 0)
+		float Uv[4];         // matches i_data3 = (u0, v0, u1, v1) — sprite slice rect
 	};
 
 	// Reference-counted lifecycle. Returns false on shader-load failure —

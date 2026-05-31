@@ -206,12 +206,42 @@ namespace Index {
 		}
 #endif
 
-		if (props.Fullscreen && !props.Windowed)
-			SetFullScreen(true);
-		else if (props.Fullscreen && props.Windowed)
-			MaximizeWindow();
-		else
+		if (props.Fullscreen) {
+			// FullscreenMode is the source of truth; the legacy Windowed
+			// bool is honoured only when the enum is left at its default
+			// (Exclusive) AND Windowed=true — that's the historical
+			// "Fullscreen + Windowed = Maximized" combo. Without this
+			// special case, projects that haven't migrated to the enum
+			// would silently flip from Maximized to Exclusive on first
+			// launch under the new engine.
+			FullscreenMode mode = props.FullscreenMode;
+			if (mode == FullscreenMode::Exclusive && props.Windowed) {
+				mode = FullscreenMode::Maximized;
+			}
+			switch (mode) {
+				case FullscreenMode::Exclusive:
+					SetFullScreen(true);
+					break;
+				case FullscreenMode::BorderlessWindowed:
+					// Borderless windowed: strip decoration, size to the
+					// primary monitor's video mode, position at (0,0).
+					// Visually identical to exclusive fullscreen but the
+					// OS compositor stays in charge — Alt-Tab is instant.
+					glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, GLFW_FALSE);
+					if (k_Videomode) {
+						glfwSetWindowSize(m_GLFWwindow,
+							k_Videomode->width, k_Videomode->height);
+						glfwSetWindowPos(m_GLFWwindow, 0, 0);
+					}
+					break;
+				case FullscreenMode::Maximized:
+					MaximizeWindow();
+					break;
+			}
+		}
+		else {
 			CenterWindow();
+		}
 
 		// Log the post-fullscreen / post-center size so a divergence
 		// between viewport (the size we *want*) and GLFW's reported
@@ -876,6 +906,22 @@ namespace Index {
 			s_MainViewport = std::make_unique<Viewport>(subW, subH);
 		}
 		s_MainViewport->SetLetterboxedSubRect(fbW, fbH, offsetX, offsetY, subW, subH);
+
+		// Publish the sub-rect to UIRegion when the aspect lock is active
+		// so script input (Index_Input_GetMousePosition), Camera2DComponent
+		// ::ScreenToWorld, and the UI event/layout systems all see cursor
+		// coordinates rebased to the visible viewport instead of the raw
+		// OS-window position. The Game View panel in the editor already
+		// owns this mechanism — it publishes its panel rect every frame
+		// — and the runtime path only kicks in when m_AspectLock > 0, so
+		// the two paths can't race.
+		//
+		// Skipped when the lock is off: in the editor process that lets
+		// the Game View panel keep ownership of UIRegion; in a non-locked
+		// runtime the raw OS-window pos already IS viewport-relative.
+		if (m_AspectLock > 0.0f) {
+			SetUIRegion(offsetX, offsetY, subW, subH);
+		}
 	}
 
 	void Window::SetAspectLock(float aspect) {
@@ -883,6 +929,19 @@ namespace Index {
 		// Re-derive the sub-rect from the current framebuffer size and
 		// re-arm the render viewport so the change is visible without
 		// waiting for the next OS resize event.
+		SyncViewportFromFramebuffer();
+		UpdateViewport();
+	}
+
+	void Window::ResyncViewportAfterRenderApiInit() {
+		// Same body as the resize-callback path: query the framebuffer,
+		// compute the sub-rect under the active aspect lock (or full
+		// framebuffer when locked is 0), push to the main viewport, then
+		// re-arm the swap chain + render-target viewport so the cached
+		// state in WebGPUApi reflects the lock from frame 0. Safe to call
+		// when the lock is disabled — the no-letterbox branch just sets
+		// the sub-rect = full framebuffer, identical to ConfigureSurface's
+		// own default.
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
 	}

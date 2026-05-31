@@ -382,6 +382,15 @@ namespace Index {
 			timer.Reset();
 			RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
 			IDX_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
+
+			// RenderApi::Init's ConfigureSurface resets the cached viewport
+			// to full surface dims; without this nudge, frame 0 would
+			// ignore the aspect lock and render stretched until the GLFW
+			// framebuffer-size callback fires (which it doesn't do at
+			// startup — only on subsequent resizes or focus events). Push
+			// the sub-rect now so the very first frame the runtime ships
+			// already letterboxed.
+			m_Window->ResyncViewportAfterRenderApiInit();
 		}
 		else {
 			// Headless mode: force off every subsystem that needs a window
@@ -1046,7 +1055,14 @@ namespace Index {
 		};
 
 		// Order matters: subsystems that hold package callbacks tear down BEFORE PackageHost::UnloadAll.
-		if (m_SceneManager) guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });
+		if (m_SceneManager) {
+			guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });
+			// Owned unique_ptr: null it like guardedShutdownOwned does. Otherwise
+			// the non-reload exit path leaves m_SceneManager pointing at an
+			// already-shut-down object, and ~Application's second Shutdown(false)
+			// would call SceneManager::Shutdown a second time.
+			m_SceneManager.reset();
+		}
 		if (ScriptEngine::IsInitialized()) guardedShutdownStatic("ScriptEngine", []{ ScriptEngine::Shutdown(); });
 		if (FontManager::IsInitialized()) guardedShutdownStatic("FontManager", []{ FontManager::Shutdown(); });
 		if (m_Configuration.EnableTextureManager) guardedShutdownStatic("TextureManager", []{ TextureManager::Shutdown(); });

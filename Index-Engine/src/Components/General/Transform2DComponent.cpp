@@ -62,9 +62,11 @@ namespace Index {
 	}
 
 	b2Rot Transform2DComponent::GetB2Rotation() const {
-		// Index Rotation is opposite-handed to Box2D's; negate at the
-		// boundary so the round-trip with Rigidbody2D::GetRotation
-		// (which also negates) preserves the value.
-		return b2Rot(Cos(Rotation), -Sin(Rotation));
+		// Index's renderer uses a standard CCW rotation matrix (positive
+		// angle = CCW in Y-up space), and so does Box2D — no sign flip
+		// needed at the boundary. The previous -Sin variant inverted the
+		// effective handedness, which made a rigidbody rotated by physics
+		// render in the opposite direction to the body's actual orientation.
+		return b2Rot(Cos(Rotation), Sin(Rotation));
 	}
 }

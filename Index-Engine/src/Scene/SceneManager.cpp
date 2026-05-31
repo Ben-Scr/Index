@@ -443,6 +443,16 @@ namespace Index {
 			catch (...) {
 				IDX_CORE_ERROR_TAG("SceneManager", "Box2D body cleanup for unloaded scene '{}' failed", sceneName);
 			}
+			// Same belt-and-suspenders sweep for the AxiomPhys world (Fast* colliders):
+			// IndexPhysicsWorld2D keeps a Body*->Scene* map read every frame by
+			// DispatchScriptContacts, so a thrown-mid-clear ClearEntities pass must
+			// not leave a body whose owning Scene is about to be freed.
+			try {
+				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(&scene);
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("SceneManager", "AxiomPhys body cleanup for unloaded scene '{}' failed", sceneName);
+			}
 		}
 		try {
 			ScenePostStopEvent e(sceneName);

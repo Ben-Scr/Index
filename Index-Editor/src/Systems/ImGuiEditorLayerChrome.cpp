@@ -629,12 +629,29 @@ namespace Index {
 			m_ProfilerPanel.Render(&m_ShowProfiler);
 		}
 
+		// Sprite Editor panel. The texture asset inspector queues an asset
+		// path/UUID via m_PendingSpriteEditorPath; drain it here so the
+		// actual OpenTexture call happens at ImGui-render time (mid-frame
+		// is the only safe window — opening the panel during inspector
+		// build would trip ImGui's "Begin without paired End" guard).
+		if (!m_PendingSpriteEditorPath.empty()) {
+			m_SpriteEditorPanel.OpenTexture(m_PendingSpriteEditorPath, m_PendingSpriteEditorAssetId);
+			m_PendingSpriteEditorPath.clear();
+			m_PendingSpriteEditorAssetId = 0;
+		}
+		if (m_ShowSpriteEditor) {
+			m_SpriteEditorPanel.Render(&m_ShowSpriteEditor);
+		}
+
 		// Unified loading popup — real OS window (not an ImGui overlay) so
 		// it stays crisp even when the editor's render thread is briefly
 		// busy. Win32BuildProgressWindow is a no-op on non-Windows
 		// platforms. Project build takes priority over script recompile
 		// because the build pipeline already runs a script compile as a
 		// sub-stage and the build popup reports the real progress for it.
+		// Package install runs last because it's user-initiated from the
+		// Package Manager panel and never overlaps with a build (the
+		// installer is gated on m_IsOperating elsewhere).
 		bool showPopup = false;
 		std::string popupTitle;
 		std::string popupStage;
@@ -659,13 +676,11 @@ namespace Index {
 			// loop the bar 0→1 the same way the old ImGui overlay did.
 			const float elapsed = scriptSys->GetActiveRebuildElapsedSeconds();
 			popupProgress = fmodf(elapsed * 0.4f, 1.0f);
-		} else if (m_PackageManagerPanel.IsCloudInstallRunning()) {
+		} else if (m_PackageManagerPanel.GetActiveLoadingPopup(popupTitle, popupStage, popupProgress)) {
+			// Cloud-install or post-install automation in flight — popup
+			// title is "Downloading <Name>..." / "Installing <Name>..."
+			// and matches the Launcher's "Downloading <Project>..." UX.
 			showPopup = true;
-			popupTitle = "Downloading Package...";
-			// The cloud-install task carries a real stage string + coarse
-			// progress fraction; reuse them so the popup mirrors the
-			// per-stage label the package panel's own strip shows.
-			m_PackageManagerPanel.TryGetCloudInstallProgress(popupStage, popupProgress);
 		}
 
 		if (showPopup) {
