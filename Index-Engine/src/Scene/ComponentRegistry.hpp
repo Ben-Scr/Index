@@ -20,10 +20,7 @@
 #include <vector>
 
 namespace Index::detail {
-    // FNV-1a 64-bit. Stable across builds, platforms, and ABIs — safe to
-    // embed in serialized assets. constexpr so callers can hash component
-    // names at compile time (e.g. the binding layer's "Transform2D" → hash
-    // cache populated from a static initializer).
+    // FNV-1a 64-bit, stable across ABIs — safe to embed in serialized assets.
     constexpr uint64_t FnvHash64(std::string_view str) noexcept {
         constexpr uint64_t kOffsetBasis = 0xcbf29ce484222325ULL;
         constexpr uint64_t kPrime = 0x100000001b3ULL;
@@ -52,42 +49,15 @@ namespace Index {
                 // Preserve serialize/deserialize: AttachInspector re-registers and would otherwise drop them.
                 if (!info.serialize) info.serialize = existing->second.serialize;
                 if (!info.deserialize) info.deserialize = existing->second.deserialize;
-                // Same preservation for the unified-archive callback. The
-                // serializationVersion is preserved iff the current
-                // registration didn't set it explicitly (i.e. still default
-                // 1) — that way bumping the version in a single registration
-                // site doesn't get silently overwritten by an
-                // AttachInspector pass that re-registers without specifying
-                // a version.
                 if (!info.serializeArchive) info.serializeArchive = existing->second.serializeArchive;
                 if (info.serializationVersion == 1 && existing->second.serializationVersion != 1) {
                     info.serializationVersion = existing->second.serializationVersion;
                 }
-                // Preserve onAdd across re-registration the same way drawInspector
-                // does — built-ins set onAdd up-front and AttachInspector should
-                // not silently drop it.
                 if (!info.onAdd) info.onAdd = existing->second.onAdd;
-                // Preserve a previously-assigned stable typeIdU32 across the
-                // AttachInspector re-registration path. The ID is published to
-                // the managed side at startup and embedded in EntityCommandBuffer
-                // wire payloads — silently reassigning it would invalidate every
-                // ECB record made before the re-registration.
+                // typeIdU32 is published to the managed side and embedded in ECB wire payloads — must survive re-registration.
                 if (info.typeIdU32 == 0) info.typeIdU32 = existing->second.typeIdU32;
-                // Likewise preserve a custom emplaceFromBytes from the first
-                // registration (e.g. ParticleSystem2DComponent's rebinding
-                // emplacer would otherwise be replaced by the auto-wired
-                // trivial-memcpy emplacer below).
                 if (!info.emplaceFromBytes) info.emplaceFromBytes = existing->second.emplaceFromBytes;
-                // Symmetric preservation for writeBytes — same rationale as
-                // emplaceFromBytes, since the PrefabTemplateCache bake path
-                // needs the component's custom serializer to survive an
-                // AttachInspector re-registration.
                 if (!info.writeBytes) info.writeBytes = existing->second.writeBytes;
-                // Same preservation for defaultEmplace — the ECB's
-                // Ecb_DefaultConstructComponent dispatch reads this callback,
-                // and a re-registration that drops it would break
-                // CreateEntityWith<T> for any component touched by
-                // AttachInspector.
                 if (!info.defaultEmplace) info.defaultEmplace = existing->second.defaultEmplace;
             }
 
@@ -97,11 +67,7 @@ namespace Index {
             info.add = [](Entity e) { e.AddComponent<T>(); };
             info.remove = [](Entity e) { e.RemoveComponent<T>(); };
 
-            // Auto-wire raw component pointer access for non-empty types so
-            // the ScriptCore ref-API can target every registered component
-            // without per-type plumbing. Empty tag types skip this — there's
-            // no payload to expose and EnTT's empty-type storage doesn't
-            // hand out addressable instances anyway.
+            // Skip empty tag types — no addressable payload in EnTT's empty-type storage.
             if constexpr (!std::is_empty_v<T>) {
                 info.getRaw = [](Entity e) -> void* {
                     if (!e.HasComponent<T>()) return nullptr;
@@ -122,44 +88,10 @@ namespace Index {
                 };
                 info.rawSize = sizeof(T);
 
-                // Auto-wire the ECB memcpy-from-bytes emplacer for every
-                // non-empty, trivially-destructible component. The memcpy
-                // path is safe whenever (a) the C# mirror's sizeof matches
-                // the native struct — `ComponentTypes<T>` enforces this at
-                // AppDomain load via `Entity_GetComponentSize` — AND (b)
-                // memcpy'ing the bytes produces a value that destroys
-                // cleanly without aliasing some other owner's heap. The
-                // `is_trivially_destructible_v<T>` gate enforces (b).
-                //
-                // Why trivially-DESTRUCTIBLE and not trivially-COPYABLE:
-                // the earlier `is_trivially_copyable_v<T>` gate was too
-                // strict: it excluded perfectly memcpy-safe components
-                // like `SpriteRendererComponent` solely because they hold
-                // a `UUID` member, whose user-declared copy constructor
-                // flips `is_trivially_copyable` to false. UUID still has a
-                // trivial destructor (it's a uint64_t wrapper), so
-                // `is_trivially_destructible_v` correctly classifies
-                // SpriteRenderer-style components as memcpy-safe while
-                // still rejecting components that hold std::vector /
-                // std::string / std::unordered_map / smart pointers
-                // (whose destructors free heap that the memcpy'd copy
-                // would also try to free → double-free, UAF, cross-
-                // instance aliasing).
-                //
-                // Components whose C++ representation holds runtime state
-                // that genuinely cannot survive a byte-level overwrite
-                // (owning std::vector / std::string / scene-bound emitter
-                // handles, etc.) get NO auto-wired emplaceFromBytes —
-                // both the ECB AddComponent path
-                // (Scripting/ScriptBindingsEcb.cpp:308) and the prefab
-                // bake path (Serialization/PrefabTemplateCache.cpp:144)
-                // refuse to dispatch when the callback is null, surfacing
-                // the failure at the call site instead of silently
-                // memcpy'ing a UAF into the entity. Authors who want
-                // these types on the ECB/prefab fast path register a
-                // custom `emplaceFromBytes` explicitly; the merge-
-                // preservation branch above keeps it alive across
-                // AttachInspector re-registration.
+                // Gate on is_trivially_destructible (not is_trivially_copyable): UUID has a user-declared
+                // copy-ctor but a trivial dtor, making SpriteRendererComponent memcpy-safe despite being
+                // non-trivially-copyable. Components with owning heap (std::vector etc.) are excluded —
+                // null emplaceFromBytes surfaces a clean error instead of a silent double-free.
                 if constexpr (std::is_trivially_destructible_v<T>) {
                     if (info.emplaceFromBytes == nullptr) {
                         info.emplaceFromBytes = [](entt::registry& r, EntityHandle e,
@@ -173,18 +105,6 @@ namespace Index {
                     }
                 }
 
-                // Auto-wire the ECB default-construct emplacer for every
-                // non-empty, default-constructible registered component.
-                // CreateEntityWith<T...> on the managed ECB records a
-                // payload-free Ecb_DefaultConstructComponent op so the C++
-                // member-initializers stick instead of being overwritten by
-                // C#'s zero-init `default(T)`. Components that are NOT
-                // default-constructible (no engine built-in matches this
-                // today, but a package might define one) silently leave the
-                // callback null — the playback path then fails the command
-                // with kEcbErrorUnknownComponent, which is the correct
-                // surface for "this component can't be added without a
-                // value".
                 if (info.defaultEmplace == nullptr) {
                     if constexpr (std::is_default_constructible_v<T>) {
                         info.defaultEmplace = [](entt::registry& r, EntityHandle e) {
@@ -193,22 +113,8 @@ namespace Index {
                     }
                 }
 
-                // Symmetric writeBytes auto-wire — appends a memcpy of the
-                // EnTT storage to `out` so the PrefabTemplateCache can bake
-                // a prefab once and replay it from raw bytes thereafter.
-                // Same trivially-destructible gate as emplaceFromBytes for
-                // the same reason: capturing the bytes of a std::vector
-                // bakes its data pointer into the template, and every
-                // hydrated instance then aliases the bake source's heap.
-                //
-                // When the gate refuses, the prefab bake path
-                // (Serialization/PrefabTemplateCache.cpp:144) sees
-                // `writeBytes == nullptr` and marks the entire template
-                // unbakeable, falling back to the slow per-property
-                // deserialize path for that prefab. The slow path is
-                // safe because it constructs each component through its
-                // proper constructor + property setters, owning fresh
-                // heap allocations per instance.
+                // Same trivially-destructible gate as emplaceFromBytes; null writeBytes makes PrefabTemplateCache
+                // mark the template unbakeable and fall back to the slow per-property path.
                 if constexpr (std::is_trivially_destructible_v<T>) {
                     if (info.writeBytes == nullptr) {
                         info.writeBytes = [](const entt::registry& r, EntityHandle e,
@@ -224,11 +130,8 @@ namespace Index {
                 }
             }
 
-            // If the caller provided a custom copyTo (or a previous registration
-            // installed one), keep it. Components that hold scene-bound runtime
-            // state — e.g. ParticleSystem2DComponent's m_EmitterScene/Entity —
-            // need a copy that re-binds against the destination, because the
-            // raw value-copy path bypasses on_construct hooks.
+            // Preserve custom copyTo — scene-bound components (e.g. ParticleSystem2D) need re-binding
+            // that the raw value-copy path bypasses.
             const bool preserveExistingCopyTo =
                 info.copyTo != nullptr ||
                 (existing != m_map.end() && existing->second.copyTo != nullptr);
@@ -253,18 +156,10 @@ namespace Index {
                 }
             }
 
-            // Compute the serialized-name hash exactly once at registration
-            // time. AttachInspector re-registers existing types — we recompute
-            // here so a late-changing serializedName is honored. Empty names
-            // hash to 0 (sentinel for "no lookup key").
             info.serializedNameHash = info.serializedName.empty()
                 ? 0u
                 : detail::FnvHash64(info.serializedName);
 
-            // Maintain the hash → ComponentInfo* index in lockstep with m_map.
-            // If a previous registration installed a different hash for this
-            // typeId, drop the old entry first to avoid a dangling reference
-            // pointing at the soon-to-be-replaced m_map slot.
             if (existing != m_map.end()) {
                 const uint64_t oldHash = existing->second.serializedNameHash;
                 if (oldHash != 0 && oldHash != info.serializedNameHash) {
@@ -275,11 +170,6 @@ namespace Index {
                 }
             }
 
-            // Assign a stable u32 type ID on first registration. The vector
-            // is 1-indexed so that 0 remains a sentinel for "unregistered"
-            // in the wire format and in ComponentTypes<T>.NativeId on the
-            // managed side. Re-registration paths preserve the ID via the
-            // merge above, so this branch fires exactly once per type.
             if (info.typeIdU32 == 0) {
                 if (m_byTypeId.empty()) {
                     m_byTypeId.push_back(nullptr); // reserve slot 0 as null
@@ -294,26 +184,16 @@ namespace Index {
                 m_hashIndex[stored.serializedNameHash] = &stored;
             }
             if (stored.typeIdU32 != 0 && stored.typeIdU32 < m_byTypeId.size()) {
-                // unordered_map nodes are stable across rehash, so the
-                // pointer stays valid even when later registrations grow
-                // the underlying map.
                 m_byTypeId[stored.typeIdU32] = &stored;
             }
         }
 
-        /// O(1) lookup by stable u32 type ID. Returns nullptr for id 0 (the
-        /// reserved "unregistered" sentinel) or for an id beyond the highest
-        /// one assigned by Register. Used by EntityCommandBuffer playback to
-        /// dispatch a recorded command to its component's emplacer in one
-        /// vector indirection — no string compare, no hash, no map lookup.
+        /// O(1) lookup by stable u32 type ID. Returns nullptr for id 0 (sentinel) or out-of-range ids.
         const ComponentInfo* GetByTypeId(uint32_t typeIdU32) const {
             if (typeIdU32 == 0 || typeIdU32 >= m_byTypeId.size()) return nullptr;
             return m_byTypeId[typeIdU32];
         }
 
-        /// Number of stable IDs currently assigned (== the highest valid id).
-        /// Useful for the managed-side resolver loop that walks every
-        /// component name and looks up its id at AppDomain load.
         uint32_t GetTypeIdCount() const {
             // Slot 0 is the null sentinel — subtract it from the reported count.
             return m_byTypeId.empty() ? 0u : static_cast<uint32_t>(m_byTypeId.size() - 1);
@@ -321,21 +201,13 @@ namespace Index {
 
         const auto& All() const { return m_map; }
 
-        /// O(1) lookup by FNV-1a hash of the component's `serializedName`.
-        /// Used by the binary scene loader (v2 component table stores hashes,
-        /// not strings) and by the script binding layer's AddComponentByHash
-        /// fast path — both want to avoid the linear scan in FindByName.
-        /// Returns nullptr if no component is registered with this hash, or
-        /// if the only matching registration had an empty serializedName.
+        /// O(1) lookup by FNV-1a hash of serializedName. Returns nullptr for hash 0 or no match.
         const ComponentInfo* FindByHash(uint64_t serializedNameHash) const {
             if (serializedNameHash == 0) return nullptr;
             const auto it = m_hashIndex.find(serializedNameHash);
             return it != m_hashIndex.end() ? it->second : nullptr;
         }
 
-        /// String-keyed wrapper. Hashes the name (no allocation, no std::string
-        /// copy) and dispatches through FindByHash. Callers that already have
-        /// the hash should prefer FindByHash directly.
         const ComponentInfo* FindBySerializedName(std::string_view name) const {
             return FindByHash(detail::FnvHash64(name));
         }
@@ -351,10 +223,7 @@ namespace Index {
         void ForEachComponentInfo(F&& fn) {
             for (auto& [id, info] : m_map)
                 fn(id, info);
-            // Dynamic components carry no real type_index — surface typeid(void)
-            // for the callback parameter. Callers that key by type_index (e.g.
-            // HasConflict / AddWithDependencies) implicitly skip dynamics; for
-            // those paths dynamics are looked up by typeIdU32 / hash instead.
+            // Dynamic entries use typeid(void) — callers keying by type_index implicitly skip them.
             for (auto& [tid, info] : m_dynamicMap) {
                 (void)tid;
                 fn(s_VoidTypeIndex, info);
@@ -371,17 +240,8 @@ namespace Index {
             }
         }
 
-        // ── Dynamic (runtime-registered) component path ──────────────────
-        //
-        // RegisterDynamic is called from the script host AFTER the user
-        // assembly loads: DynamicComponentRegistrar reflects over every
-        // struct annotated [NativeComponent(..., Generate=true)] and
-        // calls this for each. Returns the assigned stable typeIdU32, or
-        // 0 on failure (duplicate serializedName, zero-size, etc.).
-        //
-        // The DynamicComponentStorage instance owned here outlives every
-        // captured callback because the registry tears the storage down
-        // only via UnregisterAllDynamic (driven by UnloadUserAssembly).
+        // RegisterDynamic: called by DynamicComponentRegistrar after user assembly loads. Returns assigned
+        // typeIdU32 or 0 on failure. Storage is owned here, outliving all captured callbacks until UnregisterAllDynamic.
         uint32_t RegisterDynamic(
             const std::string& displayName,
             const std::string& serializedName,
@@ -395,12 +255,6 @@ namespace Index {
                     "RegisterDynamic refused '{}': size is zero", displayName);
                 return 0;
             }
-            // Alignment must be a power of two, fit within the default
-            // allocator's guarantee, and divide size evenly so element N's
-            // offset (idx * size) stays aligned. The backing vector<uint8_t>
-            // gives alignof(max_align_t) at offset 0; ensuring size is a
-            // multiple of alignment keeps every subsequent element aligned.
-            // Misalignment is a SIGBUS on ARM and a silent perf hit on x86.
             if (alignment == 0 || (alignment & (alignment - 1)) != 0) {
                 IDX_CORE_WARN_TAG("ComponentRegistry",
                     "RegisterDynamic refused '{}': alignment {} is not a power of two",
@@ -422,11 +276,6 @@ namespace Index {
             }
             const uint64_t serializedHash = serializedName.empty()
                 ? 0u : detail::FnvHash64(serializedName);
-            // Duplicate-name check: if a dynamic registration with the same
-            // serialized name already exists (e.g. a previous reload left
-            // stale state), refuse rather than silently shadow it. Static
-            // components win — never let dynamic registration clobber a
-            // built-in.
             if (serializedHash != 0 && m_hashIndex.find(serializedHash) != m_hashIndex.end()) {
                 IDX_CORE_WARN_TAG("ComponentRegistry",
                     "RegisterDynamic refused '{}': serializedName '{}' already taken",
@@ -434,8 +283,6 @@ namespace Index {
                 return 0;
             }
 
-            // Allocate the underlying byte storage. Outlives every callback
-            // captured below — destroyed only by UnregisterAllDynamic.
             auto storage = std::make_unique<DynamicComponentStorage>(size, alignment);
             DynamicComponentStorage* storagePtr = storage.get();
 
@@ -448,10 +295,6 @@ namespace Index {
             info.isDynamic         = true;
             info.rawSize           = size;
             info.dynamicStorage    = storagePtr;
-            // typeId stays at typeid(void) — dynamics share this sentinel
-            // because std::type_index can't be synthesized. Callers that
-            // care about identity use typeIdU32 / serializedNameHash.
-
             info.has = [storagePtr](Entity e) -> bool {
                 return e.IsValid() && storagePtr->Contains(e.GetHandle());
             };
@@ -483,15 +326,7 @@ namespace Index {
             };
             info.fillRawPointers = [storagePtr](entt::registry& reg, void** outPointers,
                 int maxRows, int enableFilter) -> int {
-                // Snapshot the entity list before iterating. The filter
-                // checks below call into entt::registry, which can fire
-                // on_construct/on_destroy hooks (e.g. DisabledTag callbacks);
-                // a hook that mutates this storage's underlying vector
-                // would invalidate the iterator. The snapshot is cheap —
-                // dynamics rarely have thousands of instances — and the
-                // pointer values written into outPointers stay valid as
-                // long as the storage isn't mutated between this call and
-                // the caller's use, which is the existing contract.
+                // Snapshot before iterating: filter checks can fire on_construct/on_destroy hooks that mutate storage.
                 std::vector<EntityHandle> entitiesSnapshot = storagePtr->Entities();
                 int count = 0;
                 for (EntityHandle e : entitiesSnapshot) {
@@ -505,29 +340,10 @@ namespace Index {
                 return count;
             };
 
-            // ── Serialize / deserialize for dynamic components ────────────
-            // Round-trip the raw bytes as a hex string so the registry-driven
-            // SceneSerializer / DeserializeFullEntity sweep persists the
-            // component across save/load. Without these, every save loses the
-            // dynamic component's presence on disk — the editor's Inspector
-            // would still show the entry (it reads ScriptComponent.Scripts),
-            // but `Entity.HasNativeComponent<T>()` would return false on the
-            // next reload (and on entering Play mode after BeginPlayModeRequest
-            // writes the snapshot, AND in any standalone build that loads the
-            // shipped scene from disk).
-            //
-            // Tag-style components (size=1, no fields) serialize as `"00"`;
-            // the on-disk presence of the key is the actual marker — the byte
-            // contents don't matter because the C# struct has no fields. For
-            // structs with real fields the hex preserves the exact byte image
-            // so post-deserialize reads see the editor-time values.
             info.serialize = [storagePtr](Entity e) -> Json::Value {
                 if (!e.IsValid() || !storagePtr) return Json::Value::MakeObject();
                 const void* bytes = storagePtr->Get(e.GetHandle());
                 if (!bytes || storagePtr->ElementSize() == 0) {
-                    // Component present but no payload (shouldn't normally
-                    // happen — Add allocates ElementSize bytes). Persist an
-                    // empty marker so deserialize still emplaces it.
                     return Json::Value::MakeObject();
                 }
                 static constexpr char kHex[] = "0123456789abcdef";
@@ -546,10 +362,6 @@ namespace Index {
 
             info.deserialize = [storagePtr](Entity e, const Json::Value& v) {
                 if (!e.IsValid() || !storagePtr) return;
-                // Presence of the component key in the JSON is enough — the
-                // outer sweep already calls info->add(entity) before us. We
-                // just restore the byte payload when the saved object carries
-                // a "data" hex string.
                 if (!v.IsObject()) return;
                 const Json::Value* dataNode = v.FindMember("data");
                 if (!dataNode || !dataNode->IsString()) return;
@@ -572,16 +384,10 @@ namespace Index {
                 storagePtr->EmplaceOrReplace(e.GetHandle(), bytes.data());
             };
 
-            // Assign typeIdU32. Slot 0 stays reserved as the null sentinel.
             if (m_byTypeId.empty()) m_byTypeId.push_back(nullptr);
             info.typeIdU32 = static_cast<uint32_t>(m_byTypeId.size());
             m_byTypeId.push_back(nullptr); // placeholder; patched below
 
-            // EnTT storage hash — derived from the serializedName hash so it's
-            // stable across registrations of the same component. Has no entt
-            // pool behind it (dynamics live outside EnTT) but the field is
-            // still populated for the by-storage-hash lookup paths that
-            // currently key on it (ScriptBindings line ~816 etc.).
             info.storageHash = static_cast<entt::id_type>(serializedHash != 0
                 ? serializedHash : static_cast<uint64_t>(info.typeIdU32));
 
@@ -598,13 +404,7 @@ namespace Index {
             return typeIdU32;
         }
 
-        // Removes the entity from every DynamicComponentStorage instance.
-        // EnTT runs on_destroy hooks for typed components automatically, but
-        // dynamics live outside the EnTT pool system — without this hook
-        // they leak bytes until scene unload / assembly reload. Called from
-        // Scene::DestroyEntityInternal right before m_Registry.destroy().
-        // Cheap when the entity has no dynamic components attached (each
-        // Remove is a hashmap miss).
+        // Dynamics live outside EnTT pools so on_destroy won't fire; call before m_Registry.destroy().
         void ScrubEntity(EntityHandle e) {
             for (auto& [typeIdU32, storage] : m_dynamicStorages) {
                 (void)typeIdU32;
@@ -614,12 +414,7 @@ namespace Index {
             }
         }
 
-        // Drops every component registered via RegisterDynamic. Called from
-        // the script host BEFORE the user assembly unloads (so captured
-        // lambdas don't outlive their storage). Slots in m_byTypeId are
-        // nulled — never reused — so any cached typeIdU32 on the managed
-        // side becomes invalid (managed re-resolves on the next assembly
-        // load anyway).
+        // MUST be called before user assembly unloads so captured lambdas don't outlive storage.
         void UnregisterAllDynamic() {
             for (auto& [typeIdU32, info] : m_dynamicMap) {
                 if (info.serializedNameHash != 0) {
@@ -645,7 +440,6 @@ namespace Index {
             }
         }
 
-        /// Bidirectional conflict check; either side's declaration counts.
         bool HasConflict(Entity entity, std::type_index proposed) const {
             const auto proposedIt = m_map.find(proposed);
             const ComponentInfo* proposedInfo = (proposedIt != m_map.end()) ? &proposedIt->second : nullptr;
@@ -668,33 +462,13 @@ namespace Index {
             return false;
         }
 
-        /// Add a component to `entity` plus everything its `dependsOn` chain
-        /// pulls in (transitively). Idempotent — already-present components
-        /// are skipped. Cycles are guarded against via a visited set, so a
-        /// (mistaken) declaration of A depends on B depends on A still
-        /// terminates instead of recursing forever.
-        ///
-        /// A dependency that would violate an existing `conflictsWith` on
-        /// the entity is skipped with a warning rather than failing the
-        /// parent add — the policy is deliberately "less clicking, never
-        /// force." Removal is unrestricted; nothing tracks dependents.
-        ///
-        /// Returns true if the requested component is on the entity after
-        /// the call (added or already present), false if the type isn't
-        /// registered or its add would itself conflict.
+        /// Adds component + transitive dependsOn chain. Cycle-safe. Conflicting deps are skipped with a warning.
         bool AddWithDependencies(Entity entity, std::type_index type) const {
             std::unordered_set<std::type_index> visited;
             return AddWithDependenciesImpl(entity, type, visited, /*isRoot=*/true);
         }
 
-        /// Debug-only sweep: every conflict declaration must be symmetric.
-        /// `A.conflictsWith → B` requires `B.conflictsWith → A`. The lookup paths
-        /// (HasConflict / TypesConflict) accept either side as authoritative, so
-        /// asymmetry is currently silent — the validator catches stale registrations
-        /// where one side moved or got renamed without updating its mirror.
-        ///
-        /// Wrapped in IDX_DEBUG so shipping builds skip the O(N*M) walk; call once
-        /// after the built-in registration pass completes.
+        /// Validates conflict symmetry (A↔B both declared). O(N*M), debug-only.
 #ifdef IDX_DEBUG
         void ValidateConflictSymmetry() const {
             for (const auto& [aId, aInfo] : m_map) {
@@ -716,7 +490,6 @@ namespace Index {
         void ValidateConflictSymmetry() const {}
 #endif
 
-        /// Type-pair check for callers that already have type_index values.
         bool TypesConflict(std::type_index a, std::type_index b) const {
             if (a == b) return false;
             const auto ai = m_map.find(a);
@@ -747,11 +520,6 @@ namespace Index {
             if (info.has(entity)) return true;
 
             if (HasConflict(entity, type)) {
-                // Root path: caller is responsible for popup-level filtering, so
-                // a conflicting root means something upstream skipped a check —
-                // refuse with no warning to avoid log spam from legitimate
-                // "user picked a now-conflicting component on a multi-edit"
-                // scenarios. Dependency path: warn so silent skips are visible.
                 if (!isRoot) {
                     IDX_CORE_WARN_TAG("ComponentRegistry",
                         "Skipping auto-add of dependency '{}' — conflicts with a component already on the entity",
@@ -765,12 +533,6 @@ namespace Index {
             }
 
             info.add(entity);
-            // Post-add hook: only fires when the component is added through the
-            // user-facing AddWithDependencies path (Inspector "Add Component"
-            // popup, dependency-chain pulls). Scripting / scene-load callers
-            // that drive `info.add` or `entity.AddComponent<T>()` directly
-            // skip this — they write the component's fields explicitly and
-            // shouldn't get a "smart" inheritance fighting their values.
             if (info.onAdd) {
                 info.onAdd(entity);
             }
@@ -778,34 +540,12 @@ namespace Index {
         }
 
         std::unordered_map<std::type_index, ComponentInfo> m_map;
-        // Hash → ComponentInfo* (pointers into m_map or m_dynamicMap).
-        // Maintained in lockstep with both by Register / RegisterDynamic.
-        // Pointers stay stable across re-registration because
-        // `insert_or_assign` and `emplace` on unordered_map reuse the
-        // existing node's storage when the key already exists.
         std::unordered_map<uint64_t, const ComponentInfo*> m_hashIndex;
-        // typeIdU32 → ComponentInfo* (pointers into m_map or m_dynamicMap).
-        // 1-indexed; slot 0 is reserved as a null sentinel matching the
-        // "unregistered" meaning in the EntityCommandBuffer wire format.
-        // Grows monotonically — IDs are never reused, even when a dynamic
-        // component is unregistered, so the managed-side cache and any
-        // persisted-by-id artifact stays valid.
-        std::vector<const ComponentInfo*> m_byTypeId;
-        // Dynamic-registration map. Keyed by typeIdU32 (synthesized at
-        // registration) since dynamic components share typeid(void) and
-        // can't live in m_map. ComponentInfo nodes are pointer-stable
-        // because std::unordered_map preserves node addresses across
-        // rehash, so m_hashIndex / m_byTypeId references stay valid for
-        // the entry's lifetime.
+        std::vector<const ComponentInfo*> m_byTypeId; // 1-indexed; slot 0 = null sentinel
         std::unordered_map<uint32_t, ComponentInfo> m_dynamicMap;
-        // Owned DynamicComponentStorage instances, parallel to m_dynamicMap.
-        // Lives here (not in ComponentInfo) so the storage outlives every
-        // callback that captures storagePtr by raw pointer.
         std::unordered_map<uint32_t, std::unique_ptr<DynamicComponentStorage>> m_dynamicStorages;
-        // Single shared sentinel handed to ForEachComponentInfo callers for
-        // dynamic entries. `std::type_index` requires a real type_info — we
-        // can't synthesize per-component handles — so dynamics all share
-        // typeid(void). Callers that key by type_index implicitly skip them.
+        // Dynamics share typeid(void) — std::type_index can't be synthesized; callers that key by
+        // type_index implicitly skip dynamic entries.
         static inline const std::type_index s_VoidTypeIndex{ typeid(void) };
     };
 }

@@ -8,29 +8,11 @@
 #include <mutex>
 #include <string>
 
-// Forward decl so this header doesn't drag ImGui into the engine's public
-// surface. Same constraint as StatsOverlay — the .cpp uses ImGui directly
-// and is excluded from the engine DLL build (see Index-Engine/premake5.lua).
-//
-// NOT marked INDEX_API: each consumer (Editor, Runtime) compiles the .cpp
-// into its own binary; there is no DLL boundary.
+// NOT marked INDEX_API: each consumer (Editor, Runtime) compiles the .cpp into its own binary; no DLL boundary.
 struct ImVec2;
 
 namespace Index::Diagnostics {
 
-	// Engine-level runtime log overlay. Mirrors StatsOverlay's positioning /
-	// styling so the two stack cleanly when both are visible.
-	//
-	// Shows the most-recent N client (and editor-console) log entries in a
-	// fixed-size, semi-transparent ImGui window pinned to the top-right.
-	// Filters out core engine logs by default — the runtime overlay exists
-	// for game-developer-authored logs, not engine spam. Color-codes by
-	// severity (trace=gray, info=white, warn=yellow, error/critical=red).
-	//
-	// Subscribes to Log::OnLog in the constructor, unsubscribes in the
-	// destructor. The Log event is invoked from whatever thread called
-	// IDX_INFO etc., so the entry buffer is mutex-guarded; main-thread
-	// rendering also takes the lock.
 	class LogOverlay {
 	public:
 		// Cap on retained entries — older ones are dropped FIFO when the

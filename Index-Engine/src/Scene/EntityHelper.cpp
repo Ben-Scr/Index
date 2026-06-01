@@ -76,14 +76,6 @@ namespace Index {
 		return e;
 	}
 
-	// ── UI presets ──────────────────────────────────────────────────────
-	// Each preset configures a "parent" entity (the widget root) plus
-	// optional child entities for visuals that need their own rect /
-	// renderer. Sizes are in framebuffer pixels (UIRenderer is screen-
-	// space at 1 unit per pixel). UIEventSystem auto-resolves the
-	// cross-entity references each frame, so the child structure here
-	// is also what survives scene reload.
-
 	Entity EntityHelper::CreateUIPanel(Scene& scene) {
 		Entity entity = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Panel"));
@@ -113,10 +105,6 @@ namespace Index {
 		// the value at rest before the first system tick.
 		entity.GetComponent<ImageComponent>().Color = btn.NormalColor;
 
-		// Label child — point-anchored at the button's centre with an
-		// explicit SizeDelta matching the button. Children no longer
-		// inherit parent width/height, so the label needs its own size
-		// for left/right text alignment to land at the right place.
 		Entity label = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		label.AddComponent<NameComponent>(NameComponent("Label"));
 		auto& labelRect = label.GetComponent<RectTransform2DComponent>();
@@ -143,14 +131,6 @@ namespace Index {
 		rect.SizeDelta = Vec2{ 220.0f, 20.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.18f, 0.20f, 0.24f, 1.0f };
 
-		// Fill child — UIEventSystem updates SizeDelta.x to span [0, t]
-		// of the track each frame; the rest of the rect (anchor / pivot /
-		// position / height) is authored here and stays editable in the
-		// inspector. Point-anchored at the track's left-centre with the
-		// fill's pivot also at its left edge so SizeDelta.x grows the
-		// fill rightward from the track's left edge. Initial Width=0
-		// keeps the fill invisible at Value=0; ApplySliderVisuals fills
-		// it on the first tick.
 		Entity fill = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		fill.AddComponent<NameComponent>(NameComponent("Fill"));
 		auto& fillRect = fill.GetComponent<RectTransform2DComponent>();
@@ -162,10 +142,6 @@ namespace Index {
 		fill.GetComponent<ImageComponent>().Color = Color{ 0.30f, 0.55f, 0.95f, 1.0f };
 		fill.SetParent(entity);
 
-		// Handle child — the bit the user visually drags. The handle
-		// owns the InteractableComponent so the draggable surface is
-		// the thumb itself rather than the whole track. UIEventSystem
-		// repositions it along the track each frame from SliderComponent::Value.
 		Entity handle = CreateWith<RectTransform2DComponent, ImageComponent,
 			InteractableComponent>(scene);
 		handle.AddComponent<NameComponent>(NameComponent("Handle"));
@@ -181,13 +157,7 @@ namespace Index {
 	}
 
 	Entity EntityHelper::CreateUIProgressBar(Scene& scene) {
-		// Same component shape as a slider — a Slider preset with
-		// IsReadOnly true, no draggable Handle, and a centred Label
-		// child the slider system fills with "{N}%". We deliberately
-		// don't add an InteractableComponent here: read-only sliders
-		// take hover / press visuals from theirs when present, but a
-		// progress bar visually has no interaction at all so leaving
-		// it off keeps the engine from trying to hit-test it.
+		// No InteractableComponent: progress bars don't respond to input and must not be hit-tested.
 		Entity entity = CreateWith<RectTransform2DComponent, ImageComponent,
 			SliderComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Progress Bar"));
@@ -201,10 +171,6 @@ namespace Index {
 		slider.MinValue = 0.0f;
 		slider.MaxValue = 1.0f;
 
-		// Fill child — the visible "blue bar". UIEventSystem's slider
-		// pass rewrites its anchors / pivot / SizeDelta every frame
-		// from the current Value, exactly the same path the regular
-		// slider's fill goes through.
 		Entity fill = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		fill.AddComponent<NameComponent>(NameComponent("Fill"));
 		auto& fillRect = fill.GetComponent<RectTransform2DComponent>();
@@ -216,10 +182,6 @@ namespace Index {
 		fill.GetComponent<ImageComponent>().Color = Color{ 0.30f, 0.55f, 0.95f, 1.0f };
 		fill.SetParent(entity);
 
-		// Label child — TextRenderer centred over the bar. SliderComponent
-		// updates its Text to "{N}%" each frame; we just author the
-		// initial copy so freshly-spawned bars look right before the
-		// first event-system tick.
 		Entity label = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		label.AddComponent<NameComponent>(NameComponent("Label"));
 		auto& labelRect = label.GetComponent<RectTransform2DComponent>();
@@ -243,13 +205,7 @@ namespace Index {
 	}
 
 	Entity EntityHelper::CreateUICircularSlider(Scene& scene) {
-		// Ring-only widget — no ImageComponent on the root because the
-		// ring is rendered procedurally by GuiRenderer's circular-slider
-		// pass. We DO add an InteractableComponent so UIEventSystem's
-		// hover loop sees the entity and runs the annulus hit-test on
-		// it. The default 200×200 rect with a 20 px ring matches a
-		// readable dial size; adjust SizeDelta on the RectTransform or
-		// RingThickness on the slider for a chunkier / thinner ring.
+		// No ImageComponent — ring is procedural; InteractableComponent required for UIEventSystem's annulus hit-test.
 		Entity entity = CreateWith<RectTransform2DComponent, InteractableComponent,
 			CircularSliderComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Circular Slider"));
@@ -260,17 +216,6 @@ namespace Index {
 		cs.Value = 0.5f;
 		cs.RingThickness = 20.0f;
 
-		// Optional handle child — a small dot that rides the ring at
-		// the value angle. UIEventSystem's circular-slider pass rewrites
-		// its AnchoredPosition every frame, so the user sees a thumb
-		// indicator without writing any code. The handle is point-
-		// anchored at the slider's centre so its AnchoredPosition is
-		// directly the (cosθ·r, sinθ·r) the system writes. Adds an
-		// InteractableComponent so hover/press feedback resolves
-		// against the cursor sitting on the thumb specifically — gives
-		// the same color-swap behaviour as a linear slider's handle.
-		// We also use circle.png as the texture so the visual is round,
-		// matching the disc-shaped slider body.
 		Entity handle = CreateWith<RectTransform2DComponent, ImageComponent, InteractableComponent>(scene);
 		handle.AddComponent<NameComponent>(NameComponent("Handle"));
 		auto& handleRect = handle.GetComponent<RectTransform2DComponent>();
@@ -280,12 +225,7 @@ namespace Index {
 		handleRect.SizeDelta = Vec2{ 20.0f, 20.0f };
 		auto& handleImg = handle.GetComponent<ImageComponent>();
 		handleImg.Color = cs.NormalColor;
-		// Round handle by default; uses the bundled circle.png
-		// (alpha-masks the corners off a square quad so the visible
-		// thumb is a disc). Skipping TextureAssetId — runtime
-		// rendering only consults TextureHandle, and the
-		// inspector-visible "Texture" picker shows "(None)" until
-		// the user picks one explicitly, which is fine.
+		// TextureAssetId left unset; runtime only needs TextureHandle and the inspector shows "(None)" until explicitly set.
 		handleImg.TextureHandle = TextureManager::GetDefaultTexture(DefaultTexture::Circle);
 		handle.SetParent(entity);
 		cs.HandleEntity = handle.GetHandle();
@@ -301,10 +241,6 @@ namespace Index {
 		rect.SizeDelta = Vec2{ 240.0f, 36.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
 
-		// Text child — point-anchored at the field's centre with an
-		// explicit SizeDelta matching the input field. Left-aligned text
-		// uses the rect's left edge as the origin, so the rect needs a
-		// real width.
 		Entity textChild = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		textChild.AddComponent<NameComponent>(NameComponent("Text"));
 		auto& textRect = textChild.GetComponent<RectTransform2DComponent>();
@@ -336,9 +272,6 @@ namespace Index {
 		dd.Options = { "Option A", "Option B", "Option C" };
 		dd.SelectedIndex = 0;
 
-		// Label child — point-anchored at the dropdown's centre with an
-		// explicit SizeDelta matching the dropdown. (Children no longer
-		// inherit parent dimensions.)
 		Entity labelChild = CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
 		labelChild.AddComponent<NameComponent>(NameComponent("Label"));
 		auto& labelRect = labelChild.GetComponent<RectTransform2DComponent>();
@@ -366,10 +299,6 @@ namespace Index {
 		rect.SizeDelta = Vec2{ 28.0f, 28.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.95f, 0.95f, 0.95f, 1.0f };
 
-		// Checkmark child — point-anchored to the box's centre so the
-		// child's size is its own SizeDelta and never inherits the
-		// parent's width/height. UIEventSystem flips it enabled /
-		// disabled from ToggleComponent::IsOn.
 		Entity check = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		check.AddComponent<NameComponent>(NameComponent("Checkmark"));
 		auto& checkRect = check.GetComponent<RectTransform2DComponent>();
@@ -395,18 +324,10 @@ namespace Index {
 		rect.SizeDelta = Vec2{ 220.0f, 20.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.18f, 0.20f, 0.24f, 1.0f };
 
-		// Sliding Area: invisible child that the handle anchors against.
-		// In Unity-like setups the handle is parented to a Sliding Area
-		// rather than the scrollbar root; we keep the handle directly on
-		// the scrollbar to match the slider preset and simplify the
-		// resolved-rect math.
 		Entity handle = CreateWith<RectTransform2DComponent, ImageComponent,
 			InteractableComponent>(scene);
 		handle.AddComponent<NameComponent>(NameComponent("Handle"));
 		auto& handleRect = handle.GetComponent<RectTransform2DComponent>();
-		// Anchored at the track's left-centre (LTR default) — UIEventSystem
-		// rewrites AnchoredPosition + SizeDelta every frame from Value /
-		// Size, so these are just at-rest defaults.
 		handleRect.AnchorMin = Vec2{ 0.0f, 0.5f };
 		handleRect.AnchorMax = Vec2{ 0.0f, 0.5f };
 		handleRect.Pivot = Vec2{ 0.0f, 0.5f };
@@ -427,11 +348,6 @@ namespace Index {
 		rect.SizeDelta = Vec2{ 320.0f, 220.0f };
 		entity.GetComponent<ImageComponent>().Color = Color{ 0.18f, 0.18f, 0.20f, 0.92f };
 
-		// Viewport — clips the Content. Sized as the parent's authored
-		// rect minus 20px on each axis so the scrollbars sit visually
-		// outside. Point-anchored at the parent's centre (children no
-		// longer inherit parent dimensions, so SizeDelta is the literal
-		// pixel size — author it explicitly).
 		Entity viewport = CreateWith<RectTransform2DComponent, ImageComponent>(scene);
 		viewport.AddComponent<NameComponent>(NameComponent("Viewport"));
 		auto& vRect = viewport.GetComponent<RectTransform2DComponent>();
@@ -443,10 +359,7 @@ namespace Index {
 		viewport.GetComponent<ImageComponent>().Color = Color{ 0.10f, 0.10f, 0.12f, 1.0f };
 		viewport.SetParent(entity);
 
-		// Content — the scrollable child. Sized larger than the viewport
-		// on both axes so there's something to scroll out of the box.
-		// Anchored at the viewport's top-left corner so AnchoredPosition
-		// in [-(content - viewport), 0] is the standard scroll range.
+		// Anchored at viewport top-left so AnchoredPosition scrolls in [-(content-viewport), 0].
 		Entity content = CreateWith<RectTransform2DComponent>(scene);
 		content.AddComponent<NameComponent>(NameComponent("Content"));
 		auto& cRect = content.GetComponent<RectTransform2DComponent>();

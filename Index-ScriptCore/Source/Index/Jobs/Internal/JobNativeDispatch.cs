@@ -5,35 +5,13 @@ using Index.Interop;
 
 namespace Index.Jobs.Internal;
 
-// Bridges managed Schedule paths into the native JobSystem bindings
-// added in ScriptGlue.hpp. Three pieces:
-//
-//   1. IJobBox / IJobRangeBox — the interfaces every per-loop-shape
-//      box (JobBox, JobForBox, JobParallelForBox, JobQueryRangeBox)
-//      implements. The dispatch layer treats them uniformly.
-//
-//   2. [UnmanagedCallersOnly] entry points — the function pointers we
-//      hand to native. They retrieve the box from the GCHandle we
-//      passed as `context`, invoke it, and stash any exception via
-//      JobExceptionRegistry for the calling thread to rethrow.
-//
-//   3. Schedule / ScheduleParallelFor helpers — pin the box behind a
-//      GCHandle, hand it to native, return the ulong native handle
-//      packaged as a JobHandle.
 internal static unsafe class JobNativeDispatch
 {
     internal interface IJobBox
     {
         ulong NativeHandle { get; set; }
 
-        // Invoked exactly once on a native worker. May throw — the
-        // entry point catches and stashes the exception.
         void Invoke();
-
-        // Called from the native side's release callback, after Wait
-        // completes (so after every batch's Invoke / InvokeRange has
-        // returned). Box should return itself to its per-thread pool
-        // and clear any disposable state it holds.
         void OnRelease();
     }
 
@@ -41,16 +19,11 @@ internal static unsafe class JobNativeDispatch
     {
         ulong NativeHandle { get; set; }
 
-        // Per-batch entry point — may be invoked concurrently across
-        // worker threads, once per partition. Implementations must
-        // make their own thread-local copy of any TJob struct they
-        // hold so concurrent partitions don't trample each other.
+        // Invoked concurrently across worker threads; implementations MUST copy the TJob struct locally to avoid concurrent partition trampling.
         void InvokeRange(int lo, int hi);
 
         void OnRelease();
     }
-
-    // ── [UnmanagedCallersOnly] entry points ──────────────────────────
 
     [UnmanagedCallersOnly]
     private static void JobEntrypoint(void* ctx)
@@ -115,15 +88,11 @@ internal static unsafe class JobNativeDispatch
         gch.Free();
     }
 
-    // ── Schedule helpers ─────────────────────────────────────────────
-
     internal static JobHandle Schedule(IJobBox box)
     {
         ref NativeBindingsStruct b = ref NativeCallbacks.Bindings;
         if (b.JobSystem_Enqueue == null)
         {
-            // Native bindings not yet wired (shouldn't happen at runtime,
-            // but a defensive inline run keeps tests sane in mocks).
             box.NativeHandle = 0;
             try { box.Invoke(); }
             finally { box.OnRelease(); }

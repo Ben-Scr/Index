@@ -30,17 +30,11 @@ namespace Index {
 		void NotifyOne(const std::shared_ptr<JobControlBlock>& block) {
 			if (!block) return;
 
-			// Sequentially-consistent fetch_sub so the "last decrementer
-			// wins" pattern is unambiguous across architectures. ABA
-			// concerns don't apply (counter only goes down).
 			const int remaining = block->Pending.fetch_sub(1, std::memory_order_acq_rel) - 1;
 			if (remaining > 0) {
 				return;
 			}
 
-			// remaining == 0: we are the last completer. Mark Done and
-			// wake waiters. We take the mutex even just for the notify
-			// because waiters check the Done flag under the same lock.
 			{
 				std::scoped_lock lock(block->Mutex);
 				block->Done.store(true, std::memory_order_release);
@@ -84,10 +78,7 @@ namespace Index {
 		// Fast path: already done.
 		if (block->Done.load(std::memory_order_acquire)) return;
 
-		// Hybrid work-stealing wait. We don't want to block when there's
-		// queued work we could be running — that's the classic fork-join
-		// deadlock when a job waits on a sub-job and all workers are also
-		// waiting on each other. Drain the queue while we wait.
+		// Drain the queue while waiting: blocking here with queued work risks fork-join deadlock when all workers wait on each other.
 		using namespace std::chrono_literals;
 		for (;;) {
 			if (block->Done.load(std::memory_order_acquire)) return;

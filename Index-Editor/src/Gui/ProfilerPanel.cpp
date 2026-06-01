@@ -59,10 +59,6 @@ namespace Index {
 		dst.TrackingSpan = m_TrackingSpan;
 		dst.TrackInBackground = m_TrackInBackground;
 
-		// Snapshot per-module enabled state from the live profiler. Only
-		// non-default (disabled) entries get persisted; default-enabled
-		// modules stay implicit so the JSON file doesn't grow with every
-		// new engine module.
 		dst.ModuleEnabled.clear();
 		for (const auto& m : Profiler::AllModules()) {
 			if (!m.Enabled) {
@@ -146,11 +142,6 @@ namespace Index {
 					}
 				},
 				{
-					// Diagnostic probes that sit *after* the early-exit of
-					// systems that "shouldn't run when idle". A non-zero
-					// reading here means the gate is firing every frame —
-					// the panel turns the suspicion into a single-glance
-					// answer instead of a bisection hunt.
 					"Gate Diagnostics",
 					{
 						{ "Editor.HierarchyRebuild", "Editor Hierarchy Rebuild", "ms" },
@@ -290,10 +281,6 @@ namespace Index {
 
 		ImGui::Separator();
 
-		// Body — four collapsible category headers, each grouping its modules
-		// from the static layout map. Header state defaults to OPEN on first
-		// render; ImGui persists the user's collapsed/expanded preference via
-		// imgui.ini between sessions automatically.
 		for (const auto& category : GetCategoryLayout()) {
 			ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
 			if (ImGui::CollapsingHeader(category.Header)) {

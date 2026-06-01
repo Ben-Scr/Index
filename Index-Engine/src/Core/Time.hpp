@@ -47,10 +47,7 @@ namespace Index {
 		void Update(float deltaTime);
 		void AdvanceFrameCount() { m_FrameCount++; }
 
-		// Resets the "game start" baseline used by GetTimeSinceStartup /
-		// GetRealtimeSinceStartup. Called once at the end of Application::Initialize
-		// (after RaiseApplicationStart) so the engine-init pipeline is excluded, and
-		// again on every editor play-mode entry so each play session starts at zero.
+		// Called after RaiseApplicationStart (so engine-init is excluded) and on each editor play-mode entry.
 		void MarkGameStart();
 
 		float m_DeltaTime = 0.0f;

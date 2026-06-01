@@ -29,13 +29,7 @@ namespace Index {
 			return Application::s_Instance ? Application::s_Instance->m_IsScriptInputEnabled : true;
 		}
 
-		// Set / consume the "stop play mode" flag that scripted
-		// Application.Quit() calls raise inside the editor. Quit in a
-		// shipped runtime closes the process; in the editor it must
-		// instead stop play mode (and leave the editor open). The editor
-		// polls this flag every frame and routes it through its normal
-		// stop-play path; consuming clears the flag so the editor
-		// doesn't re-stop on the next frame.
+		// Application.Quit() in the editor raises this flag instead of closing the process; poll+consume each frame via the normal stop-play path.
 		static bool ConsumeQuitStopPlayRequest()
 		{
 			if (!Application::s_Instance) return false;

@@ -30,10 +30,7 @@ namespace Index {
 		/// rather than the OS default application.
 		static bool IsScriptExtension(const std::string& ext);
 
-		/// M29: join any in-flight launcher worker threads. Called from
-		/// the editor layer's OnDetach so that detached CreateProcessW
-		/// helpers (one fast launcher, one Sleep(4000)+two-step VS
-		/// launcher) don't outlive the editor's main loop.
+		/// Join in-flight launcher threads on editor detach; without this, detached CreateProcessW helpers outlive the main loop.
 		static void JoinPendingLaunchThreads();
 
 	private:

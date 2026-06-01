@@ -32,6 +32,7 @@ project "Index-Editor"
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
     defines(GetIndexModuleDefines())
+    ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
     includedirs { "src" }
     -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h

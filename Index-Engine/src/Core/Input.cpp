@@ -79,10 +79,6 @@ namespace Index {
     }
 
     void Input::PollGamepads() {
-        // Snapshot previous-frame buttons before sampling new state so
-        // edge-detection (Down / Up) sees a consistent diff. Disconnect
-        // is handled by clearing CurrentButtons — Up edges still fire
-        // for buttons the user was holding when the pad unplugged.
         for (int i = 0; i < k_MaxGamepads; ++i) {
             auto& g = m_Gamepads[i];
             g.PreviousButtons = g.CurrentButtons;

@@ -38,17 +38,9 @@ namespace Index {
 	void RuntimeSplashLayer::OnAttach(Application& app) {
 		m_ImGuiAcquired = RuntimeImGuiHost::Acquire(app.GetWindow());
 
-		// Tell the Application this splash is live so Initialize() will
-		// defer the InitializeStartupScenes call until OnDetach below
-		// fires. Without this signal Application would load scenes
-		// synchronously during Init and the splash would render on top
-		// of an already-loaded scene instead of *before* it loads.
+		// MUST precede scene load: without this signal Application::Init loads scenes synchronously, rendering the splash over an already-loaded scene.
 		Application::SignalSplashAttached();
 
-		// Opt our (lazy-loaded) m_Logo into TextureManager::PurgeUnreferenced
-		// so the first scene load doesn't reap the splash texture out from
-		// under us. The provider is queried each Purge call, so it's fine
-		// that m_Logo is still default-invalid here.
 		m_TextureRefToken = TextureManager::AddReferenceProvider(
 			[this](const TextureManager::ReferenceEmitter& emit) {
 				if (m_Logo.IsValid()) emit(m_Logo);
@@ -85,10 +77,7 @@ namespace Index {
 			m_ImGuiAcquired = false;
 		}
 
-		// Splash is fully gone — the main loop's TickDeferredStartupScenes
-		// will pick up this signal next frame and finally load the
-		// startup scene. Sequenced last so any teardown above completes
-		// before the (potentially seconds-long) scene-load stutter.
+		// MUST be last: teardown above completes before the scene-load stutter.
 		Application::SignalSplashDetached();
 	}
 
@@ -100,15 +89,7 @@ namespace Index {
 		const float total = m_FadeIn + m_Hold + m_FadeOut;
 		if (m_Elapsed >= total) {
 			m_RequestPop = true;
-			// Self-pop at the end of the timeline. PopOverlay defers the
-			// actual erase to dispatch-end (we're inside the main loop's
-			// OnUpdate dispatch right now), but runs OnDetach
-			// immediately — which fires SignalSplashDetached and lets
-			// Application::TickDeferredStartupScenes drain the deferred
-			// startup-scene load on the very next BeginFrame step.
-			// Without this call, the splash would just go silent
-			// (return-early on every Update / PreRender) and the scene
-			// would never load.
+			// PopOverlay defers the erase but runs OnDetach immediately, firing SignalSplashDetached so the next BeginFrame loads the startup scene.
 			app.PopOverlay(this);
 		}
 	}
@@ -135,14 +116,7 @@ namespace Index {
 			if (!logoPath.empty()) {
 				m_Logo = TextureManager::LoadTexture(logoPath);
 			}
-			// If a custom splash image was authored but the load didn't
-			// produce a valid handle, surface why exactly once. Without
-			// this the only diagnostic was an `[OutOfRange] TextureHandle
-			// index 65535` line per render frame from GetTexture, which
-			// pointed at the read site rather than the load failure that
-			// caused it. Logging the requested path + the resolved path
-			// (or the missing-asset cause) tells the user which file the
-			// build expects and where to put it.
+			// Log exactly once with the resolved path; without this the only diagnostic was an OutOfRange index from GetTexture, pointing at the wrong site.
 			if (customRequested && !TextureManager::IsValid(m_Logo)) {
 				IDX_CORE_WARN_TAG("RuntimeSplash",
 					"Custom splash image '{}' failed to load (resolved: '{}'); falling back to no logo.",
@@ -150,10 +124,6 @@ namespace Index {
 					logoPath.empty() ? std::string("<unresolved>") : logoPath);
 			}
 
-			// Background image — same path resolution as the logo, but
-			// optional. If the user didn't author one we leave m_Background
-			// invalid and fall back to the solid Background{R,G,B} fill
-			// already drawn below.
 			if (project && !project->SplashScreen.BackgroundImagePath.empty()) {
 				const std::string bgPath = SplashAssetResolve::Resolve(
 					project->SplashScreen.BackgroundImagePath, project);
@@ -169,20 +139,7 @@ namespace Index {
 			}
 		}
 
-		// Aspect-locked builds render the game inside a centered sub-rect
-		// of the swap chain. The splash uses ImGui (which manages its own
-		// per-draw scissor / viewport from ImDrawData), so the engine's
-		// cached-viewport plumbing in WebGPUBackend::ApplyCachedViewportToPass
-		// doesn't touch the splash's pass — it would land at the top-left
-		// of the OS window with whatever was previously in the surround
-		// pixels (typically dark grey / undefined). Renderer2D::BeginFrame
-		// also can't help here: at splash time no scenes are loaded, so
-		// it returns early without clearing.
-		//
-		// Paint the whole swap chain black first (full-attachment loadOp=
-		// Clear), then offset the splash's ImGui window to the sub-rect.
-		// For non-aspect-locked builds the offset is (0, 0) and the sub-
-		// rect IS the full window — visually identical to the legacy path.
+		// Aspect-locked: ImGui manages its own viewport so the cached-viewport path doesn't apply; clear the full swap chain first, then offset the ImGui window to the sub-rect.
 		int width = 0, height = 0;
 		int offsetX = 0, offsetY = 0;
 		bool hasLetterbox = false;
@@ -209,9 +166,6 @@ namespace Index {
 
 		RuntimeImGuiHost::BeginFrame();
 
-		// Fade timeline. Alpha curves linearly from 0→1 over FadeIn,
-		// stays 1 during Hold, then 1→0 over FadeOut. The background
-		// fades on top so the previous frame doesn't bleed through.
 		float alpha = 1.0f;
 		if (m_Elapsed < m_FadeIn && m_FadeIn > 0.0f) {
 			alpha = m_Elapsed / m_FadeIn;
@@ -221,11 +175,6 @@ namespace Index {
 		}
 		alpha = std::clamp(alpha, 0.0f, 1.0f);
 
-		// Anchor at the centered sub-rect's top-left in framebuffer coords.
-		// In non-aspect-locked builds the offset is (0, 0) so this is the
-		// historical "fill whole window" behaviour. In locked builds the
-		// splash now sits inside the sub-rect with the BLACK clear above
-		// showing through as letterbox / pillarbox bars.
 		ImGui::SetNextWindowPos(ImVec2(static_cast<float>(offsetX), static_cast<float>(offsetY)));
 		ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)));
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -244,15 +193,7 @@ namespace Index {
 		ImDrawList* draw = ImGui::GetWindowDrawList();
 		const ImVec2 wMin = ImGui::GetWindowPos();
 		const ImVec2 wMax = ImVec2(wMin.x + width, wMin.y + height);
-		// Solid colour painted FIRST so it acts as the fallback when no
-		// background image was authored, AND as the underlay if the
-		// image fails to load or carries transparency. The optional
-		// background image is drawn on top with the same fade alpha so
-		// it animates with the rest of the splash. Letterboxing /
-		// pillarboxing is handled implicitly: scale the image so its
-		// shorter side fills the canvas (cover style), centred — so the
-		// background bleeds beyond the canvas edges instead of leaving
-		// solid bars when aspect ratios differ.
+		// Solid fill first as fallback/underlay; background image drawn cover-style (shorter side fills, centred) on top.
 		draw->AddRectFilled(wMin, wMax, PackColor(m_BackgroundR, m_BackgroundG, m_BackgroundB, alpha));
 
 		Texture2D* background = TextureManager::GetTexture(m_Background);
@@ -307,10 +248,6 @@ namespace Index {
 			}
 		}
 
-		// Subtitle line — engine version + platform + build profile, OR
-		// the project's customText override. FontSize ≤ 0 falls back to
-		// the current ImGui font's default size so legacy projects (no
-		// FontSize in index-project.json) render unchanged.
 		if (!m_Subtitle.empty()) {
 			ImFont* font = ImGui::GetFont();
 			const float fontSize = (m_FontSize > 0.0f) ? m_FontSize : ImGui::GetFontSize();

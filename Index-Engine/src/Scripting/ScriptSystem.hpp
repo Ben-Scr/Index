@@ -51,12 +51,6 @@ namespace Index {
 		bool IsNativeRebuildRunning() const;
 		float GetActiveRebuildElapsedSeconds() const;
 
-		// Static accessor for the shared NativeScriptHost. Exposed so the
-		// runtime-attach path (Entity::AddComponent<TScript>() via
-		// EntityScriptOps) can create and track native script instances
-		// without duplicating the host or losing the lifecycle bookkeeping
-		// in m_LiveInstances. The host itself is the single owner of every
-		// live native script across the engine.
 		static NativeScriptHost& GetNativeHost() { return m_NativeHost; }
 
 	private:
@@ -91,13 +85,7 @@ namespace Index {
 		static inline std::shared_ptr<ScriptSystemProcessTaskState> m_NativeRebuildTask;
 		static inline bool m_NativeRebuildQueued = false;
 
-		// True while teardown of managed/native scripts is in progress. The queued-
-		// rebuild dispatch path (OnPreRender) must not replay a queued rebuild while
-		// teardown is mid-flight — a queued rebuild kicked off mid-teardown would
-		// race with the in-progress LoadUserAssembly / NativeHost::LoadDLL and could
-		// reload an assembly that the teardown loop hasn't finished destroying
-		// instances from yet. Atomic in case future profiler/watcher threads peek
-		// at it; today the field is touched only on the main thread.
+		// Guards OnPreRender's queued-rebuild dispatch: a rebuild mid-teardown races LoadUserAssembly/NativeHost::LoadDLL.
 		static inline std::atomic<bool> m_TeardownInProgress{false};
 	};
 

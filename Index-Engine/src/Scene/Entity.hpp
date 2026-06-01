@@ -9,29 +9,11 @@
 
 namespace Index {
 	class Scene;
-	// Forward-declared so the script-branch constraints
-	// (`std::is_base_of_v<NativeScript, T>`) parse without dragging
-	// NativeScript.hpp / ScriptComponent.hpp / Scene.hpp into the top
-	// of this file. The full definition arrives via the
-	// `Scripting/EntityScriptOps.hpp` include at the BOTTOM of this
-	// file — by then the Entity class is fully defined, so the cycle
-	// Entity.hpp -> EntityScriptOps.hpp -> ScriptSystem.hpp ->
-	// Scene.hpp -> Entity.hpp (no-op via guard) resolves with every
-	// inline reference seeing a complete Entity. The script-branch
-	// templates only instantiate at the call site (user TU), where
-	// NativeScript IS complete because the same EntityScriptOps.hpp
-	// include re-runs through.
+	// Forward-declared to break the cycle Entity.hpp→EntityScriptOps.hpp→Scene.hpp→Entity.hpp;
+	// full definition arrives via the EntityScriptOps.hpp include at the bottom of this file.
 	class NativeScript;
 
-	// Helper-template forward declarations so the Entity script-branch
-	// definitions further down can reference them at PARSE time, not
-	// just at instantiation. The full bodies live in
-	// `Scripting/EntityScriptOps.hpp` (included at the bottom of this
-	// file). Without these forward decls, including Entity.hpp through
-	// ScriptSystem.hpp (which happens during EntityScriptOps.hpp's own
-	// processing of #include "Scripting/ScriptSystem.hpp") would
-	// produce a parse error: the compiler would see `EntityScriptOps::`
-	// before the namespace exists.
+	// Forward decls needed at parse time; full bodies in EntityScriptOps.hpp (included below the class).
 	namespace EntityScriptOps {
 		template<typename T>
 			requires std::is_base_of_v<NativeScript, T>
@@ -60,42 +42,19 @@ namespace Index {
 
 	public:
 		static Entity Create();
-		// Named-overload: creates a runtime entity in the active scene
-		// and attaches a NameComponent. Equivalent to
-		// Scene::CreateRuntimeEntity(name). Empty name → unnamed entity
-		// (no NameComponent added) — matches the Scene-side behavior.
 		static Entity Create(const std::string& name);
 
-		// Runtime clone / prefab spawn. Picks the right path based on
-		// the source's origin:
-		//   - prefab asset → SceneSerializer::InstantiatePrefab
-		//   - runtime / scene entity → Scene::CloneEntity (Component-only)
-		// Returns Entity::Null when the source is invalid or no active
-		// scene is loaded.
 		static Entity Instantiate(Entity source);
 
 		static void Destroy(Entity entity);
-		// Schedule the destruction `delay` seconds in the future. The
-		// entity stays valid (and addressable) until the next
-		// Scene::UpdateSystems tick on which (accumulated dt) >= delay.
-		// Non-positive delay collapses to immediate destruction.
-		// Forwarded to Scene::DestroyEntity(handle, delay).
 		static void Destroy(Entity entity, float delay);
 
-		// Variadic AND-semantics complement to HasAnyComponent<Ts...>:
-		// returns true only when EVERY listed component is present.
-		// Implementation is a fold over the existing per-T HasComponent.
-		// No 8-arity cap — C++ templates accept arbitrary packs.
 		template<typename... TComponent>
 		bool HasComponents() const {
 			if (!IsValid()) return false;
 			return (HasComponent<TComponent>() && ...);
 		}
 
-		// Convenience: Create(name) + AddComponent<Ti>() per type in the
-		// pack, in declaration order. Default-constructs each component
-		// — for value-init use Create(name) and per-call AddComponent,
-		// or EntityCommandBuffer for batched value attaches.
 		template<typename... TComponent>
 		static Entity CreateWith(const std::string& name = "") {
 			Entity e = name.empty() ? Create() : Create(name);
@@ -105,30 +64,14 @@ namespace Index {
 		}
 
 		void Destroy();
-		// Sentinel "no entity" value. Const so callers can't accidentally
-		// reseat the global to a real entity handle and corrupt every
-		// downstream null-check. Defined in Entity.cpp.
 		static const Entity Null;
 
-		// Scene-bound placeholder: an Entity with no underlying handle but
-		// a live Scene pointer, for code paths that need to dispatch
-		// scene-scoped logic (e.g. PropertyDrawer's MarkSceneDirty hook,
-		// which only reads Scene* via Entity::GetScene()) through an API
-		// that takes an Entity. The returned wrapper reports IsValid() ==
-		// false and asserts on any component operation — it exists purely
-		// to carry the scene reference, not to stand in for a real entity.
-		//
-		// Public so editor / inspector translation units can call it without
-		// being added to the Entity friend list; the private constructors
-		// remain off-limits to general callers.
+		// IsValid()==false; only carries Scene* for callers (e.g. PropertyDrawer) that need
+		// to dispatch scene-scoped logic through an Entity API but have no real handle.
 		static Entity MakeScenePlaceholder(Scene& scene);
 
 
 		// ── Component branch (ECS data — Transform2D, SpriteRenderer, …) ───
-		// Constrained out of the NativeScript-derived case so script
-		// types fall through to the script-branch overloads below.
-		// CS0111-style overload ambiguity doesn't apply in C++; concept
-		// disambiguation picks the unique candidate at the call site.
 		template<typename TComponent, typename... Args>
 			requires (!std::is_empty_v<TComponent> && !std::is_base_of_v<NativeScript, TComponent>)
 		TComponent& AddComponent(Args&&... args) {
@@ -194,15 +137,7 @@ namespace Index {
 			ComponentUtils::RemoveComponent<TComponent>(*m_Registry, m_EntityHandle);
 		}
 
-		// ── Script branch (NativeScript-derived) ────────────────────────
-		// Selected by concept disambiguation when T derives from
-		// NativeScript. Returns T* (nullable) rather than T& — a script
-		// MAY be absent, and the caller pattern
-		// `if (auto* s = e.GetComponent<MyScript>()) ...` matches Unity
-		// /Unreal idioms. Definitions live in `EntityScriptOps.hpp` (see
-		// include below the class) so the heavy ScriptComponent /
-		// NativeScriptHost machinery isn't pulled into every Entity.hpp
-		// consumer.
+		// ── Script branch (NativeScript-derived) — returns T* (nullable); definitions in EntityScriptOps.hpp ───
 		template<typename TScript>
 			requires std::is_base_of_v<NativeScript, TScript>
 		TScript* AddComponent();
@@ -246,22 +181,12 @@ namespace Index {
 		void SetEnabled(bool enabled);
 
 		// ── Parent-child hierarchy ────────────────────────────────────
-		// Reparent this entity. Pass Entity::Null to detach (make this a
-		// root). Detaches from the previous parent's child list first.
-		// Refuses cycles (passing a descendant of `this`) silently — the
-		// call becomes a no-op so a buggy editor drag-drop can't corrupt
-		// the scene graph.
+		// Pass Entity::Null to detach. Silently refuses cycles (no-op) so a buggy drag-drop can't corrupt the graph.
 		void SetParent(Entity parent);
 
 		// Returns Entity::Null when this is a root.
 		Entity GetParent() const;
 
-		// Direct children only. Returns a non-mutable view into the underlying
-		// HierarchyComponent::Children — structural edits must go through
-		// SetParent so the parent's child list and each child's parent pointer
-		// stay in sync. The previous overload returned `const vector&` which
-		// only documented immutability; a const_cast away from that reference
-		// would silently corrupt hierarchy invariants.
 		std::span<const EntityHandle> GetChildren() const;
 
 		bool HasParent() const;
@@ -281,23 +206,9 @@ namespace Index {
 	inline bool operator!=(const Entity& a, const Entity& b) { return !(a == b); }
 }
 
-// Pulls in NativeScript / Scene / ScriptSystem / ScriptComponent and
-// defines Index::EntityScriptOps helpers. Placed AFTER `class Entity`
-// is fully defined so the chain
-//   EntityScriptOps.hpp -> ScriptSystem.hpp -> Scene.hpp -> Entity.hpp
-// hits the Entity.hpp guard as a no-op when Entity is already complete.
 #include "Scripting/EntityScriptOps.hpp"
 
 namespace Index {
-
-	// ── Script-branch template definitions (out-of-class) ───────────────
-	// Lifted out of the class body so the call to
-	// `EntityScriptOps::AddScriptToEntity` etc. — defined in the
-	// EntityScriptOps.hpp include just above — is fully visible at the
-	// point of definition. Two-phase lookup would handle this even with
-	// inline-in-class bodies, but keeping them out-of-class makes the
-	// dependency between Entity templates and the helpers explicit and
-	// matches the include ordering described at the top of this file.
 
 	template<typename TScript>
 		requires std::is_base_of_v<NativeScript, TScript>
@@ -324,11 +235,6 @@ namespace Index {
 		requires std::is_base_of_v<NativeScript, TScript>
 	const TScript* Entity::GetComponent() const {
 		if (!IsValid()) return nullptr;
-		// const_cast for the helper call only — script storage IS
-		// mutable per-frame (Update mutates fields, scene drives
-		// lifecycle); the const overload exists for callers that
-		// don't intend to mutate the returned pointer, but the
-		// pointer itself targets non-const script storage by design.
 		return EntityScriptOps::GetScriptOnEntity<TScript>(m_Scene, m_EntityHandle);
 	}
 

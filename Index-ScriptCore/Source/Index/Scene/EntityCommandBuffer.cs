@@ -8,63 +8,15 @@ using Index.Interop;
 namespace Index;
 
 /// <summary>
-/// Batch-records entity creation and component additions, then plays the
-/// whole batch back to the native scene in a single P/Invoke. Drop-in
-/// replacement for tight <c>Entity.Create + entity.AddComponent</c> loops
-/// when spawning many entities at once (bullets, particles, prefab waves)
-/// — typically 50–100× faster on the dominant cases because:
-///
-/// <list type="bullet">
-///   <item>One P/Invoke for the whole batch (vs. one per component).</item>
-///   <item>Component identity travels as a stable <c>u32</c> type ID — no
-///   per-call UTF-8 marshaling of the component name.</item>
-///   <item>Native entity allocation goes through
-///   <c>Scene::CreateEntitiesBulk</c> + <c>Scene::ReserveForLoad</c>,
-///   collapsing N pool growths and N identity-map rehashes into one.</item>
-///   <item>Each component payload is <c>memcpy</c>'d directly into the
-///   EnTT storage from the recorded bytes — no per-property setter.</item>
-///   <item>Idempotent on_construct hooks (Transform2D, SpriteRenderer,
-///   StaticTag, ParticleSystem2D) are deferred under a <c>Scene::LoadGuard</c>
-///   and re-fired in one sweep at the end of playback.</item>
-/// </list>
-///
-/// <para>
-/// Only unmanaged <c>IComponent</c> structs whose layout exactly mirrors
-/// the C++ component are supported as command payloads — the
-/// <c>ComponentTypes&lt;T&gt;</c> static constructor enforces the
-/// <c>sizeof</c> match. Components whose C++ side holds scene-bound
-/// runtime state (e.g. ParticleSystem2D's emitter handle) must opt-in
-/// natively by supplying a custom <c>emplaceFromBytes</c> at
-/// registration time; recording such a component without that opt-in
-/// will fail validation during playback.
-/// </para>
-///
-/// <para>
-/// The instance-level <c>CreateEntity</c> / <c>AddComponent</c> recorder
-/// is single-threaded — serialize access externally if you share a single
-/// recorder across threads. For parallel-record from inside
-/// <see cref="Index.Jobs.IJobParallelFor"/> / <c>IJobQuery</c> workers,
-/// call <see cref="AsParallelWriter"/> and hand the returned
-/// <see cref="ParallelWriter"/> to each worker; the parent ECB merges
-/// every worker's stream at <see cref="Playback"/> time. Each instance is
-/// reusable — call <see cref="Clear"/> after playback to record a new
-/// batch without reallocating the underlying buffer.
-/// </para>
+/// Batch-records entity creation and component additions, then replays the whole batch in one P/Invoke (typically 50–100× faster than per-entity calls).
+/// Components must be unmanaged IComponent structs with layouts matching their C++ counterparts; components with scene-bound runtime state need a native emplaceFromBytes callback.
+/// Single-threaded by default; use <see cref="AsParallelWriter"/> for job-worker parallel recording.
 /// </summary>
 public sealed partial class EntityCommandBuffer : IDisposable
 {
-    // Fixed-size header (8) + per-command fixed prefix (11) — used for
-    // capacity bookkeeping. Hardcoded rather than reading sizeof against
-    // a managed mirror struct because the wire layout is intentionally
-    // version-stable.
     internal const int HEADER_BYTES = EcbWire.HEADER_BYTES;
     internal const int COMMAND_PREFIX_BYTES = EcbWire.COMMAND_PREFIX_BYTES;
 
-    // Command stream only — entity table holds no per-slot data in v1
-    // (every slot is NO_NAME) so we synthesize it at playback time
-    // instead of carrying 4 bytes per entity through the recording
-    // window. This keeps the recorder's hot path strictly proportional
-    // to the number of components actually written.
     private byte[] m_Commands;
     private int m_CommandsLen;
     private int m_CommandCount;
@@ -76,10 +28,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
     private ulong[]? m_CreatedIds;
     private int m_CreatedCount;
 
-    // Wire buffer (header + entity table + commands) handed to the
-    // native playback in one shot. Pooled per-instance and grown
-    // geometrically — a per-frame spawn loop allocates the buffer
-    // once on the first Playback and reuses it thereafter.
     private byte[]? m_WireBuffer;
 
     // Per-thread sub-recorders for parallel writes. Allocated lazily on
@@ -87,34 +35,19 @@ public sealed partial class EntityCommandBuffer : IDisposable
     // pay the dictionary cost.
     private ConcurrentDictionary<int, WorkerSlot>? m_ParallelSlots;
 
-    // Sorted-slot snapshot cache. The set of slot identities only grows
-    // during recording (each worker thread inserts once on first use),
-    // so we bump m_SlotSnapshotVersion exactly when a new slot is
-    // added. Playback rebuilds m_CachedSortedSlots only when the
-    // version drifts — steady-state per-frame Playback hits zero
-    // allocations on the merged path.
+    // Version-gated cache: m_SlotSnapshotVersion bumps only when a new worker slot is added; Playback rebuilds m_CachedSortedSlots only on drift.
     private WorkerSlot[]? m_CachedSortedSlots;
     private int m_CachedSortedSlotsVersion;
     private int m_SlotSnapshotVersion;
 
-    /// <summary>
-    /// Construct a new recorder with an initial command-stream capacity
-    /// (in bytes). The buffer grows geometrically; pre-sizing avoids the
-    /// first few resizes when the batch size is roughly known.
-    /// </summary>
+    /// <summary>Construct a recorder with an initial command-stream capacity in bytes; buffer grows geometrically.</summary>
     public EntityCommandBuffer(int initialCapacity = 1024)
     {
         if (initialCapacity < HEADER_BYTES) initialCapacity = HEADER_BYTES;
         m_Commands = new byte[initialCapacity];
     }
 
-    /// <summary>
-    /// Number of entities queued in this batch so far (across the main
-    /// recorder and every parallel writer). Inspection API — calls
-    /// snapshot the worker-slot dictionary and allocate; do not call
-    /// from inside a per-frame hot loop. The hot path (Playback)
-    /// computes its own totals inline.
-    /// </summary>
+    /// <summary>Total entities queued (main + parallel workers). Allocates a snapshot — avoid in per-frame hot loops.</summary>
     public int EntityCount
     {
         get
@@ -129,11 +62,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Number of recorded commands so far (across the main recorder and
-    /// every parallel writer). Inspection API — see <see cref="EntityCount"/>
-    /// for the snapshot caveat.
-    /// </summary>
+    /// <summary>Total commands recorded (main + parallel workers). Allocates a snapshot — see <see cref="EntityCount"/>.</summary>
     public int CommandCount
     {
         get
@@ -148,12 +77,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records the creation of a fresh runtime-origin entity and returns
-    /// a handle that subsequent <see cref="AddComponent{T}"/> calls
-    /// reference. The returned handle is valid until the next
-    /// <see cref="Clear"/> or <see cref="Dispose"/>.
-    /// </summary>
+    /// <summary>Records a new entity and returns a handle valid until the next <see cref="Clear"/> or <see cref="Dispose"/>.</summary>
     public EntityRef Create()
     {
         EntityRef r = new EntityRef(m_EntityCount);
@@ -161,13 +85,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return r;
     }
 
-    /// <summary>
-    /// Records "attach a component of type <typeparamref name="T"/> with
-    /// the given value to the entity referenced by <paramref name="e"/>".
-    /// The value's bytes are copied into the recorder's buffer
-    /// immediately, so the caller can reuse the source struct after
-    /// returning.
-    /// </summary>
+    /// <summary>Records "attach component T with the given value to entity e"; bytes are copied immediately so the source struct can be reused.</summary>
     public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
     {
         int payloadSize = sizeof(T);
@@ -199,27 +117,8 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>
-    /// Records "spawn the prefab tree identified by <paramref name="prefabGuid"/>"
-    /// and returns an <see cref="EntityRef"/> for the prefab's ROOT entity. The
-    /// child entities of the prefab tree are bulk-created on the native side
-    /// during playback and become reachable from the returned root via
-    /// <see cref="Entity.GetChildren"/> AFTER <see cref="Playback"/> completes —
-    /// they are NOT addressable through additional ECB records.
-    ///
-    /// <para>
-    /// Subsequent <see cref="AddComponent{T}"/> calls against the returned
-    /// <see cref="EntityRef"/> attach to (or replace on) the prefab's root
-    /// entity, layered on top of whatever the prefab's own components defined.
-    /// </para>
-    ///
-    /// <para>
-    /// First-spawn cost: the native side bakes a memcpy-ready template from
-    /// the .prefab on disk, then destroys the throwaway tree. Every subsequent
-    /// spawn replays from the cached bytes — typically 50–200× faster than
-    /// repeated <see cref="Entity.Instantiate"/> calls. Prefabs that hold
-    /// internal entity references fall back to a per-spawn slow path in v1;
-    /// the ECB rejects those at playback with a clear error.
-    /// </para>
+    /// Records a prefab spawn and returns an <see cref="EntityRef"/> for its root. Children are reachable only AFTER <see cref="Playback"/>.
+    /// First spawn bakes a memcpy-ready template; subsequent spawns are 50–200× faster. Prefabs with internal entity references fall back to a slow path in v1.
     /// </summary>
     public unsafe EntityRef Instantiate(ulong prefabGuid)
     {
@@ -243,13 +142,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return root;
     }
 
-    /// <summary>
-    /// Convenience overload — accepts an <see cref="Entity"/> created by
-    /// <see cref="Entity.FromPrefabGUID"/> (the same shape user scripts get
-    /// from <c>[ShowInEditor] Entity MyPrefab</c> when the field is wired to
-    /// a prefab asset in the inspector). Equivalent to
-    /// <c>Instantiate(prefabAsset.PrefabGUID)</c>.
-    /// </summary>
+    /// <summary>Convenience overload accepting a prefab-asset <see cref="Entity"/> (from <see cref="Entity.FromPrefabGUID"/> or an inspector-wired field).</summary>
     public EntityRef Instantiate(Entity prefabAsset)
     {
         if (prefabAsset is null || !prefabAsset.IsPrefabAsset)
@@ -263,28 +156,8 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     // ── CreateWith / CreateEntitiesWith ──────────────────────────────
-    //
-    // Bundle the common "Create + N×AddComponent(default)" pattern
-    // into one call. Each component is recorded as a payload-free
-    // Ecb_DefaultConstructComponent op so the native playback calls
-    // `registry.emplace<T>(handle)` and the C++ default-member-initializers
-    // fire (Transform2D Scale = (1,1), SpriteRenderer Color = white). The
-    // managed-side `default(T)` is all-zero bytes and would silently
-    // overwrite those defaults if it traveled through the regular
-    // Ecb_AddComponent path.
-    //
-    // To set initial values per entity, follow CreateWith with an
-    // `AddComponent(ref, value)` for the components you want to override
-    // (last-write-wins per type on a given entity), or set them in-place
-    // via `GetCreatedEntity(i).GetRef<T>()` after Playback.
-    //
-    // Native IComponent only — the ECB never records managed Component
-    // subclasses (those go through `Entity.CreateWith` instead).
+    // Uses Ecb_DefaultConstructComponent so C++ default-member-initializers fire (e.g. Transform2D Scale = (1,1)) instead of being overwritten by C#'s zero-init default(T).
 
-    // Records an Ecb_DefaultConstructComponent op against `e` so the native
-    // playback default-constructs T from C++ (preserving engine defaults
-    // like Transform2D Scale = (1,1)). The wire record is 11 bytes — just
-    // the fixed prefix, no payload.
     private void RecordDefaultConstruct<T>(EntityRef e) where T : unmanaged, IComponent
     {
         if (e.Index >= m_EntityCount)
@@ -303,9 +176,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
             ComponentTypes<T>.NativeId);
     }
 
-    /// <summary>
-    /// Records a single entity with one default-constructed component.
-    /// </summary>
     public EntityRef CreateWith<T1>()
         where T1 : unmanaged, IComponent
     {
@@ -314,9 +184,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with two default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -327,9 +194,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with three default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2, T3>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -342,9 +206,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with four default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2, T3, T4>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -359,9 +220,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with five default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2, T3, T4, T5>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -378,9 +236,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with six default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2, T3, T4, T5, T6>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -399,9 +254,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with seven default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2, T3, T4, T5, T6, T7>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -422,9 +274,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records a single entity with eight default-constructed components.
-    /// </summary>
     public EntityRef CreateWith<T1, T2, T3, T4, T5, T6, T7, T8>()
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -447,14 +296,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return e;
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with one
-    /// default-constructed component. The created entities' refs are
-    /// written into <paramref name="output"/> in creation order, so
-    /// <c>output[i].Index</c> is contiguous starting from the current
-    /// entity count. <paramref name="output"/> must be at least
-    /// <paramref name="length"/> elements long.
-    /// </summary>
+    /// <summary>Records <paramref name="length"/> entities with one default-constructed component each; refs written to <paramref name="output"/> in order (must be at least <paramref name="length"/> long).</summary>
     public void CreateEntitiesWith<T1>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
     {
@@ -467,11 +309,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with two
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -486,11 +323,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with three
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2, T3>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -507,11 +339,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with four
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2, T3, T4>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -530,11 +357,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with five
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2, T3, T4, T5>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -555,11 +377,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with six
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -582,11 +399,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with seven
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6, T7>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -611,11 +423,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records <paramref name="length"/> entities, each with eight
-    /// default-constructed components. See <see cref="CreateEntitiesWith{T1}(int, Span{EntityRef})"/>
-    /// for the <paramref name="output"/> contract.
-    /// </summary>
     public void CreateEntitiesWith<T1, T2, T3, T4, T5, T6, T7, T8>(int length, Span<EntityRef> output)
         where T1 : unmanaged, IComponent
         where T2 : unmanaged, IComponent
@@ -642,10 +449,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    // Shared argument validation for every CreateEntitiesWith overload
-    // (main recorder and parallel writer). Kept as a single method so the
-    // error messages stay consistent across arities and so adding a new
-    // rule is a one-site change.
     internal static void ValidateCreateEntitiesArgs(int length, int outputLength)
     {
         if (length < 0)
@@ -658,22 +461,8 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>
-    /// Returns a thread-safe writer that can be shared across job workers.
-    /// Each calling thread records into its own lock-free sub-buffer; the
-    /// parent ECB merges every sub-buffer at <see cref="Playback"/> time,
-    /// remapping per-worker <see cref="EntityRef"/> indices into the
-    /// merged entity range so the final batch is a single
-    /// <c>Scene::CreateEntitiesBulk</c>.
-    ///
-    /// <para>
-    /// Contract: recording must be quiescent (every dependent job
-    /// completed) before <c>Playback</c> is called. An
-    /// <c>EntityRef</c> returned by one worker's
-    /// <see cref="ParallelWriter.CreateEntity"/> is valid ONLY in
-    /// <see cref="ParallelWriter.AddComponent{T}"/> calls from the same
-    /// worker thread — passing it to another worker corrupts the merged
-    /// batch.
-    /// </para>
+    /// Returns a per-thread sub-buffer writer; the ECB merges all workers at <see cref="Playback"/> time.
+    /// MUST be quiescent before Playback. An <see cref="EntityRef"/> from one worker is valid ONLY in that same worker's AddComponent calls.
     /// </summary>
     public ParallelWriter AsParallelWriter()
     {
@@ -681,17 +470,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return new ParallelWriter(this);
     }
 
-    /// <summary>
-    /// Ships the recorded batch to the active scene. Returns the number
-    /// of entities created (== <see cref="EntityCount"/> on success), or
-    /// throws on a native error. After return, the runtime IDs of every
-    /// created entity are available via <see cref="GetCreatedEntityId"/>
-    /// or <see cref="GetCreatedEntity"/>, indexed by the same value the
-    /// originating <see cref="EntityRef"/> wraps (with parallel writes,
-    /// indices are concatenated in main → worker-ascending-tid order, so
-    /// the main recorder's entities come first, then worker 1's slot, then
-    /// worker 2's slot, and so on).
-    /// </summary>
+    /// <summary>Ships the batch to the active scene. Returns entity count; IDs available via <see cref="GetCreatedEntityId"/> indexed by EntityRef order (main first, then workers by ascending thread ID).</summary>
     public unsafe int Playback()
     {
         PlaybackTotals totals = ComputeTotals();
@@ -714,17 +493,8 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 
     /// <summary>
-    /// Ships the recorded batch into a caller-owned ID buffer. Use this
-    /// overload when the consumer already has a destination span (e.g.
-    /// a <c>NativeArray&lt;ulong&gt;</c> or a temporary
-    /// <c>stackalloc</c>) so the ECB's internal <c>m_CreatedIds</c>
-    /// buffer is never allocated. <paramref name="destination"/> must
-    /// be at least <see cref="EntityCount"/> elements long.
-    /// <para>
-    /// Unlike <see cref="Playback"/>, this overload does NOT update the
-    /// recorder's <c>m_CreatedCount</c> — <see cref="GetCreatedEntityId"/>
-    /// continues to reflect the last call to <see cref="Playback"/>.
-    /// </para>
+    /// Variant of <see cref="Playback"/> that writes IDs into a caller-owned span, avoiding the internal m_CreatedIds allocation.
+    /// Does NOT update m_CreatedCount, so <see cref="GetCreatedEntityId"/> still reflects the last <see cref="Playback"/> call.
     /// </summary>
     public unsafe int PlaybackInto(Span<ulong> destination)
     {
@@ -750,10 +520,6 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return created;
     }
 
-    // Aggregates totals across the main recorder + every parallel worker
-    // slot in one pass so Playback / PlaybackInto don't iterate twice.
-    // Snapshot is taken under the quiescent contract; the cached sorted
-    // slot array is returned when it's still valid.
     private struct PlaybackTotals
     {
         public uint EntityCount;
@@ -932,28 +698,18 @@ public sealed partial class EntityCommandBuffer : IDisposable
 
     private WorkerSlot[] SortedSlotSnapshot()
     {
-        // Steady-state fast path: the slot set hasn't changed since the
-        // last Playback, so the cached sorted array is still valid. The
-        // Playback contract requires workers to be quiescent before
-        // calling, so no new slot can be racing in here.
         int version = Volatile.Read(ref m_SlotSnapshotVersion);
         if (m_CachedSortedSlots != null && m_CachedSortedSlotsVersion == version)
         {
             return m_CachedSortedSlots;
         }
 
-        // ConcurrentDictionary.Values produces a snapshot; OK to sort
-        // in place. Slot count is bounded by the number of worker threads
-        // that ever called AsParallelWriter on this ECB — handful at most.
         WorkerSlot[] arr = new WorkerSlot[m_ParallelSlots!.Count];
         int idx = 0;
         foreach (WorkerSlot s in m_ParallelSlots.Values)
         {
             if (idx < arr.Length) arr[idx++] = s;
         }
-        // arr may be slightly shorter than allocated if dict grew during
-        // the iteration — should not happen under the quiescent contract,
-        // but trim defensively.
         if (idx != arr.Length) Array.Resize(ref arr, idx);
         Array.Sort(arr, static (a, b) => a.ManagedThreadId.CompareTo(b.ManagedThreadId));
 
@@ -962,13 +718,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return arr;
     }
 
-    /// <summary>
-    /// Runtime ID of the i-th entity created by the most recent
-    /// <see cref="Playback"/>. Compatible with every <c>Entity.*</c> API
-    /// that takes a ulong entity ID. Throws when called before any
-    /// successful playback or when <paramref name="index"/> is out of
-    /// range.
-    /// </summary>
+    /// <summary>Runtime ID of the i-th entity from the most recent <see cref="Playback"/>; throws if out of range or before any playback.</summary>
     public ulong GetCreatedEntityId(int index)
     {
         if ((uint)index >= (uint)m_CreatedCount || m_CreatedIds == null)
@@ -979,19 +729,9 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return m_CreatedIds[index];
     }
 
-    /// <summary>
-    /// Convenience wrapper — same as <see cref="GetCreatedEntityId"/>
-    /// but returns a live <see cref="Entity"/>.
-    /// </summary>
     public Entity GetCreatedEntity(int index) => new Entity(GetCreatedEntityId(index));
 
-    /// <summary>
-    /// Discards every recorded command without releasing the backing
-    /// buffer, leaving the instance ready to record a fresh batch. Used
-    /// by per-frame spawn loops to avoid re-allocating between frames.
-    /// Parallel-writer sub-buffers are reset in place too, so per-frame
-    /// loops keep their per-worker allocations.
-    /// </summary>
+    /// <summary>Resets all counters without releasing backing buffers; reuse the instance each frame to avoid allocation.</summary>
     public void Clear()
     {
         m_CommandsLen = 0;
@@ -1009,10 +749,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Releases the recorder's buffers and clears the result table. The
-    /// instance is unusable afterwards.
-    /// </summary>
+    /// <summary>Releases all buffers; the instance is unusable afterwards.</summary>
     public void Dispose()
     {
         Clear();
@@ -1031,19 +768,12 @@ public sealed partial class EntityCommandBuffer : IDisposable
             tid,
             static (id, self) =>
             {
-                // Factory runs exactly once per missing key — safe place
-                // to bump the cache-invalidation counter without paying
-                // an interlock on every GetOrAdd hit.
-                Interlocked.Increment(ref self.m_SlotSnapshotVersion);
+                        Interlocked.Increment(ref self.m_SlotSnapshotVersion);
                 return new WorkerSlot(id);
             },
             this);
     }
 
-    // Per-thread mini-recorder. Each thread that ever called
-    // AsParallelWriter.{CreateEntity,AddComponent} on this ECB owns one
-    // slot; no slot is ever shared across threads, so the fields here
-    // are written without synchronization.
     internal sealed class WorkerSlot
     {
         public byte[] Commands = new byte[256];
@@ -1059,10 +789,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
     }
 }
 
-// Shared wire-format constants + low-level record writer/remapper.
-// Both the single-threaded recorder and each parallel WorkerSlot pack
-// command records through this helper so the byte layout stays in sync
-// with the native side at one site.
+// Wire-format constants and record writers; single source of truth for the byte layout shared with the native side.
 internal static class EcbWire
 {
     // Mirrors EcbOpcode in EntityCommandBufferWire.hpp.
@@ -1070,11 +797,7 @@ internal static class EcbWire
     // OP_SET_COMPONENT = 2 (reserved on the native side; no managed
     // emitter today — call sites add components via OP_ADD_COMPONENT).
     public const byte OP_INSTANTIATE_PREFAB = 3;
-    // Payload-free "attach this component, default-constructed from C++"
-    // record. Used by CreateEntityWith / CreateEntitiesWith so the engine's
-    // C++ member-initializers (Transform2D Scale = (1,1), SpriteRenderer
-    // Color = white) survive instead of being overwritten by C#'s zero-init
-    // `default(T)`. Native dispatch lives in ScriptBindingsEcb.cpp.
+    // Payload-free opcode; native side calls defaultEmplace so C++ member-initializers (e.g. Transform2D Scale=(1,1)) fire instead of being overwritten by C#'s zero-init default(T).
     public const byte OP_DEFAULT_CONSTRUCT_COMPONENT = 4;
 
     // Sentinel "no name" matching kEcbNoName on the native side.
@@ -1085,11 +808,6 @@ internal static class EcbWire
     // u64 prefabGuid — the only payload Ecb_InstantiatePrefab carries today.
     public const int INSTANTIATE_PREFAB_PAYLOAD_BYTES = 8;
 
-    // Appends one Ecb_AddComponent record to (commands, commandsLen),
-    // growing the byte buffer geometrically if needed. Callers maintain
-    // their own commandsLen / commandCount counters by ref so the helper
-    // works for both the parent ECB and per-worker slots without copying
-    // back through a state struct.
     public static unsafe void WriteAddComponentRecord(
         ref byte[] commands,
         ref int commandsLen,
@@ -1106,9 +824,6 @@ internal static class EcbWire
         {
             byte* w = basePtr + commandsLen;
             *w = OP_ADD_COMPONENT; w += 1;
-            // memcpy each field rather than punning through an aligned
-            // pointer write — the command stream is byte-packed and the
-            // u32 / u16 slots land on odd offsets after the opcode byte.
             Unsafe.CopyBlockUnaligned(w, &entityIndex, 4); w += 4;
             Unsafe.CopyBlockUnaligned(w, &typeId, 4); w += 4;
             Unsafe.CopyBlockUnaligned(w, &payloadSize, 2); w += 2;
@@ -1122,11 +837,7 @@ internal static class EcbWire
         commandCount++;
     }
 
-    // Appends one Ecb_DefaultConstructComponent record. No payload —
-    // the native side default-constructs T from the registered
-    // `defaultEmplace` callback. The fixed 11-byte prefix matches
-    // every other opcode, so the merge-and-remap walker
-    // (CopyAndRemapCommands below) handles it without an opcode branch.
+    // No payload; native default-constructs T via the registered defaultEmplace callback. Same 11-byte prefix as other opcodes so the remap walker needs no branch.
     public static unsafe void WriteDefaultConstructRecord(
         ref byte[] commands,
         ref int commandsLen,
@@ -1152,11 +863,7 @@ internal static class EcbWire
         commandCount++;
     }
 
-    // Appends one Ecb_InstantiatePrefab record. Reuses the same fixed
-    // 11-byte prefix layout as Ecb_AddComponent so the parallel-merge
-    // walker (CopyAndRemapCommands below) can splice prefab spawns into
-    // the merged stream without per-opcode branching — it rewrites the
-    // u32 entityIndex blindly and copies the payload through.
+    // Shares the fixed 11-byte prefix with AddComponent so the merge walker splices prefab records without per-opcode branching.
     public static unsafe void WriteInstantiatePrefabRecord(
         ref byte[] commands,
         ref int commandsLen,
@@ -1194,11 +901,7 @@ internal static class EcbWire
         Array.Resize(ref buf, newCap);
     }
 
-    // Walks a packed command stream record-by-record and emits each
-    // record into `dst`, rewriting its u32 entityIndex field by adding
-    // `baseOffset`. Used by the merged-playback path to splice every
-    // worker slot's stream into one buffer while keeping per-record
-    // entity indices in the merged range.
+    // Copies the command stream to dst, adding baseOffset to every entityIndex; used by merged-playback to splice worker slots into the unified range.
     public static unsafe void CopyAndRemapCommands(
         byte* dst,
         byte[] src,

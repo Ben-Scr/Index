@@ -6,11 +6,7 @@
 
 
 namespace Index {
-	// Shape-validity guards on every b2Shape_* accessor: a collider can outlive
-	// its underlying b2Shape (SetSensor rebuilds the shape, scene unload destroys
-	// it, etc.) while still holding the old m_ShapeId. Calling b2Shape_* with a
-	// stale id is undefined behavior — Box2D may mutate an unrelated shape that
-	// happened to land in the same recycled slot.
+	// Stale m_ShapeId after SetSensor/scene-unload is UB: Box2D recycles slots and the old id may alias a different shape.
 	#define IDX_COLLIDER_SHAPE_GUARD() do { if (!b2Shape_IsValid(m_ShapeId)) return; } while (0)
 	#define IDX_COLLIDER_BODY_GUARD()  do { if (!b2Body_IsValid(m_BodyId))   return; } while (0)
 

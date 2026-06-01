@@ -15,10 +15,7 @@
 namespace Index {
 
 	namespace {
-		// unique_ptr storage so the addresses returned by Register/Find stay
-		// stable across subsequent push_back calls — vector<ProfilerModule>
-		// would invalidate raw pointers on grow, which the INDEX_PROFILE_*
-		// caching path can hold on to.
+		// unique_ptr: pointer stability across push_back (caching path holds raw pointers).
 		std::vector<std::unique_ptr<ProfilerModule>> g_Modules;
 		std::unordered_map<std::string, size_t> g_Index;
 
@@ -81,10 +78,6 @@ namespace Index {
 			m.RunningSum += value - overwritten;
 			m.AvgValue = m.Count > 0 ? static_cast<float>(m.RunningSum / m.Count) : 0.0f;
 
-			// Min/Max: cheap path when the new sample doesn't dethrone the
-			// current extremum and the overwritten sample wasn't itself
-			// the extremum. Otherwise rescan. This keeps steady-state at
-			// O(1) and worst-case (replacing the min or max) at O(N).
 			const bool needRescan = (m.Count == m.Samples.size()) &&
 				(overwritten == m.MinValue || overwritten == m.MaxValue);
 			if (m.Count == 1) {
@@ -122,7 +115,6 @@ namespace Index {
 		std::scoped_lock lock(g_Mutex);
 		g_Modules.clear();
 		g_Index.clear();
-		// Names are the contract between push sites and ProfilerPanel; order = panel display order.
 		const char* names[] = {
 			// Internal: hidden from panel, used to derive "Others" residual.
 			"Frame Time",
@@ -151,10 +143,6 @@ namespace Index {
 			// GPU category
 			"GPU",
 
-			// Frame Breakdown — finer-grained CPU scopes for localizing
-			// uninstrumented work. Each push site uses a unique name so
-			// the per-module sample-rate gate doesn't drop concurrent
-			// pushes within the same frame.
 			"UpdateScenes",
 			"OnPreRenderScenes",
 			"Renderer2D.Begin",
@@ -163,13 +151,6 @@ namespace Index {
 			"Renderer2D.End",
 			"GuiRenderer.End",
 			"GizmoRenderer.End",
-			// Renderer2D per-stage breakdown — bracket the four phases of
-			// RenderSceneWithVP so 100k-sprite scenes attribute frame cost to
-			// Collect (ECS walk + cull) vs. Sort (key-sort + permute) vs.
-			// Upload (queue.WriteBuffer for instance + uniform buffers) vs.
-			// Submit (BeginRenderPass + per-texture-run DrawIndexed loop).
-			// Without these, "Rendering" is a single number and optimisation
-			// is blind to which stage actually dominates.
 			"Renderer2D.Collect",
 			"Renderer2D.Sort",
 			"Renderer2D.Upload",
@@ -179,10 +160,6 @@ namespace Index {
 			"Layer.OnPostRender",
 			"SwapBuffers",
 
-			// Gated-path probes — non-zero values here mean a system that
-			// "early-exits when idle" is in fact running every frame. The
-			// 100k-empty-entity diagnosis hinges on these reading ~0.0
-			// (gates working) vs. non-zero (gate defeated, real culprit).
 			"Editor.HierarchyRebuild",
 			"TransformHierarchy",
 			"UILayout",
@@ -191,10 +168,6 @@ namespace Index {
 			"UIFocus",
 			"ManagedGameSystem",
 
-			// UIEventSystem.Update bisection sub-scopes — Update is 7+ ms
-			// even with 0 widgets in the registry, so we slice the body
-			// into broad sections to localize which block iterates over
-			// something that isn't actually empty.
 			"UIEvent.RefResolve",
 			"UIEvent.HitTest",
 			"UIEvent.Visuals",

@@ -3,17 +3,7 @@ using System;
 namespace Index;
 
 /// <summary>
-/// Thread-safe static random facade. Each thread holds its own independent
-/// <see cref="Random"/> instance via <see cref="ThreadStaticAttribute"/>, so
-/// calls from <c>IJobParallelFor.Execute</c> (or any other multi-threaded
-/// context) never race against each other or against the main thread.
-///
-/// Use this in jobs where <see cref="RandomHandler"/> would be unsafe.
-/// For deterministic, reproducible sequences across threads, construct
-/// your own <see cref="Random"/> and carry it as a job-struct field instead.
-///
-/// All seed-management methods (<see cref="SetSeed"/>, <see cref="RemoveSeed"/>)
-/// affect only the calling thread's generator.
+/// Thread-safe random facade — each thread owns its own <see cref="Random"/> instance so parallel jobs never race. For deterministic sequences carry a <see cref="Random"/> as a job-struct field instead.
 /// </summary>
 public static class ParallelRandom
 {
@@ -23,9 +13,7 @@ public static class ParallelRandom
 
     private static Random CreateForCurrentThread()
     {
-        // Random() seeds from DateTime.Ticks + Guid hash + Stopwatch timestamp.
-        // XOR the managed thread id in so two threads constructed in the same
-        // tick can't end up with identical seeds.
+        // XOR the managed thread id into the seed so threads constructed in the same tick don't get identical sequences.
         Random r = new Random();
         r.SetSeed(r.GetSeed() ^ (ulong)Environment.CurrentManagedThreadId);
         return r;

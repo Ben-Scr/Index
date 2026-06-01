@@ -155,10 +155,6 @@ namespace Index {
 			profile.RenderBackend = IndexProject::RenderBackendFromString(v->AsStringOr("Auto"));
 		}
 
-		// Forgiving validation: an out-of-matrix backend (e.g. D3D12 on a
-		// Linux profile from a hand-edited file) snaps to the first allowed
-		// entry so the editor never shows an illegal combo. The on-disk file
-		// is rewritten with the corrected value on next save.
 		if (!IsBackendAllowed(profile.Platform, profile.RenderBackend)) {
 			const auto allowed = AllowedBackends(profile.Platform);
 			if (!allowed.empty()) {
@@ -180,10 +176,6 @@ namespace Index {
 		std::error_code ec;
 		std::filesystem::create_directories(directory, ec);
 
-		// Mirror the panel's "New profile" defaults (Windows + Direct3D12) so
-		// the seeded Windows profile matches what the user would otherwise get
-		// from clicking New. Linux only has Vulkan available per
-		// AllowedBackends(), so that's the only sensible pick there.
 		struct DefaultSpec {
 			const char* Name;
 			BuildPlatform Platform;

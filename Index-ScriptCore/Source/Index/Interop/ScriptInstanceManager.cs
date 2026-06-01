@@ -107,28 +107,11 @@ internal class ScriptAssemblyLoadContext : AssemblyLoadContext
     }
 }
 
-/// <summary>
-/// Manages script instances on the managed side. All public methods are
-/// [UnmanagedCallersOnly] and called from C++ via function pointers.
-/// </summary>
 internal static class ScriptInstanceManager
 {
-    // All four dictionaries are reached from [UnmanagedCallersOnly] reverse-pinvoke
-    // entry points that the C++ side may dispatch from worker threads (asset loader,
-    // hot-reload, build job). Plain Dictionary<,> is not thread-safe — concurrent
-    // reads with a single writer can corrupt internal bucket chains. Use
-    // ConcurrentDictionary so TryGetValue / indexer / TryRemove / Clear / Values
-    // snapshots are all safe under concurrent access.
+    // [UnmanagedCallersOnly] entry points may be dispatched from worker threads; ConcurrentDictionary keeps all ops safe.
     private static readonly ConcurrentDictionary<int, ScriptInstanceData> s_Instances = new();
-    // Secondary index for O(1) Entity.GetComponent<TScript>() / HasComponent /
-    // TryGetComponent. Without this the lookup had to enumerate the full
-    // primary dictionary and allocate a snapshot list on every call —
-    // visible cost when scripts call GetComponent inside per-frame OnUpdate.
-    // Keyed by (entityID, runtime type) so two scripts of different types
-    // on the same entity each get their own slot. Updated alongside the
-    // primary store in CreateScriptInstance / DestroyScriptInstance and
-    // cleared in the same paths that clear s_Instances (assembly unload,
-    // hot reload, scene teardown).
+    // (entityID, Type) -> handle secondary index for O(1) per-frame GetComponent<TScript> lookups.
     private static readonly ConcurrentDictionary<(ulong EntityID, Type Type), int> s_InstancesByType = new();
     private static readonly ConcurrentDictionary<int, GameSystem> s_GameSystems = new();
     private static readonly ConcurrentDictionary<int, GlobalSystem> s_GlobalSystems = new();
@@ -150,9 +133,6 @@ internal static class ScriptInstanceManager
         public bool HasAwoken;
     }
 
-    // Concurrent set: HashSet<int> is not thread-safe; concurrent OnAwake calls
-    // would race the bucket array. ConcurrentDictionary<int, byte>.TryAdd is
-    // the standard "thread-safe set add" pattern in .NET.
     private static readonly ConcurrentDictionary<int, byte> s_GameSystemAwoken = new();
 
     private class ScriptClassInfo
@@ -165,17 +145,7 @@ internal static class ScriptInstanceManager
         public MethodInfo? StartMethod;
         public MethodInfo? UpdateMethod;
 
-        // Lazily populated by EnsureInvokableMethods. Holds every public
-        // instance method on this class that an inspector "On Click ()" /
-        // "On Value Changed ()" list can target — returns void, takes
-        // 0 or 1 supported parameter (bool / int / float / double /
-        // string / Vector2 / Color / Entity), declared on the user's
-        // subclass (not on EntityScript / Component / object). Keyed by
-        // name so InvokeScriptMethodByName is an O(1) lookup. The
-        // parallel `InvokableMethodArgKinds` list tags each enumerated
-        // method with the wire-level arg-kind byte (matches the C++
-        // `InspectorEventArgKind` enum) so the inspector can render the
-        // appropriate value editor.
+        // Lazily populated by EnsureInvokableMethods. Public void methods the inspector "On Click/Value Changed" list can target; keyed by name for O(1) dispatch.
         public Dictionary<string, MethodInfo>? InvokableMethodsByName;
         public List<string>? InvokableMethodNames;
         public List<byte>? InvokableMethodArgKinds;
@@ -228,11 +198,6 @@ internal static class ScriptInstanceManager
         if (entityID == 0 || string.IsNullOrWhiteSpace(className))
             return null;
 
-        // Fast path: resolve the class name to a Type via the cache and
-        // hit the (entityID, Type) -> handle secondary index. O(1) and
-        // allocation-free, which matters because GetComponent<TScript>()
-        // is now the canonical "find this script" API and may be called
-        // every frame from user OnUpdate.
         ScriptClassInfo? classInfo = ResolveClassByName(className);
         if (classInfo != null
             && s_InstancesByType.TryGetValue((entityID, classInfo.Type), out int cachedHandle)
@@ -241,11 +206,6 @@ internal static class ScriptInstanceManager
             return cachedData.Instance;
         }
 
-        // Slow path: secondary index miss. Falls back to the original
-        // O(N) walk so callers passing a className we haven't cached
-        // (or that resolved before the index was populated) still
-        // resolve correctly. Same comparison rules: short name OR
-        // full name match.
         foreach (var data in SnapshotInstances())
         {
             EntityScript instance = data.Instance;
@@ -263,11 +223,6 @@ internal static class ScriptInstanceManager
         return null;
     }
 
-    // Look up the cached ScriptClassInfo for a given className (short or
-    // full name). Returns null when no cache entry exists OR when the
-    // entry isn't a script — keeps the fast-path quiet for non-script
-    // names (e.g. native component names that happen to flow through
-    // here on a mistaken call site).
     private static ScriptClassInfo? ResolveClassByName(string className)
     {
         if (s_ClassCache.TryGetValue(className, out ScriptClassInfo? info) && info != null && info.IsScript)
@@ -413,14 +368,7 @@ internal static class ScriptInstanceManager
         if (s_UserLoadContext == null)
             return;
 
-        // Strip every static event handler still pointing into the user
-        // assembly before the ALC unloads. By the time this runs the
-        // engine has already called every script's OnDisable through
-        // ShutdownGlobalSystems + TeardownManagedScripts — well-behaved
-        // scripts that `+=` in OnEnable and `-=` in OnDisable leave
-        // nothing here. Anything remaining is genuinely leaking and
-        // would otherwise survive the AssemblyLoadContext.Unload,
-        // pointing into freed code on the next event raise.
+        // Remaining handlers after OnDisable swept them indicate leaks; they would survive ALC.Unload and point into freed code on the next event raise.
         int strayHandlers = SweepUserStaticEventHandlers(SweepScope.AssemblyUnload);
         if (strayHandlers > 0)
         {
@@ -446,13 +394,7 @@ internal static class ScriptInstanceManager
             Log.Warn("[ScriptLoader] User assembly load context is still alive after unload; lingering references may delay full cleanup.");
     }
 
-    // Called from native on play mode exit, AFTER the editor has
-    // reloaded the pre-play scene snapshot (which destroyed every
-    // play-mode EntityScript / GameSystem and fired their OnDisable /
-    // OnDestroy thunks). Anything left is genuinely a script that
-    // forgot to `-=` in OnDisable. GlobalSystem subscriptions are
-    // explicitly preserved because GlobalSystems live across play
-    // mode — their handlers are still valid in edit mode.
+    // Called after the editor reloads the pre-play snapshot; GlobalSystem subscriptions are preserved because they survive play mode.
     [UnmanagedCallersOnly]
     public static void OnPlayModeExited()
     {
@@ -463,52 +405,20 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Distinguishes the two contexts where the sweep runs:
-    //   • AssemblyUnload — every script kind (EntityScript, GameSystem,
-    //     GlobalSystem, free-floating helpers in user code) is about to
-    //     vanish with the ALC. Strip any handler whose method lives in
-    //     the user assembly, full stop.
-    //   • PlayModeExit — only per-play-lifetime scripts (EntityScript,
-    //     GameSystem) were torn down. GlobalSystem instances are still
-    //     alive and their subscriptions remain valid; removing them
-    //     would break legitimate cross-mode patterns like a logger
-    //     GlobalSystem forwarding Log.LogMessage to a file.
+    // AssemblyUnload: strip all user-assembly handlers. PlayModeExit: strip only EntityScript/GameSystem handlers; GlobalSystem subscriptions remain valid.
     private enum SweepScope
     {
         AssemblyUnload,
         PlayModeExit,
     }
 
-    // Walks every static event in every loaded engine-side assembly,
-    // removes any subscriber whose method (or compiler-generated closure
-    // outer type) lives in the user assembly and matches the scope
-    // policy, and returns the total number of handlers stripped. No-op
-    // when no user assembly is loaded.
-    //
-    // Implementation notes:
-    //   • The backing field for `public static event Action<T> Foo` is
-    //     a private static field with the same name as the event. We
-    //     read/write through the field rather than the event's
-    //     add_/remove_ accessors so a single Delegate.Combine of the
-    //     kept invocations re-assembles the cleaned delegate atomically.
-    //   • Lambdas declared inside user methods compile into instance
-    //     methods on a compiler-generated closure type living in the
-    //     user assembly, so Method.DeclaringType.Module.Assembly is
-    //     the reliable user-vs-core discriminator.
-    //   • For PlayModeExit, we walk past compiler-generated nested
-    //     closure types ([CompilerGenerated]) to find the user-facing
-    //     outer class, then keep only handlers whose outer class is an
-    //     EntityScript or GameSystem subclass.
-    //   • Walks every loaded assembly (not just core) so events declared
-    //     in engine-side packages also get swept.
+    // Walks every static event in every loaded engine-side assembly and removes user-assembly subscribers matching the scope policy.
+    // Reads/writes the implicit backing field directly (same name as event) so cleanup is atomic. Closure types are unwound to their user-facing outer class for PlayModeExit filtering.
     private static int SweepUserStaticEventHandlers(SweepScope scope)
     {
         Assembly? userAssembly = s_UserAssembly;
         if (userAssembly == null) return 0;
 
-        // Per-play-lifetime base types are resolved once up-front, not
-        // per-handler, so the sweep stays cheap even with thousands of
-        // subscribers across all engine events.
         Type? entityScriptBase = null;
         Type? gameSystemBase = null;
         if (scope == SweepScope.PlayModeExit && s_CoreAssembly != null)
@@ -526,19 +436,8 @@ internal static class ScriptInstanceManager
 
         foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
-            // Sweeping events declared by the user assembly itself is
-            // pointless — they're about to be unloaded with the ALC. The
-            // play-mode-exit path leaves the user assembly intact, but in
-            // that case there's nothing to remove either (handlers
-            // declared and subscribed inside the same assembly are
-            // already self-cleaning when the user re-runs play).
             if (assembly == userAssembly) continue;
 
-            // Filter to assemblies referenced by user-script-relevant
-            // surface area. Probing every loaded BCL assembly (System.*,
-            // Microsoft.*) is wasted work — none of them expose events the
-            // user assembly is supposed to subscribe to. Index-ScriptCore
-            // and any engine-side managed packages do.
             string? name = assembly.GetName().Name;
             if (name == null) continue;
             if (name.StartsWith("System.", StringComparison.Ordinal)) continue;
@@ -549,9 +448,7 @@ internal static class ScriptInstanceManager
             try { types = assembly.GetTypes(); }
             catch (ReflectionTypeLoadException ex)
             {
-                // Partial type loads can happen if a dependent assembly
-                // failed to bind. Sweep whatever did load and skip the
-                // rest — better than aborting the cleanup entirely.
+                // Partial type loads from a failed dependent — sweep what did load.
                 types = Array.FindAll(ex.Types, t => t != null)!;
             }
             catch
@@ -571,10 +468,7 @@ internal static class ScriptInstanceManager
                 {
                     if (evt.AddMethod == null || !evt.AddMethod.IsStatic) continue;
 
-                    // Implicit `event Foo` declarations get a backing
-                    // static field named the same as the event. Explicit
-                    // add/remove accessors don't; skip those — there's
-                    // no portable way to enumerate their subscribers.
+                    // Implicit event backing field has the same name as the event; explicit add/remove accessors have no backing field to walk.
                     FieldInfo? field = type.GetField(evt.Name, fieldFlags);
                     if (field == null) continue;
                     if (!typeof(Delegate).IsAssignableFrom(field.FieldType)) continue;
@@ -629,13 +523,7 @@ internal static class ScriptInstanceManager
         // anything pointing into it must die.
         if (scope == SweepScope.AssemblyUnload) return true;
 
-        // PlayModeExit sweep: only strip handlers owned by per-play-
-        // lifetime script types. Walk past compiler-generated closure
-        // types ([CompilerGenerated]) to find the user-facing outer
-        // class — a lambda inside MyScript.OnStart compiles into a
-        // method on `MyScript.<>c__DisplayClass0_0`, whose containing
-        // type is MyScript, and we want to filter on MyScript's base
-        // class chain, not the closure's.
+        // PlayModeExit: walk past compiler-generated closure types to find the user-facing outer class for base-type filtering.
         Type? owner = declaring;
         while (owner != null && owner.IsNested && IsCompilerGenerated(owner))
         {
@@ -656,10 +544,7 @@ internal static class ScriptInstanceManager
         }
         catch
         {
-            // IsDefined can throw on malformed metadata; treat as
-            // non-compiler-generated so we stop walking and use the
-            // declaring type as the owner. Safer than aborting the
-            // whole sweep.
+            // IsDefined can throw on malformed metadata; treat as non-compiler-generated and stop the closure walk here.
             return false;
         }
     }
@@ -685,11 +570,6 @@ internal static class ScriptInstanceManager
                 HasStarted = false,
                 HasAwoken = false
             };
-            // Secondary (entityID, type) -> handle index. Indexer write
-            // overwrites — re-attaching the same script type on the same
-            // entity replaces the prior mapping (matches the s_Instances
-            // behaviour where the prior handle keeps an entry until the
-            // teardown path clears it).
             s_InstancesByType[(entityID, classInfo.Type)] = handle;
 
             return handle;
@@ -706,10 +586,6 @@ internal static class ScriptInstanceManager
     {
         if (!s_Instances.TryRemove(handle, out ScriptInstanceData data))
             return;
-        // Mirror removal in the secondary index. The reverse lookup walks
-        // the dictionary once — acceptable because DestroyScriptInstance
-        // is cold (called on teardown / hot-reload / explicit remove), not
-        // per-frame.
         ulong entityID = data.Instance.Entity != null ? data.Instance.Entity.ID : 0;
         if (entityID != 0)
         {
@@ -1056,12 +932,7 @@ internal static class ScriptInstanceManager
             s_UserLoadContext = new ScriptAssemblyLoadContext(s_CoreAssembly!, fullPath);
             byte[] assemblyBytes = System.IO.File.ReadAllBytes(fullPath);
 
-            // Load the PDB alongside the assembly so exceptions thrown from
-            // user code carry file/line info in their stack traces. Without
-            // symbols the user frames appear bare ("at NewGame7.OnStart()"),
-            // and the editor's log-link parser falls back to the first .cs
-            // in the trace — the catch frame here in ScriptInstanceManager —
-            // sending the user to the harness instead of their own script.
+            // Load PDB so stack traces have file/line info; without symbols the editor's log-link parser points to this file instead of the user's script.
             System.IO.MemoryStream? symbolsStream = null;
             string pdbPath = System.IO.Path.ChangeExtension(fullPath, ".pdb");
             if (System.IO.File.Exists(pdbPath))
@@ -1084,10 +955,6 @@ internal static class ScriptInstanceManager
 
             Log.Info($"User assembly loaded: {path}");
 
-            // Reflect over the freshly-loaded assembly and register every
-            // [NativeComponent(..., Generate = true)] struct with the engine.
-            // Replaces the build-time codegen pipeline — components are now
-            // visible to the editor / ECS the moment the C# project rebuilds.
             DynamicComponentRegistrar.RegisterAll(s_UserAssembly);
             return 1;
         }
@@ -1130,11 +997,7 @@ internal static class ScriptInstanceManager
         CoroutineScheduler.PumpFixedUpdate();
     }
 
-    // Cancel every live script's destroy CTS, then drop every pending
-    // scheduler entry. Called both from per-script teardown's bulk path
-    // (LoadUserAssembly when re-loading, UnloadUserAssembly during hot
-    // reload) so any captured user-ALC types are released for the GC
-    // dance in UnloadCurrentUserAssemblyContext.
+    // Cancel all coroutines before unload so captured user-ALC types are released for the GC dance in UnloadCurrentUserAssemblyContext.
     private static void CancelAllInstanceCoroutines()
     {
         foreach (var data in s_Instances.Values)
@@ -1235,18 +1098,7 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Shared write path for both EntityScript and GameSystem instances:
-    // resolves the named member by reflection, parses the string-encoded
-    // value, and pushes it through. Looks up FIELDS first (faster path
-    // and the only thing the editor used to write to), then falls back
-    // to PROPERTIES so users can expose validated/computed setters in
-    // the inspector. Silently skips on miss / parse failure — matches
-    // the existing SetScriptField tolerance, since the editor may post
-    // stale member names after a script edit.
-    //
-    // Property setters can throw (validation, ArgumentOutOfRange, etc.).
-    // We catch and log so a bad inspector edit doesn't take down the
-    // whole script-host call.
+    // Fields first (faster), then properties; silently skips on miss/parse failure since the editor may post stale names after a script edit.
     private static unsafe void ApplyFieldEdit(object instance, byte* fieldNamePtr, byte* valuePtr)
     {
         string fieldName = Marshal.PtrToStringUTF8((IntPtr)fieldNamePtr) ?? "";
@@ -1266,10 +1118,7 @@ internal static class ScriptInstanceManager
         var property = type.GetProperty(fieldName, k_Flags);
         if (property == null) return;
 
-        // Refuse the write if no public setter — the inspector should
-        // already have flagged the row read-only via AppendMemberJson,
-        // but defend against a stale write anyway. (CanWrite alone
-        // returns true for `init`-only and private setters.)
+        // CanWrite alone returns true for init-only and private setters, so check SetMethod.IsPublic explicitly.
         if (!property.CanWrite || property.SetMethod == null || !property.SetMethod.IsPublic)
             return;
 
@@ -1293,13 +1142,6 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Walks every instance field + property, drops members declared on
-    // the supplied base type (so EntityScript / GameSystem boilerplate
-    // stays out of the inspector), and emits the same JSON shape the
-    // editor already parses for [ShowInEditor]. Centralising it keeps
-    // GetScriptFields and GetGameSystemFields in lock-step so the C++
-    // inspector sees identical payloads regardless of which kind of
-    // script the member lives on.
     private static unsafe byte* SerializeInstanceFields(object instance, Type ignoreBaseType)
     {
         var type = instance.GetType();
@@ -1616,13 +1458,7 @@ internal static class ScriptInstanceManager
             if (t == typeof(AudioRef)) return new AudioRef(ParseAssetUUID(s));
             if (t.IsSubclassOf(typeof(Component)))
             {
-                // Format: "EntityID:ComponentName".
-                // Routes through Entity.GetComponentByType so the script's
-                // inspector-assigned field shares the same Component
-                // instance as entity.GetComponent<T>(). Without that
-                // sharing, UI event subscriptions (Button.OnClicked etc.)
-                // attach to a different Component than UIEventDispatcher
-                // invokes, and handlers silently never fire.
+                // Format: "EntityID:ComponentName". Must go through GetComponentByType so inspector fields share the same instance as GetComponent<T>() — otherwise UI event handlers silently never fire.
                 var sep = s.IndexOf(':');
                 if (sep > 0)
                 {
@@ -1641,10 +1477,6 @@ internal static class ScriptInstanceManager
 
             if (t.IsEnum)
             {
-                // Stored as the underlying integer's decimal form. ToObject
-                // accepts any integer convertible to the enum's underlying
-                // type, so this works for both regular enums and [Flags] OR
-                // combinations.
                 long parsed = string.IsNullOrWhiteSpace(s) ? 0 : long.Parse(s, ic);
                 return Enum.ToObject(t, parsed);
             }
@@ -1661,10 +1493,6 @@ internal static class ScriptInstanceManager
         return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
-    // Inspector visibility rules:
-    //   public field (no [EditorIgnore]/[HideFromEditor])  -> visible
-    //   private/protected field with [ShowInEditor]        -> visible
-    //   anything with [EditorIgnore] or [HideFromEditor]   -> hidden
     private static bool IsFieldEditorVisible(FieldInfo field)
     {
         if (field.GetCustomAttribute<EditorIgnoreAttribute>() != null) return false;
@@ -1673,15 +1501,6 @@ internal static class ScriptInstanceManager
         return field.GetCustomAttribute<ShowInEditorAttribute>() != null;
     }
 
-    // Unified adapter over `FieldInfo` / `PropertyInfo` so the inspector
-    // pipeline can reflect on both without duplicating every traversal.
-    // Properties surface with the same visibility rules as fields:
-    //   public property (public getter)                    -> visible
-    //   private getter / protected with [ShowInEditor]     -> visible
-    //   indexer / write-only / [EditorIgnore]              -> hidden
-    // Read-only properties (no public setter) display but the editor
-    // marks the row read-only so the user can't drive an edit through a
-    // setter the script doesn't expose.
     private readonly struct EditorMember
     {
         public readonly MemberInfo Member;
@@ -1711,11 +1530,6 @@ internal static class ScriptInstanceManager
 
         public static EditorMember FromProperty(PropertyInfo p)
         {
-            // "Writable from the inspector" means there's a setter the
-            // editor can legally invoke. We require a non-null setter
-            // (excludes get-only properties) AND a public setter
-            // (excludes init-only and private setters which would throw
-            // a MethodAccessException when SetValue dispatches).
             bool canWrite = p.CanWrite
                 && p.SetMethod != null
                 && p.SetMethod.IsPublic;
@@ -1740,11 +1554,6 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Walks every instance field + property on `type`, filters them
-    // through the same visibility rules `IsFieldEditorVisible` applies
-    // to fields, and skips compiler-generated backing storage so an
-    // auto-property `public T Foo { get; set; }` shows up exactly once
-    // (as `Foo`) rather than twice (as `<Foo>k__BackingField` and `Foo`).
     private static IEnumerable<EditorMember> CollectEditorMembers(Type type)
     {
         const BindingFlags k_Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
@@ -1772,17 +1581,7 @@ internal static class ScriptInstanceManager
         return member.GetCustomAttribute<ShowInEditorAttribute>() != null;
     }
 
-    // Build a single field's JSON object for the editor metadata payload.
-    // Centralised here so GetScriptFields and GetClassFieldDefs emit the same
-    // shape — the C++ inspector parses the result into PropertyDescriptor.
-    //
-    // Enum / FlagEnum fields gain `enumIsFlags` and `enumOptions` arrays so
-    // the editor can render the correct combo / multi-checkbox UI without a
-    // second reflection round-trip.
-    //
-    // The same path serves both fields and properties; for properties
-    // without a public setter the row is force-marked read-only so the
-    // editor can't post a write back through `SetScriptField`.
+    // Emits the JSON PropertyDescriptor shape for one member; enum fields gain enumIsFlags/enumOptions arrays for the combo/checkbox UI.
     private static void AppendMemberJson(System.Text.StringBuilder sb, in EditorMember member, object? value)
     {
         var ic = System.Globalization.CultureInfo.InvariantCulture;
@@ -1831,11 +1630,6 @@ internal static class ScriptInstanceManager
             hasSpace = true;
         }
 
-        // EnabledIf — gate this row on another field's value. Mirrors the
-        // native PropertyMetadata::EnabledIfFn path. The C++ inspector
-        // resolves the gate at draw time using the per-entity field-value
-        // snapshot it already builds for multi-edit, so no extra round-trip
-        // is needed.
         string enabledIfField = "";
         string enabledIfValue = "";
         bool hasEnabledIf = false;
@@ -1898,11 +1692,6 @@ internal static class ScriptInstanceManager
         sb.Append("}");
     }
 
-    // Read a member's value defensively. Property getters can throw
-    // arbitrary exceptions (e.g. validation that depends on another
-    // field that the inspector hasn't pushed yet). Swallow those so a
-    // single throwing getter doesn't blank the entire inspector — the
-    // row falls back to `default` so the UI shows something coherent.
     private static object? TryGetMemberValue(in EditorMember member, object instance)
     {
         try { return member.GetValue(instance); }
@@ -1948,11 +1737,7 @@ internal static class ScriptInstanceManager
         }
     }
 
-    /// <summary>
-    /// Returns field definitions for a class WITHOUT needing a live instance.
-    /// Creates a temporary instance to read default values, then discards it.
-    /// Used by the editor in Edit Mode to show [ShowInEditor] fields.
-    /// </summary>
+    /// <summary>Returns field definitions for a class using a temporary instance for default values; used by the editor in Edit Mode.</summary>
     [UnmanagedCallersOnly]
     public static unsafe byte* GetClassFieldDefs(byte* classNamePtr)
     {
@@ -1999,12 +1784,6 @@ internal static class ScriptInstanceManager
     }
 
     // ── Inspector event bindings ────────────────────────────────
-    // Backs the native InspectorEventList (Button.OnClick, etc.). The C++
-    // side stores (entityUUID, className, methodName) per row and calls
-    // InvokeScriptMethodByName when the trigger fires. We reflect every
-    // parameterless `void` method declared on the user's subclass and cache
-    // the MethodInfo in ScriptClassInfo. Cache lifetime rides on
-    // s_ClassCache, which LoadUserAssembly clears on hot reload.
 
     private static readonly Type[] s_InvokableExcludedDeclaringTypes =
     {
@@ -2058,12 +1837,7 @@ internal static class ScriptInstanceManager
             }
             if (excluded) continue;
 
-            // Overloads: pick the first one we see for a given name. The
-            // dispatcher resolves by name only, so two methods with the
-            // same name and different parameter types would otherwise
-            // race for the slot. Picking deterministically (first hit)
-            // mirrors Unity's "name uniqueness wins" — if a class wants
-            // both signatures, rename one.
+            // Name-only dispatch: first overload wins; if a class needs both signatures, rename one.
             if (byName.TryAdd(method.Name, method))
             {
                 nameKinds.Add((method.Name, argKind));
@@ -2096,11 +1870,6 @@ internal static class ScriptInstanceManager
 
             EnsureInvokableMethods(classInfo);
 
-            // Wire format: array of "<methodName>:<argKind>" strings. The
-            // C++ inspector splits on ':' to get the bare name (for the
-            // dropdown) and the argKind byte (for the value editor).
-            // Void methods land as "<name>:0" — same colon separator
-            // for every kind keeps the parser simple.
             var sb = new System.Text.StringBuilder();
             sb.Append('[');
             bool first = true;
@@ -2126,10 +1895,6 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Parse an "x,y" / "r,g,b,a" / etc. comma-separated float string into a
-    // fixed-size span. Returns false on any parse failure or a count that
-    // doesn't match `expected`. Caller decides what to do on failure
-    // (typically: log and skip the invoke).
     private static bool TryParseFloatList(string s, int expected, Span<float> outValues)
     {
         if (string.IsNullOrEmpty(s) || expected <= 0 || outValues.Length < expected) return false;
@@ -2221,12 +1986,6 @@ internal static class ScriptInstanceManager
             {
                 ulong uuid = 0;
                 ulong.TryParse(raw, System.Globalization.NumberStyles.Integer, ic, out uuid);
-                // The C# Entity wrapper accepts the persistent UUID as
-                // its `ID` field directly — every `InternalCalls.Entity_*`
-                // call routes through the native resolver, so a UUID-keyed
-                // wrapper looks up correctly even when the underlying
-                // entt handle was reallocated. Empty / unparseable
-                // payloads collapse to Entity.Invalid (id=0).
                 return new object?[] { uuid == 0 ? Entity.Invalid : new Entity(uuid) };
             }
             default:
@@ -2284,11 +2043,7 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // Standalone two-call buffer writer for the new event-binding helpers.
-    // We don't reuse NullTerminated() here because it's a singleton pinned
-    // buffer — concurrent reflection calls from the same frame (drawer
-    // sampling several classes) would clobber each other's output. The
-    // event-binding callers always pass their own destination buffer.
+    // Can't reuse NullTerminated() — it's a singleton pinned buffer; concurrent reflection calls from the same frame would clobber each other.
     private static unsafe int WriteUtf8(string s, byte* outBuffer, int capacity)
     {
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);

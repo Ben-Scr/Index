@@ -24,31 +24,6 @@
 #include <unordered_map>
 #include <utility>
 
-// =============================================================================
-// TextRenderer — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// CPU-side glyph emission (DecodeUtf8, MeasureLineWidth, MeasureNaturalSize,
-// EmitText with word/character wrap) is GPU-backend-agnostic.
-//
-// Process-shared GPU resources (text shader module, pipeline layout, atlas
-// sampler) live in a Globals() singleton with reference counting, since
-// multiple TextRenderer instances exist in the engine (one per GuiRenderer
-// for the editor's two FBOs, plus Renderer2D's owned one for world-space
-// text).
-//
-// Per-instance state (dynamic vertex buffer, uniform buffer, per-frame
-// bind-group cache) is a TU-local side-table keyed by `this`. The buffers
-// grow geometrically on demand and are released on Shutdown.
-//
-// Pipeline cache: built lazily per (color-format, has-depth). The engine
-// hits at most ~2 formats per session (swap-chain BGRA8Unorm or FBO RGBA8
-// Unorm × {with depth, without}).
-//
-// Clip handling: groups the supplied commands by (atlas, sort key, clip
-// rect) and applies SetScissorRect per group from the MVP-projected
-// UI-space clip — so a single RenderInstances call can mix unclipped +
-// Mask-clipped text correctly.
-// =============================================================================
 
 namespace Index {
 
@@ -327,10 +302,6 @@ namespace Index {
 			wgpu::Buffer VertexBuffer;
 			uint32_t     VertexBufferCapacityBytes = 0;
 			wgpu::Buffer UniformBuffer;
-			// Bind groups for this frame, keyed by font-atlas pool ID. Cleared
-			// at the top of every RenderInstances call so an atlas destroyed
-			// between frames (Font::~Font -> DeregisterAtlas) can't leak a
-			// stale TextureView reference into a cached group.
 			std::unordered_map<unsigned, wgpu::BindGroup> BindGroupsThisCall;
 		};
 		std::unordered_map<const TextRenderer*, PerInstance> g_PerInstance;
@@ -522,11 +493,6 @@ namespace Index {
 			}
 		}
 		if (uuid != 0) {
-			// Async load: returns immediately with a handle whose Font may still
-			// be baking on a worker. GetFont() returns nullptr until the bake
-			// publishes (one or more frames later) — for those frames we fall
-			// through to the default-font branch below so the text renders with
-			// the bundled GoogleSans atlas instead of disappearing.
 			text.ResolvedFont = FontManager::LoadFontByUUIDAsync(uuid, bakeRequest);
 			if (Font* f = FontManager::GetFont(text.ResolvedFont)) return f;
 		}
@@ -766,9 +732,6 @@ namespace Index {
 		if (!EnsureUniformBuffer(device, inst)) return;
 		queue.WriteBuffer(inst.UniformBuffer, 0, glm::value_ptr(mvp), 64);
 
-		// Sort the supplied commands so glyph emission groups by
-		// (SortingLayer, SortingOrder, atlas) — adjacent atlas runs share a
-		// bind group + draw call.
 		m_Order.clear();
 		m_Order.reserve(commands.size());
 		for (size_t i = 0; i < commands.size(); ++i) {
@@ -784,10 +747,6 @@ namespace Index {
 			return ca.FontPtr < cb.FontPtr;
 		});
 
-		// Emit all glyph vertices first, recording one GlyphRun per
-		// homogeneous (atlas, sort key, clip) span. The clip is the
-		// per-pass scissor target; including it in the run key keeps
-		// SetScissorRect changes minimal.
 		m_Vertices.clear();
 		m_Runs.clear();
 

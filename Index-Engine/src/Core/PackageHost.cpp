@@ -50,15 +50,7 @@ namespace Index {
 #endif
 		}
 
-		// SEH-guarded LoadLibrary. A package whose static-init or DllMain
-		// raises an access violation (e.g. it was built against a different
-		// Index-Engine ABI and the link-time-resolved imports land at the
-		// wrong offsets) would otherwise tear down the entire editor with
-		// no warning. We catch the structured exception here, return
-		// nullptr, and let the caller log + skip the package.
-		//
-		// MSVC constraint: functions using __try/__except can't have local
-		// C++ objects with destructors, hence the bare-pointer signature.
+		// SEH guard: stale-ABI package crashing in DllMain/static-init would kill the editor without this. __try/__except requires no local C++ destructors, hence the bare-pointer signature.
 		void* LoadLibraryGuarded(const char* path) {
 #ifdef IDX_PLATFORM_WINDOWS
 			__try {
@@ -72,17 +64,7 @@ namespace Index {
 #endif
 		}
 
-		// SEH-guarded IndexPackage_OnLoad call. Same rationale as
-		// LoadLibraryGuarded — a package's OnLoad may call back into the
-		// engine (registering components, contributors, etc.) and a stale
-		// ABI lands the call on the wrong offset. Without SEH a single
-		// broken package would crash the editor on every launch (LoadAll
-		// runs at startup) and effectively brick the user's project.
-		//
-		// Out-params carry the result; the return is the int from OnLoad
-		// when it returned cleanly, or 0 + *outCrashed = true when SEH
-		// trapped a fault. Caller distinguishes the two via *outCrashed
-		// (a package legitimately returning 0 is a clean success).
+		// Same SEH rationale as LoadLibraryGuarded: OnLoad calls back into the engine and a stale ABI would crash the editor on every launch. *outCrashed distinguishes a trapped fault from a clean OnLoad return of 0.
 		int InvokeOnLoadGuarded(void* moduleHandle, bool* outCrashed, bool* outHadExport) {
 			*outCrashed = false;
 			*outHadExport = false;
@@ -107,10 +89,6 @@ namespace Index {
 #endif
 		}
 
-		// SEH-guarded IndexPackage_OnUnload symmetric counterpart. A
-		// package whose OnUnload faults shouldn't take down the rest of
-		// shutdown — we log and continue tearing down the remaining
-		// packages.
 		void InvokeOnUnloadGuarded(void* moduleHandle, bool* outCrashed) {
 			*outCrashed = false;
 			using OnUnloadFn = void (*)();
@@ -149,14 +127,8 @@ namespace Index {
 			return stem;
 		}
 
-		// Folders we care about end in `.Native` — that's where the
-		// unmanaged C++ DLL for an engine-core / standalone-cpp package
-		// lands. Plain `Pkg.<Name>/` folders hold the *managed* C# assembly,
-		// which Win32 LoadLibrary will happily map (a .NET assembly is a
-		// valid PE file) but pollutes the unmanaged loader, pins the file
-		// against editor C# hot-reload, and produces the misleading
-		// "no IndexPackage_OnLoad export" log lines users have seen.
-		bool LooksLikeNativePackageFolder(const std::string& folderName) {
+		// Skips Pkg.<Name>/ (managed-only) folders: LoadLibrary-ing a .NET assembly pins it against C# hot-reload and produces false "no OnLoad export" warnings.
+				bool LooksLikeNativePackageFolder(const std::string& folderName) {
 			if (folderName.rfind("Pkg.", 0) != 0) return false;
 			constexpr std::string_view k_NativeSuffix = ".Native";
 			return folderName.size() > k_NativeSuffix.size()
@@ -193,13 +165,6 @@ namespace Index {
 	}
 
 	namespace {
-		// Shared discovery + filter + load worker for both LoadAll() and
-		// LoadInstalled(). Returns the count of newly loaded packages.
-		// Skips any candidate whose name OR file path is already present in
-		// s_LoadedPackages — calling twice is safe and produces no double-
-		// register from OnLoad. Logging is suppressed for "already loaded"
-		// packages on the second pass so the post-install path doesn't
-		// noisy-log every existing package.
 		size_t LoadInternal(bool isInitialLoadAll) {
 			std::vector<std::filesystem::path> candidates;
 
@@ -212,13 +177,6 @@ namespace Index {
 			// Distribution layout (future): packages alongside the exe in a Packages/ folder.
 			DiscoverIn(exeDir / "Packages", candidates);
 
-			// Precompiled-package layout: each installed package ships its
-			// native sibling DLL inside <project>/Packages/<Name>/Bin/Windows-x64/.
-			// This is the path used by the cloud registry installer — the DLL
-			// is published as part of the zip, not built from source on the
-			// user's machine. We probe this for every package in the project's
-			// allow-list (looked up further down) so a package's native code
-			// loads without needing the engine source / Index.sln / premake.
 			const IndexProject* projectForScan = ProjectManager::GetCurrentProject();
 			if (projectForScan && !projectForScan->PackagesDirectory.empty()) {
 				const std::filesystem::path projectPackages(projectForScan->PackagesDirectory);
@@ -234,24 +192,8 @@ namespace Index {
 				}
 			}
 
-			// Modular package policy: only packages the active project has
-			// explicitly *installed* (listed in index-project.json's `packages`
-			// array) are LoadLibrary'd. The engine itself stays free of types
-			// that no project asked for — the same install-or-not contract the
-			// user-facing package menu implies.
-			//
-			// Decision matrix:
-			//   project loaded + packages array present  ->  load only listed
-			//   project loaded + packages array empty    ->  load nothing
-			//   no project loaded                        ->  load nothing
-			//   INDEX_LOAD_ALL_PACKAGES=1                ->  load every found DLL
-			//
-			// INDEX_LOAD_ALL_PACKAGES is the engine-developer escape hatch — set
-			// it when running the engine repo's own editor build with no project
-			// just to smoke-test that every shipped package still loads. Off by
-			// default so end-user editors / runtimes never silently load a
-			// package that wasn't installed.
-			const IndexProject* activeProject = ProjectManager::GetCurrentProject();
+			// Only packages listed in the project's packages array are loaded; INDEX_LOAD_ALL_PACKAGES=1 overrides this for engine-dev smoke testing.
+						const IndexProject* activeProject = ProjectManager::GetCurrentProject();
 			std::unordered_set<std::string> allowList;
 			if (activeProject) {
 				allowList.insert(activeProject->Packages.begin(), activeProject->Packages.end());
@@ -284,10 +226,6 @@ namespace Index {
 				return 0;
 			}
 
-			// Build a fast lookup of what's already loaded so we don't double-load.
-			// Match by package name AND by module path: name catches the common
-			// "DLL was rebuilt with the same name" case; path catches the rare
-			// "two DLLs with the same package name in different folders" case.
 			std::unordered_set<std::string> alreadyLoadedByName;
 			std::unordered_set<std::string> alreadyLoadedByPath;
 			for (const LoadedPackage& existing : s_LoadedPackages) {
@@ -314,12 +252,6 @@ namespace Index {
 					continue;
 				}
 
-				// SEH-guarded load. A broken package (built against a
-				// different engine ABI, missing imports, etc.) can fault
-				// during static-init / DllMain — without the guard that
-				// kills the entire editor and, because LoadAll runs at
-				// startup, locks the user out of their project on every
-				// relaunch.
 				void* module = LoadLibraryGuarded(pathStr.c_str());
 				if (!module) {
 					IDX_CORE_WARN_TAG("PackageHost",
@@ -333,13 +265,6 @@ namespace Index {
 				bool onLoadHadExport = false;
 				const int onLoadResult = InvokeOnLoadGuarded(module, &onLoadCrashed, &onLoadHadExport);
 				if (onLoadCrashed) {
-					// The package's OnLoad raised an SEH fault (commonly an
-					// access violation from a stale-ABI cross-DLL call into
-					// the engine). Unload the module and skip this package
-					// rather than letting the fault propagate and crash the
-					// editor. The package stays in the project's allow-list
-					// — the editor's package manager surfaces this state so
-					// the user can uninstall + reinstall a rebuilt version.
 					IDX_CORE_ERROR_TAG("PackageHost",
 						"Package '{}' crashed during IndexPackage_OnLoad (likely binary incompatibility "
 						"with the running engine — try uninstalling and reinstalling). Unloaded; editor continues.",
@@ -419,4 +344,4 @@ namespace Index {
 		return false;
 	}
 
-}
+}			

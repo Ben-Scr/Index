@@ -59,13 +59,48 @@ echo [ERROR] python / py not on PATH. Dawn's codegen needs Python 3.
 goto :error
 :python_ok
 
+REM --- Resolve pinned revision ------------------------------------------------
+REM DAWN_REVISION (env) wins; otherwise read scripts\dawn\dawn-revision.txt if
+REM present; otherwise stay empty and clone tip-of-main (the original behaviour
+REM for local devs who want the latest). CI relies on the revision file so the
+REM build is reproducible and the Dawn cache key stays stable.
+if not defined DAWN_REVISION (
+    if exist "scripts\dawn\dawn-revision.txt" (
+        for /f "usebackq tokens=1 delims= " %%R in ("scripts\dawn\dawn-revision.txt") do (
+            if not defined DAWN_REVISION set "DAWN_REVISION=%%R"
+        )
+    )
+)
+
 REM --- Clone ------------------------------------------------------------------
 if exist "%DAWN_DIR%\CMakeLists.txt" goto :clone_done
-echo [1/5] Cloning Dawn ^(this may take a few minutes^)...
-git clone --depth=1 https://dawn.googlesource.com/dawn "%DAWN_DIR%"
-if errorlevel 1 (
-    echo [ERROR] git clone failed.
-    goto :error
+if defined DAWN_REVISION (
+    echo [1/5] Fetching Dawn at pinned revision !DAWN_REVISION! ^(this may take a few minutes^)...
+    git init "%DAWN_DIR%"
+    if errorlevel 1 (
+        echo [ERROR] git init failed.
+        goto :error
+    )
+    REM remote add fails harmlessly if origin already exists from a prior run.
+    git -C "%DAWN_DIR%" remote add origin https://dawn.googlesource.com/dawn 2>nul
+    git -C "%DAWN_DIR%" fetch --depth=1 origin !DAWN_REVISION!
+    if errorlevel 1 (
+        echo [ERROR] git fetch of pinned revision !DAWN_REVISION! failed.
+        echo         Check the SHA in scripts\dawn\dawn-revision.txt is reachable on dawn.googlesource.com.
+        goto :error
+    )
+    git -C "%DAWN_DIR%" checkout --detach FETCH_HEAD
+    if errorlevel 1 (
+        echo [ERROR] git checkout of pinned revision failed.
+        goto :error
+    )
+) else (
+    echo [1/5] Cloning Dawn ^(tip of main; this may take a few minutes^)...
+    git clone --depth=1 https://dawn.googlesource.com/dawn "%DAWN_DIR%"
+    if errorlevel 1 (
+        echo [ERROR] git clone failed.
+        goto :error
+    )
 )
 goto :fetch_deps
 :clone_done
@@ -99,19 +134,29 @@ if errorlevel 1 (
 )
 
 REM --- Build ------------------------------------------------------------------
-echo [4/5] Building webgpu_dawn ^(Debug + Release^)...
-"!CMAKE_EXE!" --build "%DAWN_BUILD_DIR%" --config Debug --target webgpu_dawn
-if errorlevel 1 (
-    echo [ERROR] Debug build failed.
-    goto :error
-)
-"!CMAKE_EXE!" --build "%DAWN_BUILD_DIR%" --config Release --target webgpu_dawn
-if errorlevel 1 (
-    echo [ERROR] Release build failed.
-    goto :error
+REM DAWN_BUILD_CONFIGS (env) selects which configs to build; defaults to both
+REM for local dev (the editor's Debug build links the Debug lib). CI sets it to
+REM "Release" only -- the Windows CI job builds the solution in Release, so the
+REM Debug lib (~1.36 GB, slow to build) is dead weight there.
+if not defined DAWN_BUILD_CONFIGS set "DAWN_BUILD_CONFIGS=Debug Release"
+echo [4/5] Building webgpu_dawn ^(configs: !DAWN_BUILD_CONFIGS!^)...
+for %%C in (!DAWN_BUILD_CONFIGS!) do (
+    echo     - building %%C...
+    "!CMAKE_EXE!" --build "%DAWN_BUILD_DIR%" --config %%C --target webgpu_dawn
+    if errorlevel 1 (
+        echo [ERROR] %%C build failed.
+        goto :error
+    )
 )
 
 REM --- Regenerate Index.sln ---------------------------------------------------
+REM CI sets DAWN_SKIP_PREMAKE=1: the workflow regenerates project files itself
+REM (scripts/Setup.py) with the correct module-profile / options right after
+REM this, so a redundant default-option premake run here is skipped.
+if defined DAWN_SKIP_PREMAKE (
+    echo [5/5] DAWN_SKIP_PREMAKE set - skipping premake regen.
+    goto :done
+)
 echo [5/5] Regenerating Index.sln via Premake...
 if not exist "vendor\bin\premake5.exe" goto :no_premake
 "vendor\bin\premake5.exe" vs2022

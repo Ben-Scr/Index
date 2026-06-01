@@ -42,6 +42,8 @@ namespace Index {
 		static bool ResetComponent(Scene& scene, EntityHandle entity, std::string_view componentName);
 		static bool SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path);
 		static bool SaveEntityToFile(Scene& scene, EntityHandle entity, const std::string& path, SceneSerializationFormat format);
+		// Saves entity subtree as a .prefab, converts the live subtree in-place into an instance (all entities get Origin::Prefab + PrefabInstanceComponent matching the written uuid). Returns GUID or 0 on failure.
+		static uint64_t SaveEntityAsPrefabInstance(Scene& scene, EntityHandle entity, const std::string& path);
 		static EntityHandle LoadEntityFromFile(Scene& scene, const std::string& path);
 		static bool ConvertFileFormat(const std::string& path, SceneSerializationFormat format);
 		static bool IsBinarySerializedFile(const std::string& path);
@@ -49,39 +51,17 @@ namespace Index {
 		static bool ApplyPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
 		static EntityHandle RevertPrefabInstanceOverride(Scene& scene, EntityHandle entity, const std::string& overridePath);
 
-		// Re-instantiate a prefab instance against the current on-disk source
-		// while preserving the instance's per-field overrides. `previousSourceEntityValue`
-		// is the prefab's "Entity" JSON block as it existed BEFORE the source was
-		// saved — it's the baseline against which overrides are computed and then
-		// re-applied on top of the new source. Returns the new entity handle
-		// (the old one is destroyed). Used by the prefab inspector to push edits
-		// to live instances without dropping their per-field overrides.
+		// `previousSourceEntityValue` is the prefab "Entity" block BEFORE the source was saved; used as override baseline so per-field overrides survive a source edit.
 		static EntityHandle RefreshPrefabInstance(Scene& scene, EntityHandle existing,
 			const Json::Value& previousSourceEntityValue);
 
-		// Compute the per-field override set for a single prefab instance:
-		// outOverrides is filled with `{ "Transform2D.posX": <value>, ... }`
-		// — keys are dot-paths into the entity's serialized form. Returns true
-		// only when the entity is an `EntityOrigin::Prefab` instance whose source
-		// GUID resolves in the AssetRegistry; orphans and non-instances return
-		// false with `outOverrides` left empty. Used by the inspector to flag
-		// overridden components/fields and feed the Revert Field UI.
+		// outOverrides is filled with dot-path keys e.g. "Transform2D.posX". Returns false for non-instances and orphans (source GUID not in AssetRegistry).
 		static bool ComputeInstanceOverrides(Scene& scene, EntityHandle entity, Json::Value& outOverrides);
 
-		// Resolve the prefab-instance root for any entity in a prefab subtree.
-		// Returns `entity` itself when it carries PrefabInstanceComponent
-		// (i.e. is the instance root), otherwise walks up HierarchyComponent.Parent
-		// until it finds the root or runs out of ancestors. Returns entt::null
-		// when the entity is not part of a prefab instance.
+		// NOTE: PrefabInstanceComponent is on every entity in the subtree (not just the root), so the root is determined by walking HierarchyComponent.Parent upward.
 		static EntityHandle GetPrefabInstanceRoot(Scene& scene, EntityHandle entity);
 
-		// True when any entity in this prefab instance's subtree differs from
-		// its on-disk source (root override OR per-child entity override).
-		// `entity` may be the root or any descendant — the root is resolved
-		// internally. Returns false for non-instances and orphans (source
-		// missing). Used by the inspector to enable/disable the Apply All /
-		// Revert All buttons; without the subtree walk an edit to a child
-		// entity would leave the buttons disabled on the root.
+		// Walks the entire subtree so a child-only edit still enables Apply/Revert All on the root. `entity` may be any member of the instance.
 		static bool HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
 
 	private:

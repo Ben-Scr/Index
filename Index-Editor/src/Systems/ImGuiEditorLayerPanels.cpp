@@ -52,14 +52,6 @@
 
 namespace Index {
 	namespace {
-		// Hook the just-submitted ImGui item (e.g. a Browse... button) as a
-		// drop target accepting an Asset Browser file payload. The callback
-		// runs once on a successful drop with the dropped item's absolute
-		// path. `extWhitelist` filters by extension (lower-cased, dot-
-		// included, e.g. {".png", ".jpg"}); pass an empty span to accept any
-		// file. Returns true when a valid drop was applied. Used by every
-		// Browse... button in the Project Settings panel so the user can
-		// drag-drop assets onto the field as an alternative to the picker.
 		bool BrowseAcceptImageDrop(std::span<const std::string_view> extWhitelist,
 			const std::function<void(const std::string&)>& onDrop)
 		{
@@ -91,12 +83,6 @@ namespace Index {
 			return applied;
 		}
 
-		// Convert a dropped (or picked) absolute asset path to the
-		// project-relative form the project file persists. Mirrors the
-		// post-picker logic each settings slot already runs: prefer
-		// `Assets/foo.png` when the file lives under the project's
-		// Assets dir; otherwise fall back to the bare filename so the
-		// stored path stays portable across project relocations.
 		std::string ToProjectRelativeAssetPath(const std::filesystem::path& absPath,
 			const std::string& assetsDirectory)
 		{
@@ -107,9 +93,6 @@ namespace Index {
 			return absPath.filename().string();
 		}
 
-		// Shared image-extension whitelist for every texture-typed
-		// Browse... drop site (App Icon, Splash Image, Cursors). Matches
-		// the AssetKind::Texture filter the picker uses.
 		constexpr std::string_view k_ImageExts[] = {
 			".png", ".jpg", ".jpeg", ".bmp"
 		};
@@ -262,11 +245,7 @@ namespace Index {
 				: SceneSerializationFormat::Json;
 		}
 
-		// Variant that skips any file or directory whose path-relative-to-srcDir
-		// has a leading segment matching one of `excludedSegments`. Used to keep
-		// editor-only assets (IndexAssets/Textures/Editor) out of shipped builds.
-		// Match is case-insensitive on Windows so the Editor folder excludes
-		// regardless of how the user cased it on disk.
+		// Match is case-insensitive on Windows so "Editor" excludes regardless of the user's disk casing.
 		int CopyDirIncrementalExcluding(const std::filesystem::path& srcDir,
 			const std::filesystem::path& destDir,
 			const std::vector<std::filesystem::path>& excludedRelativePaths)
@@ -334,20 +313,7 @@ namespace Index {
 		}
 
 #ifdef IDX_PLATFORM_WINDOWS
-		// Build a single-image .ico blob containing a 32-bit BMP DIB from a
-		// PNG/JPEG/etc. that the engine's Texture2D class can decode. We
-		// reuse Texture2D so we don't have to pull stb_image into the editor
-		// (the engine DLL doesn't dllexport stb's symbols). The texture
-		// round-trips through GL — it's a one-shot per build, so the cost
-		// is irrelevant.
-		//
-		// Layout produced (matches what Win32's RT_ICON / RT_GROUP_ICON
-		// loaders expect):
-		//   [IconDir (6 bytes)]
-		//   [IcoEntry (16 bytes)]
-		//   [BITMAPINFOHEADER (40 bytes)] biHeight = 2*H (XOR + AND mask)
-		//   [BGRA pixels, bottom-up] W * H * 4 bytes
-		//   [AND mask, 1bpp, 4-byte aligned rows] all zero (alpha-channel cutout)
+		// Layout: [IconDir 6B][IcoEntry 16B][BITMAPINFOHEADER 40B, biHeight=2*H][BGRA pixels bottom-up][AND mask 1bpp 4B-aligned, all zero].
 		std::string BuildIcoBytesFromImage(const std::filesystem::path& imagePath,
 			std::vector<std::uint8_t>& outIcoBytes)
 		{
@@ -382,12 +348,7 @@ namespace Index {
 			};
 #pragma pack(pop)
 
-			// Pure CPU decode — we never need the pixels on the GPU, and
-			// Texture2D::GetImageData() is a stub that returns null under
-			// the current WebGPU backend (async readback isn't wired).
-			// flipVertical=false so we read pixels in the PNG's natural
-			// top-down order; we'll flip + BGRA-swizzle on the way into
-			// the DIB below.
+			// flipVertical=false: pixels come top-down; we flip + BGRA-swizzle into the DIB below.
 			std::unique_ptr<ImageData> img = Texture2D::DecodeFileToCpu(
 				imagePath.string().c_str(), /*flipVertical*/ false);
 			if (!img) {
@@ -438,9 +399,7 @@ namespace Index {
 			BitmapInfoHdr bih{};
 			bih.biSize = sizeof(BitmapInfoHdr);
 			bih.biWidth = width;
-			// 2*H is the ICO convention: top half is the XOR (color) bitmap,
-			// bottom half is the AND mask. biHeight stays positive — the DIB
-			// is bottom-up.
+			// biHeight = 2*H per ICO convention: XOR bitmap + AND mask stacked; positive = bottom-up DIB.
 			bih.biHeight = height * 2;
 			bih.biPlanes = 1;
 			bih.biBitCount = 32;
@@ -464,9 +423,7 @@ namespace Index {
 					dstRow[x * 4 + 3] = srcRow[x * 4 + 3]; // A
 				}
 			}
-			// AND mask region is already zero-initialised (assign() above).
-			// All-zero AND mask means "use the alpha channel for transparency",
-			// which is what we want for 32-bit icons.
+			// AND mask is all-zero (assign() above): signals "use alpha channel" for 32-bit icons.
 
 			return std::string{};
 		}
@@ -483,20 +440,12 @@ namespace Index {
 			return std::string{};
 		}
 
-		// Identifier of an existing RT_ICON / RT_GROUP_ICON resource. Win32
-		// names a resource either by a numeric ordinal (the high 16 bits of
-		// the LPSTR are zero) or by a string. Numeric icon ids are reserved
-		// when choosing new ids; string names are kept for diagnostics.
 		struct ExistingResName {
 			bool IsNumeric = false;
 			WORD NumericId = 0;
 			std::string StringName;
 		};
 
-		// Enumerate every resource of `resType` that the .exe at `exePath`
-		// already carries. Used so EmbedIconIntoExecutable can avoid numeric
-		// RT_ICON id collisions when adding the build-specific icon set.
-		// Returns empty vector and sets error string on failure.
 		std::vector<ExistingResName> EnumerateExistingResources(
 			const std::string& exePath, WORD resType, std::string& outError)
 		{
@@ -542,25 +491,8 @@ namespace Index {
 			return out;
 		}
 
-		// Replace the RT_GROUP_ICON / RT_ICON resources of `exePath` with the
-		// icons in `icoBytes` (the contents of a .ico — either read from disk
-		// or built from a PNG by BuildIcoBytesFromImage). Returns an empty
-		// string on success or a human-readable error description on failure.
-		// The runtime exe is compiled with `1 ICON "icon.ico"`
-		// (Index-Runtime/icon.rc), so we overwrite group ID 1. We leave any
-		// other icon resources in place instead of deleting and adding icons in
-		// the same update transaction; that pattern can fail with
-		// UpdateResource(RT_ICON) error 1359 on some freshly copied exes.
-		// Wraps EmbedIconIntoExecutableOnce with a small retry loop.
-		// Error 1359 (ERROR_INTERNAL_ERROR) and the kernel-level "another
-		// process has the file open" failures from BeginUpdateResource
-		// are nearly always transient: the runtime exe was copy_file'd
-		// moments ago and Windows / antivirus / Explorer haven't fully
-		// released their handles yet. Sleep + retry a handful of times
-		// before giving up so a Build that races AV doesn't randomly
-		// fail to update the taskbar icon. (The function is defined
-		// later in this file; declaration here keeps the wrapper next
-		// to the public entry point users will call.)
+		// Retries up to 6 times on error 1359/32/33 and BeginUpdateResource failures — AV/Explorer hold the
+		// freshly copied exe open transiently; polling fixes the race without permanently failing the Build.
 		std::string EmbedIconIntoExecutableOnce(const std::string& exePath,
 			const std::vector<std::uint8_t>& icoBytes);
 
@@ -605,11 +537,7 @@ namespace Index {
 				std::uint32_t BytesInRes;
 				std::uint32_t ImageOffset;
 			};
-			// The wire-format RT_GROUP_ICON entry differs from the on-disk
-			// .ico entry: the trailing field is a 16-bit resource ID rather
-			// than a 32-bit byte offset, so the per-entry size is 14 bytes
-			// instead of 16. Pack to avoid trailing padding the loader would
-			// reject.
+			// RT_GROUP_ICON wire format: trailing field is a 16-bit resource ID (not a 32-bit offset), so 14 bytes/entry; pack to avoid loader-rejected padding.
 			struct GroupEntry {
 				std::uint8_t Width;
 				std::uint8_t Height;
@@ -650,9 +578,7 @@ namespace Index {
 					std::to_string(::GetLastError()) + ")";
 			}
 
-			// Write each RT_ICON under a numeric id that is not already present.
-			// Avoiding the delete pass keeps the resource update simple and has
-			// proven more reliable on freshly copied release exes.
+			// Avoid the delete-then-add pattern: updating without deleting is more reliable on freshly copied exes.
 			std::unordered_set<WORD> usedIconIds;
 			for (const ExistingResName& r : existingIcons) {
 				if (r.IsNumeric) usedIconIds.insert(r.NumericId);
@@ -676,12 +602,7 @@ namespace Index {
 				}
 				const WORD iconId = static_cast<WORD>(nextIconId++);
 				usedIconIds.insert(iconId);
-				// Bypass RT_ICON / RT_GROUP_ICON macros — those expand
-				// through MAKEINTRESOURCE which is the WIDE (LPWSTR) form
-				// when UNICODE is defined (the default for VS projects),
-				// triggering a type mismatch against UpdateResourceA's
-				// LPCSTR. Use MAKEINTRESOURCEA directly with the documented
-				// numeric IDs (RT_ICON=3, RT_GROUP_ICON=14).
+				// Use MAKEINTRESOURCEA (not RT_ICON macro): RT_ICON expands to WIDE under UNICODE, mismatching UpdateResourceA's LPCSTR.
 				if (!::UpdateResourceA(hUpdate,
 					MAKEINTRESOURCEA(3),
 					MAKEINTRESOURCEA(iconId),
@@ -798,20 +719,7 @@ namespace Index {
 			return ImVec4(1.0f, 0.32f, 0.32f, 1.0f);
 		}
 
-		// ── Project Settings search index ─────────────────────────────
-		// Drives the search bar at the top of the Project Settings
-		// window. The panel renders settings as hardcoded inline ImGui
-		// calls grouped under CollapsingHeader sections, so there's no
-		// data model to scan automatically — instead, every
-		// CollapsingHeader has an entry here listing its category,
-		// section label, and a curated keyword string (field names,
-		// synonyms, abbreviations) the search matches against.
-		//
-		// EVERY ImGui::CollapsingHeader call inside a RenderSettings_*
-		// helper MUST have a matching entry below — SectionVisible()
-		// returns false for any (category, section) pair not listed,
-		// which means missing entries are silently hidden whenever the
-		// search bar has any text in it.
+		// EVERY ImGui::CollapsingHeader inside a RenderSettings_* helper MUST have a matching k_SettingsIndex entry — SectionVisible() fails closed for unlisted (category, section) pairs.
 		ImVec4 GetLogLinkColor() {
 			const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
 			const float luminance = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z;
@@ -820,14 +728,7 @@ namespace Index {
 				: ImVec4(0.45f, 0.68f, 1.00f, 1.0f);
 		}
 
-		// Renders a log message line-by-line, styling the byte span
-		// [linkStart, linkEnd) of `fullText` as an inline clickable link.
-		// We split on '\n' and emit each line as one or more TextUnformatted
-		// calls joined by SameLine(0,0); ImGui's SameLine math only behaves
-		// correctly for single-line text, so wrapping is sacrificed for the
-		// inline-link cases (the parent BeginChild already has a horizontal
-		// scrollbar). Messages with no link still go through TextWrapped at
-		// the call site, preserving wrap for the common case.
+		// SameLine(0,0) joining is required for inline links — ImGui wrapping breaks with multi-segment lines, so link lines sacrifice wrap (parent BeginChild has HScrollbar).
 		void RenderLogMessageWithInlineLink(
 			std::string_view fullText,
 			size_t linkStart,
@@ -962,11 +863,6 @@ namespace Index {
 			if (filterLower.empty()) return true;
 			if (SettingsContains(categoryNameLower, filterLower)) return true;
 
-			// Section name is authored in title case in the index (it
-			// has to match the literal CollapsingHeader label exactly),
-			// so lowercase it on the fly. Two settings entries with the
-			// same section incur a redundant transform, but with 17
-			// total entries the cost is negligible.
 			std::string sectionLower(entry.Section ? entry.Section : "");
 			std::transform(sectionLower.begin(), sectionLower.end(), sectionLower.begin(),
 				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -1005,10 +901,7 @@ namespace Index {
 				if (std::strcmp(entry.Section, section) != 0) continue;
 				return SettingsEntryMatches(filterLower, entry, categoryNameLower);
 			}
-			// Section not in the index — fail closed so a missing entry
-			// is loudly visible (the section disappears the moment the
-			// user types anything) rather than silently bypassing the
-			// filter.
+			// Section not in k_SettingsIndex: fail closed so unlisted sections disappear under any filter (loudly visible).
 			return false;
 		}
 	}
@@ -1194,11 +1087,7 @@ namespace Index {
 			return;
 		}
 
-		// Persist the current scene + project on the UI thread before
-		// the worker starts. SceneSerializer / project Save touch
-		// state owned by the UI side (active scene, LastOpenedScene)
-		// and aren't thread-safe to call from the worker. Doing it
-		// here mirrors the original synchronous flow.
+		// Save here on the UI thread — SceneSerializer/project::Save aren't thread-safe to call from the build worker.
 		Scene* active = SceneManager::Get().GetActiveScene();
 		if (active && active->IsDirty()) {
 			std::string scenePath = project->GetSceneFilePath(active->GetName());
@@ -1208,9 +1097,6 @@ namespace Index {
 			IDX_INFO_TAG("Build", "Saved current scene.");
 		}
 
-		// Kick off the actual build on a worker thread. The future
-		// becomes "ready" when ExecuteBuild returns; the UI polls
-		// it once per frame in the editor's chrome update.
 		m_BuildFuture = std::async(std::launch::async, [this]() {
 			ExecuteBuild();
 		});
@@ -1266,12 +1152,6 @@ namespace Index {
 			ReportBuildProgress(0.30f, "C# scripts compiled");
 		}
 
-		// Rebuild native scripts with the project's chosen build profile so
-		// the shipped DLL has INDEX_BUILD_RELEASE / INDEX_BUILD_DEVELOPMENT
-		// matching the C# side. Editor hot-reload always builds DEVELOPMENT;
-		// here we override via -DINDEX_BUILD_PROFILE so a Release build
-		// actually strips dev-only #ifdef'd code from native scripts.
-		// Skipped when the project has no CMakeLists (no native scripts).
 		const std::filesystem::path nativeProjectDir(project->NativeScriptsDir);
 		const std::filesystem::path nativeCMakeLists = nativeProjectDir / "CMakeLists.txt";
 		if (std::filesystem::exists(nativeCMakeLists)) {
@@ -1319,6 +1199,55 @@ namespace Index {
 			ReportBuildProgress(1.0f, "Output directory creation failed");
 			return;
 		}
+		// Release ships an editor-free engine. The editor's own dev build of
+		// Index-Engine.dll is compiled with INDEX_WITH_EDITOR=1 (it has to host
+		// the editor); copying it verbatim would ship editor-only systems (the
+		// PrefabTemplateCache .prefab watcher, ProjectManager hooks, ...). So for
+		// Release we rebuild Index-Runtime in the Dist configuration — which sets
+		// INDEX_WITH_EDITOR=0 via ApplyIndexEditorModuleDefine() in premake5.lua —
+		// and stage the runtime exe + engine DLL from that output instead.
+		// Development keeps copying the adjacent dev build for fast iteration.
+		std::filesystem::path runtimeOutputDirectory = exeDir / ".." / "Index-Runtime";
+		if (project->ActiveBuildProfile == IndexProject::BuildProfile::Release) {
+			const std::filesystem::path engineRoot =
+				exeDir.parent_path().parent_path().parent_path();
+			const std::filesystem::path runtimeProject =
+				engineRoot / "Index-Runtime" / "Index-Runtime.vcxproj";
+			const std::string msbuildPath = IndexProject::GetMSBuildPath();
+			if (msbuildPath.empty() || !std::filesystem::exists(runtimeProject)) {
+				IDX_ERROR_TAG("Build",
+					"Release profile needs a Dist (editor-free) runtime build, but the toolchain "
+					"is unavailable (msbuild='{}', project='{}'). Aborting rather than shipping an "
+					"editor-enabled engine.",
+					msbuildPath, runtimeProject.string());
+				m_BuildSucceeded.store(false, std::memory_order_relaxed);
+				ReportBuildProgress(1.0f, "Dist toolchain unavailable");
+				return;
+			}
+			ReportBuildProgress(0.45f, "Building editor-free runtime (Dist)");
+			IDX_INFO_TAG("Build", "Building Index-Runtime (Dist) so the shipped engine carries no editor systems...");
+			const Process::Result distBuild = Process::Run({
+				msbuildPath, runtimeProject.string(),
+				"/p:Configuration=Dist", "/p:Platform=x64",
+				"/m", "/v:minimal", "/nologo"
+			}, engineRoot.string());
+			if (!distBuild.Succeeded()) {
+				IDX_ERROR_TAG("Build", "Dist runtime build failed (exit code {}).", distBuild.ExitCode);
+				if (!distBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", distBuild.Output);
+				m_BuildSucceeded.store(false, std::memory_order_relaxed);
+				ReportBuildProgress(1.0f, "Dist runtime build failed");
+				return;
+			}
+			// Re-point staging at bin/Dist-<system>-<arch>/Index-Runtime, preserving
+			// whatever system/arch suffix the editor's own bin dir uses.
+			const std::string curCfgDir = exeDir.parent_path().filename().string();
+			const std::string::size_type dash = curCfgDir.find('-');
+			const std::string distCfgDir = "Dist" +
+				(dash != std::string::npos ? curCfgDir.substr(dash) : std::string("-windows-x86_64"));
+			runtimeOutputDirectory = engineRoot / "bin" / distCfgDir / "Index-Runtime";
+			IDX_INFO_TAG("Build", "Editor-free runtime ready; staging from {}", runtimeOutputDirectory.string());
+		}
+
 		ReportBuildProgress(0.55f, "Copying runtime binaries");
 
 		auto copyFile = [&](const std::filesystem::path& src, const std::filesystem::path& dest, const std::string& name) {
@@ -1339,7 +1268,6 @@ namespace Index {
 			}
 		};
 
-		const std::filesystem::path runtimeOutputDirectory = exeDir / ".." / "Index-Runtime";
 		const std::string runtimeExecutableFilename = GetRuntimeExecutableFilename();
 		const std::string outputExecutableStem = project->ExecutableName.empty()
 			? project->Name : project->ExecutableName;
@@ -1350,10 +1278,6 @@ namespace Index {
 			outDir / GetEngineRuntimeFilename(),
 			GetEngineRuntimeFilename());
 
-		// GLFW and Glad are SharedLibs (premake5.lua: one shared copy across
-		// engine.dll + runtime.exe). Tracy is also shared, but only when the
-		// engine was built without --no-profiler. The runtime postbuild stages
-		// all of them next to Index-Runtime.exe, so we copy from there.
 		for (std::string_view depName : { std::string_view{"GLFW"}, std::string_view{"Glad"} }) {
 			const std::string filename = SharedLibraryFilename(depName);
 			copyFile(runtimeOutputDirectory / filename, outDir / filename, filename);
@@ -1405,10 +1329,6 @@ namespace Index {
 			}
 
 			if (!indexAssetsSrc.empty() && std::filesystem::exists(indexAssetsSrc)) {
-				// Editor-only assets (icons, gizmo art, file-type previews)
-				// have no business in a shipped runtime — skip them. The
-				// excluded path is relative to IndexAssets/, so the
-				// recursive copy walks past Textures/Editor entirely.
 				const std::vector<std::filesystem::path> excluded{
 					std::filesystem::path("Textures") / "Editor",
 				};
@@ -1448,29 +1368,8 @@ namespace Index {
 			}
 		}
 
-		// Native package DLLs.
-		//
-		// `PackageHost::LoadAll` (engine side) scans `<exeDir>/Packages/` for
-		// folders matching `Pkg.<Name>.Native/Pkg.<Name>.Native.dll` and
-		// LoadLibrary-loads each one — that's how packages with a native
-		// layer (engine_core / standalone_cpp / pinvoke_dll) register their
-		// components, systems, and P/Invoke surface in the runtime.
-		//
-		// The user's csproj reference already pulls the C# `Pkg.<Name>.dll`
-		// into the build via MSBuild's standard copy. The native sibling has
-		// no such automatic copy, so without this block a project that uses
-		// e.g. `Index.Tilemap2D` shipped with `Pkg.Index.Tilemap2D.dll`
-		// alone — DllImport resolves into a process where no native module
-		// exists, components never register, `GetComponent<Tilemap2D>()`
-		// returns null, and the user's first `tilemap.SetTile(...)` NREs.
-		//
-		// Source layout (dev): the editor exe lives at
-		//   <indexBin>/<config>/Index-Editor/Index-Editor.exe
-		// and each native package is a sibling folder:
-		//   <indexBin>/<config>/Pkg.<Name>.Native/Pkg.<Name>.Native.dll
-		// We mirror that into the build's distribution layout under
-		// `<buildOutput>/Packages/`, which matches the second probe
-		// PackageHost::LoadInternal walks (`exeDir / "Packages"`).
+		// Native package DLLs: MSBuild copies the C# Pkg.*.dll but not the native sibling; without this
+		// block DllImport resolves into a process with no native module and components never register.
 		{
 			const std::filesystem::path packageSearchRoot = exeDir / "..";
 			int copiedPackages = 0;
@@ -1507,16 +1406,6 @@ namespace Index {
 		}
 
 #ifdef IDX_PLATFORM_WINDOWS
-		// Embed a custom icon resource into the copied runtime executable.
-		// Without this, the shipped .exe always shows the default Index
-		// runtime icon (compiled into Index-Runtime via icon.rc) regardless
-		// of what AppIconPath points to — the project setting only ever
-		// affected the in-app window icon. We update RT_GROUP_ICON / RT_ICON
-		// directly via the Win32 resource APIs so the Explorer / taskbar /
-		// Alt+Tab icon all match what the user picked. PNG / JPEG / BMP /
-		// any format Texture2D can decode is converted to a 32-bit BMP-DIB
-		// .ico in-memory before embedding, so the user's .png AppIconPath
-		// works without re-exporting to .ico.
 		if (!project->AppIconPath.empty()) {
 			std::filesystem::path iconPath(project->AppIconPath);
 			if (!iconPath.is_absolute()) {
@@ -1569,10 +1458,7 @@ namespace Index {
 		ReportBuildProgress(1.0f, "Build complete");
 
 #ifdef IDX_PLATFORM_WINDOWS
-		// ShellExecute opens an Explorer window — touches OS UI state
-		// that's safer to do from the editor's UI thread than the
-		// build worker. Skipped here; the explorer popup happens on
-		// the UI thread once the future resolves.
+		// Explorer popup runs on the UI thread once the future resolves, not on the build worker (ShellExecute touches OS UI state).
 #endif
 	}
 
@@ -1584,11 +1470,6 @@ namespace Index {
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (project) {
-			// Sync m_BuildSceneList with disk every frame so newly-imported
-			// scenes auto-appear and deleted ones drop out, while preserving
-			// any manual drag-drop reordering the user has done within the
-			// panel. AssetRegistry caches the scan, so this is cheap when
-			// nothing has changed since last sync.
 			AssetRegistry::Sync();
 			std::vector<std::string> diskScenes;
 			diskScenes.reserve(m_BuildSceneList.size() + 4);
@@ -1623,11 +1504,6 @@ namespace Index {
 				}
 			}
 
-			// Active build profile — drives target platform + render backend
-			// for the upcoming Build. Rescanned from disk every frame so
-			// edits in the Build Profiles panel propagate without a manual
-			// refresh button. Cheap: profiles are 3-field JSON files and a
-			// typical project has a handful.
 			if (ImGui::CollapsingHeader("Target Platform", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Indent(8);
 
@@ -1664,13 +1540,7 @@ namespace Index {
 					}
 				}
 
-				// First-open default: if the user hasn't explicitly chosen a
-				// profile, preselect the first Windows-platform profile on
-				// disk so Build targets the host platform without forcing a
-				// manual pick. Project creation seeds a "Windows" profile
-				// (IndexBuildProfile::WriteDefaultProfiles), so this normally
-				// resolves to that. If no Windows profile exists we leave the
-				// selection empty rather than silently target Linux.
+				// Default to first Windows profile; leave empty if none exists (don't silently target Linux).
 				if (project->ActiveBuildProfileName.empty()) {
 					for (const auto& p : diskProfiles) {
 						if (p.Platform == BuildPlatform::Windows) {
@@ -1784,10 +1654,7 @@ namespace Index {
 
 				if (ImGui::BeginDragDropTarget()) {
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
-						// 1-arg constructor — the asset-browser source sends a
-						// null-terminated path with `size() + 1` bytes; the
-						// (data, DataSize) form embeds the trailing `\0` and
-						// breaks the literal extension comparison below.
+						// Use 1-arg ctor: payload includes trailing '\0' in DataSize, so (data,DataSize) embeds it and breaks extension comparison.
 						std::string droppedPath(static_cast<const char*>(payload->Data));
 						if (std::filesystem::path(droppedPath).extension() == ".scene") {
 							std::string sceneName = std::filesystem::path(droppedPath).stem().string();
@@ -1813,13 +1680,6 @@ namespace Index {
 
 				ImGui::Spacing();
 
-				// Build Profile dropdown. Drives the INDEX_BUILD_DEVELOPMENT
-				// vs INDEX_BUILD_RELEASE compile-time defines passed to BOTH
-				// C# and native scripts at build time. Switching the profile
-				// also flips the runtime overlay defaults (stats + logs)
-				// since release ships shouldn't expose dev diagnostics by
-				// default — the user can re-enable explicitly via Player
-				// Settings after the auto-flip.
 				ImGui::TextUnformatted("Build Profile:");
 				ImGui::SetNextItemWidth(-1);
 				const char* profileItems[] = { "Development", "Release" };
@@ -1841,15 +1701,7 @@ namespace Index {
 
 				ImGui::Spacing();
 
-				// Custom defines list. Symbols here are baked into both the
-				// C# .csproj's <DefineConstants> and the native scripts'
-				// CMakeLists target_compile_definitions on next compile.
-				// Names only (no `=value`) — Unity-style scripting symbols.
 				ImGui::TextUnformatted("Custom Defines:");
-				// Reserve room for the "Add" button on the right so the
-				// input field doesn't push it off-panel — previously the
-				// input was width=-1 which left the button visually clipped
-				// to a few pixels and made the click target unusable.
 				const float addBtnWidth = ImGui::CalcTextSize("Add").x
 					+ ImGui::GetStyle().FramePadding.x * 2.0f;
 				const float availForInput = ImGui::GetContentRegionAvail().x
@@ -1906,11 +1758,6 @@ namespace Index {
 
 		ImGui::Spacing();
 
-		// Resolve the active profile (if any) — used both for the Build
-		// gating below AND to apply the selected RenderBackend to the
-		// project before the build kicks off. Re-loaded from disk on each
-		// frame so manual edits to .indexbuild files propagate without a
-		// restart.
 		IndexBuildProfile activeProfile;
 		bool activeProfileResolved = false;
 		if (project && !project->ActiveBuildProfileName.empty()) {
@@ -1932,10 +1779,6 @@ namespace Index {
 
 		float halfWidth = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
 		if (ImGui::Button("Build", ImVec2(halfWidth, 0))) {
-			// Bake the active profile's render backend into the project
-			// before the build runs — the existing build pipeline reads
-			// IndexProject::ActiveRenderBackend, so this routes the
-			// per-profile choice through without changing pipeline signatures.
 			if (activeProfileResolved && project) {
 				project->ActiveRenderBackend = activeProfile.RenderBackend;
 				project->Save();
@@ -1983,12 +1826,6 @@ namespace Index {
 		m_BuildProfilesPanel.Render(&m_ShowBuildProfilesPanel);
 	}
 
-	// Unified Project Settings window. Side-tab nav on the left lists the
-	// six topical categories (Display, Graphics, Branding, Build, Editor,
-	// Systems); the right pane renders the selected category. All settings
-	// here live in the per-project IndexProject struct and round-trip
-	// through index-project.json, regardless of whether they affect the
-	// editor's UX or the shipped game's runtime.
 	void ImGuiEditorLayer::RenderProjectSettingsPanel() {
 		if (!m_ShowProjectSettings) return;
 
@@ -2018,11 +1855,6 @@ namespace Index {
 			== static_cast<int>(SettingsCategory::Systems) + 1,
 			"k_CategoryLabels out of sync with SettingsCategory enum");
 
-		// Full-width search bar above the sidebar+content split.
-		// Filters both the sidebar (categories with zero matches drop
-		// off the list) and each category's content (CollapsingHeaders
-		// whose section/keywords don't match are hidden). Empty buffer
-		// means "no filter" — everything renders as before.
 		ImGui::SetNextItemWidth(-1);
 		ImGui::InputTextWithHint("##SettingsSearch", "Search settings...",
 			m_ProjectSettingsSearchBuffer, sizeof(m_ProjectSettingsSearchBuffer));
@@ -2032,12 +1864,6 @@ namespace Index {
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		const bool filterActive = !filterLower.empty();
 
-		// Auto-switch when the current category has no matches but
-		// another does. Walks the enum in declaration order so the
-		// user lands on the first category that has a hit (Display →
-		// Graphics → Branding → ... → Systems). If nothing matches
-		// at all, leaves the selection alone — the content pane's
-		// empty-state line below covers that case.
 		if (filterActive && !CategoryHasMatches(m_SelectedSettingsCategory, filterLower)) {
 			for (int i = 0; i < IM_ARRAYSIZE(k_CategoryLabels); ++i) {
 				auto cat = static_cast<SettingsCategory>(i);
@@ -2053,10 +1879,6 @@ namespace Index {
 		const float listColumnWidth = ImGui::GetContentRegionAvail().x * 0.22f;
 		const float listW = std::max(160.0f, listColumnWidth);
 
-		// Gate each sidebar Selectable on CategoryHasMatches so
-		// categories with zero matches drop off the list when a filter
-		// is active. anyVisible doubles as the trigger for the empty-
-		// state messages below.
 		bool anyVisible = false;
 		ImGui::BeginChild("##SettingsNav", ImVec2(listW, 0), /*border*/ true);
 		for (int i = 0; i < IM_ARRAYSIZE(k_CategoryLabels); ++i) {
@@ -2096,9 +1918,6 @@ namespace Index {
 		}
 		ImGui::EndChild();
 
-		// Single save site — every helper bitwise-ORs into `changed`, and
-		// the Global Systems handshake re-runs the script engine's project-
-		// scope system list whenever the Systems helper flipped its bool.
 		if (changed) {
 			project->Save();
 			if (globalSystemsChanged) {
@@ -2113,18 +1932,11 @@ namespace Index {
 			}
 		}
 
-		// Render any reference picker popup opened from this panel (App
-		// Icon, Splash images, Cursors, Default Font). Single call site —
-		// the old two-panel layout duplicated this.
 		ReferencePicker::RenderPopup();
 
 		ImGui::End();
 	}
 
-	// Display — build resolution + UI scaling reference dimensions.
-	// Window dims drive the runtime's window creation; UI scaling
-	// configures UILayoutSystem's reference-to-current ratio so UI authored
-	// at one resolution renders proportionally at any window size.
 	void ImGuiEditorLayer::RenderSettings_Display(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
@@ -2133,10 +1945,6 @@ namespace Index {
 			if (ImGui::CollapsingHeader("Window", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Indent(8);
 
-				// ── Startup ────────────────────────────────────────────
-				// Applied once when the runtime opens its OS window. The
-				// user can't change these mid-game without a restart, so
-				// they live above the runtime-mutable section below.
 				ImGui::TextDisabled("Startup");
 				ImGui::Separator();
 
@@ -2147,12 +1955,6 @@ namespace Index {
 
 				changed |= ImGui::Checkbox("Fullscreen", &project.BuildFullscreen);
 
-				// Fullscreen Mode combo — disabled when Fullscreen is off
-				// (the value is ignored by Window::Create then, so editing
-				// it would be misleading). Labels mirror the
-				// FullscreenMode enum: Exclusive (true fullscreen),
-				// Borderless Windowed (monitor-sized undecorated window),
-				// Maximized (decorated, maximised).
 				struct FullscreenModeOption {
 					const char* Label;
 					FullscreenMode Mode;
@@ -2196,10 +1998,6 @@ namespace Index {
 						"ignored in windowed launches.");
 				}
 
-				// ── Runtime ───────────────────────────────────────────
-				// Behaviour the runtime keeps honouring after startup. The
-				// user can toggle these via Window APIs at runtime too; the
-				// values here are just the launch defaults.
 				ImGui::Spacing();
 				ImGui::TextDisabled("Runtime");
 				ImGui::Separator();
@@ -2250,13 +2048,6 @@ namespace Index {
 			}
 		}
 
-		// UI scaling — Canvas-Scaler-style. Reference resolution defines
-		// the "pixel unit" the UI was authored in; the layout system
-		// multiplies SizeDelta / AnchoredPosition / padding by
-		// (curResolution / refResolution) so the same scene renders
-		// proportionally on any window size. Defaults are pre-seeded to
-		// match the build resolution so a freshly-created project's
-		// Game View previews 1:1 unless the user opts in.
 		if (SectionVisible(SettingsCategory::Display, "UI Scaling", filterLower)) {
 			if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
 			if (ImGui::CollapsingHeader("UI Scaling", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2280,10 +2071,6 @@ namespace Index {
 		}
 	}
 
-	// Graphics — render backend + post-processing kill switch + default
-	// font. The render backend lives here (rather than under Editor) even
-	// though changing it affects the editor too, because the same value
-	// is what ships in the built game.
 	void ImGuiEditorLayer::RenderSettings_Graphics(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
@@ -2394,29 +2181,12 @@ namespace Index {
 		}
 		}  // end SectionVisible("Default Font")
 
-		// Render-backend restart modal. Stays in the Graphics helper so the
-		// function-static popup state remains scoped here. The popup-drawing
-		// block runs unconditionally — safe even if the Render Backend
-		// section is hidden by the search filter; the popup only ever
-		// opens via the combo INSIDE that section, so the only way to see
-		// the modal while the section is hidden is to type the filter AFTER
-		// opening the modal.
-		// NoSavedSettings + CenterNextModal keeps the popup centered every
-		// time it appears — without NoSavedSettings, a stale Pos= entry in
-		// imgui.ini would override the Appearing-condition center and pin
-		// the dialog to whatever spot it was last seen at.
+		// NoSavedSettings prevents a stale imgui.ini Pos= from pinning the dialog off-center.
 		if (s_RenderBackendChangePopup) {
 			ImGui::OpenPopup("Restart Editor");
 			s_RenderBackendChangePopup = false;
 		}
-		// Re-apply the centering every frame (ImGuiCond_Always) rather
-		// than only on appear. With ImGui multi-viewport + NoAutoMerge
-		// (SetNextWindowAsNativeDialog below), the Appearing-cond Pos
-		// hint doesn't reliably translate to the OS window's initial
-		// placement — the dialog ends up pinned to the editor's top
-		// instead of its centre. Re-pivoting every frame uses the
-		// AlwaysAutoResize-measured size so frame 2 onward lands the
-		// dialog's centre exactly at the editor viewport's centre.
+		// ImGuiCond_Always needed: multi-viewport + NoAutoMerge makes the Appearing-cond Pos hint unreliable, pinning the dialog off-center on first show.
 		const ImVec2 viewportCenter = ImGui::GetMainViewport()->GetCenter();
 		ImGui::SetNextWindowPos(viewportCenter, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
@@ -2447,10 +2217,6 @@ namespace Index {
 		}
 	}
 
-	// Branding — splash screen, app icon, and cursors. The shipped game's
-	// visual identity. App icon embeds into the runtime .exe at build time;
-	// cursors apply live to the editor window so changes are visible
-	// immediately rather than after a relaunch.
 	void ImGuiEditorLayer::RenderSettings_Branding(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
@@ -2622,12 +2388,6 @@ namespace Index {
 					changed = true;
 				}
 
-				// Show preview — replays the splash sequence (fade-in,
-				// hold, fade-out) over the editor's main viewport so the
-				// user can sanity-check colours / images / text without
-				// running a full build. The actual layer push lives on
-				// ImGuiEditorLayer (we only set the request flag here);
-				// see RequestSplashPreview in the header.
 				ImGui::Spacing();
 				if (ImGui::Button("Show Preview")) {
 					m_SplashPreviewRequest = true;
@@ -2650,15 +2410,7 @@ namespace Index {
 
 			constexpr const char* k_AppIconPickerKey = "ProjectSettings.AppIcon";
 
-			// Apply a pending picker selection from a previous frame.
-			//
-			// AppIconPath is the SHIPPED game's window icon (and what the
-			// build pipeline embeds into the runtime .exe). It must not be
-			// applied to the editor's own window — the editor keeps its own
-			// embedded RT_ICON regardless of which project is open. The 64x64
-			// thumbnail rendered below is the in-panel preview; we don't
-			// need to push the texture into glfwSetWindowIcon to show what
-			// the user picked.
+			// AppIconPath is the shipped game's icon only; do NOT push to glfwSetWindowIcon — the editor keeps its own embedded RT_ICON.
 			if (auto pending = ReferencePicker::ConsumeSelection(k_AppIconPickerKey); pending) {
 				const std::string raw = *pending;
 				uint64_t pickedId = 0;
@@ -2715,10 +2467,6 @@ namespace Index {
 				}
 			}
 			else {
-				// Render the engine default icon as the placeholder thumbnail
-				// so the user sees what'll ship by default. Falls through to
-				// the disabled "No icon set" text only if IndexAssets isn't
-				// installed (development environment without `Setup.bat`).
 				const std::string defaultIconPath = SplashAssetResolve::DefaultLogoPath();
 				if (!defaultIconPath.empty()) {
 					TextureHandle defIconHandle = TextureManager::LoadTexture(defaultIconPath);
@@ -2743,11 +2491,6 @@ namespace Index {
 						ReferencePicker::CollectAssetsByKind(AssetKind::Texture),
 						ReferencePicker::Style::Thumbnails);
 				}
-				// Drop target lives on the Browse button itself — keeps
-				// the affordance consistent with every other Browse... in
-				// this panel (Splash Image, Cursors). Note: NOT calling
-				// SetWindowIcon — the AppIconPath is the SHIPPED game's
-				// icon, not the editor's window icon.
 				if (BrowseAcceptImageDrop(k_ImageExts, [&](const std::string& dropped) {
 					project.AppIconPath =
 						SplashAssetResolve::NormalizeForStorage(dropped, &project);
@@ -2795,11 +2538,6 @@ namespace Index {
 				}
 			};
 
-			// Renders the picker / drag-drop / clear UI for one cursor
-			// slot. `slotName` is the persisted project field; the lambda
-			// rewrites it on selection. The "live apply" callback pushes
-			// the new cursor into the Window so the user sees the swap
-			// without re-launching.
 			auto renderCursorSlot = [&](const char* label,
 				const char* pickerKey, std::string& slotPath,
 				void (Window::*liveSetter)(const Texture2D*))
@@ -2878,10 +2616,6 @@ namespace Index {
 		}  // end SectionVisible("Cursors")
 	}
 
-	// Build — Executable Name + Runtime Diagnostics + ECS Entity Bits.
-	// EntityBits lives here (rather than its own engine-internals category)
-	// because it's a compile-time / build-time setting: changing it requires
-	// rebuilding the engine, which the "Rebuild Engine" button automates.
 	void ImGuiEditorLayer::RenderSettings_Build(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
@@ -2915,13 +2649,6 @@ namespace Index {
 		}
 		}  // end SectionVisible("Diagnostics")
 
-		// EnTT entity ID bit-split. Compile-time only — premake reads
-		// the saved value from index-project.json and bakes
-		// -DINDEX_ENTITY_BITS=N into every C++ TU that touches an entt
-		// header, so a change here requires regenerating project files
-		// and rebuilding the engine before it takes effect. The cap
-		// trades against EnTT's per-slot version count, which is what
-		// detects stale handles to recycled entity IDs.
 		if (SectionVisible(SettingsCategory::Build, "ECS Entity Bits", filterLower)) {
 		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
 		if (ImGui::CollapsingHeader("ECS Entity Bits", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -2961,12 +2688,6 @@ namespace Index {
 					"to do that automatically.");
 			}
 
-			// Drift indicator + Rebuild Engine button.
-			// `GetCompiledEntityBits()` returns the bit width baked into the
-			// engine DLL the editor is currently running against. When the
-			// user moves the dropdown, project.EntityBits changes immediately
-			// but the engine DLL doesn't — that's the drift state, and the
-			// only path to resolving it is rebuilding the engine.
 			const int compiledBits = Index::GetCompiledEntityBits();
 			ImGui::Spacing();
 			if (compiledBits != project.EntityBits) {
@@ -2990,30 +2711,8 @@ namespace Index {
 				ImGui::TextDisabled("Engine matches the selected width. Choose a different size to enable rebuild.");
 			}
 
-			// Confirmation modal. The rebuild itself runs in a transient
-			// cmd.exe spawned with a generated batch script — neither the
-			// editor nor the launcher can do the build in-process because
-			// both link Index-Engine.dll and MSBuild would fail with LNK1104
-			// on the locked binary. cmd.exe doesn't load the engine, so it
-			// can freely overwrite the .dll / .exe / .lib outputs. The
-			// console window doubles as the progress UI: stage labels echo,
-			// MSBuild output streams live, and `pause` on failure lets the
-			// user read the error before the window closes.
-			//
-			// Fast path: the only build artefact that depends on
-			// `entityBits` is the generated header at
-			// Index-Engine/src/Generated/IndexEntityBitsConfig.h
-			// (#undef/#define INDEX_ENTITY_BITS). We write it directly
-			// from the editor before spawning the build, so the script
-			// no longer needs to invoke premake — MSBuild's incremental
-			// tracker sees the header's mtime change and recompiles
-			// only the TUs that include it (everything that transitively
-			// includes <entt/entt.hpp> via pch.hpp, in lockstep across
-			// Index-Engine, Index-Editor, Index-Runtime, Index-Launcher,
-			// and any native packages with the Generated dir on their
-			// include path). Premake's matching writer is
-			// WriteIndexEntityBitsConfigHeader in the root premake5.lua;
-			// the two paths converge on the same header content.
+			// Build runs in a detached cmd.exe (not in-process) because the editor/launcher both hold Index-Engine.dll locked — MSBuild would fail with LNK1104.
+			// Editor writes IndexEntityBitsConfig.h directly so MSBuild incremental only recompiles TUs that include entt (no premake regen needed).
 			ImGuiUtils::CenterNextModal();
 			ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 			if (ImGui::BeginPopupModal("Rebuild Engine?", nullptr,
@@ -3028,9 +2727,6 @@ namespace Index {
 				if (ImGui::Button("Rebuild", ImVec2(120.0f, 0.0f))) {
 					project.Save();
 
-					// Index-Editor.exe lives at:
-					//   <repoRoot>/bin/<config>-windows-x86_64/Index-Editor/Index-Editor.exe
-					// Engine root is therefore three parents up from the exe dir.
 					const std::filesystem::path editorExeDir = Path::ExecutableDir();
 					const std::filesystem::path engineRoot =
 						editorExeDir.parent_path().parent_path().parent_path();
@@ -3040,33 +2736,14 @@ namespace Index {
 					const std::string config = IndexProject::GetActiveBuildConfiguration();
 					const std::string projectRootDir = project.RootDirectory;
 					const std::string userCsprojPath = project.CsprojPath;
-					// User-defined C# components no longer go through a build-
-					// time codegen pipeline — they're reflected and registered
-					// at runtime by DynamicComponentRegistrar when the user
-					// assembly loads. Rebuild Engine is now only required for
-					// engine-config edits (entityBits, etc.), not for component
-					// changes.
 					const int newEntityBits = project.EntityBits;
 
-					// Editor PID for the spawned script's wait loop. The
-					// old flow used a hardcoded `timeout /t 3` and just
-					// hoped the editor had exited; polling tasklist is
-					// deterministic and starts MSBuild as soon as the
-					// process is actually gone.
 				#ifdef IDX_PLATFORM_WINDOWS
 					const unsigned long editorPid = ::GetCurrentProcessId();
 				#else
 					const unsigned long editorPid = 0; // Windows-only flow today; placeholder for clarity.
 				#endif
 
-					// Write the generated header that the EnTT patch
-					// reads to override INDEX_ENTITY_BITS. Doing this
-					// from C++ (rather than letting premake do it via a
-					// regen) is what unlocks the fast rebuild path:
-					// MSBuild incremental sees only this file change
-					// and rebuilds the dependent TUs. Premake's writer
-					// (WriteIndexEntityBitsConfigHeader) emits the same
-					// content for the regen path.
 					const std::filesystem::path generatedDir = engineRoot
 						/ "Index-Engine" / "src" / "Generated";
 					const std::filesystem::path headerPath = generatedDir
@@ -3096,20 +2773,6 @@ namespace Index {
 						}
 					}
 
-					// Emit the rebuild script. The PID-wait loop replaces
-					// the hardcoded 3-second timeout from the old flow
-					// — it polls tasklist until the editor process is
-					// actually gone (with a 30-second safety cap), so
-					// the build starts the moment MSBuild can write to
-					// the engine DLL. Premake is no longer invoked here
-					// (the header write above did the only thing premake
-					// was doing for this code path). `MSBuild Index.sln`
-					// is kept (not narrowed to the four main C++
-					// projects) because user-authored packages also
-					// include entt and need to recompile in lockstep —
-					// MSBuild's incremental tracker handles the
-					// "C# project doesn't see the header → skip" case
-					// naturally.
 					if (headerWritten) {
 						std::ostringstream bat;
 						bat <<
@@ -3181,11 +2844,7 @@ namespace Index {
 							{ "cmd.exe", "/c", batPath.string() }, engineRoot);
 						ImGui::CloseCurrentPopup();
 						if (spawned) {
-							// Clean shutdown — releases the engine DLL
-							// file lock so MSBuild can overwrite the
-							// rebuilt binary. The PID-wait loop in the
-							// spawned script polls for our exit before
-							// running MSBuild.
+							// MUST Quit() cleanly to release the engine DLL file lock before MSBuild overwrites it.
 							Application::GetInstance()->Quit();
 						}
 						else {
@@ -3195,10 +2854,6 @@ namespace Index {
 						}
 					}
 					else {
-						// Header write failed (already logged above);
-						// don't spawn the build because it would compile
-						// against the stale value. Leave the modal open
-						// so the user can retry / cancel.
 					}
 				}
 				ImGui::SameLine();
@@ -3213,17 +2868,9 @@ namespace Index {
 		}  // end SectionVisible("ECS Entity Bits")
 	}
 
-	// Editor — editor-only workflow toggles. Asset Browser duplicate
-	// suffix, entity-name suffix, asset serialization format, and the
-	// script auto-recompile pair. None of these affect the shipped game's
-	// runtime — they shape how the editor edits this project.
 	void ImGuiEditorLayer::RenderSettings_Editor(IndexProject& project, bool& changed,
 		const std::string& filterLower)
 	{
-		// "Show file extensions" and the Auto-Save section moved to
-		// Edit -> Preferences (user-scoped now). Asset duplicate-suffix
-		// stays here — it's about the asset files we author into this
-		// project, not editor chrome.
 		if (SectionVisible(SettingsCategory::Editor, "Asset Browser", filterLower)) {
 		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
 		if (ImGui::CollapsingHeader("Asset Browser", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -3349,12 +2996,6 @@ namespace Index {
 		}  // end SectionVisible("Scripting")
 	}
 
-	// Systems — managed (C#) GameSystems registered at the project scope
-	// (run for every loaded scene). The toggle list drives
-	// ScriptEngine::InitializeGlobalSystems on edit so the editor's next
-	// play-mode session uses the new set without a restart. The caller is
-	// responsible for the shutdown/reinit handshake when outGlobalSystemsChanged
-	// flips to true.
 	void ImGuiEditorLayer::RenderSettings_Systems(IndexProject& project, bool& changed,
 		bool& outGlobalSystemsChanged, const std::string& filterLower)
 	{
@@ -3423,12 +3064,6 @@ namespace Index {
 		}  // end SectionVisible("Global Systems")
 	}
 
-	// Splash preview — replays the runtime's splash timeline as a
-	// foreground overlay over the editor. Triggered by the
-	// "Show Preview" button in Player Settings → Splash Screen.
-	// Self-completes after FadeIn + Duration + FadeOut seconds.
-	// Path resolution mirrors RuntimeSplashLayer's logic so the user
-	// sees exactly what the build will ship.
 	void ImGuiEditorLayer::TickSplashPreview() {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
@@ -3442,13 +3077,6 @@ namespace Index {
 			m_SplashPreviewActive = true;
 			m_SplashPreviewElapsed = 0.0f;
 
-			// Logo — same resolution rules as the runtime splash so
-			// "Show Preview" matches what the build will ship: stored
-			// path (which may be an "index:Textures/…" reference to an
-			// engine-shipped asset, a project-relative "Assets/foo.png",
-			// or an absolute path) → SplashAssetResolve::Resolve, then
-			// fall back to the engine-shipped default logo when the
-			// project hasn't set one.
 			std::string logoPath = SplashAssetResolve::Resolve(
 				project->SplashScreen.ImagePath, project);
 			if (logoPath.empty()) {
@@ -3507,11 +3135,7 @@ namespace Index {
 		}
 		alpha = std::clamp(alpha, 0.0f, 1.0f);
 
-		// Draw onto the OS-window foreground draw list so the preview
-		// floats above every dock / panel including the toolbar. Using
-		// the foreground list also dodges the InvisibleButton/scissor
-		// nesting issues the dockspace adds — the preview can't be
-		// docked or focused.
+		// Use foreground draw list to float above all docks; avoids dockspace InvisibleButton/scissor issues.
 		ImGuiViewport* vp = ImGui::GetMainViewport();
 		ImDrawList* draw = ImGui::GetForegroundDrawList(vp);
 		const ImVec2 wMin = vp->WorkPos;
@@ -3677,13 +3301,6 @@ namespace Index {
 				ImGuiUtils::DrawTexturePreview(*tex, 128.0f);
 				ImGui::Text("%.0f x %.0f", tex->GetWidth(), tex->GetHeight());
 
-				// Persistent import settings live in the asset's companion
-				// `.meta`. First open: meta has no import block — seed the
-				// dropdowns from the live Texture2D's sampler so the UI
-				// reflects what's currently loaded rather than always
-				// showing the struct defaults. Edits write back to .meta
-				// AND immediately re-sampler every loaded slot of this
-				// path so the change is visible in the viewport this frame.
 				ImGui::Spacing();
 				ImGui::Separator();
 				ImGui::Spacing();
@@ -3808,10 +3425,6 @@ namespace Index {
 			m_PackageManagerInitialized = true;
 		}
 
-		// Pre-seed a sensible first-open size and minimum constraints so a
-		// freshly-docked panel isn't squashed to its title bar — without
-		// this, ImGui's dock layout could collapse the panel's content
-		// area to 0 px and the user only sees the tab strip.
 		ImGui::SetNextWindowSize(ImVec2(880, 540), ImGuiCond_FirstUseEver);
 		ImGui::SetNextWindowSizeConstraints(ImVec2(420, 320), ImVec2(FLT_MAX, FLT_MAX));
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();

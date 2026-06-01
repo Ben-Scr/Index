@@ -6,21 +6,7 @@
 
 #include <cstdint>
 
-// =============================================================================
-// Framebuffer — RAII wrapper for an offscreen render target.
-// -----------------------------------------------------------------------------
-// Used by the editor's per-panel viewports (Editor View + Game View) to
-// render into a texture that ImGui then samples for its docked panels.
-// Created with (width, height, format), can be resized in place via
-// Recreate, and cleans up its backend handles on destruction. Under
-// WebGPU a colour wgpu::Texture + depth/stencil wgpu::Texture are
-// created with matching attachments.
-//
-// `GetColorTextureBackendId()` exposes the raw backend handle for the
-// colour attachment so ImGui::Image can sample it. This is the one place
-// backend integers leak through the abstraction — required by ImGui's
-// API contract.
-// =============================================================================
+// Framebuffer: RAII offscreen render target used by editor panel viewports. GetColorTextureBackendId() returns the raw WGPUTextureView pointer as uint64_t for ImGui::Image.
 
 namespace Index {
 
@@ -40,29 +26,13 @@ namespace Index {
 
 		~Framebuffer();
 
-		// Tear down + recreate at a new size. No-op when the size matches
-		// the existing attachments (the editor calls this every frame
-		// against the panel's content region, so the cheap-path matters).
-		// Returns true on success.
 		bool Recreate(int width, int height,
 			TextureFormat colorFormat = TextureFormat::RGBA8,
 			TextureFilter filter = TextureFilter::Linear);
 
-		// Release backend handles. Idempotent — safe to call on an
-		// already-empty framebuffer. Under WebGPU the actual Dawn resources
-		// are NOT freed immediately — they're moved to a two-frame deferred-
-		// destroy queue so that any ImGui frame still referencing the
-		// color view's raw WGPUTextureView pointer (handed out via
-		// GetColorTextureBackendId) finishes rendering before the view is
-		// released. The queue is drained by ProcessFrameEndDeferredDestroy
-		// once per frame from WebGPUApi::Present.
+		// Dawn resources are NOT freed immediately — moved to a two-frame deferred-destroy queue so ImGui frames still holding the WGPUTextureView pointer finish before the handle releases.
 		void Destroy();
 
-		// Drains the two-frame deferred-destroy queue. Called once per
-		// frame from WebGPUApi::Present after the surface has presented and
-		// ImGui has fully submitted, so any color-view pointer ImGui held
-		// is no longer in flight by the time the underlying Dawn resources
-		// release. Safe to call when the queue is empty.
 		static void ProcessFrameEndDeferredDestroy();
 
 		bool IsValid() const { return m_BackendId != 0; }
@@ -72,13 +42,7 @@ namespace Index {
 		// integer otherwise.
 		uint32_t GetBackendId() const { return m_BackendId; }
 
-		// Backend identifier for the colour attachment. The editor passes
-		// this into `ImGui::Image` so the panel samples this FBO's texture.
-		// Returns a 64-bit value because under the WebGPU backend it's the
-		// raw WGPUTextureView pointer (must fit 8 bytes on x64), while
-		// under earlier backends it stored a small integer handle. ImGui's
-		// ImTextureID is `ImU64` in current Dear ImGui, so a uint64_t fits
-		// the consumer's cast chain naturally.
+		// Returns raw WGPUTextureView pointer as uint64_t — imgui_impl_wgpu casts ImTextureID back to WGPUTextureView and dereferences it directly.
 		uint64_t GetColorTextureBackendId() const { return m_ColorTextureId; }
 
 		int GetWidth() const { return m_Viewport.GetWidth(); }
@@ -86,20 +50,11 @@ namespace Index {
 		const Viewport& GetViewport() const { return m_Viewport; }
 
 	private:
-		// Backend handles. 0 = unset. Under WebGPU `m_ColorTextureId`
-		// stores the raw WGPUTextureView pointer cast to uint64_t so it
-		// can be passed straight through to ImGui's imgui_impl_wgpu as a
-		// real WGPUTextureView (imgui_impl_wgpu reinterpret_casts the
-		// supplied ImTextureID to WGPUTextureView and dereferences it).
-		// `m_BackendId` stays a 32-bit pool key indexing into
-		// Framebuffer_WebGPU.cpp's GPU resource map.
+		// m_ColorTextureId stores raw WGPUTextureView pointer (uint64_t) so ImGui passes it straight to imgui_impl_wgpu without a pool lookup. m_BackendId is a 32-bit Framebuffer_WebGPU.cpp pool key.
 		uint32_t m_BackendId       = 0;
 		uint64_t m_ColorTextureId  = 0;
 		uint32_t m_DepthRenderbuffer = 0;
-		// Colour format of the live attachment, tracked so Recreate's same-size
-		// fast-path also detects a FORMAT change (e.g. RGBA8 -> RGBA16F at equal
-		// size). Without it the old-format texture would be kept and silently
-		// mismatch the render pass built for the requested format.
+		// Tracked so Recreate's same-size fast-path also catches FORMAT changes (e.g. RGBA8 -> RGBA16F at equal size).
 		TextureFormat m_ColorFormat = TextureFormat::RGBA8;
 
 		Viewport m_Viewport{ 0, 0 };

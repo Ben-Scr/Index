@@ -16,17 +16,6 @@
 #include <span>
 #include <unordered_map>
 
-// =============================================================================
-// GizmoRenderer2D — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// CPU side (BuildGeometry — squares→4 edges, circles→N segments, lines
-// pass-through) drives a persistent dynamic wgpu::Buffer + one
-// wgpu::RenderPipeline (LineList topology) + one render pass with
-// LoadOp::Load.
-//
-// All state is TU-local because GizmoRenderer2D is a fully static class
-// (single global instance). No per-`this` map needed.
-// =============================================================================
 
 namespace Index {
 
@@ -112,10 +101,6 @@ namespace Index {
 			wgpu::ShaderModule module, wgpu::PipelineLayout layout,
 			wgpu::TextureFormat colorFormat, bool hasDepth)
 		{
-			// Vertex layout: 1 buffer, 2 attributes.
-			//   loc 0: position (Float32x3, offset 0)
-			//   loc 1: color    (Unorm8x4,  offset 12)  ← decoded from the
-			//          packed uint32 PosColorVertex::color field.
 			wgpu::VertexAttribute attrs[2] = {};
 			attrs[0].format         = wgpu::VertexFormat::Float32x3;
 			attrs[0].offset         = offsetof(PosColorVertex, x);
@@ -329,14 +314,6 @@ namespace Index {
 
 	std::span<const PosColorVertex>
 	GizmoRenderer2D::BuildGeometry(GizmoLayerMask layerMask) {
-		// CPU geometry build — squares fan into 4 edges; circles into N
-		// segments; lines pass-through. Storage comes from the per-frame
-		// arena: one bump-alloc up front, no per-shape push_back, the whole
-		// buffer is reclaimed in O(1) by Application::EndFrame.
-		//
-		// Upper-bound vertex count, ignoring the layer-mask filter — the
-		// cursor below tracks the actual count and the arena slack is
-		// reclaimed at EndFrame regardless, so over-allocation is free.
 		std::size_t cap = Gizmo::s_Squares.size() * 8   // 4 edges × 2 verts
 		                + Gizmo::s_Lines.size()   * 2;
 		for (const Circle& ci : Gizmo::s_Circles) {
@@ -349,10 +326,6 @@ namespace Index {
 		std::span<PosColorVertex> buf =
 			FrameArenas::Frame().CreateArray<PosColorVertex>(cap);
 		if (buf.empty()) {
-			// Arena exhausted this frame. Log once per session — repeated
-			// warnings would spam the console every frame the scene stays
-			// over budget. The gizmo pass is silently skipped this frame;
-			// the arena resets at EndFrame and the next frame retries.
 			static bool s_OverflowLogged = false;
 			if (!s_OverflowLogged) {
 				IDX_CORE_WARN_TAG("GizmoRenderer",

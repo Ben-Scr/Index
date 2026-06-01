@@ -115,13 +115,6 @@ public class Scene
     public int EntityCount => IsLoaded ? InternalCalls.Scene_GetEntityCount(Name) : 0;
 
     // ── Singletons ─────────────────────────────────────────────
-    // Singleton lookups search every entity carrying the component, regardless
-    // of enabled state — matching native Scene::GetSingletonComponent<T>().
-    // A disabled "singleton" is still the one instance; if the caller cares
-    // about activity they should check `entity.IsEnabled` after the lookup.
-    //
-    // Non-Try variants log on anomalies (Error when missing, Warn when
-    // multiple) and return the first match. Try* variants are silent.
 
     public T? GetSingleton<T>() where T : Component, new()
     {
@@ -383,10 +376,7 @@ internal struct QueryFilter
     internal string WithNames;
     internal string WithoutNames;
     internal string MustHaveNames;
-    // 0=all, 1=enabled only, 2=disabled only. Default is 1 — queries
-    // skip disabled entities unless the caller opts in via IncludeDisabled()
-    // or switches to DisabledOnly().
-    internal int EnableFilter;
+    internal int EnableFilter; // 0=all, 1=enabled only (default), 2=disabled only
     internal List<Func<Entity, bool>>? Conditions;
 
     internal QueryFilter(string sceneName, string withNames)

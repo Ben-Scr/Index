@@ -7,17 +7,7 @@ using Index.Components;
 
 namespace Index.Interop;
 
-// Reflects over the user's loaded assembly at startup and registers every
-// value type that implements `IComponent` — no attribute required. Matches
-// the managed-component flow: declare the type, save the file, the editor
-// picks it up.
-//
-// Lifetime:
-//   - ScriptInstanceManager.LoadUserAssembly calls RegisterAll AFTER the
-//     assembly has been loaded into the collectible AssemblyLoadContext.
-//   - ScriptInstanceManager.UnloadUserAssembly calls UnregisterAll BEFORE
-//     the ALC tears down, so captured native callbacks don't outlive their
-//     DynamicComponentStorage.
+// RegisterAll must be called AFTER the ALC loads; UnregisterAll BEFORE it tears down (native callbacks must not outlive DynamicComponentStorage).
 internal static class DynamicComponentRegistrar
 {
     public static void RegisterAll(Assembly userAssembly)
@@ -88,18 +78,7 @@ internal static class DynamicComponentRegistrar
             return false;
         }
 
-        // Use Unsafe.SizeOf<T>() (managed layout) — NOT Marshal.SizeOf (which
-        // applies P/Invoke marshalling rules and disagrees on bool, char, etc.:
-        // Marshal sees bool as 4-byte Win32 BOOL, Unsafe sees it as 1-byte
-        // managed bool). ComponentTypes<T>'s layout-drift guard compares
-        // Unsafe.SizeOf<T>() on the C# side against the size we registered
-        // here on the C++ side, so they MUST agree — using Marshal.SizeOf
-        // bricked any component with a `bool` (or similarly-marshalled type)
-        // with a "C++ sizeof = 4, C# sizeof = 1" mismatch.
-        //
-        // Unsafe.SizeOf<T>() also handles empty structs (returns 1) and
-        // non-blittable-by-marshal types that are still memcpy-safe in the
-        // managed runtime, so the old "is blittable" gate disappears too.
+        // MUST use Unsafe.SizeOf (managed layout), NOT Marshal.SizeOf: Marshal sees bool as 4-byte Win32 BOOL, causing a C++/C# size mismatch that breaks bool-field components.
         int size = ComputeManagedSize(type);
         if (size <= 0)
         {
@@ -111,12 +90,6 @@ internal static class DynamicComponentRegistrar
         string subcategory = "Native Components (C#)";
         uint   categoryCode = 0u; // 0 = Component (Tag is reserved for engine-internal)
 
-        // Walk fields to compute the strictest required alignment and reject
-        // any field type the native side can't safely consume. The C++ side
-        // backs dynamic components with std::vector<uint8_t>, so the
-        // strictest tolerable alignment is alignof(max_align_t) (typically
-        // 16). A struct containing only float/int/bool/Vec2/3/4 needs 4-byte
-        // alignment; adding `double` or `long` bumps it to 8.
         if (!TryComputeAlignment(type, out uint alignment))
         {
             return false;
@@ -139,11 +112,6 @@ internal static class DynamicComponentRegistrar
         return true;
     }
 
-    // Match the managed Unsafe.SizeOf<T>() layout the runtime uses for the
-    // struct, NOT the P/Invoke marshalled layout Marshal.SizeOf returns.
-    // Invoked via reflection because Unsafe.SizeOf is a generic method and we
-    // only have a Type at this point. Returns -1 on failure (e.g. the method
-    // moved or returned a non-int box, both vanishingly unlikely).
     private static int ComputeManagedSize(Type structType)
     {
         try
@@ -161,10 +129,6 @@ internal static class DynamicComponentRegistrar
         }
     }
 
-    // Whitelist of primitive field types and their alignment in bytes.
-    // Anything not in this table is rejected — the native side has no
-    // visibility into the C# field shape, so unsupported types would
-    // silently produce wrong-sized or misaligned reads.
     private static bool TryComputeAlignment(Type structType, out uint alignment)
     {
         alignment = 1;

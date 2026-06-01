@@ -55,13 +55,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
-    <Reference Include="Pkg.Index.Hardware" />
   </ItemGroup>
   <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
-    <Reference Include="Pkg.Index.Hardware" />
   </ItemGroup>
   <ItemGroup Condition=" '$(Configuration)|$(Platform)' == 'Dist|x64' ">
-    <Reference Include="Pkg.Index.Hardware" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Source\CreateEntityJobSample.cs" />

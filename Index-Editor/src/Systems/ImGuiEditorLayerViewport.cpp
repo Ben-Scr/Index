@@ -87,14 +87,7 @@ namespace Index {
 		RenderApi::SetClearColor(clearColor);
 		RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 
-		// Split into sprites-only vs overlays (UI + gizmos) so the wireframe
-		// pass can submit ONLY the sprite pipeline — which is the only
-		// renderer that honours PolygonMode::Wireframe. GuiRenderer and
-		// GizmoRenderer2D draw filled quads regardless of the wireframe flag,
-		// so re-running them during the wireframe overlay would paint
-		// fully-filled solid-black quads (the wireframe sprite pipeline uses
-		// the `fs_wire_main` constant-black fragment shader) on top of the
-		// filled pass's output and mask it out.
+		// Sprites-only lambda: only the sprite pipeline honours PolygonMode::Wireframe; GuiRenderer/GizmoRenderer2D paint filled quads regardless and would mask it out.
 		auto runSpriteRender = [&]() {
 			if (onlyPassedScene) {
 				renderer->RenderSceneWithVP(scene, vp, viewportAABB);
@@ -107,24 +100,8 @@ namespace Index {
 		};
 
 		auto runOverlayRender = [&]() {
-			// UI must paint into this panel's FBO (not the OS window
-			// backbuffer that ImGui will cover). The auto BeginFrame path
-			// is skipped in editor mode, so we drive RenderScene here while
-			// the FBO is still bound.
-			//
-			// World-space mode (Editor View) projects through the same `vp`
-			// the world used so UI rects translate/scale with the camera —
-			// matching how the selection gizmo for a RectTransform2D draws.
-			// Screen-space mode (Game View, runtime) keeps UI locked to the
-			// canvas regardless of camera, the way runtime UI behaves.
-			//
-			// UI submits BEFORE gizmos so the gizmo pass paints on top —
-			// selection outlines, manipulators, and debug overlays must be
-			// visible even when the user is editing UI that fills the viewport.
+			// UI submits BEFORE gizmos so selection outlines and manipulators paint on top even when UI fills the viewport.
 			if (auto* gui = app->GetGuiRenderer()) {
-				// Resolve the canonical pixel-to-world scale once per pass and
-				// thread it through to RenderScene so the renderer doesn't reach
-				// into Application / main-camera state itself.
 				const float pixelToWorldScale = uiInWorldSpace
 					? GuiRenderer::ComputeWorldUIPixelScale()
 					: 0.0f;
@@ -151,13 +128,6 @@ namespace Index {
 			}
 		};
 
-		// Wireframe pass relies on the sprite wireframe pipeline +
-		// dedicated `fs_wire_main` fragment entry point — the pipeline
-		// has alpha-blending disabled and the fragment shader outputs
-		// solid (0,0,0,1), so every quad-edge line writes opaque black
-		// regardless of the entity's texture or instance colour. The
-		// alpha colour-mask keeps the FBO opaque so the writes don't
-		// leak transparency from the line draws back into compositing.
 		auto runWireframePass = [&]() {
 			RenderApi::SetPolygonMode(PolygonMode::Wireframe);
 			RenderApi::SetColorMask(true, true, true, false);
@@ -206,11 +176,7 @@ namespace Index {
 		const bool hasTransform = scene.HasComponent<Transform2DComponent>(m_SelectedEntity);
 		const bool hasRectTransform = scene.HasComponent<RectTransform2DComponent>(m_SelectedEntity);
 
-		// Per-component gizmos (registered by packages) are dispatched below
-		// regardless of transform presence, so we no longer early-out when a
-		// selection has neither Transform2D nor RectTransform2D — a registered
-		// callback may want to paint on transformless entities (rare, but the
-		// package surface allows it). Save/restore of gizmo state is cheap.
+		// Package gizmo callbacks may target transformless entities, so no early-out on missing transform.
 
 		const Color previousColor = Gizmo::GetColor();
 		const float previousLineWidth = Gizmo::GetLineWidth();
@@ -256,10 +222,6 @@ namespace Index {
 			if (scene.HasComponent<PolygonCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<PolygonCollider2DComponent>(m_SelectedEntity);
 				if (collider.IsValid()) {
-					// Outline by drawing line segments between consecutive world-space
-					// vertices — Box2D's GetPolygon already applies the offset, scale,
-					// and any custom hull, so we just need to project through the
-					// entity's rotation to get the on-screen position.
 					const std::vector<Vec2> worldPoints = collider.GetWorldPoints();
 					if (worldPoints.size() >= 3) {
 						Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
@@ -329,20 +291,12 @@ namespace Index {
 		} // end if (hasTransform)
 
 		if (hasRectTransform) {
-			// UILayoutSystem normally runs inside GuiRenderer::RenderScene,
-			// which fires later in this same RenderEditorView pass. Force a
-			// layout refresh now so we read fresh resolved screen-space corners
-			// for the selected rect (and its ancestors).
+			// MUST precede gizmo corner reads: UILayoutSystem fires later in RenderEditorView, so force layout now for fresh resolved corners.
 			ComputeUILayout(scene);
 
 			auto& rect = scene.GetComponent<RectTransform2DComponent>(m_SelectedEntity);
 
-			// The Editor View renders UI in world space (see
-			// RenderSceneIntoFBO with uiInWorldSpace=true), scaling the
-			// resolved UI-pixel coords by ComputeWorldUIPixelScale().
-			// Mirror that scale here so the outline lands exactly on
-			// the rendered widget instead of drifting away with camera
-			// pan/zoom.
+			// Mirror RenderSceneIntoFBO's uiInWorldSpace=true scale so the outline lands on the rendered widget.
 			const float worldScale = GuiRenderer::ComputeWorldUIPixelScale();
 
 			const Vec2 bl = rect.GetBottomLeft();
@@ -387,33 +341,16 @@ namespace Index {
 			Gizmo::DrawSquare(outerMidB, rectHandleSize, rectHandleRotationDegrees);
 			Gizmo::DrawSquare(outerMidT, rectHandleSize, rectHandleRotationDegrees);
 
-			// ── Text margin gizmo ─────────────────────────────────
-			// When the selected rect carries a TextRendererComponent,
-			// paint an inner rect indicating the wrap area + four tiny
-			// solid handle squares centred on each edge midpoint. The
-			// handles are draggable; the InvisibleButton overlays + drag
-			// math live in RenderEditorView, where mouse state and the
-			// FBO's screen rect are in scope.
 			if (componentGizmosEnabled && scene.HasComponent<TextRendererComponent>(m_SelectedEntity)) {
 				const auto& text = scene.GetComponent<TextRendererComponent>(m_SelectedEntity);
 
-				// Margin is in pixel units (FontSize domain). Convert to
-				// world units the same way the renderer does — via the
-				// rect's uniform scale. Use the rect's local scale axis
-				// since worldScale is already baked into `corners`.
 				const float marginScale = worldScale * std::max(0.01f, std::abs(rect.Scale.x));
 				const float ml = text.Margin.x * marginScale;
 				const float mt = text.Margin.y * marginScale;
 				const float mr = text.Margin.z * marginScale;
 				const float mb = text.Margin.w * marginScale;
 
-				// corners[] indices (world units, pre-rotation): 0=BL,1=BR,2=TR,3=TL.
-				// Reconstruct the inner rect in unrotated space, then rotate
-				// around the same pivot the outer rect uses. Working in
-				// unrotated space lets margin offsets stay axis-aligned in
-				// the rect's local frame, matching how the renderer applies
-				// them (Margin.x always insets along the rect's local +X,
-				// regardless of world rotation).
+				// Work in unrotated space so margin offsets stay axis-aligned in the rect's local frame (Margin.x insets along local +X regardless of rotation), then rotate the result.
 				const Vec2 innerBL{ bl.x * worldScale + ml, bl.y * worldScale + mb };
 				const Vec2 innerTR{ tr.x * worldScale - mr, tr.y * worldScale - mt };
 				Vec2 inner[4] = {
@@ -436,10 +373,6 @@ namespace Index {
 				Gizmo::DrawLine(inner[2], inner[3]);
 				Gizmo::DrawLine(inner[3], inner[0]);
 
-				// Edge-midpoint handles. Size scales with the camera's
-				// world-per-pixel so the handles stay roughly screen-px
-				// constant regardless of zoom — matches what users expect
-				// from a manipulator handle.
 				const AABB camAABB = m_EditorCamera.GetViewportAABB();
 				const float worldPerScreenPx = camAABB.Scale().x / std::max(1.0f, static_cast<float>(m_EditorViewFBO.GetWidth()));
 				const float handleHalf = 5.0f * worldPerScreenPx;
@@ -457,12 +390,6 @@ namespace Index {
 			}
 		}
 
-		// Package-registered viewport gizmos. Walk every registered component
-		// type and invoke `drawEditorGizmo` on any one the selected entity has.
-		// Built-in components don't set this today (they paint via the
-		// hardcoded branches above); the hook exists so packages — Tilemap2D,
-		// future tools — can paint their own selection helper without the
-		// editor having to learn about package-side types.
 		if (componentGizmosEnabled) {
 			if (auto* app = Application::GetInstance()) {
 				if (auto* sm = app->GetSceneManager()) {
@@ -546,15 +473,7 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::RenderEditorView(Scene& scene) {
-		// NoScrollbar/NoScrollWithMouse: the viewport itself never scrolls — the
-		// FBO image fills the content region and is the only "real" content.
-		// The InvisibleButton overlays below (rect-resize handles, text-margin
-		// handles) call SetCursorScreenPos at world→screen-projected positions,
-		// which can land far outside the panel when the editor camera is zoomed
-		// in heavily. Each InvisibleButton then extends ImGui's CursorMaxPos to
-		// cover that off-panel position, causing ImGui to render a scrollbar
-		// for content that doesn't exist. Suppressing scrolling on this window
-		// kills the spurious scrollbar without changing the actual rendering.
+		// NoScrollbar/NoScrollWithMouse: InvisibleButton overlays set off-panel cursor positions that extend CursorMaxPos and trigger a spurious scrollbar.
 		m_IsEditorViewActive = ImGui::Begin("Editor View", nullptr,
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
@@ -565,11 +484,6 @@ namespace Index {
 			return;
 		}
 
-		// ── Top toolbar ─────────────────────────────────────────────
-		// Mirror the Game View's per-window options strip: a single
-		// row pinned above the viewport image. Currently exposes the
-		// draw-mode selector (Default / Triangle / Mixed); add new
-		// editor-only viewport options here so they group naturally.
 		{
 			constexpr const char* k_DrawModeLabels[] = { "Default", "Triangle", "Mixed" };
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
@@ -593,10 +507,6 @@ namespace Index {
 				ImGui::SetTooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
 			}
 
-			// Gizmos visibility toggle for this panel. Mirrors the
-			// "depressed when active" style used by the Game View's
-			// Stats / Logs buttons so the user can tell at a glance
-			// whether gizmos are currently being drawn into the FBO.
 			ImGui::SameLine();
 			{
 				const bool active = m_ShowGizmos;
@@ -615,10 +525,6 @@ namespace Index {
 			}
 		}
 
-		// In prefab-edit mode, every reference to the inspector's "scene"
-		// in this function points at the detached prefab scene. We don't
-		// want gizmos / camera icons / framebuffer renders to leak the
-		// active scene's contents into the prefab viewport.
 		Scene* renderScene = IsInPrefabEditMode() ? m_PrefabEditScene.get() : &scene;
 
 		const ImVec2 viewportSize = ImGui::GetContentRegionAvail();
@@ -670,10 +576,6 @@ namespace Index {
 					m_ShowGizmos ? GizmoLayerMask::All : GizmoLayerMask::EditorOnly);
 				Gizmo::ClearViewportAABBOverride();
 
-				// FBO color textures use the renderer's native top-left
-				// origin (texel row 0 = top of the rendered image). Sample
-				// with default UV(0,0)-(1,1) so what the engine drew at
-				// world +y appears at the top of the panel.
 				ImGui::Image(
 					static_cast<ImTextureID>(static_cast<intptr_t>(m_EditorViewFBO.GetColorTextureBackendId())),
 					viewportSize);
@@ -865,13 +767,6 @@ namespace Index {
 				}
 				}
 
-				// ── Text margin draggable handles ─────────────────────
-				// Layered on top of the FBO image as InvisibleButtons.
-				// The visual squares are painted into the FBO by the
-				// margin-gizmo block in DrawEditorComponentGizmos; this
-				// loop only handles mouse picking + drag-to-margin
-				// updates, so the picking rect always lines up with what
-				// the user sees painted.
 				if (m_SelectedEntity != entt::null
 					&& m_ShowGizmos
 					&& renderScene->IsValid(m_SelectedEntity)
@@ -940,24 +835,7 @@ namespace Index {
 					constexpr float kHandleSizePx = 12.0f;
 					const float kHalf = kHandleSizePx * 0.5f;
 
-					// Per-handle InvisibleButtons each call SetCursorScreenPos
-					// then submit an InvisibleButton; ImGui's ItemSize clears
-					// IsSetPos at the end of each item, so the loop itself
-					// doesn't trip the "extending boundaries without an item
-					// afterwards" check.
-					//
-					// We deliberately do NOT capture/restore an outer
-					// cursor position around this loop. The capture site
-					// is right after the FBO image, where ImGui has
-					// already advanced cursor.y past CursorMaxPos.y for
-					// the next-line slot — restoring to that position
-					// at loop end with SetCursorScreenPos flips IsSetPos
-					// back to true, and ImGui::End()'s post-window check
-					// then asserts because cursor.y > max.y. Nothing in
-					// this function consumes the cursor after this block
-					// (just IsWindowHovered / IsWindowFocused / End), so
-					// leaving the cursor wherever the last InvisibleButton
-					// left it is harmless.
+					// Do NOT restore cursor after this loop: restoring with SetCursorScreenPos re-sets IsSetPos, causing ImGui::End to assert (cursor.y > max.y).
 
 					for (int i = 0; i < 4; ++i) {
 						ImVec2 screen;
@@ -976,12 +854,6 @@ namespace Index {
 						}
 						if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
 							const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
-							// Convert pixel delta into rect-local pixel-margin
-							// units. Up screen = -Y in world (we already flip
-							// Y for screen → world), and growing margins shrink
-							// the inner rect. Per-handle sign tables encode
-							// the direction each handle should move the
-							// corresponding margin axis.
 							const float worldDx = mouseDelta.x * worldPerScreenPxX;
 							const float worldDy = -mouseDelta.y * worldPerScreenPxY;
 							// World-to-rect-pixel: divide by marginScale.
@@ -993,38 +865,12 @@ namespace Index {
 							case 2: text.Margin.w += pixDy; break; // Bottom → drag up grows bottom margin
 							case 3: text.Margin.y -= pixDy; break; // Top    → drag up SHRINKS top margin
 							}
-							// Margins are free to go negative — that lets a
-							// designer push the inner text rect OUTSIDE the
-							// host RectTransform2D's bounds (e.g. a label
-							// whose visible text spills past the panel it
-							// reads from). The previous non-negative clamp
-							// was a defensive cap that vetoed that valid
-							// authoring intent. The renderer still floors
-							// the resulting wrap width at 0 so an over-
-							// shot margin can't generate negative-width
-							// wrap rects.
 							if (renderScene) renderScene->MarkDirty();
 						}
 					}
 					// (No cursor restore — see comment above the loop.)
 				}
 
-				// ── Viewport entity picking ───────────────────────────
-				// Left-click on the FBO area (outside any gizmo handle or
-				// overlay child window) hit-tests the scene's entity AABBs
-				// against the world-space click point and selects the
-				// topmost hit. Ctrl/Shift toggle multi-selection; clicking
-				// empty world with no modifier clears selection. The
-				// hit-test itself lives in Picking::TryPickEntity so the
-				// C# scripting binding can share the same algorithm.
-				//
-				// Gating:
-				//   IsWindowHovered() (default flags) → mouse is over the
-				//     editor view's content AND no child window blocks it,
-				//     so clicking the particle overlay falls through here.
-				//   !IsAnyItemActive() → no gizmo handle (rect-resize,
-				//     text-margin) consumed the press this frame.
-				//   inside the image rect → excludes the toolbar row above.
 				if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
 					&& ImGui::IsWindowHovered()
 					&& !ImGui::IsAnyItemActive())
@@ -1133,10 +979,6 @@ namespace Index {
 			}
 		}
 
-		// "Stats" toggle. Lives next to VSync; flips m_ShowGameViewStats so
-		// the overlay block at the bottom of this function decides whether
-		// to draw. Buttons show a depressed appearance when their overlay
-		// is active so the user can see at a glance which are on.
 		ImGui::SameLine();
 		{
 			const bool active = m_ShowGameViewStats;
@@ -1292,12 +1134,6 @@ namespace Index {
 					renderFrame = true;
 				}
 
-				// Compute imageMin BEFORE rendering so we can publish UIRegion
-				// before the UI pass runs. ImGui::GetCursorScreenPos returns the
-				// position the upcoming InvisibleButton will use as its top-left
-				// (matches what we'd otherwise get from ItemRectMin after the
-				// button) — getting it ahead of time lets us set UIRegion in
-				// time for the engine UI systems inside RenderSceneIntoFBO.
 				const ImVec2 canvasMin = ImGui::GetCursorScreenPos();
 				const ImVec2 canvasMax(canvasMin.x + viewportSize.x, canvasMin.y + viewportSize.y);
 				const ImVec2 imageMin(
@@ -1305,39 +1141,7 @@ namespace Index {
 					canvasMin.y + (viewportSize.y - renderSize.y) * 0.5f);
 				const ImVec2 imageMax(imageMin.x + renderSize.x, imageMin.y + renderSize.y);
 
-				// Publish the panel's pixel rect so engine UI systems
-				// (UILayoutSystem, UIEventSystem, GuiRenderer) resolve in
-				// panel-relative coordinates instead of full-OS-window
-				// coordinates. Without this, mouse hit-tests miss widgets
-				// because the rendered position (panel-centered) differs
-				// from the layout-resolved position (window-centered).
-				//
-				// Crucially this MUST happen before RenderSceneIntoFBO. The
-				// game camera's m_Viewport aliases Window::s_MainViewport
-				// (Camera2DComponent::Initialize), and savedViewport->SetSize
-				// above mutates that shared object to the FBO size. UI systems
-				// fall back to MainViewport when UIRegion is inactive, so
-				// without the region published first they'd compute uiScale
-				// against the temporarily-mutated MainViewport — different
-				// from the editor view's uiScale and visually inconsistent
-				// (rect resolves at one scale while the renderer projects with
-				// another). Publishing UIRegion first pins layout, ortho, and
-				// text rendering all to the same renderSize.
-				//
-				// imageMin lives in ImGui screen space, which equals OS-DESKTOP
-				// pixels once ImGuiConfigFlags_ViewportsEnable is on (the editor
-				// turns it on). Engine input — input.GetMousePosition() — comes
-				// from GLFW's cursor callback and is in MAIN-WINDOW-CLIENT
-				// pixels. UIEventSystem subtracts the published offset from the
-				// mouse coords; if we publish desktop coords and the editor
-				// isn't sitting at desktop (0,0), the subtraction is off by the
-				// window's desktop position on every axis where it isn't zero
-				// (e.g. a window snapped to the left edge has X=0 but Y>0, so
-				// only the Y hit-test drifts — the classic "Slider works on X
-				// but the Y handle is offset" bug). Subtract the main viewport's
-				// desktop position to convert imageMin into the same window-
-				// client space the input system reports. With multi-viewport
-				// disabled this is (0,0) and the math is a no-op.
+				// MUST precede RenderSceneIntoFBO: UIRegion pins layout/event coords to the panel rect; subtract mainViewportPos to convert ImGui desktop coords to GLFW window-client space (avoids Y-drift when window is not at desktop Y=0).
 				const ImVec2 mainViewportPos = ImGui::GetMainViewport()->Pos;
 				Window::SetUIRegion(
 					static_cast<int>(imageMin.x - mainViewportPos.x),
@@ -1368,21 +1172,12 @@ namespace Index {
 					imageMax);
 				drawList->AddRect(imageMin, imageMax, IM_COL32(255, 255, 255, 40));
 
-				// Stats overlay — engine-level helper. The cached snapshot
-				// refreshes at 30 Hz internally; we just feed the FBO size
-				// and let it draw inside the rendered image rectangle.
-				// Tracks rendered height so the log overlay below can stack.
 				float statsRenderedHeight = 0.0f;
 				if (m_ShowGameViewStats) {
 					m_GameViewStatsOverlay.RefreshIfDue(fbW, fbH);
 					statsRenderedHeight = m_GameViewStatsOverlay.RenderInRect(imageMin, imageMax);
 				}
 
-				// Log overlay — pinned same place as stats; offset down when
-				// stats is also visible so the two don't overlap. Lazy-
-				// constructed: subscribing to Log::OnLog at engine load is
-				// safe (Log is initialized very early), but we mirror the
-				// runtime's lazy-construction style for symmetry.
 				if (m_ShowGameViewLogs) {
 					if (!m_GameViewLogOverlay) {
 						m_GameViewLogOverlay = std::make_unique<Index::Diagnostics::LogOverlay>();

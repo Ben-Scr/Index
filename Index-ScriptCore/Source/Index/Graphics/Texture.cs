@@ -16,17 +16,7 @@ public enum TextureFilter
     Anisotropic = 3,
 }
 
-// Engine-shipped fallback / primitive textures. Every entry here resolves
-// to a file under `<IndexAssets>/Textures/Default/` that the engine loads
-// at startup and keeps in TextureManager's reserved 0–8 slots — so e.g.
-// `Texture.Square` is the same white-quad fallback `Renderer2D` substitutes
-// when a sprite's texture handle goes stale, and `Texture.Circle` is the
-// same disc the CircularSlider's background uses.
-//
-// Order MUST match `Index-Engine/src/Graphics/DefaultTexture.hpp`. Adding
-// a new default texture is a 4-site change: native enum, native default
-// path list (`s_DefaultTextures`), this enum, and the convenience
-// property below.
+// Order MUST match Index-Engine/src/Graphics/DefaultTexture.hpp; adding an entry requires 4 sync sites.
 public enum DefaultTexture : byte
 {
     Square = 0,
@@ -78,32 +68,12 @@ public sealed class Texture : IEquatable<Texture>
         return InternalCalls.Texture_LoadAsset(assetId) ? new Texture(assetId) : null;
     }
 
-    // Engine-shipped default textures. The native side resolves the enum
-    // to its AssetRegistry GUID via `TextureManager::GetDefaultTexture` →
-    // `GetTextureAssetUUID`, so the wrapper round-trips through the same
-    // FromAssetUUID path as user assets — `IsValid`, `Name`, `Path`,
-    // `Width`, and `Height` all behave identically.
-    //
-    // Returns null if the engine hasn't initialised TextureManager yet
-    // (calling from a static-init or pre-OnStart context) or if the
-    // requested default failed to load — both cases match what
-    // `FromAssetUUID` would return for an absent user asset, so callers
-    // already null-checking inspector-bound textures don't need a
-    // separate path.
     public static Texture? GetDefault(DefaultTexture defaultTexture)
     {
         ulong assetId = InternalCalls.Texture_GetDefaultAssetUUID((byte)defaultTexture);
         return FromAssetUUID(assetId);
     }
 
-    // Convenience accessors. Each property hits the native side once per
-    // get — cheap, but if a hot loop accesses it every frame, prefer
-    // caching the returned Texture in a local field.
-    //
-    //   var sprite = entity.GetComponent<SpriteRenderer>();
-    //   sprite.Texture = Texture.Square;
-    //
-    // is the intended use.
     public static Texture? Square            => GetDefault(DefaultTexture.Square);
     public static Texture? Pixel             => GetDefault(DefaultTexture.Pixel);
     public static Texture? Circle            => GetDefault(DefaultTexture.Circle);

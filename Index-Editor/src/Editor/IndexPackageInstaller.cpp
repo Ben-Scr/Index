@@ -18,12 +18,6 @@ namespace Index {
 
 	namespace {
 
-		// L13: per-fieldName regex pair, built once per (fieldName, quote-style)
-		// pair on first request and cached for the rest of the process. The
-		// previous version constructed two `std::regex` objects on every call;
-		// over hundreds of fields × packages × layers that adds up on cold
-		// package scans. Mirrors the pattern at lines below where the layer
-		// detection regexes are file-scope statics.
 		struct ExtractRegexPair {
 			std::regex DoubleQuoted;
 			std::regex SingleQuoted;
@@ -45,10 +39,6 @@ namespace Index {
 		}
 
 		std::string ExtractStringField(const std::string& content, const std::string& fieldName) {
-			// Pattern: name = "value"  (= optionally surrounded by whitespace, value in double quotes)
-			// Lua single-quote strings would also be valid; supporting both keeps things simple.
-			// fieldName is treated as a literal token (assumed alphanumeric — which is true for
-			// our schema fields: name / version / description), so no regex-escape needed.
 			const ExtractRegexPair& regexes = GetExtractRegexes(fieldName);
 
 			std::smatch match;
@@ -72,6 +62,56 @@ namespace Index {
 			return true;
 		}
 
+		bool IsSafePathComponent(std::string_view value) {
+			if (value.empty() || value == "." || value == "..") return false;
+			for (char c : value) {
+				const unsigned char uc = static_cast<unsigned char>(c);
+				if (uc < 0x20 || uc == 0x7F) return false;
+				if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+					c == '"' || c == '<' || c == '>' || c == '|') return false;
+			}
+			return value.find("..") == std::string_view::npos;
+		}
+
+		std::string XmlEscape(std::string_view value) {
+			std::string out;
+			out.reserve(value.size());
+			for (char c : value) {
+				switch (c) {
+					case '&':  out += "&amp;";  break;
+					case '<':  out += "&lt;";   break;
+					case '>':  out += "&gt;";   break;
+					case '"':  out += "&quot;"; break;
+					case '\'': out += "&apos;"; break;
+					default:   out.push_back(c); break;
+				}
+			}
+			return out;
+		}
+
+		std::optional<std::filesystem::path> ResolveContainedChildPath(
+			const std::string& rootDir,
+			std::string_view childName)
+		{
+			if (!IsSafePathComponent(childName)) return std::nullopt;
+
+			std::error_code ec;
+			const std::filesystem::path canonicalRoot =
+				std::filesystem::weakly_canonical(std::filesystem::path(rootDir), ec);
+			if (ec || canonicalRoot.empty()) return std::nullopt;
+
+			const std::filesystem::path target =
+				std::filesystem::weakly_canonical(canonicalRoot / childName, ec);
+			if (ec || target.empty()) return std::nullopt;
+
+			const std::filesystem::path relative = target.lexically_relative(canonicalRoot);
+			if (relative.empty() || relative.is_absolute()) return std::nullopt;
+			for (const auto& component : relative) {
+				if (component == "..") return std::nullopt;
+			}
+			return target;
+		}
+
 	} // namespace
 
 	std::optional<IndexPackageManifest> IndexPackageInstaller::ReadManifest(const std::string& packageDir) {
@@ -92,9 +132,6 @@ namespace Index {
 		manifest.Description = ExtractStringField(content, "description");
 		manifest.PackageDir = std::filesystem::path(packageDir).generic_string();
 
-		// Detect which layers are declared via `<layer> = {` patterns. Both canonical
-		// names and legacy aliases are accepted; the loader normalizes them on the
-		// premake side, but this editor parser used to only see the legacy names.
 		static const std::regex k_NativeRe(R"((^|[\s,;{])native\s*=\s*\{)");
 		static const std::regex k_EngineCoreRe(R"((^|[\s,;{])engine_core\s*=\s*\{)");
 		static const std::regex k_NativeStandaloneRe(R"((^|[\s,;{])native_standalone\s*=\s*\{)");
@@ -115,7 +152,7 @@ namespace Index {
 			manifest.CSharpAllowUnsafe = std::regex_search(content, k_AllowUnsafeRe);
 		}
 
-		if (manifest.Name.empty() || manifest.Version.empty()) {
+		if (!IsSafePathComponent(manifest.Name) || manifest.Version.empty()) {
 			return std::nullopt;
 		}
 		return manifest;
@@ -252,7 +289,13 @@ namespace Index {
 			return result;
 		}
 
-		std::filesystem::path targetDir = std::filesystem::path(projectPackagesDir) / repoName;
+		const auto resolvedTarget = ResolveContainedChildPath(projectPackagesDir, repoName);
+		if (!resolvedTarget) {
+			result.Message = "Refusing to install package with unsafe repository name: " + repoName;
+			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
+			return result;
+		}
+		const std::filesystem::path targetDir = *resolvedTarget;
 
 		std::error_code ec;
 		if (std::filesystem::exists(targetDir, ec) && !ec) {
@@ -319,7 +362,13 @@ namespace Index {
 			return result;
 		}
 
-		std::filesystem::path targetDir = std::filesystem::path(projectPackagesDir) / dirName;
+		const auto resolvedTarget = ResolveContainedChildPath(projectPackagesDir, dirName);
+		if (!resolvedTarget) {
+			result.Message = "Refusing to install package with unsafe directory name: " + dirName;
+			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
+			return result;
+		}
+		const std::filesystem::path targetDir = *resolvedTarget;
 		if (std::filesystem::exists(targetDir, ec) && !ec) {
 			result.Message = "A package with that name already exists at " + targetDir.generic_string();
 			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
@@ -369,15 +418,17 @@ namespace Index {
 					continue;
 				}
 				const std::string assemblyName = "Pkg." + packageName;
+				const std::string escapedAssemblyName = XmlEscape(assemblyName);
+				const std::string escapedPackageName = XmlEscape(packageName);
 				// $(MSBuildThisFileDirectory) is the directory of this .props
 				// file (i.e. <project>/Packages/), so the HintPath resolves to
 				// <project>/Packages/<Name>/Bin/Windows-x64/Pkg.<Name>.dll
 				// regardless of where the user's .csproj is invoked from.
 				// Private=true copies the DLL into the user's bin/<Config>/ on
 				// build so the runtime loader finds it next to the user assembly.
-				content += "    <Reference Include=\"" + assemblyName + "\">\n";
-				content += "      <HintPath>$(MSBuildThisFileDirectory)" + packageName
-					+ "\\Bin\\Windows-x64\\" + assemblyName + ".dll</HintPath>\n";
+				content += "    <Reference Include=\"" + escapedAssemblyName + "\">\n";
+				content += "      <HintPath>$(MSBuildThisFileDirectory)" + escapedPackageName
+					+ "\\Bin\\Windows-x64\\" + escapedAssemblyName + ".dll</HintPath>\n";
 				content += "      <Private>true</Private>\n";
 				content += "    </Reference>\n";
 			}
@@ -418,8 +469,8 @@ namespace Index {
 	IndexPackageInstaller::InstallResult IndexPackageInstaller::InstallToProject(IndexProject& project, const std::string& packageName) {
 		InstallResult result;
 
-		if (packageName.empty()) {
-			result.Message = "Package name cannot be empty.";
+		if (!IsSafePathComponent(packageName)) {
+			result.Message = "Package name is unsafe: " + packageName;
 			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
 			return result;
 		}
@@ -444,10 +495,6 @@ namespace Index {
 		project.Packages.push_back(packageName);
 		project.Save();
 
-		// Self-contained package layout (Unity-style precompiled): the
-		// package zip ships precompiled DLLs under Bin/Windows-x64/. The
-		// user's .csproj references them via IndexPackages.props — no build
-		// step required at install time, no engine repo or premake involved.
 		RegeneratePackageReferences(project);
 
 		result.Success = true;
@@ -458,11 +505,6 @@ namespace Index {
 
 
 	namespace {
-		// After removing a package from the allow-list, sweep stale build outputs out
-		// of the user project's bin tree so the directory reflects reality. Looks for
-		// any file under <project>/bin/.../ whose name starts with "Pkg.<Name>." and
-		// removes it. Best-effort: errors are logged but not propagated (a locked DLL
-		// from a still-running editor instance is a normal case).
 		void DeletePackageBinArtifacts(const IndexProject& project, const std::string& packageName) {
 			std::filesystem::path binRoot = std::filesystem::path(project.RootDirectory) / "bin";
 			std::error_code ec;
@@ -510,6 +552,12 @@ namespace Index {
 	IndexPackageInstaller::InstallResult IndexPackageInstaller::UninstallFromProject(IndexProject& project, const std::string& packageName) {
 		InstallResult result;
 
+		if (!IsSafePathComponent(packageName)) {
+			result.Message = "Refusing to remove package with unsafe name: " + packageName;
+			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
+			return result;
+		}
+
 		auto it = std::find(project.Packages.begin(), project.Packages.end(), packageName);
 		if (it == project.Packages.end()) {
 			result.Success = true;
@@ -553,7 +601,13 @@ namespace Index {
 	IndexPackageInstaller::InstallResult IndexPackageInstaller::Uninstall(const std::string& projectPackagesDir, const std::string& packageName) {
 		InstallResult result;
 
-		std::filesystem::path targetDir = std::filesystem::path(projectPackagesDir) / packageName;
+		const auto resolvedTarget = ResolveContainedChildPath(projectPackagesDir, packageName);
+		if (!resolvedTarget) {
+			result.Message = "Refusing to remove package with unsafe name: " + packageName;
+			IDX_ERROR_TAG("IndexPackages", "{}", result.Message);
+			return result;
+		}
+		const std::filesystem::path targetDir = *resolvedTarget;
 		std::error_code ec;
 		if (!std::filesystem::exists(targetDir, ec) || ec) {
 			result.Message = "Package directory not found: " + targetDir.generic_string();

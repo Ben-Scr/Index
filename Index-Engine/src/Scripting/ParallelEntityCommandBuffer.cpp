@@ -11,11 +11,7 @@
 namespace Index {
 
 	ParallelEntityCommandBuffer::ParallelEntityCommandBuffer() {
-		// One slot per worker plus one for non-workers / main thread. We
-		// resize ONCE and never touch the vector again — the addresses
-		// AsWriter() returns must stay valid across the rest of the
-		// recording window even while other threads are calling AsWriter()
-		// for different slots.
+		// Resize ONCE — AsWriter() returns addresses into this vector and they must remain stable during the recording window.
 		int workerCount = JobSystem::GetWorkerCount();
 		if (workerCount < 0) workerCount = 0;
 		const std::size_t slotCount = static_cast<std::size_t>(workerCount) + 1u;
@@ -23,13 +19,6 @@ namespace Index {
 	}
 
 	NativeEntityCommandBuffer& ParallelEntityCommandBuffer::AsWriter() {
-		// Worker threads land in their dedicated slot. Non-workers (main
-		// thread or third-party threads) share the spillover slot, which
-		// is always the last one. The spillover slot is single-threaded
-		// from each non-worker's perspective IFF the user only calls
-		// AsWriter() from one non-worker thread at a time — which is the
-		// contract (parallel record is for jobs; the main thread records
-		// linearly).
 		const int workerIdx = JobSystem::GetWorkerIndex();
 		const std::size_t spilloverSlot = m_Subs.size() - 1u;
 
@@ -84,15 +73,6 @@ namespace Index {
 			scene.SetEntityMetaDataNoFlags(m_CreatedHandles[i], EntityOrigin::Runtime);
 		}
 
-		// Walk each sub-buffer in order, remapping each command's local
-		// EntityIndex by the per-writer base offset. Sub-buffers contribute
-		// contiguous ranges in worker order so GetCreatedEntity(i) returns
-		// the i-th entity as recorded across the whole parallel batch.
-		//
-		// Apply takes Scene& and EntityHandle& now — same signature
-		// change documented in NativeEntityCommandBuffer.hpp. Lets
-		// Instantiate thunks rewrite the merged-handle slot in place
-		// when a parallel writer records a prefab spawn.
 		uint32_t base = 0;
 		for (auto& sub : m_Subs) {
 			const uint32_t subCount = sub.m_EntityCount;

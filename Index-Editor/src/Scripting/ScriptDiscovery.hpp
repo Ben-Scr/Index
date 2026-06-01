@@ -24,20 +24,9 @@ namespace Index::EditorScriptDiscovery {
 		std::filesystem::path Path;
 		std::string Extension;
 		ScriptType Type = ScriptType::Unknown;
-		// `IsManagedComponent` and `IsNativeComponent` are mutually exclusive
-		// — a .cs file is either a managed class (`: Component`) hosted by the
-		// ScriptComponent's managed slot, OR a native-backed struct
-		// (`: IComponent`) that maps onto a C++ ECS pool. The two attach via
-		// completely different paths (ScriptComponent::AddManagedComponent vs.
-		// ComponentRegistry::AddWithDependencies), so the popup needs to tell
-		// them apart.
+		// Mutually exclusive: managed (: Component, via ScriptComponent) vs native-backed (: IComponent, via ComponentRegistry). Attach paths differ, so the popup must distinguish them.
 		bool IsManagedComponent = false;
 		bool IsNativeComponent = false;
-		// Display name of the paired C++ component. For native-backed structs,
-		// this is the value of `[NativeComponent("...")]` when present, or the
-		// struct's class name as fallback. The Add Component popup uses this
-		// to look up the matching ComponentInfo and to hide the C++ entry from
-		// the regular General/Rendering/Physics/Audio categories.
 		std::string NativeName;
 		bool IsGameSystem = false;
 		bool IsGlobalSystem = false;
@@ -100,11 +89,6 @@ namespace Index::EditorScriptDiscovery {
 		return true;
 	}
 
-	// Strips characters disallowed in C#/C++ identifiers and prefixes an
-	// underscore if the result would start with a digit. Stricter than
-	// IsValidRegisteredScriptToken: no ':' (this is for single class names,
-	// not fully-qualified namespace tokens). Returns `fallback` when the
-	// input is empty or sanitizes down to nothing.
 	inline std::string SanitizeIdentifier(const std::string& input, const std::string& fallback)
 	{
 		std::string out;
@@ -203,10 +187,7 @@ namespace Index::EditorScriptDiscovery {
 			|| compactSource.find(":global::Index.Components.IComponent") != std::string::npos;
 	}
 
-	// Pulls the string argument out of `[NativeComponent("…")]` in the *raw*
-	// source. Cannot use the whitespace-stripped buffer here — that path
-	// collapses interior spaces inside string literals (so "New Native" would
-	// become "NewNative" and never match the registered C++ display name).
+	// Must use raw source, not whitespace-stripped: interior spaces in attribute string literals would be collapsed and never match the C++ display name.
 	inline std::string ExtractNativeComponentAttributeName(const std::filesystem::path& filePath)
 	{
 		std::ifstream input(filePath, std::ios::binary);
@@ -218,11 +199,7 @@ namespace Index::EditorScriptDiscovery {
 		constexpr std::string_view marker = "NativeComponent";
 		std::size_t pos = 0;
 		while ((pos = source.find(marker, pos)) != std::string::npos) {
-			// Look back for the `[` that opens the attribute — skip
-			// whitespace so `[ NativeComponent(...)]` is accepted. Bail if
-			// the prior non-whitespace char isn't `[`; that filters out the
-			// `using Index.Components` / `: IComponent` / interface-name
-			// occurrences of the token "NativeComponent".
+			// Look back past whitespace for '[' to confirm this is an attribute, not ':IComponent' or 'using' occurrences of the token.
 			std::size_t bracket = pos;
 			while (bracket > 0 && std::isspace(static_cast<unsigned char>(source[bracket - 1]))) {
 				--bracket;
@@ -288,12 +265,7 @@ namespace Index::EditorScriptDiscovery {
 		std::string extension = ToLowerCopy(filePath.extension().string());
 		if (IsCSharpScriptExtension(extension)) {
 			const std::string compactSource = ReadSourceWithoutWhitespace(filePath);
-			// `: IComponent` (or qualified variants) means this .cs is a
-			// native-backed struct paired with a C++ ECS pool. `: Component`
-			// alone is a regular managed class hosted by the ScriptComponent.
-			// The two are mutually exclusive — IComponent wins because the
-			// substring check for ":Component" would otherwise also fire for
-			// classes that happen to inherit from a base named Component.
+			// IComponent check must precede Component: ":Component" would otherwise fire on ":IComponent" too (substring match).
 			const bool isNativeComponent = SourceHasBaseClass(compactSource, "IComponent")
 				|| SourceHasBaseClass(compactSource, "Components.IComponent");
 			const bool isManagedComponent = !isNativeComponent
@@ -303,10 +275,6 @@ namespace Index::EditorScriptDiscovery {
 			if (isNativeComponent) {
 				nativeName = ExtractNativeComponentAttributeName(filePath);
 				if (nativeName.empty()) {
-					// Fallback to the struct name when no attribute hint is
-					// provided. ComponentTypes<T>.ResolveNativeName tries the
-					// same candidate, so this keeps the popup and the runtime
-					// lookup in sync for the no-attribute case.
 					nativeName = filePath.stem().string();
 				}
 			}
@@ -364,22 +332,7 @@ namespace Index::EditorScriptDiscovery {
 		});
 	}
 
-	// H23: per-frame cache. CollectProjectScriptEntries used to do a
-	// full recursive directory walk on EVERY call — and several call
-	// sites (ImGuiEditorLayer panels, AssetBrowser, ScriptComponentInspector)
-	// invoke it once per frame. With more than a handful of scripts the
-	// cost is visible.
-	//
-	// Cache strategy: a 1-second debounce with explicit MarkDirty(). The
-	// debounce alone is sufficient to fold per-frame thrash within a tick;
-	// MarkDirty is provided so file-mutation paths (script create / rename /
-	// delete) can force an immediate rebuild. Atomic dirty flag + scoped
-	// mutex keeps the cache coherent if a future caller invokes from a
-	// worker thread.
-	//
-	// `inline` statics are guaranteed unique across translation units
-	// (one symbol per program), so the cache is shared by every TU that
-	// includes this header.
+	// 1-second debounce cache for the directory walk (called once per frame from multiple panels). MarkDirty() forces an immediate rebuild on file mutations.
 	namespace detail {
 		inline std::vector<ScriptEntry> s_Cache;
 		inline std::atomic<bool> s_Dirty{ true };
@@ -412,10 +365,6 @@ namespace Index::EditorScriptDiscovery {
 		// cache write is short and re-takes the lock.
 		std::vector<ScriptEntry> rebuilt;
 		if (IndexProject* project = ProjectManager::GetCurrentProject()) {
-			// Walk the whole Assets tree so .cs files placed outside the
-			// historical Assets/Scripts/ folder still appear in the
-			// "Add Script" picker. Matches the csproj's `Assets\**\*.cs`
-			// compile glob — discovery and compilation share one root.
 			CollectScriptFiles(std::filesystem::path(project->AssetsDirectory), rebuilt);
 			CollectScriptFiles(std::filesystem::path(project->NativeSourceDir), rebuilt);
 		}

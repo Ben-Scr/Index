@@ -20,11 +20,6 @@ namespace Index::ImGuiUtils {
 	void BeginInspectorFieldRow(const char* label);
 	void DrawInspectorLabel(const char* label);
 
-	// Mark every entity's owning scene dirty after a multi-edit setter loop.
-	// Centralised here so every *Multi helper below (and any caller doing
-	// its own per-entity write loop) can drop in a one-liner instead of
-	// re-implementing the gated MarkDirty walk. Defined in ImGuiUtils.cpp
-	// to keep Scene.hpp out of this widely-included header.
 	void MarkSelectionDirty(std::span<const Entity> entities);
 
 	template<typename Draw>
@@ -145,15 +140,8 @@ namespace Index::ImGuiUtils {
 
 	void DrawTexturePreview(uint64_t rendererId, float texWidth, float texHeight, float previewSize = 96.0f);
 
-	// Canonical Texture2D preview. Picks the correct UV orientation from
-	// tex.IsFlippedY() so the same call site works regardless of whether
-	// the texture was loaded with stb's "flipVertical" load path. Prefer
-	// this over the raw-handle overload for any new editor preview.
 	void DrawTexturePreview(const Texture2D& tex, float previewSize = 96.0f);
 
-	// Anchor the next modal window to the center of the main viewport. Call
-	// immediately before BeginPopupModal(). Uses ImGuiCond_Appearing so the
-	// user can drag the modal afterward without it snapping back.
 	void CenterNextModal();
 	std::string Ellipsize(const std::string& text, float maxWidth, bool* outTruncated = nullptr);
 	void TextEllipsis(const std::string& text, float maxWidth = -1.0f);
@@ -167,25 +155,8 @@ namespace Index::ImGuiUtils {
 
 	void EndComponentSection();
 
-	// ── Multi-edit primitives ─────────────────────────────────────────
-	//
-	// All MultiEdit widgets sample the field across every entity in `entities`.
-	// If all entities give the same value the widget renders normally; if any
-	// channel differs it renders in a "mixed" state showing "—" (or an
-	// indeterminate look for booleans / combos / strings). Editing always
-	// writes through to ALL selected entities — for vectors and colors the
-	// per-channel write mask matches the widget so editing only Y on a vec3
-	// leaves X and Z untouched on every entity.
-	//
-	// All edits go through the caller-supplied setter, which is the same
-	// mutation path single-entity edits use today (direct assignment or
-	// component setter, plus scene.MarkDirty() at the inspector level).
-
 	namespace MultiEdit {
 
-		// Sample a scalar across all entities. Returns true if all entities
-		// give the same value; false if mixed. `out` is set to the first
-		// entity's value either way.
 		template <typename T, typename Getter>
 		bool SampleUniform(std::span<const Entity> entities, Getter&& get, T& out) {
 			if (entities.empty()) {
@@ -202,10 +173,6 @@ namespace Index::ImGuiUtils {
 			return true;
 		}
 
-		// Sample N channels across all entities. `getChan(entity, channelIdx) -> float`
-		// is invoked once per (entity, channel). `outValues[c]` receives the
-		// first entity's channel value; `mixedMask[c]` is true if any other
-		// entity's channel differs.
 		template <std::size_t N, typename ChannelGet>
 		void SamplePerChannel(std::span<const Entity> entities, ChannelGet&& getChan,
 			float (&outValues)[N], std::array<bool, N>& mixedMask)
@@ -232,10 +199,6 @@ namespace Index::ImGuiUtils {
 			}
 		}
 
-		// Layout for an N-channel inline row (replicates ImGui's internal
-		// DragScalarN spacing: components separated by ItemInnerSpacing, last
-		// component absorbs rounding error). Body runs per-channel and returns
-		// true if it changed; the row returns true if any channel changed.
 		template <typename Body>
 		inline bool MultiItemRow(int components, Body&& body) {
 			const ImGuiStyle& style = ImGui::GetStyle();
@@ -255,11 +218,6 @@ namespace Index::ImGuiUtils {
 		}
 	}
 
-	// ── Scalar widgets ────────────────────────────────────────────────
-
-	// `get(Entity) -> float`, `set(Entity, float)`. When mixed, displays "—"
-	// but the underlying value is the first entity's value (drag math still
-	// works). Edits propagate to ALL entities.
 	template <typename Getter, typename Setter>
 	bool DragFloatMulti(const char* label, std::span<const Entity> entities,
 		Getter&& get, Setter&& set,
@@ -343,8 +301,7 @@ namespace Index::ImGuiUtils {
 		const bool uniform = MultiEdit::SampleUniform<int>(entities, get, v);
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
-		// InputInt has no format-string knob; when mixed we render via InputText
-		// with a hint instead so the user sees "—" rather than "0".
+		// InputInt has no format-string knob; use InputTextWithHint to show "—" when mixed.
 		bool changed = false;
 		if (uniform) {
 			changed = ImGui::InputInt("##Value", &v, step, stepFast);
@@ -366,7 +323,6 @@ namespace Index::ImGuiUtils {
 		return changed;
 	}
 
-	// Generic typed scalar — for int16, uint8, uint64, etc.
 	template <typename T, typename Getter, typename Setter>
 	bool DragScalarMulti(const char* label, std::span<const Entity> entities,
 		ImGuiDataType dataType, Getter&& get, Setter&& set,
@@ -428,7 +384,6 @@ namespace Index::ImGuiUtils {
 		return changed;
 	}
 
-	// Tri-state checkbox using ImGui's native MixedValue flag.
 	template <typename Getter, typename Setter>
 	bool CheckboxMulti(const char* label, std::span<const Entity> entities,
 		Getter&& get, Setter&& set)
@@ -437,9 +392,7 @@ namespace Index::ImGuiUtils {
 		const bool uniform = MultiEdit::SampleUniform<bool>(entities, get, v);
 		ImGui::PushID(label);
 		BeginInspectorFieldRow(label);
-		// ImGuiItemFlags_MixedValue (1<<12) — declared in imgui_internal.h but
-		// the value is part of the public ABI and used by Checkbox to draw the
-		// indeterminate dash. Matches imgui_internal.h declaration.
+		// ImGuiItemFlags_MixedValue = 1<<12: part of the public ABI, used by Checkbox for the indeterminate dash.
 		constexpr int kMixedValueFlag = 1 << 12;
 		if (!uniform) {
 			ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
@@ -457,8 +410,6 @@ namespace Index::ImGuiUtils {
 		return changed;
 	}
 
-	// String multi-edit. Buffer size is fixed at 256 chars to match the existing
-	// NameComponent pattern. When mixed, the input shows "—" as a hint.
 	template <typename Getter, typename Setter>
 	bool InputTextMulti(const char* label, std::span<const Entity> entities,
 		Getter&& get, Setter&& set)
@@ -483,11 +434,6 @@ namespace Index::ImGuiUtils {
 		return changed;
 	}
 
-	// Per-channel float vector multi-edit. Renders `componentCount` adjacent
-	// drag widgets with separate mixed flags. `getChan(entity, channelIdx)`
-	// reads the channel value; `setChan(entity, channelIdx, newValue)` writes
-	// it on edit. Only channels the user actually touched are written, so
-	// editing Y on a vec3 leaves X and Z alone on every selected entity.
 	template <typename ChannelGet, typename ChannelSet>
 	bool DragFloatNMulti(const char* label, std::span<const Entity> entities,
 		int componentCount, ChannelGet&& getChan, ChannelSet&& setChan,
@@ -498,8 +444,6 @@ namespace Index::ImGuiUtils {
 
 		float values[4] = {};
 		std::array<bool, 4> mixedMask{};
-		// Sample the up-to-4 channels by hand; SamplePerChannel<N> needs a
-		// compile-time N so we just inline the loop here.
 		for (int c = 0; c < componentCount; ++c) mixedMask[c] = false;
 		if (!entities.empty()) {
 			for (int c = 0; c < componentCount; ++c) values[c] = getChan(entities[0], c);
@@ -517,11 +461,7 @@ namespace Index::ImGuiUtils {
 		BeginInspectorFieldRow(label);
 		const bool anyChanged = MultiEdit::MultiItemRow(componentCount, [&](int c) -> bool {
 			ImGui::PushID(c);
-			// Capture the pre-edit channel value: when only this channel is
-			// edited we must NOT broadcast the other channels' (possibly
-			// mixed) sampled values onto every selected entity. ImGui::DragFloat
-			// returns true on commit; only propagate when the user actually
-			// produced a delta on THIS channel.
+			// Only write this channel when it actually changed; don't broadcast other channels' mixed values.
 			const float pre = values[c];
 			float channelValue = pre;
 			const char* fmt = mixedMask[c] ? "-" : format;
@@ -538,9 +478,6 @@ namespace Index::ImGuiUtils {
 		return anyChanged;
 	}
 
-	// 4-channel color multi-edit, per-channel mixed-state.
-	// `getChan(entity, channelIdx)` reads R/G/B/A in [0..1].
-	// `setChan(entity, channelIdx, newValue)` writes the channel.
 	template <typename ChannelGet, typename ChannelSet>
 	bool ColorEdit4Multi(const char* label, std::span<const Entity> entities,
 		ChannelGet&& getChan, ChannelSet&& setChan,
@@ -568,11 +505,7 @@ namespace Index::ImGuiUtils {
 			}
 		}
 		else {
-			// Per-channel drag fallback when any channel differs across the
-			// selection — ColorEdit4 cannot show per-channel "mixed" state.
-			// Same C7 caveat as DragFloatNMulti: only write when the channel
-			// the user touched actually moved, so we never broadcast a
-			// sampled "mixed primary" value onto every entity.
+			// Per-channel drag fallback: ColorEdit4 can't show per-channel mixed state.
 			anyChanged = MultiEdit::MultiItemRow(4, [&](int c) -> bool {
 				ImGui::PushID(c);
 				const float pre = values[c];
@@ -592,8 +525,6 @@ namespace Index::ImGuiUtils {
 		return anyChanged;
 	}
 
-	// Enum combo multi-edit. When mixed, the preview text is "—"; opening the
-	// combo and picking a value writes it to all selected entities.
 	template <typename TEnum, typename Getter, typename Setter>
 	bool EnumComboMulti(const char* label, std::span<const Entity> entities,
 		Getter&& get, Setter&& set)
@@ -637,8 +568,6 @@ namespace Index::ImGuiUtils {
 		return changed;
 	}
 
-	// Combo backed by a name array (for non-magic_enum cases). When mixed,
-	// preview shows "—".
 	template <typename Getter, typename Setter>
 	bool ComboMulti(const char* label, std::span<const Entity> entities,
 		Getter&& get, Setter&& set,

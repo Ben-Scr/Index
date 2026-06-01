@@ -2,11 +2,7 @@
 #include "Collections/AABB.hpp"
 
 namespace Index {
-	// Per-entity render-time cache for entities tagged StaticTag. Lazily
-	// populated by Renderer2D on first encounter and refreshed when the
-	// transform values differ from the cached snapshot. Scene removes this via the
-	// on_destroy<StaticTag> observer so that toggling the tag off and back on
-	// starts with a clean cache instead of stale bounds.
+	// Renderer2D transform/AABB cache for StaticTag entities. Cleared via on_destroy<StaticTag> observer so retoggling the tag starts clean.
 	struct StaticRenderData {
 		AABB CachedAABB{};
 		Vec2 CachedPosition{};

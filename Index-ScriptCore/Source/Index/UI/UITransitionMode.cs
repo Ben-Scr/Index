@@ -1,9 +1,6 @@
 namespace Index.UI;
 
-// Mirrors the native UITransitionMode enum (see
-// Index-Engine/src/Components/UI/UITransitionMode.hpp). Underlying
-// type is byte to match the C++ side; integer values must stay in
-// sync because we marshal as int through the binding layer.
+// Underlying type is byte; integer values must stay in sync with the native UITransitionMode enum (marshalled as int through the binding layer).
 public enum UITransitionMode : byte
 {
     // Per-state Color writes into the widget's ImageComponent.Color,

@@ -40,6 +40,18 @@ namespace Index {
 			return true;
 		}
 
+		// Asset-path fields (splash, cursor) may be project-relative SUBpaths, so
+		// they can't use IsValidSceneName (which forbids '/'). Lighter guard: reject
+		// path traversal + absolute paths so a tampered index-project.json can't point
+		// the engine at files outside the project tree. Empty = "none", allowed.
+		bool IsSafeAssetPath(std::string_view value) {
+			if (value.empty()) return true;
+			if (value.find("..") != std::string_view::npos) return false;
+			if (value.front() == '/' || value.front() == '\\') return false;
+			if (value.size() >= 2 && value[1] == ':') return false;
+			return true;
+		}
+
 		uint64_t ParseUInt64String(std::string_view value, uint64_t fallback = 0) {
 			if (value.empty()) return fallback;
 			try {
@@ -96,14 +108,8 @@ namespace Index {
 
 		std::filesystem::path ResolveEngineRoot() {
 			const auto exeDir = std::filesystem::path(Path::ExecutableDir());
-			// Dev-layout walks come first so that a developer running the
-			// launcher out of bin/<cfg>-<plat>/Index-Launcher/ keeps using the
-			// real source tree at ../../.. — its EngineSDK sibling is a
-			// build-output artifact, not the source of truth, and using it
-			// would break the engine-solution regen flow (no premake5.lua).
-			// EngineSDK/ is the fallback for a zipped distribution where the
-			// source tree is no longer reachable from the exe.
-			const std::vector<std::filesystem::path> candidates = {
+		// Dev layout (bin/<cfg>-<plat>/Index-Launcher/) probed first; EngineSDK/ fallback for packaged distributions.
+		const std::vector<std::filesystem::path> candidates = {
 				exeDir / ".." / ".." / "..",
 				exeDir / "..",
 				exeDir / "EngineSDK"
@@ -125,12 +131,6 @@ namespace Index {
 			return {};
 		}
 
-		// 64-bit FNV-1a. Cache-key quality, not cryptographic. Used by the
-		// premake-regen skip cache to decide whether the inputs feeding
-		// `premake5 vs2022 --index-project=...` have actually changed since
-		// the last successful regeneration. Lifetime of the stamp file (see
-		// RegenStampPath) is bounded by `bin-int/`, which is git-ignored and
-		// gets wiped by clean builds.
 		constexpr uint64_t k_Fnv1aSeed   = 0xcbf29ce484222325ull;
 		constexpr uint64_t k_Fnv1aPrime  = 0x100000001b3ull;
 
@@ -229,21 +229,8 @@ namespace Index {
 			return seed;
 		}
 
-		// Returns a 64-bit digest of every input that affects what `premake5
-		// vs2022 --index-project=<projectRoot>` would generate. If two calls
-		// return the same value, the premake invocation would produce identical
-		// .vcxproj / .sln files and can be safely skipped — saving the user a
-		// full Visual Studio recompile on every launcher-driven project open.
-		//
-		// Inputs covered:
-		//   • The project root path itself (different projects yield different
-		//     solutions because the package filter differs).
-		//   • <projectRoot>/index-project.json (packages list, entityBits, etc.).
-		//   • Every <projectRoot>/Packages/<Name>/index-package.lua.
-		//   • Every <engineRoot>/packages/<Name>/index-package.lua.
-		//   • <engineRoot>/premake5.lua and Dependencies.lua.
-		//   • Every .lua under <engineRoot>/premake/.
-		//   • Every <engineRoot>/Index-*/premake5.lua and Tests/*/premake5.lua.
+		// Digest of every input that affects premake output; matching hash means premake can be skipped,
+		// avoiding unconditional .vcxproj timestamp rewrites that force a full VS recompile on every open.
 		uint64_t ComputeRegenInputHash(const std::filesystem::path& engineRoot,
 		                                const std::filesystem::path& projectRoot) {
 			uint64_t h = k_Fnv1aSeed;
@@ -261,10 +248,7 @@ namespace Index {
 		}
 
 		std::filesystem::path RegenStampPath(const std::filesystem::path& engineRoot) {
-			// bin-int/ is the premake objdir prefix — already git-ignored and
-			// scoped to per-machine build state. The stamp records only the
-			// hash of the LAST regen; switching between projects forces a
-			// regen anyway because projectRoot is part of the hash.
+			// bin-int/ is git-ignored; switching projects forces a regen because projectRoot is part of the hash.
 			return engineRoot / "bin-int" / ".index-regen-stamp";
 		}
 
@@ -371,10 +355,7 @@ namespace Index {
 				}
 			};
 
-			// Packaged-SDK layout drops Index-ScriptCore.dll flat under
-			// EngineSDK/Index-ScriptCore/ (no per-config bin tree). Check it
-			// first; FindScriptCoreArtifact falls through to the dev candidates
-			// below when the flat copy isn't present.
+			// Packaged SDK drops the DLL flat under EngineSDK/Index-ScriptCore/ (no per-config bin tree).
 			appendUnique(engineRoot / "Index-ScriptCore");
 
 			const std::string platformDirectory = GetNativeBuildPlatformDirectory();
@@ -819,11 +800,7 @@ endforeach()
 			root.AddMember("enablePostProcessing", false);
 		}
 
-		// autoSaveScenes / autoSaveIntervalSeconds / showFileExtensions
-		// moved to user-scoped EditorPreferences (2026-05). Save() no
-		// longer emits them; legacy values present in pre-migration
-		// project files are loaded into LegacyEditorPrefs and dropped
-		// from disk on this Save.
+		// autoSaveScenes/autoSaveIntervalSeconds/showFileExtensions moved to EditorPreferences (2026-05).
 		root.AddMember("assetSerializationFormat",
 			std::string(IndexProject::ProjectAssetSerializationFormatToString(project.AssetSerializationFormat)));
 
@@ -851,16 +828,10 @@ endforeach()
 			root.AddMember("buildProfile",
 				std::string(IndexProject::BuildProfileToString(project.ActiveBuildProfile)));
 		}
-		// Preferred render backend — written only when non-default (Auto)
-		// to keep index-project.json minimal for projects that haven't
-		// touched the Graphics tab.
 		if (project.ActiveRenderBackend != IndexProject::RenderBackend::Auto) {
 			root.AddMember("renderBackend",
 				std::string(IndexProject::RenderBackendToString(project.ActiveRenderBackend)));
 		}
-		// Empty == "no build profile selected" (the default). Skip the
-		// field entirely in that case so legacy projects round-trip
-		// cleanly through the new editor.
 		if (!project.ActiveBuildProfileName.empty()) {
 			root.AddMember("activeBuildProfile", project.ActiveBuildProfileName);
 		}
@@ -931,7 +902,6 @@ endforeach()
 			defineConstants += buildDefine;
 		}
 
-		// Editor hot-reload always uses Development; shipping defaults shouldn't bleed into editor preview.
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		const std::string profileDefine = (primarySymbol == "INDEX_EDITOR")
 			? std::string("INDEX_BUILD_DEVELOPMENT")
@@ -1098,10 +1068,7 @@ endforeach()
 	}
 
 	std::string IndexProject::GetSceneFilePath(const std::string& sceneName) const {
-		// Defense in depth: even though Load() now validates these strings,
-		// GetSceneFilePath is also called from runtime code paths that could
-		// receive untrusted input. Reject anything that contains traversal
-		// characters before we splice it into a filesystem path.
+		// Defense in depth: runtime callers may pass untrusted input; reject traversal chars before path-splicing.
 		if (!IsValidSceneName(sceneName)) {
 			IDX_CORE_WARN_TAG("IndexProject",
 				"Refusing to resolve scene path for unsafe name '{}'", sceneName);
@@ -1148,11 +1115,6 @@ endforeach()
 
 	bool IndexProject::Save() const {
 		const bool ok = File::WriteAllText(ProjectFilePath, Json::Stringify(BuildProjectJson(*this), true));
-		// Keep the IntelliSense-visible defines file in sync with the project's
-		// CustomDefines + ActiveBuildProfile every time the project is saved.
-		// Failures are logged but non-fatal — a stale props file just means VS
-		// shows the wrong active branches until the next save; runtime
-		// compilation goes through BuildManagedDefineConstants regardless.
 		(void)WriteManagedDefinesProps();
 		return ok;
 	}
@@ -1161,19 +1123,8 @@ endforeach()
 		if (outAddedImport) *outAddedImport = false;
 		if (CsprojPath.empty()) return false;
 
-		// Build the semicolon-separated define list. Mirrors
-		// BuildManagedDefineConstants() but uses literal ';' (props files
-		// don't need the MSBuild command-line %3B escape) and prepends
-		// $(DefineConstants) so the SDK-default DEBUG/TRACE survives.
-		//
-		// INDEX_EDITOR (NOT INDEX_BUILD) here: this props file drives
-		// Visual Studio IntelliSense, which represents the editor's
-		// hot-reload compile context — `#if INDEX_EDITOR` blocks show
-		// as active in VS and `#if INDEX_BUILD` blocks show as inactive,
-		// mirroring what the editor's `dotnet build … -p:DefineConstants=
-		// INDEX_EDITOR;…` invocation actually defines. Shipping builds
-		// override DefineConstants on the command line (a global
-		// property), so the props file is ignored at ship time.
+		// INDEX_EDITOR (not INDEX_BUILD): this props file drives VS IntelliSense for the editor's hot-reload
+		// context; shipping builds override DefineConstants on the command line and ignore this file.
 		std::string defines = "$(DefineConstants);INDEX_EDITOR";
 		const std::string profile = GetActiveBuildProfileDefine();
 		if (!profile.empty()) {
@@ -1220,10 +1171,7 @@ endforeach()
 			return false;
 		}
 
-		// Migration for projects created before this mechanism existed:
-		// inject `<Import Project="Packages/IndexDefines.props" ... />` if
-		// the .csproj doesn't already have it. Idempotent — looks for the
-		// substring before patching.
+		// One-shot migration: inject the IndexDefines.props import if the .csproj doesn't already have it.
 		if (!File::Exists(CsprojPath)) return true;
 		std::string csproj = File::ReadAllText(CsprojPath);
 		if (csproj.find("Packages/IndexDefines.props") != std::string::npos
@@ -1366,10 +1314,6 @@ endforeach()
 				}
 				if (const Json::Value* buildAspectValue = root.FindMember("buildAspect")) {
 					std::string raw = buildAspectValue->AsStringOr("Free Aspect");
-					// Validate against the shared preset list — typo'd or
-					// stale labels (e.g. an older engine that didn't have
-					// "21:9") fall back to "Free Aspect" so a broken
-					// project file still loads with no enforcement.
 					bool matched = false;
 					for (const auto& preset : k_AspectRatioPresets) {
 						if (raw == preset.Label) { matched = true; break; }
@@ -1393,7 +1337,7 @@ endforeach()
 				}
 				if (const Json::Value* iconValue = root.FindMember("appIcon")) {
 					const std::string iconPath = iconValue->AsStringOr();
-					if (iconPath.empty() || IsValidSceneName(iconPath)) {
+					if (iconPath.empty() || IsSafeAssetPath(iconPath)) {
 						project.AppIconPath = iconPath;
 					}
 					else {
@@ -1402,7 +1346,7 @@ endforeach()
 					}
 				}
 				if (const Json::Value* exeNameValue = root.FindMember("executableName")) {
-					project.ExecutableName = exeNameValue->AsStringOr();
+					{ const std::string exeName = exeNameValue->AsStringOr(); if (exeName.empty() || IsValidSceneName(exeName)) project.ExecutableName = exeName; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring invalid executableName '{}' (no path separators or traversal allowed)", configPath, exeName); }
 				}
 				if (const Json::Value* splashValue = root.FindMember("splashScreen")) {
 					if (const Json::Value* v = splashValue->FindMember("enabled")) {
@@ -1418,10 +1362,10 @@ endforeach()
 						project.SplashScreen.FadeOutSeconds = static_cast<float>(v->AsDoubleOr(0.0));
 					}
 					if (const Json::Value* v = splashValue->FindMember("imagePath")) {
-						project.SplashScreen.ImagePath = v->AsStringOr();
+						{ const std::string p = v->AsStringOr(); if (IsSafeAssetPath(p)) project.SplashScreen.ImagePath = p; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring unsafe splash imagePath '{}'", configPath, p); }
 					}
 					if (const Json::Value* v = splashValue->FindMember("backgroundImagePath")) {
-						project.SplashScreen.BackgroundImagePath = v->AsStringOr();
+						{ const std::string p = v->AsStringOr(); if (IsSafeAssetPath(p)) project.SplashScreen.BackgroundImagePath = p; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring unsafe splash backgroundImagePath '{}'", configPath, p); }
 					}
 					if (const Json::Value* v = splashValue->FindMember("customText")) {
 						project.SplashScreen.CustomText = v->AsStringOr();
@@ -1539,11 +1483,7 @@ endforeach()
 					project.ShowRuntimeLogs = v->AsBoolOr(true);
 				if (const Json::Value* v = root.FindMember("enablePostProcessing"))
 					project.EnablePostProcessing = v->AsBoolOr(true);
-				// autoSaveScenes / autoSaveIntervalSeconds migrated to
-				// user-scoped EditorPreferences. We still parse the keys
-				// here so legacy projects can hand the values off (via
-				// LegacyEditorPrefs) before they drop from the project
-				// file on the next Save.
+				// Parse legacy keys into LegacyEditorPrefs so they can migrate to EditorPreferences on next Save.
 				if (const Json::Value* v = root.FindMember("autoSaveScenes")) {
 					project.LegacyEditorPrefs.AutoSaveScenes = v->AsBoolOr(false);
 					project.LegacyEditorPrefs.AutoSaveScenesPresent = true;
@@ -1577,9 +1517,9 @@ endforeach()
 					project.EditorAssetDuplicateSuffix = IndexProject::EditorEntityNameSuffixStyleFromString(
 						v->AsStringOr("ParenthesizedNumber"));
 				if (const Json::Value* v = root.FindMember("cursorImagePath"))
-					project.CursorImagePath = v->AsStringOr();
+					{ const std::string p = v->AsStringOr(); if (IsSafeAssetPath(p)) project.CursorImagePath = p; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring unsafe cursorImagePath '{}'", configPath, p); }
 				if (const Json::Value* v = root.FindMember("uiInteractableCursorImagePath"))
-					project.UIInteractableCursorImagePath = v->AsStringOr();
+					{ const std::string p = v->AsStringOr(); if (IsSafeAssetPath(p)) project.UIInteractableCursorImagePath = p; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring unsafe uiInteractableCursorImagePath '{}'", configPath, p); }
 				if (const Json::Value* v = root.FindMember("buildProfile"))
 					project.ActiveBuildProfile = IndexProject::BuildProfileFromString(v->AsStringOr("Development"));
 				if (const Json::Value* v = root.FindMember("renderBackend"))
@@ -1628,12 +1568,7 @@ endforeach()
 
 		ResolvePaths(project);
 
-		// One-shot migration: projects created before the Assets-wide compile
-		// glob shipped have their csproj locked to "Assets\Scripts\**\*.cs",
-		// so .cs files placed elsewhere under Assets/ silently fail to compile.
-		// Rewrite the narrow glob to the broad one in place. The check is an
-		// exact string match so it stays a no-op once migrated and won't
-		// disturb users who deliberately scoped their compile glob.
+		// One-shot migration: widen Assets\Scripts\**\*.cs glob to Assets\**\*.cs so scripts outside Scripts/ compile.
 		if (File::Exists(project.CsprojPath)) {
 			std::string csproj = File::ReadAllText(project.CsprojPath);
 			constexpr std::string_view oldGlob = "<Compile Include=\"Assets\\Scripts\\**\\*.cs\" />";
@@ -1647,12 +1582,7 @@ endforeach()
 			}
 		}
 
-		// Refresh IndexDefines.props so the file on disk matches what the
-		// project just deserialised. This both writes the props file (if
-		// missing) and patches the .csproj to import it (one-shot migration
-		// for projects pre-dating the mechanism). Save() also calls this,
-		// but doing it here too means a fresh open already shows the right
-		// active branches in VS without requiring an explicit save first.
+		// Keep IndexDefines.props in sync on open (not just on Save) so VS shows correct active branches immediately.
 		(void)project.WriteManagedDefinesProps();
 
 		return project;
@@ -1681,10 +1611,7 @@ endforeach()
 		std::filesystem::path packageDir = std::filesystem::path(project.PackagesDirectory) / "Index-ScriptCore";
 		std::filesystem::create_directories(packageDir);
 
-		// Atomic-ish install: if the PDB copy fails after the DLL copy succeeds we
-		// leave a half-installed package on disk that "looks" valid to the next
-		// launch but has no symbols. Wrap both copies; on failure, remove the
-		// package directory so the next ConfigurePackages call starts clean.
+		// Wrap both copies so a partial failure (DLL ok, PDB failed) leaves no half-installed package.
 		try {
 			if (std::filesystem::exists(scriptCoreOutput))
 				std::filesystem::copy_file(scriptCoreOutput, packageDir / "Index-ScriptCore.dll", std::filesystem::copy_options::overwrite_existing);
@@ -1753,14 +1680,36 @@ endforeach()
 			(void)File::WriteAllText(project.ProjectFilePath, Json::Stringify(root, true));
 		}
 
-		// Generate starter scene
+		// Generate starter scene. Pre-seeds a Camera2D entity so a fresh
+		// project renders something — the deserializer no longer auto-injects
+		// a camera, so the template has to carry one explicitly.
 		{
 			ReportCreateProgress(progressCallback, 0.56f, "Generating starter scene...");
 			Json::Value sceneRoot = Json::Value::MakeObject();
 			sceneRoot.AddMember("version", 1);
 			sceneRoot.AddMember("name", project.StartupScene);
 			sceneRoot.AddMember("systems", Json::Value::MakeArray());
-			sceneRoot.AddMember("entities", Json::Value::MakeArray());
+
+			Json::Value transform2D = Json::Value::MakeObject();
+			transform2D.AddMember("posX", 0.0);
+			transform2D.AddMember("posY", 0.0);
+			transform2D.AddMember("rotation", 0.0);
+			transform2D.AddMember("scaleX", 1.0);
+			transform2D.AddMember("scaleY", 1.0);
+
+			Json::Value camera2D = Json::Value::MakeObject();
+			camera2D.AddMember("orthoSize", 5.0);
+			camera2D.AddMember("zoom", 1.0);
+
+			Json::Value cameraEntity = Json::Value::MakeObject();
+			cameraEntity.AddMember("name", std::string("Camera"));
+			cameraEntity.AddMember("Transform2D", std::move(transform2D));
+			cameraEntity.AddMember("Camera2D", std::move(camera2D));
+
+			Json::Value entities = Json::Value::MakeArray();
+			entities.Append(std::move(cameraEntity));
+			sceneRoot.AddMember("entities", std::move(entities));
+
 			const SceneSerializationFormat starterFormat =
 				project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary
 					? SceneSerializationFormat::Binary
@@ -1955,11 +1904,7 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		// Packaged-SDK distributions ship headers + Index-Engine.lib but no
-		// premake5.lua, because regenerating the engine solution requires the
-		// full engine source tree. Treat this as a successful no-op rather
-		// than an error — the user's project still builds via its own
-		// generated CMakeLists.txt against the bundled SDK.
+		// Packaged SDK ships without premake5.lua; skip regen silently — project still builds via CMakeLists.txt.
 		std::error_code premakeLuaEc;
 		const std::filesystem::path premakeLua = std::filesystem::path(engineRoot) / "premake5.lua";
 		if (!std::filesystem::exists(premakeLua, premakeLuaEc) || premakeLuaEc) {
@@ -1976,13 +1921,7 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		// Skip the premake invocation when none of its inputs have changed
-		// since the last successful regen. Premake rewrites all .vcxproj
-		// timestamps unconditionally — even on a no-op run — which trips
-		// MSBuild's FastUpToDateCheck and forces Visual Studio to recompile
-		// the entire engine solution on every project open. The hash covers
-		// every file premake reads (project json, package manifests, all
-		// .lua) so a genuine change still triggers regen.
+		// Skip premake when inputs unchanged: premake always rewrites .vcxproj timestamps, tripping VS FastUpToDateCheck.
 		const std::filesystem::path engineRootPath(engineRoot);
 		const std::filesystem::path projectRootPath(projectRootDir);
 		const std::filesystem::path solutionPath = engineRootPath / "Index.sln";
@@ -2160,14 +2099,8 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		// MSBuild solution-level project targets have a precise syntax:
-		//   /t:<EscapedProjectName>:<TargetName>
-		// where dots/spaces/etc. in the project name are replaced with '_'.
-		// Without the ":Build" suffix MSBuild treats <EscapedProjectName>
-		// as a bare target name and tries to invoke it on every project in
-		// the solution — which fails MSB4057 on every project that doesn't
-		// happen to define a target with that name (i.e. all of them).
-		// See https://learn.microsoft.com/en-us/visualstudio/msbuild/how-to-build-specific-targets-in-solutions-by-using-msbuild-exe
+		// MSBuild solution targets: dots in project name must be '_'; ":Build" suffix required or MSBuild
+		// treats the name as a bare target on every project (MSB4057 on all of them).
 		auto escapeTarget = [](const std::string& t) {
 			std::string out = t;
 			std::replace(out.begin(), out.end(), '.', '_');
@@ -2243,17 +2176,8 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		// Build local packages only — relinking Index-Engine.dll would fail (loaded by caller).
-		// We invoke MSBuild directly on each project file rather than going through
-		// solution-level targets (-t:Pkg_X:Build), because MSBuild's flag parser
-		// splits on the first ':' of -t: and treats the rest as a literal target
-		// name, defeating the documented "project:target" escape syntax. Building
-		// the .csproj/.vcxproj directly sidesteps that entirely and also matches
-		// how the eventual shipped-binary flow will work (no Index.sln involved).
-		// TODO(registry-v2): for end-user binaries that don't have the engine
-		// source / Index.sln, replace this whole regen+build path with: generate
-		// a self-contained per-package .csproj at install time referencing the
-		// shipped Index-ScriptCore.dll, then `dotnet build` it.
+		// Build each project file directly (not via solution -t: targets) because MSBuild's flag parser
+		// splits on the first ':' and defeats the project:target escape, causing MSB4057 on all projects.
 		const std::filesystem::path generatedRoot =
 			std::filesystem::path(GetEngineRootDir()) / "premake" / "generated";
 
@@ -2289,9 +2213,6 @@ public class GameScript : EntityScript
 			return result;
 		}
 
-		// Build each project file in turn. Stop on first failure so the error
-		// dialog shows the actual failing project's output rather than a long
-		// tail of "skipped because previous failed" noise from msbuild.
 		std::string combinedOutput;
 		bool allSucceeded = true;
 		int lastExitCode = 0;

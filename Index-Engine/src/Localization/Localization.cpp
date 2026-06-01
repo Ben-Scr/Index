@@ -284,10 +284,6 @@ namespace Index::Localization {
 			}
 		}
 
-		// Builds the AvailableLanguages list from the union of {installed
-		// files} ∪ {manifest entries}, with each language tagged Installed /
-		// Available based on whether a local file was found. Stable English-
-		// first ordering keeps the dropdown predictable.
 		void RebuildLanguageList() {
 			State& s = S();
 			s.AvailableLanguages.clear();
@@ -300,9 +296,6 @@ namespace Index::Localization {
 				}
 			};
 
-			// Installed files first — their displayName comes from the file's
-			// meta block (preferred over manifest for community translations
-			// dropped into the user dir).
 			std::unordered_map<std::string, std::string> displayNames;
 			std::unordered_map<std::string, std::filesystem::path> files;
 			ScanFilesIn(BundledLocalizationDir(), files, displayNames);
@@ -373,16 +366,7 @@ namespace Index::Localization {
 			IDX_CORE_INFO_TAG("Localization", "Language switched to '{}'.", code);
 		}
 
-		// Kicks off a font-only download when the chosen language is already
-		// installed locally (e.g. its .json ships in the bundled IndexAssets)
-		// but the merged CJK font isn't on disk yet. Without this, picking a
-		// CJK language whose JSON is bundled would never trigger the font
-		// fetch — the download path in RequestLanguageDownload() only runs
-		// for languages with Status == Available. No-op when there is no
-		// CJK requirement, the font already exists at the user-dir path,
-		// the manifest has no CJK entry, or another download is in flight.
-		// Sets restartRequired so the UI knows the ImGui atlas has already
-		// been baked without the glyph ranges and needs a relaunch.
+		// Downloads the CJK font for an already-installed language whose JSON ships bundled (skipped by the normal Available-only download path).
 		void EnsureCjkFontForInstalledLanguage(const std::string& code) {
 			State& s = S();
 
@@ -650,11 +634,6 @@ namespace Index::Localization {
 		const DownloadStatusSnapshot snap = s.Downloader.Status();
 		if (snap.Code.empty() || !snap.Finished) return;
 
-		// The downloader has finished a job. Settle its results into the
-		// service's state, then clear the pending switch so future polls
-		// don't re-fire — but leave the snapshot in place so the UI can
-		// keep showing "Done"/"Restart required" until the next download
-		// starts.
 		const std::string code = snap.Code;
 		const bool success = snap.Success;
 

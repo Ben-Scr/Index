@@ -13,16 +13,6 @@
 
 namespace Index {
 
-	// Map from managed-visible u64 handle id -> live JobHandle + the
-	// managed-supplied context + release callback. The map is the bridge
-	// between the managed "handle is a stable u64 I can pass around" view
-	// and the native "JobHandle wraps a shared_ptr to a control block"
-	// view.
-	//
-	// Single mutex is adequate at job-schedule cadence (a few k/sec on
-	// a busy frame, never on a per-iteration hot path). If contention
-	// ever shows up here, switch to a sharded map or a
-	// concurrent-hash-map; the binding contract is unchanged.
 	struct JobBindingEntry {
 		JobHandle handle;
 		void* context;

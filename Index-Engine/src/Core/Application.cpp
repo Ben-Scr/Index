@@ -55,13 +55,7 @@ namespace Index {
 		: m_SceneManager(std::make_unique<SceneManager>())
 		, m_FixedUpdateAccumulator{ 0 }
 	{
-		// Process-wide singleton. Constructing a second Application while the
-		// first is still alive would silently rebind s_Instance and leave the
-		// original instance reachable only through whatever pointers callers
-		// happen to hold — every subsystem keyed off Application::Get()
-		// (input, scripting, scene manager) would start dispatching to the
-		// new instance mid-frame. IDX_VERIFY is on in all build configs so
-		// this catches the misuse in release too.
+		// A second Application would silently rebind s_Instance; all subsystems keyed off Get() would dispatch to the new instance mid-frame.
 		IDX_VERIFY(s_Instance == nullptr,
 			"Application: a second instance was constructed while one is still alive — "
 			"only one Application is permitted per process.");
@@ -70,22 +64,12 @@ namespace Index {
 	}
 
 	Renderer2D* Application::GetRenderer2D() {
-		// Today Renderer2D is the only IRenderer impl installed during
-		// Initialize. When alternate backends (NullRenderer, custom 3D) become
-		// installable, this static_cast is the documented coupling point —
-		// callers that bypass IRenderer to reach Renderer2D-specific features
-		// must tolerate a nullptr return.
 		return static_cast<Renderer2D*>(m_Renderer2D.get());
 	}
 
 	Application::~Application()
 	{
-		// Defensive teardown for paths that destroyed the Application without
-		// ever calling Run() (e.g. an Initialize-time exception in a non-Run
-		// host or a unit test). Run()'s normal exit already calls Shutdown,
-		// which sets m_IsShuttingDown back to false at the end — so we use
-		// (window-still-alive AND not-currently-shutting-down) as the signal
-		// that no Shutdown has happened yet.
+		// Guard for hosts that never call Run() (unit tests, init-time exceptions); Run()'s normal path already calls Shutdown which resets m_IsShuttingDown.
 		if (!m_IsShuttingDown && m_Window) {
 			Shutdown(false);
 		}
@@ -137,10 +121,6 @@ namespace Index {
 			}
 			m_LastFrameTime = Clock::now();
 
-			// Headless (no m_Window): the loop exits on RequestQuit / Quit alone,
-			// since there's no WindowClose event to listen for. The window-close
-			// check is short-circuited when m_Window is null so the same loop
-			// drives both modes.
 			while (!m_ShouldQuit && !(m_Window && m_Window->ShouldClose())) {
 				const float targetFps = Max(GetTargetFramerate(), 0.0f);
 				DurationChrono targetFrameTime{};
@@ -154,11 +134,7 @@ namespace Index {
 					? m_LastFrameEndTime
 					: now;
 
-				// CPU idle for runtime fps cap. Relies on 1ms timer res from timeBeginPeriod in Initialize().
-				// The "no vsync OR paused" predicate becomes "always (when capping)" in headless mode
-				// because there's no swap-chain vsync to defer to — the explicit null guard keeps the
-				// short-circuit safe for callers that flipped EnableWindow=false without using the
-				// Headless() factory (which also clears UseTargetFrameRateForMainLoop).
+				// Headless has no swap-chain vsync so the cap runs unconditionally when UseTargetFrameRateForMainLoop is set.
 				if (m_Configuration.UseTargetFrameRateForMainLoop && targetFps > 0.0f && (!m_Window || !m_Window->IsVsync() || IsEnginePaused()))
 				{
 					auto const nextFrameTime = m_LastFrameTime + targetFrameTime;
@@ -185,12 +161,7 @@ namespace Index {
 
 					m_Time.Update(deltaTime);
 
-					// Skip the entire input tick in headless mode: PollGamepads
-					// (called from Input::Update) hits glfwGetGamepadState, which
-					// crashes when GLFW wasn't initialised. Key / mouse / axis
-					// state stays at its zero-initialised defaults, so any script
-					// that reads Input.GetKey(...) just sees "nothing pressed" —
-					// the right answer for a headless run.
+					// Headless: skip input entirely — Input::Update calls glfwGetGamepadState which crashes without a GLFW window.
 					if (m_Window) {
 						// Snapshot prev-state BEFORE polling so GetKeyDown/Up reflect events from this frame.
 						m_Input.Update();
@@ -199,23 +170,9 @@ namespace Index {
 						// frame's keys, not last frame's.
 						m_Input.PostPoll();
 					}
-					// Do NOT TryCompleteQuitRequest here — it must run AFTER
-					// BeginFrame's OnPreRender pass so layers (e.g. the
-					// editor's dirty-scene save-before-quit dialog) get to
-					// see Application::IsQuitRequested() and call CancelQuit
-					// before the request auto-completes. RequestQuit calls
-					// originating from a layer's previous-frame OnPreRender
-					// (Application > Quit menu, custom hotkeys, etc.) would
-					// otherwise be completed at the very top of the next
-					// frame — before the intercept has a chance to fire —
-					// because m_QuitRequestFrame < current frame count by
-					// then. The end-of-frame call at the bottom of the loop
-					// is sufficient.
+					// MUST NOT TryCompleteQuitRequest here — must run AFTER OnPreRender so layers (save-before-quit dialog) can call CancelQuit before the request auto-completes.
 
-					// Scale at the accumulator input so TimeScale controls step *frequency*.
-					// The step quantum stays unscaled — Box2D's solver needs a constant dt
-					// for stability, and per-call dt staying fixed prevents script integration
-					// (vel * Time.FixedDeltaTime) from compounding with the changed call rate.
+					// TimeScale controls step frequency via the accumulator; the step quantum stays unscaled so Box2D's solver gets a constant dt.
 					m_FixedUpdateAccumulator += m_Time.GetDeltaTime();
 					const double fixedDt = m_Time.GetUnscaledFixedDeltaTime();
 					if (fixedDt <= 0.0) {
@@ -265,11 +222,6 @@ namespace Index {
 					}
 
 					{
-						// Read Scene's cached live-entity counter instead of
-						// iterating entt's entity storage every frame. The
-						// previous scan was O(all entities) inside the
-						// profiler block; on a 10k-entity scene it dominated
-						// the profile sample it was meant to report on.
 						std::size_t totalEntities = 0;
 						if (m_SceneManager) {
 							m_SceneManager->ForeachLoadedScene([&totalEntities](Scene& scene) {
@@ -325,12 +277,6 @@ namespace Index {
 		// 1ms timer res for accurate sleep_until in the frame-cap path. Paired with timeEndPeriod in Shutdown.
 		timeBeginPeriod(1);
 #endif
-		// Report the configured entity cap once at startup. The bit-split is
-		// chosen at compile time via index-project.json's `entityBits` field
-		// (premake bakes it into the engine TUs as -DINDEX_ENTITY_BITS=N).
-		// Surfacing the cap here lets users sanity-check the build matches
-		// the setting they expected, especially after editing the project
-		// JSON manually.
 		{
 			using EntityTraits = entt::entt_traits<EntityHandle>;
 			constexpr uint64_t kEntityCap = static_cast<uint64_t>(EntityTraits::entity_mask);
@@ -349,22 +295,10 @@ namespace Index {
 #endif
 
 		Timer timer = Timer();
-		// JobSystem before any other subsystem so init-time fan-out
-		// (e.g. parallel asset scans) is available. The pool itself is
-		// cheap to spin up — milliseconds — and other shutdown paths
-		// rely on it still being alive when they tear down.
-		// Worker count comes from ApplicationConfig (default -1 = auto,
-		// matching the previous hardcoded behavior). Game code can
-		// override via IDX_GAME's config; scripts can override at boot
-		// via JobSystem.Configure on the C# side.
 		JobSystem::Initialize(JobSystemSpec{ m_Configuration.JobSystemWorkerCount });
 		IDX_INFO_TAG("JobSystem", "Initialization took " + StringHelper::ToString(timer));
 
 		timer.Reset();
-		// FrameArenas backs per-frame scratch (Renderer2D, Gizmo, etc.) and
-		// a persistent buffer for cross-frame engine scratch. Initialize
-		// before any subsystem that might use them; both capacities come
-		// from ApplicationConfig and either can be 0 to opt out.
 		FrameArenas::Initialize(FrameArenasSpec{
 			m_Configuration.FrameArenaCapacityBytes,
 			m_Configuration.PersistentArenaCapacityBytes,
@@ -383,22 +317,10 @@ namespace Index {
 			RenderApi::Init(GLInitSpecifications(Color::Background(), GLCullingMode::Back));
 			IDX_INFO_TAG("RenderApi", "Initialization took " + StringHelper::ToString(timer));
 
-			// RenderApi::Init's ConfigureSurface resets the cached viewport
-			// to full surface dims; without this nudge, frame 0 would
-			// ignore the aspect lock and render stretched until the GLFW
-			// framebuffer-size callback fires (which it doesn't do at
-			// startup — only on subsequent resizes or focus events). Push
-			// the sub-rect now so the very first frame the runtime ships
-			// already letterboxed.
+			// MUST call after RenderApi::Init: ConfigureSurface resets the viewport to full surface dims; the GLFW framebuffer-size callback doesn't fire at startup so frame 0 would render stretched without this.
 			m_Window->ResyncViewportAfterRenderApiInit();
 		}
 		else {
-			// Headless mode: force off every subsystem that needs a window
-			// or a GL context, even if the user explicitly enabled them.
-			// Each override logs a warning so the silent demotion is visible
-			// in the log. ApplicationConfig::Headless() already clears these,
-			// but a caller who flipped EnableWindow=false on a default-
-			// constructed config still gets a working build.
 			auto disable = [](bool& flag, const char* name) {
 				if (flag) {
 					IDX_WARN_TAG("Application", "{} disabled because EnableWindow=false (headless mode).", name);
@@ -414,10 +336,7 @@ namespace Index {
 			IDX_INFO_TAG("Application", "Running headless (EnableWindow=false): no window, no graphics backend.");
 		}
 
-		// TextureManager must come before Renderer2D: Renderer2D::Initialize
-		// hard-asserts that the default Square texture is registered (it's
-		// the unresolved-sprite fallback), and that registration happens
-		// inside TextureManager::Initialize -> LoadDefaultTextures.
+		// MUST precede Renderer2D: Renderer2D::Initialize hard-asserts the default Square texture is registered (done in TextureManager::Initialize -> LoadDefaultTextures).
 		if (m_Configuration.EnableTextureManager) {
 			timer.Reset();
 			TextureManager::Initialize();
@@ -432,10 +351,6 @@ namespace Index {
 
 		if (m_Configuration.EnableRenderer2D) {
 			timer.Reset();
-			// Construct the concrete default renderer to do impl-specific
-			// configuration, then move into the IRenderer-typed member. Packages
-			// that want to substitute a different IRenderer can do so by
-			// installing it BEFORE Application reaches this point (future hook).
 			auto renderer = std::make_unique<Renderer2D>();
 			renderer->Initialize();
 			renderer->SetSceneProvider([this](const std::function<void(Scene&)>& fn) {
@@ -471,20 +386,13 @@ namespace Index {
 			IDX_INFO_TAG("PhysicsSystem", "Initialization took " + StringHelper::ToString(timer));
 		}
 
-		// FontManager piggy-backs on Renderer2D's GL context but lives on
-		// the same enable flag as TextureManager (both are GPU asset
-		// caches). No extra config knob — text without a renderer is
-		// pointless anyway.
 		if (m_Configuration.EnableTextureManager && m_Configuration.EnableRenderer2D) {
 			timer.Reset();
 			FontManager::Initialize();
 			IDX_INFO_TAG("FontManager", "Initialization took " + StringHelper::ToString(timer));
 		}
 
-		// Register the rest of IndexAssets/ as built-in assets so the
-		// inspector's reference picker can offer engine-shipped icons,
-		// audio, etc. via its eye toggle. Runs AFTER FontManager so the
-		// default font's hand-picked GUID wins over the auto-scan.
+		// MUST run after FontManager so the default font's hand-picked GUID wins over the auto-scan.
 		{
 			timer.Reset();
 			const std::string indexAssetsRoot = Path::ResolveIndexAssets("");
@@ -517,25 +425,10 @@ namespace Index {
 		IDX_INFO_TAG("SceneManager", "Initialization took " + StringHelper::ToString(timer));
 		ConfigureLayers();
 
-		// Preload-frame: render whatever layers ConfigureLayers pushed
-		// (typically a splash overlay in shipped builds) BEFORE the
-		// potentially seconds-long blocking InitializeStartupScenes call
-		// below. Without this, the user stares at a black window for the
-		// duration of every Awake/Start in the startup scene; the splash
-		// only appeared after scenes had finished loading. Render twice:
-		// the first frame initializes ImGui's context-bound resources and
-		// often draws nothing visible, the second actually paints.
+		// Render twice before startup scenes load so the splash is visible immediately; first frame initialises ImGui resources, second actually paints.
 		RenderOnceForRefresh();
 		RenderOnceForRefresh();
 
-		// Apply the project's custom cursor images (always-on default
-		// + UI hover variant). UIEventSystem flips between the two each
-		// frame via Window::SetCursorOverUI; loading them here once
-		// avoids re-decoding the texture per swap. Cursor support runs
-		// in both editor and shipped runtime so authored projects get
-		// the same look in either host. Skipped entirely when headless
-		// (no window to apply the cursor to, no TextureManager to load
-		// the image through).
 		if (m_Window) {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			auto applyCursor = [&](const std::string& projectPath, void (Window::*setter)(const Texture2D*))
@@ -563,23 +456,11 @@ namespace Index {
 		if (m_Configuration.SetWindowIcon && m_Window) {
 			m_Window->SetWindowIconFromResource();
 
-			// AppIconPath is the icon for the SHIPPED game's window (and
-			// what the editor's build pipeline embeds into the runtime
-			// .exe). Applying it here in the editor would replace the
-			// editor's own window icon with the user's game icon, which
-			// isn't what the project setting promises — the editor should
-			// keep its embedded RT_ICON regardless of which project is
-			// open. Restrict the load to the runtime host.
+			// Skip in editor: applying AppIconPath would replace the editor's own embedded RT_ICON with the user's game icon.
 			if (!IsEditor()) {
 				IndexProject* project = ProjectManager::GetCurrentProject();
 				if (project && !project->AppIconPath.empty()) {
-					// AppIconPath is stored project-relative (e.g.
-					// "Assets/icon.png"). TextureManager::ResolveTexturePath
-					// only checks CWD / engine IndexAssets / <exe>/Assets/Textures,
-					// none of which equal "<project>/Assets/icon.png" once
-					// the runtime is launched from anywhere other than the
-					// project dir. Prepend the project root explicitly so
-					// the load works regardless of the working directory.
+					// Prepend project root: TextureManager resolvers don't cover project-relative paths when the runtime launches from another directory.
 					std::filesystem::path iconPath(project->AppIconPath);
 					if (!iconPath.is_absolute()) {
 						iconPath = std::filesystem::path(project->RootDirectory) / project->AppIconPath;
@@ -598,17 +479,6 @@ namespace Index {
 			PackageHost::LoadAll();
 		}
 
-		// Splash-gated startup: when the splash overlay is currently
-		// attached (runtime hosts opt in via project.SplashScreen.Enabled
-		// and push the layer in ConfigureLayers), skip the heavy startup
-		// trio here and let TickDeferredStartupScenes drain it once the
-		// splash pops itself at the end of its timeline. The main loop
-		// will tick the splash's OnUpdate / OnPreRender each frame in
-		// the meantime, so the user sees the splash play through cleanly
-		// before any scene-load stutter. Hosts without a splash (editor,
-		// or runtime with SplashScreen disabled) load synchronously here
-		// — the m_DeferredStartupScenes flag stays false and the gate
-		// no-ops every frame.
 		if (m_SplashLayerActive) {
 			m_DeferredStartupScenes = true;
 			IDX_INFO_TAG("Application", "Startup scene load deferred until splash completes.");
@@ -616,10 +486,6 @@ namespace Index {
 		else {
 			m_SceneManager->InitializeStartupScenes();
 			ScriptEngine::RaiseApplicationStart();
-			// Baseline for Time.TimeSinceStartup / Time.RealtimeSinceStartup —
-			// excludes window/GL/scene/package init from the "since game start" clock.
-			// In editor preview the editor calls MarkGameStart() again on play-mode
-			// entry so each play session starts at zero.
 			m_Time.MarkGameStart();
 		}
 	}
@@ -637,16 +503,9 @@ namespace Index {
 			m_SceneManager->InitializeStartupScenes();
 		}
 		ScriptEngine::RaiseApplicationStart();
-		// Reset t=0 here rather than at the bottom of Initialize: with
-		// the splash sitting in front of the user for several seconds,
-		// counting that time in Time.timeSinceStartup would make script
-		// timers (cooldowns, fade-ins) start mid-elapsed. Marking the
-		// start now means t=0 == "first frame the player actually sees".
+		// MarkGameStart after splash so t=0 equals "first frame the player sees", not the start of the splash sequence.
 		m_Time.MarkGameStart();
-		// Drop the leftover dt-jump from the splash period: without this,
-		// the next BeginFrame would feed several seconds' worth of dt into
-		// every system at once, breaking Box2D stability and any unscaled-
-		// dt animation that tweened against actual elapsed time.
+		// Reset time points to avoid a multi-second dt spike on the first post-splash frame (would break Box2D and unscaled-dt animations).
 		ResetTimePoints();
 	}
 
@@ -683,11 +542,7 @@ namespace Index {
 				}
 			}
 
-			// Splash gate: when the splash layer just popped itself in
-			// the OnUpdate dispatch above, this drains the deferred
-			// startup-scene load so the very next render pass sees a
-			// loaded scene. Runs BEFORE UpdateScenes / OnPreRenderScenes
-			// because both depend on the active scene actually existing.
+			// MUST run before UpdateScenes/OnPreRenderScenes which require the active scene to exist.
 			TickDeferredStartupScenes();
 
 			if (gameplayActive && m_SceneManager) {
@@ -738,11 +593,6 @@ namespace Index {
 
 		m_IsRenderingFrame = false;
 
-		// Wipe per-frame scratch after rendering completes. O(1) bump-
-		// pointer reset; pointers handed out during this frame become
-		// dangling here, which is the contract callers opted into. Runs
-		// every frame including the paused branch — paused frames may
-		// still have allocated scratch via OnPaused / UI layers.
 		FrameArenas::OnEndFrame();
 	}
 
@@ -758,12 +608,7 @@ namespace Index {
 		dispatcher.Dispatch<WindowResizeEvent>([this](WindowResizeEvent& e) {
 			m_IsMinimized = e.GetWidth() == 0 || e.GetHeight() == 0;
 			if (!m_IsMinimized) {
-				// Recompute every Camera2DComponent's projection against the
-				// new aspect. m_ProjMat is cached and only rebuilt by
-				// UpdateProj(); without this, runtime sprites stretch on
-				// resize because the swap chain widened but the camera kept
-				// the launch-time ortho. (Editor's game-view path resets the
-				// viewport per-frame, so this call is transient there.)
+				// Update camera projections: m_ProjMat is cached and not rebuilt automatically; without this sprites stretch on resize.
 				if (m_SceneManager) {
 					m_SceneManager->ForeachLoadedScene([](Scene& scene) {
 						auto view = scene.GetRegistry().view<Camera2DComponent>();
@@ -772,11 +617,6 @@ namespace Index {
 						}
 					});
 				}
-				// Forward to managed scripts so `Index.Window.OnResize`
-				// subscribers fire the same frame GLFW delivered the new
-				// framebuffer size. Skipped when minimised (zero-area
-				// frame) so scripts don't see a transient 0x0 just because
-				// the user dragged the window down to the taskbar.
 				ScriptEngine::RaiseWindowResize();
 			}
 			return false;
@@ -887,10 +727,6 @@ namespace Index {
 			// Explicit gizmo pass — used to be a hidden draw inside EndFrame.
 			// Now declared as its own step in the render pipeline.
 			if (Gizmo::GetShowInRuntime()) {
-				// Resolve VP from the runtime main camera. The renderer no
-				// longer reaches into Camera2DComponent::Main() implicitly
-				// (per audit H3) — callers thread the VP they want gizmos
-				// projected against. No camera = no draw.
 				if (Camera2DComponent* cam = Camera2DComponent::Main()) {
 					INDEX_TRY_CATCH_LOG(m_GizmoRenderer2D->RenderWithVP(cam->GetViewProjectionMatrix(), GizmoLayerMask::Shared));
 				}
@@ -903,12 +739,7 @@ namespace Index {
 			m_Window->SwapBuffers();
 		}
 
-		// Post-Submit hook. SwapBuffers triggers WebGPUBackend::Present,
-		// which runs Queue::Submit. By the time control returns here, the
-		// command buffer for this frame has been consumed by Dawn and the
-		// GPU work is in flight. This is the safe place to issue any
-		// MapAsync calls that would otherwise have raced against Submit
-		// (e.g. GpuTimer's deferred readback maps).
+		// Safe to issue MapAsync here: SwapBuffers already ran Queue::Submit, so these reads won't race against the current frame's command buffer.
 		if (Renderer2D* r2d = GetRenderer2D()) {
 			INDEX_TRY_CATCH_LOG(r2d->OnAfterPresent());
 		}
@@ -982,11 +813,7 @@ namespace Index {
 	void Application::ResetTimePoints() {
 		m_LastFrameTime = Clock::now();
 		m_FixedUpdateAccumulator = 0;
-		// Reset m_LastFrameEndTime too: leaving it at the prior frame's stamp meant
-		// the next frame's vsync-bucket calculation (frameStart - m_LastFrameEndTime)
-		// treated the entire delta-spike interval as "vsync wait time", emitting a
-		// misleading multi-second VSync profile mark and dragging the residual
-		// 'Others' bucket into negative-clamped-to-0 territory.
+		// Reset to avoid treating the delta-spike interval as vsync wait time on the next frame's profiler bucket.
 		m_LastFrameEndTime = Clock::time_point{};
 	}
 
@@ -1010,11 +837,6 @@ namespace Index {
 			}
 		}
 
-		// Snapshot raw pointers — layer OnDetach may pop other layers
-		// (legitimate during shutdown), and we need to detach each one
-		// exactly once regardless of mutations. The dispatch guard makes
-		// any pop deferred for the duration of the loop, so popped layer
-		// memory stays live until we're done iterating.
 		{
 			LayerDispatchGuard detachGuard(m_LayerStack);
 			std::vector<Layer*> detachOrder;
@@ -1033,12 +855,7 @@ namespace Index {
 		m_EventBus.Clear();
 		m_LayerStack.Clear();
 
-		// Each subsystem shutdown is guarded so that a throw doesn't skip
-		// the rest. Critically, every owning unique_ptr is .reset() in the
-		// same step as its Shutdown — otherwise an exception would leave
-		// the pointer non-null and a re-entrant render path (e.g. a frame
-		// triggered by a hook firing during teardown) could call into a
-		// half-shutdown object.
+		// Each unique_ptr is reset() in the same step as Shutdown — a throw must not leave the pointer non-null so a re-entrant path can't call into a half-torn object.
 		auto guardedShutdownStatic = [](const char* name, auto&& fn) {
 			try { fn(); }
 			catch (const std::exception& e) {
@@ -1057,10 +874,6 @@ namespace Index {
 		// Order matters: subsystems that hold package callbacks tear down BEFORE PackageHost::UnloadAll.
 		if (m_SceneManager) {
 			guardedShutdownStatic("SceneManager", [&]{ m_SceneManager->Shutdown(); });
-			// Owned unique_ptr: null it like guardedShutdownOwned does. Otherwise
-			// the non-reload exit path leaves m_SceneManager pointing at an
-			// already-shut-down object, and ~Application's second Shutdown(false)
-			// would call SceneManager::Shutdown a second time.
 			m_SceneManager.reset();
 		}
 		if (ScriptEngine::IsInitialized()) guardedShutdownStatic("ScriptEngine", []{ ScriptEngine::Shutdown(); });
@@ -1088,11 +901,6 @@ namespace Index {
 
 		m_Window.reset();
 
-		// Release FrameArenas backing buffers. Pairs with the Initialize
-		// call. After this, Frame()/Persistent() still return valid
-		// references but with zero capacity, so any late callers fail
-		// gracefully (Allocate returns nullptr) instead of touching freed
-		// memory.
 		FrameArenas::Shutdown();
 
 		if (JobSystem::IsInitialized()) {

@@ -17,14 +17,6 @@ namespace Index {
 
 #define INDEX_DOTNET_UNMANAGEDCALLERSONLY_METHOD reinterpret_cast<const Index::DotNetHostChar*>(-1)
 
-	/// <summary>
-	/// Encapsulates CoreCLR initialization via the hostfxr/.NET hosting API.
-	///
-	/// Usage:
-	///   1. Initialize(runtimeConfigPath) — boots the .NET runtime
-	///   2. LoadAssemblyAndGetFunction(...) — loads an assembly and gets a function pointer
-	///   3. Close() — shuts down the runtime
-	/// </summary>
 	class DotNetHost {
 	public:
 		DotNetHost() = default;

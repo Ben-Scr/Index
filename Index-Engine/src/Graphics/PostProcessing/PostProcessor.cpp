@@ -12,20 +12,6 @@
 #include <cstring>
 #include <unordered_map>
 
-// =============================================================================
-// PostProcessor — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// Shader handle, bind-group layout, pipeline layout, sampler, and the
-// per-target-format pipeline cache. Initialize() builds everything that
-// doesn't depend on the destination format; the per-format pipeline is
-// lazily built the first time a given format shows up at Blit().
-//
-// The blit shader is the embedded "postblit" entry in Shader.cpp's
-// k_BuiltIns registry — a single module with vs_main + fs_main that
-// generates a fullscreen triangle from vertex_index. No vertex buffer is
-// bound; the pipeline declares zero vertex buffers and the draw call
-// passes 3 vertices.
-// =============================================================================
 
 namespace Index {
 
@@ -35,17 +21,9 @@ namespace Index {
 		wgpu::PipelineLayout  PipelineLayout;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BlitPipelines;
 
-		// Effect passes (3-binding bgl: texture + sampler + per-effect
-		// uniform buffer). All single-source-texture effects share this
-		// layout. Per-effect pipelines and uniform buffers live below.
 		wgpu::BindGroupLayout EffectBindGroupLayout;
 		wgpu::PipelineLayout  EffectPipelineLayout;
 
-		// Per-effect pipeline caches (one entry per (effect, target format)
-		// tuple) and persistent uniform buffers. queue.WriteBuffer pushes
-		// fresh values at the start of each pass; the buffer slot is reused.
-		// Uniform sizes are in bytes; the matching WGSL struct layout lives
-		// in Shader.cpp::k_Post*WGSL.
 		wgpu::Buffer          VignetteUniformBuffer;            // 48 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> VignettePipelines;
 
@@ -61,18 +39,8 @@ namespace Index {
 		wgpu::Buffer          ColorGradingUniformBuffer;        // 48 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> ColorGradingPipelines;
 
-		// Bloom 4-pass pipeline. Threshold + blur share the 3-binding
-		// effect bgl; composite needs its own 4-binding bgl below
-		// because it samples two source textures (scene + blurred
-		// bloom). Each step has its own uniform buffer + pipeline cache.
-		//
-		// Horizontal and vertical blur get SEPARATE uniform buffers (not
-		// just two writes into one) because Dawn's queue.WriteBuffer
-		// uploader collapses successive writes to the same buffer in
-		// the same submission down to the most-recent value — recording
-		// the two passes back-to-back against one buffer would silently
-		// make both passes read the vertical direction, producing a
-		// streaky vertical-only bloom instead of a 2D Gaussian.
+		// Bloom blur H/V use SEPARATE uniform buffers: Dawn's queue.WriteBuffer collapses successive writes
+		// to the same buffer within one submission — sharing would make both passes read the vertical direction.
 		wgpu::Buffer          BloomThresholdUniformBuffer;      // 16 bytes
 		wgpu::Buffer          BloomBlurUniformBufferH;          // 16 bytes
 		wgpu::Buffer          BloomBlurUniformBufferV;          // 16 bytes
@@ -80,44 +48,19 @@ namespace Index {
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomThresholdPipelines;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomBlurPipelines;
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> BloomCompositePipelines;
-		// Composite pass binding layout: scene tex (0) + sampler (1) +
-		// bloom tex (2) + uniform (3). Built once in Initialize and
-		// reused across composite pipeline variants.
 		wgpu::BindGroupLayout BloomCompositeBgl;
 		wgpu::PipelineLayout  BloomCompositePipelineLayout;
-		// Full-resolution intermediates for the threshold + blur passes.
-		// Both RGBA16F so bright HDR pixels survive the round trip.
-		// Recreated to match the caller's dst size on demand. Bumped
-		// from half-res to full-res so the composite no longer reveals
-		// blocky bilinear-upsample patterns at the bloom halo edges —
-		// noticeable when the bloom radius is small relative to the
-		// viewport. Doubles the blur shader's per-pixel cost vs the
-		// previous half-res path.
 		Framebuffer           BloomTempA;
 		Framebuffer           BloomTempB;
 
 		wgpu::Buffer          PixelatedUniformBuffer;           // 16 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> PixelatedPipelines;
 
-		// Gaussian Blur — reuses the postbloomblur shader (math is
-		// identical to a separable Gaussian; only the use case differs).
-		// Runs at the dst's full resolution rather than half-res so the
-		// blurred image stays sharp instead of getting a low-res
-		// upsample mush look. Needs ONE temp FBO at dst dimensions for
-		// the H-pass output (V-pass writes to dst directly). Separate
-		// H/V uniform buffers for the same WriteBuffer-collapse reason
-		// as Bloom (see BloomBlurUniformBufferH/V).
 		wgpu::Buffer          GaussianBlurUniformBufferH;       // 16 bytes
 		wgpu::Buffer          GaussianBlurUniformBufferV;       // 16 bytes
 		std::unordered_map<wgpu::TextureFormat, wgpu::RenderPipeline> GaussianBlurPipelines;
 		Framebuffer           GaussianBlurTemp;                 // full-res RGBA16F
 
-		// Ping-pong intermediate FBOs used when more than one effect is
-		// enabled. Each effect samples the previous step's FBO and writes
-		// to the other one; the final enabled effect writes directly to
-		// the caller's view. Both are RGBA16F (same as Renderer2D's scene
-		// FBO) so Bloom's HDR signal survives the chain. Recreated on-
-		// demand to match the caller's dimensions inside EnsurePingPong.
 		Framebuffer           PingPongA;
 		Framebuffer           PingPongB;
 
@@ -152,9 +95,6 @@ namespace Index {
 			return false;
 		}
 
-		// Compile/look up the blit shader via the standard Shader wrapper.
-		// The vsPath stem "postblit" routes to k_PostBlitWGSL in Shader.cpp's
-		// built-in registry; fsPath is ignored under WebGPU.
 		m_BlitShader = std::make_unique<Shader>("postblit", "postblit");
 		if (!m_BlitShader->IsValid()) {
 			IDX_CORE_ERROR_TAG("PostProcessor",
@@ -163,9 +103,6 @@ namespace Index {
 			return false;
 		}
 
-		// Bind group layout — binding 0: sampled source texture (Float),
-		// binding 1: filtering sampler. Future effect pipelines will reuse
-		// this same layout plus add a binding 2 for per-effect uniforms.
 		wgpu::BindGroupLayoutEntry bglEntries[2]{};
 		bglEntries[0].binding = 0;
 		bglEntries[0].visibility = wgpu::ShaderStage::Fragment;
@@ -197,11 +134,6 @@ namespace Index {
 			return false;
 		}
 
-		// Linear sampler with Clamp-to-edge addressing. Linear filtering is
-		// the right default for blit / vignette / color grading; bloom's
-		// downsample/upsample passes will reuse this sampler. Clamp prevents
-		// the bloom blur's edge taps from wrapping around to the other side
-		// of the FBO.
 		wgpu::SamplerDescriptor samplerDesc{};
 		samplerDesc.label = "postprocess-linear-sampler";
 		samplerDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
@@ -219,10 +151,6 @@ namespace Index {
 			return false;
 		}
 
-		// Effect bind group layout — 3 entries (texture + sampler + uniform
-		// buffer). Shared by every single-source-texture effect pipeline.
-		// Future effects that need MORE inputs (e.g. bloom's composite
-		// reads two sources) will declare their own layout.
 		wgpu::BindGroupLayoutEntry effectBglEntries[3]{};
 		effectBglEntries[0].binding = 0;
 		effectBglEntries[0].visibility = wgpu::ShaderStage::Fragment;
@@ -260,9 +188,6 @@ namespace Index {
 			return false;
 		}
 
-		// Per-effect uniform buffers. Persistent across frames;
-		// queue.WriteBuffer pushes fresh values at the start of each pass.
-		// Size matches the matching WGSL struct in Shader.cpp.
 		auto makeUniformBuffer = [&](const char* label, uint64_t size) -> wgpu::Buffer {
 			wgpu::BufferDescriptor d{};
 			d.label = label;
@@ -302,11 +227,7 @@ namespace Index {
 			return false;
 		}
 
-		// Bloom composite bind group layout: scene texture (0), shared
-		// sampler (1), bloom texture (2), uniform (3). The 4-binding
-		// layout exists only here because every other effect samples a
-		// single source — composite is the only step that combines
-		// the scene with the blurred bloom inside one fragment shader.
+		// Bloom composite uses 4 bindings (scene + sampler + bloom + uniform) unlike all other effects.
 		wgpu::BindGroupLayoutEntry compositeBglEntries[4]{};
 		compositeBglEntries[0].binding = 0;
 		compositeBglEntries[0].visibility = wgpu::ShaderStage::Fragment;
@@ -348,7 +269,6 @@ namespace Index {
 			return false;
 		}
 
-		// Per-effect shaders — built-in entries in Shader.cpp's k_BuiltIns.
 		auto loadShader = [](const char* name) -> std::unique_ptr<Shader> {
 			auto s = std::make_unique<Shader>(name, name);
 			if (!s->IsValid()) {
@@ -375,9 +295,6 @@ namespace Index {
 			|| !m_BloomThresholdShader || !m_BloomBlurShader || !m_BloomCompositeShader
 			|| !m_PixelatedShader)
 		{
-			// Reset everything so we don't leave the PP in a half-initialised
-			// state. Initialize returning false makes Renderer2D fall through
-			// to the legacy direct-render path.
 			m_VignetteShader.reset();
 			m_ChromaticShader.reset();
 			m_GrainShader.reset();
@@ -397,7 +314,6 @@ namespace Index {
 	void PostProcessor::Shutdown() {
 		if (!m_Impl) return;
 
-		// Per-effect pipelines + uniform buffers.
 		m_Impl->VignettePipelines.clear();
 		m_Impl->ChromaticPipelines.clear();
 		m_Impl->GrainPipelines.clear();
@@ -422,18 +338,14 @@ namespace Index {
 		m_Impl->GaussianBlurUniformBufferH = nullptr;
 		m_Impl->GaussianBlurUniformBufferV = nullptr;
 
-		// Bloom composite layout + temp FBOs.
 		m_Impl->BloomCompositePipelineLayout = nullptr;
 		m_Impl->BloomCompositeBgl = nullptr;
 		m_Impl->BloomTempA.Destroy();
 		m_Impl->BloomTempB.Destroy();
 		m_Impl->GaussianBlurTemp.Destroy();
 
-		// Ping-pong FBOs.
 		m_Impl->PingPongA.Destroy();
 		m_Impl->PingPongB.Destroy();
-
-		// Layouts.
 		m_Impl->EffectPipelineLayout = nullptr;
 		m_Impl->EffectBindGroupLayout = nullptr;
 		m_Impl->BlitPipelines.clear();
@@ -442,8 +354,6 @@ namespace Index {
 		m_Impl->BindGroupLayout = nullptr;
 		m_Impl->Initialized = false;
 
-		// Per-effect shader handles (last so the pipelines above release
-		// their captured module refs first).
 		m_PixelatedShader.reset();
 		m_BloomCompositeShader.reset();
 		m_BloomBlurShader.reset();
@@ -457,9 +367,6 @@ namespace Index {
 	}
 
 	namespace {
-		// Per-target-format pipeline cache. The blit shader is format-agnostic
-		// in its WGSL but the wgpu::RenderPipeline bakes the color target
-		// format into the pipeline state; one cache entry per (dstFormat).
 		wgpu::RenderPipeline GetOrCreateBlitPipeline(
 			PostProcessor::Impl& impl,
 			const Shader& blitShader,
@@ -478,24 +385,12 @@ namespace Index {
 				return nullptr;
 			}
 
-			// Vertex stage — no vertex buffer; vs_main builds positions from
-			// @builtin(vertex_index) for a fullscreen triangle.
 			wgpu::VertexState vertexState{};
 			vertexState.module = look.Module;
 			vertexState.entryPoint = "vs_main";
 			vertexState.bufferCount = 0;
 			vertexState.buffers = nullptr;
 
-			// Fragment stage — output to the requested target format with
-			// straight-alpha blending so the intermediate's alpha channel
-			// drives compositing. The filled-pass intermediate is fully
-			// opaque (alpha=1 everywhere) so straight-alpha collapses to
-			// overwrite, matching the previous behaviour. The wireframe
-			// pass clears its intermediate to alpha=0 and writes opaque
-			// black at line pixels only — alpha-aware blit composites
-			// those edge pixels onto the caller while preserving whatever
-			// the caller already painted underneath (filled sprite + UI +
-			// gizmos in Mixed draw mode).
 			wgpu::BlendState blend{};
 			blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
 			blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
@@ -540,14 +435,6 @@ namespace Index {
 			return pipeline;
 		}
 
-		// Generic effect-pipeline factory. Every single-source-texture
-		// effect (Vignette, CA, Grain, Lens Distortion, Color Grading,
-		// Bloom) shares this pipeline shape: fullscreen-triangle vertex,
-		// per-effect fragment, EffectPipelineLayout (3-binding bgl),
-		// straight-alpha blend, no depth. The only thing varying per
-		// effect is the shader module + (for chained passes) the target
-		// color format. One pipeline per (effect, dstFormat) pair —
-		// cached in the per-effect unordered_map.
 		wgpu::RenderPipeline BuildEffectPipeline(
 			PostProcessor::Impl& impl,
 			const Shader& shader,
@@ -612,7 +499,6 @@ namespace Index {
 			return pipeline;
 		}
 
-		// Cache-aware wrapper around BuildEffectPipeline.
 		wgpu::RenderPipeline GetOrCreateEffectPipeline(
 			PostProcessor::Impl& impl,
 			const Shader& shader,
@@ -627,10 +513,6 @@ namespace Index {
 			return pipeline;
 		}
 
-		// Generic effect dispatch — writes the uniform, builds the bind
-		// group from (srcView, sampler, uniformBuffer), opens a render
-		// pass against dstView, draws the fullscreen triangle. Used by
-		// every per-effect Run* helper below.
 		void RunEffectPass(
 			PostProcessor::Impl& impl,
 			wgpu::RenderPipeline pipeline,
@@ -690,17 +572,12 @@ namespace Index {
 			pass.End();
 		}
 
-		// Convenience: resolve an FBO's color view via the engine pool.
 		wgpu::TextureView ViewOf(const Framebuffer& fb) {
 			WebGPUBackend::FramebufferLookup look =
 				WebGPUBackend::LookupFramebufferByFboId(fb.GetBackendId());
 			return look.Valid ? look.ColorView : nullptr;
 		}
 
-		// Ensure both ping-pong FBOs match the caller's dimensions. Both
-		// are RGBA16F so HDR signal survives end-to-end. Returns false if
-		// either Recreate fails (in which case the caller should fall
-		// through to Blit instead of attempting effect chains).
 		bool EnsurePingPongFbos(PostProcessor::Impl& impl, uint32_t w, uint32_t h) {
 			const int iw = static_cast<int>(w);
 			const int ih = static_cast<int>(h);
@@ -708,11 +585,6 @@ namespace Index {
 			if (!impl.PingPongB.Recreate(iw, ih, TextureFormat::RGBA16F)) return false;
 			return true;
 		}
-
-		// ── Per-effect Run helpers ──────────────────────────────────────
-		// Each packs the user-facing settings struct into the matching
-		// std140 uniform layout, picks/creates the cached pipeline for
-		// the destination format, then defers to RunEffectPass.
 
 		void RunVignettePass(PostProcessor::Impl& impl, const Shader& shader,
 			wgpu::TextureView srcView, wgpu::TextureView dstView,
@@ -812,10 +684,6 @@ namespace Index {
 				impl.ColorGradingUniformBuffer, u, sizeof(u), "postprocess-colorgrading");
 		}
 
-		// Bloom composite pipeline factory. Different from the standard
-		// effect pipeline because the composite shader samples two
-		// textures (scene + blurred bloom) and so uses a 4-binding bgl
-		// instead of the 3-binding effect bgl.
 		wgpu::RenderPipeline BuildBloomCompositePipeline(
 			PostProcessor::Impl& impl,
 			const Shader& shader,
@@ -836,8 +704,6 @@ namespace Index {
 			vertexState.entryPoint = "vs_main";
 			vertexState.bufferCount = 0;
 
-			// Standard SrcAlpha blend like the other effects so the
-			// composite respects any pre-existing alpha channel.
 			wgpu::BlendState blend{};
 			blend.color.srcFactor = wgpu::BlendFactor::SrcAlpha;
 			blend.color.dstFactor = wgpu::BlendFactor::OneMinusSrcAlpha;
@@ -889,8 +755,6 @@ namespace Index {
 			return p;
 		}
 
-		// Composite pass dispatcher — like RunEffectPass but binds two
-		// source textures (scene + bloom) into the bloom-composite bgl.
 		void RunBloomCompositePass(
 			PostProcessor::Impl& impl,
 			wgpu::RenderPipeline pipeline,
@@ -953,14 +817,6 @@ namespace Index {
 			pass.End();
 		}
 
-		// Bloom — 4 passes:
-		//   1. Threshold extract: srcView -> BloomTempA (half-res, RGBA16F)
-		//   2. Horizontal blur:   BloomTempA -> BloomTempB
-		//   3. Vertical blur:     BloomTempB -> BloomTempA
-		//   4. Composite scene+bloom -> dstView
-		// The threshold and blur passes reuse the standard 3-binding
-		// effect bgl (single source texture). Only the composite needs
-		// the 4-binding bloom-composite bgl + pipeline (above).
 		void RunBloomPass(
 			PostProcessor::Impl& impl,
 			const Shader& thresholdShader,
@@ -972,12 +828,6 @@ namespace Index {
 			uint32_t dstWidth, uint32_t dstHeight,
 			const PostProcessing2DComponent::BloomSettings& b)
 		{
-			// Full-resolution intermediates. Half-res was cheaper but
-			// produced visible bilinear-upsample blocks at the halo
-			// edges — switching to full-res removes that artifact and
-			// gives the bloom a smooth, clean falloff at the cost of
-			// ~4x the blur shader work per pass. Minimum 1 px to keep
-			// Recreate happy if the caller passes a degenerate viewport.
 			const int fullW = std::max(1, static_cast<int>(dstWidth));
 			const int fullH = std::max(1, static_cast<int>(dstHeight));
 			if (!impl.BloomTempA.Recreate(fullW, fullH, TextureFormat::RGBA16F)) return;
@@ -991,9 +841,6 @@ namespace Index {
 
 			const wgpu::TextureFormat tempFormat = wgpu::TextureFormat::RGBA16Float;
 
-			// Taps (per direction) -> halfK. tapCount = 2*halfK + 1, so
-			// halfK = (taps - 1) / 2. The user-facing slider clamps to
-			// [7, 500] -> halfK ~[3, 250] which matches the WGSL clamp.
 			const int tapsClamped = std::max(3, std::min(500, b.Taps));
 			const float halfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
 
@@ -1017,11 +864,6 @@ namespace Index {
 				"postprocess-bloom-blur-pipeline");
 			if (!blurPipeline) return;
 
-			// Scatter scales the per-texel step so a larger Scatter pushes
-			// taps further apart and widens the bloom. Texel size is in
-			// UV space (1/width of the full-res FBO) — doubled vs the
-			// old half-res math so Scatter stays in the same range
-			// visually.
 			const float scatterMul = 1.0f + 10.0f * b.Scatter;   // [1.0 .. 11.0]
 			const float texelW = scatterMul / static_cast<float>(fullW);
 			const float texelH = scatterMul / static_cast<float>(fullH);
@@ -1036,9 +878,6 @@ namespace Index {
 			}
 
 			// ── Pass 3: Vertical blur (BloomTempB -> BloomTempA) ──
-			// Uses a different uniform buffer than the H pass — see the
-			// Impl::BloomBlurUniformBufferH/V comment for the Dawn write-
-			// collapse bug that motivated the split.
 			{
 				float u[4]{};
 				u[0] = 0.0f; u[1] = 1.0f; u[2] = texelH; u[3] = halfKernel;
@@ -1063,15 +902,6 @@ namespace Index {
 				impl.BloomCompositeUniformBuffer, u, sizeof(u));
 		}
 
-		// Gaussian Blur — separable two-pass blur over the WHOLE scene
-		// (no thresholding). Runs at full resolution so the output stays
-		// sharp; uses one dedicated full-res temp FBO for the H-pass
-		// output, then writes V-pass straight to dst.
-		//
-		// Reuses the postbloomblur shader: the math is identical to a
-		// 1D Gaussian. Reuses the BloomQuality enum on the user-facing
-		// side; here we map it to per-direction half-kernel size (3 / 6
-		// / 10 = 7 / 13 / 21 taps).
 		void RunGaussianBlurPass(
 			PostProcessor::Impl& impl,
 			const Shader& blurShader,
@@ -1089,10 +919,6 @@ namespace Index {
 				WebGPUBackend::LookupFramebufferByFboId(impl.GaussianBlurTemp.GetBackendId());
 			if (!tempLook.Valid || !tempLook.ColorView) return;
 
-			// Two pipelines needed: one for the H pass (writes to the
-			// full-res RGBA16F temp), one for the V pass (writes to the
-			// dst, which may be RGBA8/BGRA8/etc). The pipeline cache
-			// keys on dstFormat so both get distinct entries.
 			wgpu::RenderPipeline pipelineToTemp = GetOrCreateEffectPipeline(
 				impl, blurShader, impl.GaussianBlurPipelines,
 				wgpu::TextureFormat::RGBA16Float,
@@ -1102,13 +928,9 @@ namespace Index {
 				"postprocess-gaussianblur-pipeline-dst");
 			if (!pipelineToTemp || !pipelineToDst) return;
 
-			// Taps -> halfK. Matches Bloom's mapping.
 			const int tapsClamped = std::max(3, std::min(500, g.Taps));
 			const float halfKernel = static_cast<float>(std::max(1, (tapsClamped - 1) / 2));
 
-			// Radius → per-texel step multiplier. Range [0.5 .. 6.5]
-			// matches Bloom's Scatter so a Radius=0.5 default gives a
-			// noticeable but moderate blur.
 			const float radiusMul = 0.5f + 6.0f * g.Radius;
 			const float texelW = radiusMul / static_cast<float>(fullW);
 			const float texelH = radiusMul / static_cast<float>(fullH);
@@ -1180,7 +1002,6 @@ namespace Index {
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		if (!device) return;
 
-		// Resolve src framebuffer's color view via the engine's pool.
 		WebGPUBackend::FramebufferLookup srcLook =
 			WebGPUBackend::LookupFramebufferByFboId(src.GetBackendId());
 		if (!srcLook.Valid || !srcLook.ColorView) {
@@ -1192,10 +1013,6 @@ namespace Index {
 		wgpu::RenderPipeline pipeline = GetOrCreateBlitPipeline(*m_Impl, *m_BlitShader, dstFormat);
 		if (!pipeline) return;
 
-		// Per-call bind group: source's color view + the shared linear
-		// sampler. WebGPU bind groups are cheap to create; the texture
-		// view rotates per frame (intermediate FBO is recreated on resize)
-		// so we don't try to cache by view pointer.
 		wgpu::BindGroupEntry bgEntries[2]{};
 		bgEntries[0].binding = 0;
 		bgEntries[0].textureView = srcLook.ColorView;
@@ -1216,12 +1033,6 @@ namespace Index {
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!encoder) return;
 
-		// Color attachment — LoadOp::Load preserves whatever the caller
-		// painted before invoking us (a prior RenderApi::Clear, typically).
-		// The fullscreen triangle overwrites the visible region with our
-		// sampled source pixels, so the load value only matters for any
-		// region outside the dstWidth x dstHeight viewport (none in
-		// practice, but Load is the safe default).
 		wgpu::RenderPassColorAttachment colorAtt{};
 		colorAtt.view       = dstView;
 		colorAtt.loadOp     = wgpu::LoadOp::Load;
@@ -1235,13 +1046,8 @@ namespace Index {
 		passDesc.depthStencilAttachment = nullptr;
 
 		wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
-		// Honour the cached RenderApi::SetViewport rect. For the runtime
-		// aspect-lock composite, the caller (Renderer2D::RenderSceneWithVP)
-		// sets it to the centered sub-rect of the swap chain so this blit's
-		// fullscreen triangle gets clipped to that rect — preserving the
-		// BLACK bars painted by Renderer2D::BeginFrame's swap-chain clear.
-		// In every non-aspect-locked path the cached viewport already
-		// matches the full destination, so this is a no-op.
+		// MUST apply viewport before draw: aspect-lock caller sets a sub-rect so the blit
+		// respects the letterbox region painted by the swap-chain clear.
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetBindGroup(0, bindGroup);
@@ -1270,16 +1076,7 @@ namespace Index {
 			return;
 		}
 
-		// Build the ordered list of enabled effects. The order matches
-		// standard URP/HDRP convention: Bloom needs HDR signal so runs
-		// first; Color Grading is the parametric grade + (future)
-		// tonemap step, so it runs after Bloom but before the LDR-domain
-		// effects; Grain is last so it sits on top of everything.
-		//
-		// Each entry is an enum tag the dispatch switch below maps to
-		// the matching RunXxxPass helper. std::array stays inline (no
-		// heap alloc) and the small size (max 6 effects) keeps the
-		// per-frame branch cost negligible.
+		// Effect order: Bloom (needs HDR signal) → ColorGrading → GaussianBlur → Lens → CA → Vignette → Grain → Pixelated.
 		enum class EffectKind : uint8_t {
 			Bloom, ColorGrading, GaussianBlur, LensDistortion, Chromatic, Vignette, Grain, Pixelated
 		};
@@ -1287,32 +1084,18 @@ namespace Index {
 		size_t enabledCount = 0;
 		if (settings->Bloom.Enabled)               enabled[enabledCount++] = EffectKind::Bloom;
 		if (settings->ColorGrading.Enabled)        enabled[enabledCount++] = EffectKind::ColorGrading;
-		// Gaussian Blur sits between grading and the geometric/overlay
-		// effects: it blurs the colour-graded scene but leaves later
-		// effects (lens, CA, vignette, grain, pixelated) sharp on top —
-		// otherwise grain would get smeared into formless noise and the
-		// pixelated grid would lose its hard cell edges.
 		if (settings->GaussianBlur.Enabled)        enabled[enabledCount++] = EffectKind::GaussianBlur;
 		if (settings->LensDistortion.Enabled)      enabled[enabledCount++] = EffectKind::LensDistortion;
 		if (settings->ChromaticAberration.Enabled) enabled[enabledCount++] = EffectKind::Chromatic;
 		if (settings->Vignette.Enabled)            enabled[enabledCount++] = EffectKind::Vignette;
 		if (settings->Grain.Enabled)               enabled[enabledCount++] = EffectKind::Grain;
-		// Pixelated last — applying it after everything else means the
-		// chunky cells include all prior effects in their colour, which
-		// is what users want from a "retro" look. If it ran earlier,
-		// later effects like Bloom would blur its sharp grid edges away.
 		if (settings->Pixelated.Enabled)           enabled[enabledCount++] = EffectKind::Pixelated;
 
-		// Zero enabled effects → passthrough (same as no component).
 		if (enabledCount == 0) {
 			Blit(src, dstView, dstFormat, dstWidth, dstHeight);
 			return;
 		}
 
-		// More than one effect requires the ping-pong intermediates so
-		// each pass can sample the previous pass's output. Recreate both
-		// FBOs at the caller's dimensions (the helper's resize-check
-		// short-circuits when sizes match, so this is cheap per frame).
 		if (enabledCount > 1) {
 			if (!EnsurePingPongFbos(*m_Impl, dstWidth, dstHeight)) {
 				IDX_CORE_WARN_TAG("PostProcessor",
@@ -1323,21 +1106,11 @@ namespace Index {
 			}
 		}
 
-		// Time uniform for Grain. Pull once per Run() so all passes in
-		// the same frame see a consistent value. Application::GetInstance
-		// is non-null after engine init; the fallback to 0 keeps Grain
-		// deterministic if PostProcessor::Run somehow fires during
-		// early bootstrap (shouldn't happen, but defensive).
 		float currentTime = 0.0f;
 		if (Application* app = Application::GetInstance()) {
 			currentTime = app->GetTime().GetRealtimeSinceStartup();
 		}
 
-		// Ping-pong FBOs are always RGBA16F (matches Renderer2D's scene
-		// FBO). The format the cached pipeline targets must match the
-		// FBO it writes to — that's enforced by the per-(effect, format)
-		// pipeline cache: intermediate passes use ppFormat; the final
-		// pass uses the caller's dstFormat.
 		const wgpu::TextureFormat ppFormat = wgpu::TextureFormat::RGBA16Float;
 
 		wgpu::TextureView curSrcView = ViewOf(src);
@@ -1346,7 +1119,6 @@ namespace Index {
 			return;
 		}
 
-		// Ping-pong cursor: 0 = write to PingPongA next, 1 = PingPongB next.
 		int pp = 0;
 
 		auto dispatch = [&](EffectKind kind,
@@ -1384,9 +1156,6 @@ namespace Index {
 						passSrc, passDst, passFmt, passW, passH, settings->Pixelated);
 					break;
 				case EffectKind::GaussianBlur:
-					// Reuses m_BloomBlurShader (postbloomblur) — same
-					// separable-Gaussian math, just driven for the whole
-					// scene instead of bloom's thresholded extract.
 					RunGaussianBlurPass(*m_Impl, *m_BloomBlurShader,
 						passSrc, passDst, passFmt, passW, passH, settings->GaussianBlur);
 					break;
@@ -1402,13 +1171,11 @@ namespace Index {
 			uint32_t passDstH;
 
 			if (isLast) {
-				// Final pass writes to the caller's target.
 				passDstView   = dstView;
 				passDstFormat = dstFormat;
 				passDstW      = dstWidth;
 				passDstH      = dstHeight;
 			} else {
-				// Intermediate pass writes to the current ping-pong FBO.
 				Framebuffer& fb = (pp == 0) ? m_Impl->PingPongA : m_Impl->PingPongB;
 				passDstView   = ViewOf(fb);
 				passDstFormat = ppFormat;
@@ -1424,7 +1191,6 @@ namespace Index {
 			dispatch(enabled[i], curSrcView, passDstView, passDstFormat, passDstW, passDstH);
 
 			if (!isLast) {
-				// Next pass samples this pass's destination.
 				curSrcView = passDstView;
 				pp = 1 - pp;
 			}

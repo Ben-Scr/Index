@@ -125,19 +125,10 @@ namespace Index {
 			WriteAllocationLeakReport(*data);
 		}
 #endif
-		// Flip the gates BEFORE destroying AllocatorData so any thread that
-		// reaches Allocate/Free *after* this line sees s_IsShutdown=true /
-		// s_Data=nullptr and bails to the raw-malloc path rather than touching
-		// the about-to-be-freed AllocatorData.
 		s_IsShutdown.store(true, std::memory_order_release);
 		s_Data.store(nullptr, std::memory_order_release);
 
-		// Take the AllocatorData mutex one last time as a quiescence barrier:
-		// any thread still mid-Allocate/Free that loaded the old `data` pointer
-		// before the stores above is, by the load-acquire ordering on the
-		// mutex, either done or currently holding the lock. Acquiring it here
-		// guarantees we observe the completion of those critical sections and
-		// that no new ones can begin (because the gates are already closed).
+		// Acquire the mutex as a quiescence barrier — ensures any thread already past the gate load has finished.
 		{
 			std::scoped_lock<std::mutex> quiesceLock(data->m_Mutex);
 			(void)quiesceLock;
@@ -171,11 +162,7 @@ namespace Index {
 
 		{
 			std::scoped_lock<std::mutex> lock(data->m_Mutex);
-			// Re-check the gate AFTER acquiring the lock: Shutdown's drain
-			// barrier flips s_IsShutdown before taking the mutex, so a caller
-			// that won the race for the lock during drain still sees the
-			// closed gate here and bails out (caller still owns `memory`,
-			// returned via the raw path).
+			// Re-check after lock: Shutdown flips s_IsShutdown before taking mutex, so drain racers still see the closed gate.
 			if (s_IsShutdown.load(std::memory_order_acquire))
 				return memory;
 			Allocation& alloc = data->m_AllocationMap[memory];
@@ -294,10 +281,6 @@ namespace Index {
 			size_t freedSize = 0;
 			{
 				std::scoped_lock<std::mutex> lock(data->m_Mutex);
-				// Re-check after acquiring the lock — Shutdown closes the gate
-				// before taking the mutex, so a caller mid-Free that won the
-				// lock race during drain falls through to plain free() and
-				// skips the about-to-be-destructed bookkeeping maps.
 				if (s_IsShutdown.load(std::memory_order_acquire)) {
 					std::free(memory);
 					return;
@@ -354,9 +337,6 @@ namespace Index {
 	namespace Memory {
 		const AllocationStats& GetAllocationStats() { return s_GlobalStats; }
 
-		// Snapshot accessor: take the stats lock so the (TotalAllocated, TotalFreed)
-		// pair is read atomically. The legacy reference accessor above can race
-		// with concurrent allocations and is kept only for source compatibility.
 		AllocationStatsSnapshot GetAllocationStatsSnapshot() {
 			std::scoped_lock<std::mutex> lock(s_GlobalStatsMutex);
 			AllocationStatsSnapshot snapshot;

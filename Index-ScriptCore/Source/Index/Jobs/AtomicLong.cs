@@ -2,10 +2,7 @@ using System.Threading;
 
 namespace Index.Jobs;
 
-/// <summary>
-/// Reference-typed atomic 64-bit integer for sharing state across parallel jobs.
-/// Uses <see cref="Interlocked.Read(ref long)"/> for torn-read safety on 32-bit runtimes.
-/// </summary>
+/// <summary>Reference-typed atomic 64-bit integer; uses Interlocked.Read for torn-read safety on 32-bit runtimes.</summary>
 public sealed class AtomicLong
 {
     private long m_Value;

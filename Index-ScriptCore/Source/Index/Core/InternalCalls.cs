@@ -356,13 +356,6 @@ internal static unsafe class InternalCalls
     }
 
     // ── Script add/has/remove ─────────────────────────────────────────
-    // These mirror Entity_AddComponent / HasComponent / RemoveComponent
-    // but route to the ScriptComponent.Scripts vector + ScriptSystem
-    // bind path instead of the ECS pool. Used by Entity.cs's script
-    // branch when typeof(T) : EntityScript — see AddComponent<T> above
-    // for the CS0111 rationale. Class name is the script's short type
-    // name (typeof(T).Name); the native side matches against
-    // ScriptInstance::GetClassName().
     internal static bool Entity_AddScript(ulong entityID, string className)
     {
         byte[] buf = EncodeUtf8Z(className);
@@ -381,11 +374,7 @@ internal static unsafe class InternalCalls
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_RemoveScript(entityID, ptr) != 0;
     }
 
-    // Returns the raw void* into the entity's component slot, or null when the
-    // entity / component is missing. Caller is responsible for casting to the
-    // matching blittable struct mirror — the layout-size guard in ScriptHostBridge
-    // (via Entity_GetComponentSize at startup) is what stops a stale C# mirror
-    // from silently corrupting memory.
+    // Layout-size guard in ScriptHostBridge (Entity_GetComponentSize at startup) prevents a stale C# mirror from corrupting memory.
     internal static void* Entity_GetComponentPtr(ulong entityID, string componentName)
     {
         byte[] buf = EncodeUtf8Z(componentName);
@@ -398,12 +387,6 @@ internal static unsafe class InternalCalls
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Entity_GetComponentSize(ptr);
     }
 
-    // Native query that returns one row of raw component pointers per matching
-    // entity. `outPointers` is sized `maxRows × poolCount` (caller-managed).
-    // Returns the actual matched row count; if > maxRows, the caller resizes
-    // and retries — same convention as the existing Scene_QueryEntities path.
-    // The string arguments are pipe-separated component display/serialized
-    // names; empty / null is allowed for any of them.
     internal static int Scene_OpenQueryView(
         string? sceneName,
         string? writeNames,
@@ -459,21 +442,12 @@ internal static unsafe class InternalCalls
     }
 
     // ── EntityCommandBuffer ─────────────────────────────────────────
-    // Resolve a component name to its stable u32 type ID. Called once per
-    // type from ComponentTypes<T>'s static constructor; the result is the
-    // cache key the recorder uses on every AddComponent. Zero indicates
-    // the name didn't resolve.
     internal static uint Component_GetTypeId(string componentName)
     {
         byte[] buf = EncodeUtf8Z(componentName);
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Component_GetTypeId(ptr);
     }
 
-    // Single-call playback of a pre-recorded ECB byte stream. `buffer` is
-    // pinned by the caller (the managed recorder owns the underlying byte[]
-    // and holds it pinned for the duration of this call). Returns the
-    // number of entities created (>= 0) or a negative error code:
-    //   -1 truncated, -2 no scene, -3 output buffer too small.
     internal static int Ecb_Playback(byte* buffer, int length, ulong* outRuntimeIds, int maxOut)
     {
         return NativeCallbacks.Bindings.Ecb_Playback(buffer, length, outRuntimeIds, maxOut);
@@ -537,9 +511,6 @@ internal static unsafe class InternalCalls
 
     internal static void SpriteRenderer_SetSpriteName(ulong id, string? name)
     {
-        // Reuse the EncodeUtf8Z helper above so the marshalled buffer ends
-        // in a null terminator — the C++ side takes the buffer as a plain
-        // `const char*` and assumes C-string semantics.
         name ??= "";
         int len = Encoding.UTF8.GetByteCount(name);
         Span<byte> buf = len <= 256 ? stackalloc byte[len + 1] : new byte[len + 1];
@@ -815,6 +786,8 @@ internal static unsafe class InternalCalls
     internal static void ParticleSystem2D_SetPlayOnAwake(ulong id, bool enabled) => NativeCallbacks.Bindings.ParticleSystem2D_SetPlayOnAwake(id, enabled ? 1 : 0);
     internal static void ParticleSystem2D_GetColor(ulong id, out float r, out float g, out float b, out float a) { float cr, cg, cb, ca; NativeCallbacks.Bindings.ParticleSystem2D_GetColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static void ParticleSystem2D_SetColor(ulong id, float r, float g, float b, float a) => NativeCallbacks.Bindings.ParticleSystem2D_SetColor(id, r, g, b, a);
+    internal static ulong ParticleSystem2D_GetTexture(ulong id) => NativeCallbacks.Bindings.ParticleSystem2D_GetTexture(id);
+    internal static void ParticleSystem2D_SetTexture(ulong id, ulong assetId) => NativeCallbacks.Bindings.ParticleSystem2D_SetTexture(id, assetId);
     internal static float ParticleSystem2D_GetLifeTime(ulong id) => NativeCallbacks.Bindings.ParticleSystem2D_GetLifeTime(id);
     internal static void ParticleSystem2D_SetLifeTime(ulong id, float v) => NativeCallbacks.Bindings.ParticleSystem2D_SetLifeTime(id, v);
     internal static float ParticleSystem2D_GetSpeed(ulong id) => NativeCallbacks.Bindings.ParticleSystem2D_GetSpeed(id);

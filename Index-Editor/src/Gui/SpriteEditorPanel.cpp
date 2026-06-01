@@ -22,11 +22,7 @@
 namespace Index {
 
 	namespace {
-		// Half-pixel inset isn't applied here — UV math lives on the
-		// renderer side (Phase D). The editor stores integer pixel rects.
-
-		// Renamed away from `Color` to dodge an ambiguity with `Index::Color`
-		// (transitively pulled in via AssetRegistry → Collections/Color.hpp).
+		// Renamed to RGBA to dodge ambiguity with Index::Color (pulled in transitively via AssetRegistry).
 		ImU32 RGBA(int r, int g, int b, int a = 255) {
 			return IM_COL32(r, g, b, a);
 		}
@@ -38,8 +34,6 @@ namespace Index {
 	}
 
 	void SpriteEditorPanel::Initialize() {
-		// Nothing to allocate up front — every per-asset resource is
-		// scoped to OpenTexture / Shutdown.
 	}
 
 	void SpriteEditorPanel::Shutdown() {
@@ -57,15 +51,9 @@ namespace Index {
 			return;
 		}
 		if (m_AssetPath == assetPath) {
-			// Already open. The texture inspector "Open Sprite Editor"
-			// button calls this every time it's pressed — no-op when
-			// nothing changed so a re-press doesn't blow away staged edits.
 			return;
 		}
 		if (m_Dirty) {
-			// Stage the new path; the prompt fires next frame from
-			// RenderUnsavedPrompt and either drops the staged edits
-			// (Discard), commits them (Save), or aborts the swap (Cancel).
 			m_PendingAssetPath  = assetPath;
 			m_PendingAssetId    = assetId;
 			m_ShowUnsavedPrompt = true;
@@ -75,9 +63,6 @@ namespace Index {
 		m_AssetPath   = assetPath;
 		m_AssetId     = assetId;
 
-		// Resolve a live TextureHandle for the canvas. The asset browser's
-		// thumbnail cache + the editor's preview cache both already have
-		// this texture loaded; LoadTexture is a hit-cache call when so.
 		m_PreviewHandle = TextureManager::LoadTexture(assetPath);
 		if (Texture2D* tex = TextureManager::GetTexture(m_PreviewHandle)) {
 			m_TexWidth  = static_cast<int>(tex->GetWidth());
@@ -88,9 +73,6 @@ namespace Index {
 			m_TexHeight = 0;
 		}
 
-		// Seed staged list from .meta. Future Apply-from-empty-meta path
-		// produces a fresh import block automatically via Phase A's
-		// WriteTextureMeta merge.
 		m_Slices    = AssetRegistry::ReadTextureMeta(assetPath).Sprites;
 		m_Selection.clear();
 		m_Dirty = false;
@@ -128,9 +110,6 @@ namespace Index {
 		RenderToolbar();
 		ImGui::Separator();
 
-		// Two-column split: canvas (left, takes remaining space) + slice
-		// list (right, fixed width). Same pattern as the editor viewport
-		// vs. hierarchy split.
 		const float panelHeight    = ImGui::GetContentRegionAvail().y;
 		const float sliceListWidth = 260.0f;
 		const float canvasWidth    = std::max(100.0f, ImGui::GetContentRegionAvail().x - sliceListWidth - ImGui::GetStyle().ItemSpacing.x);
@@ -341,9 +320,6 @@ namespace Index {
 		ImDrawList* drawList = ImGui::GetWindowDrawList();
 		m_LastCanvasSize = canvasSize;
 
-		// Cell-checker background fills the entire canvas region so the
-		// area outside the texture is visually distinct from in-texture
-		// transparency.
 		drawList->AddRectFilled(canvasMin, canvasMax, RGBA(28, 28, 28));
 		const float checker = 16.0f;
 		for (float y = canvasMin.y; y < canvasMax.y; y += checker) {
@@ -358,16 +334,11 @@ namespace Index {
 			}
 		}
 
-		// First-frame fit so a freshly-opened texture isn't anchored to
-		// (0,0) at 100% zoom — invariably either tiny or way off-canvas.
 		if (!m_PanInitialized) {
 			ZoomToFitTexture();
 			m_PanInitialized = true;
 		}
 
-		// Texture image. UV pair matches the load-time flip convention
-		// (TextureManager loads textures with flipVertical=false, so the
-		// natural (0,0)→(1,1) is correct).
 		const ImVec2 imageMin(canvasMin.x + m_PanOffset.x, canvasMin.y + m_PanOffset.y);
 		const ImVec2 imageMax(imageMin.x + m_TexWidth * m_Zoom, imageMin.y + m_TexHeight * m_Zoom);
 		drawList->PushClipRect(canvasMin, canvasMax, true);
@@ -429,8 +400,6 @@ namespace Index {
 
 		drawList->PopClipRect();
 
-		// Invisible interaction button covers the whole canvas. ImGui
-		// hover / IsItemActive on this gate every input.
 		ImGui::SetCursorScreenPos(canvasMin);
 		ImGui::InvisibleButton("##SpriteEditorCanvasInteract", canvasSize,
 			ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
@@ -439,16 +408,12 @@ namespace Index {
 		const ImGuiIO& io = ImGui::GetIO();
 		const ImVec2 mouseTexPx = ScreenToTexture(io.MousePos);
 
-		// Pan (middle mouse OR space+left). Middle mouse only — no key
-		// binding to space here to match the rest of the editor's
-		// "modifier-free middle-mouse pan" convention.
 		if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 0.0f)) {
 			m_PanOffset.x += io.MouseDelta.x;
 			m_PanOffset.y += io.MouseDelta.y;
 		}
 
-		// Zoom with wheel — anchored on the cursor so zooming in stays
-		// centred on whatever the user is looking at.
+		// Zoom anchored on cursor so the view stays centred on what the user is looking at.
 		if (hovered && io.MouseWheel != 0.0f) {
 			const float oldZoom = m_Zoom;
 			const float factor  = (io.MouseWheel > 0) ? 1.15f : (1.0f / 1.15f);
@@ -462,9 +427,6 @@ namespace Index {
 			}
 		}
 
-		// Mouse interactions on the texture. Gate everything behind the
-		// hovered invisible-button so dragging outside the panel never
-		// hijacks the click-to-deselect path.
 		if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
 			Handle hit = Handle::None;
 			const int hitSlice = HitTestSlice(mouseTexPx, hit);
@@ -542,10 +504,6 @@ namespace Index {
 				slice.W = std::max(1, x1 - x0);
 				slice.H = std::max(1, y1 - y0);
 			}
-			// Clamp to texture bounds — sliceing outside the texture
-			// would render nothing anyway, and the editor's existing
-			// inset-by-half-pixel rendering math (Phase D) would NaN on
-			// rects with zero size.
 			slice.X = std::clamp(slice.X, 0, std::max(0, m_TexWidth - 1));
 			slice.Y = std::clamp(slice.Y, 0, std::max(0, m_TexHeight - 1));
 			slice.W = std::clamp(slice.W, 1, std::max(1, m_TexWidth  - slice.X));
@@ -593,8 +551,6 @@ namespace Index {
 			m_IsDrawing = false;
 		}
 
-		// Keyboard shortcuts (Delete, Ctrl+A, Ctrl+D) gated on the
-		// canvas being hovered so they don't fight the slice-list inputs.
 		if (hovered) {
 			if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !m_Selection.empty()) {
 				DeleteSelected();
@@ -1009,10 +965,7 @@ namespace Index {
 			return;
 		}
 		m_Dirty = false;
-		// Bump the renderer-side slice-epoch counter. Cached SpriteUVResolver
-		// entries built against the prior epoch are invalidated lazily on the
-		// next ResolveSpriteUVRect call per texture, so any SpriteRenderer
-		// pointing at this texture picks up the new slice rects next frame.
+		// Bumping the epoch lazily invalidates cached SpriteUVResolver entries so SpriteRenderers see the new rects next frame.
 		NotifySpriteSliceEpochBumped();
 	}
 
@@ -1037,13 +990,7 @@ namespace Index {
 			return;
 		}
 
-		// Route through Texture2D::DecodeFileToCpu so we share the engine's
-		// stb_image implementation across the DLL boundary (the editor's
-		// own .cpp can't link stbi_* directly — they're file-static inside
-		// the engine TU that defines STB_IMAGE_IMPLEMENTATION). The helper
-		// already forces RGBA8 4-channel output; we ask for top-down
-		// orientation (flipVertical=false) so my pixel coordinates match
-		// the canvas display.
+		// Route through Texture2D::DecodeFileToCpu — stbi_* symbols are file-static in the engine TU, not linkable directly from the editor DLL.
 		auto image = Texture2D::DecodeFileToCpu(m_AssetPath.c_str(), /*flipVertical=*/false);
 		if (!image || image->Width <= 0 || image->Height <= 0 || !image->Pixels) {
 			IDX_WARN_TAG("SpriteEditor", "Failed to decode '{}' for auto-slice.", m_AssetPath);
@@ -1053,9 +1000,6 @@ namespace Index {
 		const std::size_t byteCount = static_cast<std::size_t>(image->Width) * image->Height * 4u;
 		m_DecodedPixels.assign(image->Pixels, image->Pixels + byteCount);
 		m_DecodedMtime = mtime;
-		// Sanity: if the texture and bitmap disagree on dimensions, prefer
-		// the decode (TextureManager may have padded for POT or some other
-		// constraint).
 		m_TexWidth  = image->Width;
 		m_TexHeight = image->Height;
 	}

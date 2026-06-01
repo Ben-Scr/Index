@@ -364,10 +364,6 @@ namespace Index::Json {
 						return false;
 					}
 
-					// Warn on duplicate keys during parse (the runtime AddMember
-					// upsert path is intentional for BuildOverridePatch, but
-					// duplicate keys in the JSON input are a parser-level
-					// surprise the caller almost certainly wants to know about).
 					if (objectValue.FindMember(key) != nullptr) {
 						IDX_CORE_WARN_TAG("Serialization",
 							"Duplicate JSON key '{}' encountered while parsing — last occurrence wins", key);
@@ -405,10 +401,7 @@ namespace Index::Json {
 					return true;
 				}
 
-				// Hard cap on JSON array length. Protects against malformed or hostile
-				// input that would otherwise allocate gigabytes by appending elements
-				// until OOM. 16M is well above any reasonable scene/prefab data size
-				// (a 1k-entity scene serializes to ~10k JSON elements top-level).
+				// 16M-element hard cap guards against hostile/corrupt input that would otherwise OOM.
 				constexpr std::size_t k_MaxArrayElements = 16u * 1024u * 1024u;
 
 				while (!IsAtEnd()) {

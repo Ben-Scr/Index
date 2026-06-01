@@ -6,45 +6,15 @@ using Index.Coroutines;
 
 namespace Index;
 
-/// <summary>
-/// Base class for user C# scripts. Subclass and override lifecycle callbacks.
-///
-/// Inherits <see cref="Component"/> so the unified Entity API treats scripts
-/// like components: <c>entity.GetComponent&lt;MyScript&gt;()</c>,
-/// <c>entity.AddComponent&lt;MyScript&gt;()</c>,
-/// <c>entity.HasComponent&lt;MyScript&gt;()</c>,
-/// <c>entity.TryGetComponent&lt;MyScript&gt;(out var s)</c> all dispatch to
-/// the script storage (ScriptInstanceManager) when <c>T : EntityScript</c>,
-/// and to the ECS storage otherwise. C# overload resolution does NOT
-/// pick between generic constraints (CS0111), so unifying the hierarchy
-/// is the only path to a single <c>AddComponent&lt;T&gt;</c> that handles
-/// both — runtime dispatch on <c>typeof(T)</c> picks the right backend.
-///
-/// The inherited <c>Entity</c> property (defined on Component) is reused
-/// directly — _SetEntityID still works because Component's setter is
-/// internal.
-/// </summary>
+/// <summary>Base class for user C# scripts; also acts as a Component so GetComponent/AddComponent/HasComponent work uniformly.</summary>
 public abstract class EntityScript : Component
 {
-    // Non-nullable Transform shorthand. EntityScript subclasses overwhelmingly
-    // run on entities that have a Transform2D (CameraFollow, Player movement,
-    // physics-driven sprites, …) and expect to write `Transform.Position = …`
-    // without null-fork-juggling — a nullable type here forces every existing
-    // user script through `Transform?.Position` or `Transform!`. We therefore
-    // throw on the rare tag-entity case rather than propagate Entity.Transform's
-    // nullability. Scripts that legitimately run on tag entities (UI roots,
-    // singleton tag scripts) should probe `Entity.Transform` directly — that
-    // accessor still returns Transform2D? for exactly that case.
+    // Throws if entity has no Transform2D; use Entity.Transform (nullable) for tag entities.
     public Transform2D Transform => Entity.Transform
         ?? throw new InvalidOperationException(
             $"EntityScript '{GetType().Name}' accessed `Transform` on an entity without a Transform2D. " +
             "Probe `Entity.Transform` (nullable) when the script may run on tag entities.");
 
-    // ── Coroutine destroy lifetime ───────────────────────────────
-    // Lazy-initialised so scripts that never use coroutines pay zero cost.
-    // Once cancelled, m_CoroutineCtsTerminated stays true so subsequent
-    // DestroyToken accesses always return a pre-cancelled token — awaits
-    // started after destroy short-circuit through GetResult immediately.
     private CancellationTokenSource? m_CoroutineCts;
     private bool m_CoroutineCtsTerminated;
 
@@ -68,17 +38,14 @@ public abstract class EntityScript : Component
     protected Entity Create(string? name = null) => Entity.Create(name);
     protected Entity Create(Entity source) => Entity.Create(source);
     protected Entity Instantiate(Entity prefabOrSource) => Entity.Instantiate(prefabOrSource);
+    protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Transform2D? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
 
     protected void Print(object? obj)
     {
         Log.Info(obj?.ToString() ?? "null");
     }
 
-    /// <summary>
-    /// Cancellation token tied to this script's lifetime. Cancelled
-    /// immediately before OnDestroy() runs. Pass it to any external async
-    /// work you start so the work tears itself down with the script.
-    /// </summary>
+    /// <summary>Token cancelled before OnDestroy(); pass to external async work for automatic teardown.</summary>
     protected CancellationToken DestroyToken
     {
         get
@@ -89,21 +56,7 @@ public abstract class EntityScript : Component
         }
     }
 
-    /// <summary>
-    /// Recommended fire-and-forget entry point for `async Task` coroutines.
-    /// Wraps the task so OperationCanceledException is silently swallowed
-    /// (the expected outcome on script destroy) and other exceptions are
-    /// logged instead of escaping to TaskScheduler.UnobservedTaskException.
-    /// </summary>
-    /// <example>
-    /// <code>
-    /// public override void OnStart() => RunCoroutine(BombSequence);
-    /// async Task BombSequence() {
-    ///     await new WaitForSeconds(3.0f);
-    ///     Entity.Destroy();
-    /// }
-    /// </code>
-    /// </example>
+    /// <summary>Fire-and-forget coroutine entry point. Swallows OperationCanceledException on destroy; logs other exceptions.</summary>
     protected void RunCoroutine(Func<Task> coroutine)
     {
         CancellationToken token = DestroyToken;
@@ -126,12 +79,6 @@ public abstract class EntityScript : Component
         catch (Exception ex) { Log.Error($"[Coroutine] {ex}"); }
     }
 
-    /// <summary>
-    /// Cancel any pending coroutines owned by this script. Called by
-    /// ScriptInstanceManager.InvokeOnDestroy immediately before the user's
-    /// OnDestroy override runs, and as belt-and-braces from
-    /// UnloadUserAssembly on hot reload.
-    /// </summary>
     internal void _CancelPendingCoroutines()
     {
         var cts = m_CoroutineCts;

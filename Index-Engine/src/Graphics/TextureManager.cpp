@@ -3,8 +3,12 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Assets/TextureMeta.hpp"
+#include "Components/Graphics/ImageComponent.hpp"
+#include "Components/Graphics/ParticleSystem2DComponent.hpp"
+#include "Components/Graphics/SpriteRendererComponent.hpp"
 #include "Core/Log.hpp"
 #include "Graphics/TextureEntry.hpp"
+#include "Scene/SceneManager.hpp"
 #include "Serialization/Path.hpp"
 
 #include <algorithm>
@@ -12,21 +16,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
-
-// =============================================================================
-// TextureManager — slot table + handle-generation pool.
-// -----------------------------------------------------------------------------
-// Texture loading routes through Texture2D::Load() (decoded via stbi_load +
-// uploaded via the active backend), so callers get a real GPU resource per
-// LoadTexture/LoadTextureByUUID call.
-//
-// Default textures (Square / Pixel / Circle / etc.) are pre-loaded from
-// IndexAssets/Textures/Default/*.png at Initialize. Sprite + UI fallback
-// paths look these up via GetDefaultTexture so a SpriteRendererComponent
-// or ImageComponent with no user-assigned texture still produces a visible
-// white quad.
-// =============================================================================
 
 namespace Index {
 
@@ -52,10 +43,7 @@ namespace Index {
 		uint32_t g_NextDestroyListenerToken = 1;
 
 		void FireDestroyListeners(TextureHandle handle) {
-			// Iterate over a local copy — listeners are allowed to remove
-			// themselves from inside the callback. This is rare (registration
-			// is normally lifecycle-bound), but copy cost is tiny vs. the
-			// safety guarantee.
+			// Snapshot before iterating — listeners may remove themselves during the callback.
 			if (g_DestroyListeners.empty()) return;
 			std::vector<DestroyListenerEntry> snapshot = g_DestroyListeners;
 			for (const auto& e : snapshot) {
@@ -63,27 +51,12 @@ namespace Index {
 			}
 		}
 
-		// Resolved handles for each DefaultTexture enum value. Indexed
-		// directly by the enum's underlying byte. Held alongside (not
-		// inside) s_DefaultTextures because s_DefaultTextures stores
-		// the on-disk paths for diagnostics — we want both.
 		std::array<TextureHandle, 9> g_DefaultHandles{};
 
-		// Reverse index from a (path, filter, wrap-u, wrap-v) tuple-hash to
-		// the slot in s_Textures. Built incrementally on insert / cleared
-		// on UnloadTexture so FindTextureByPath becomes O(1) average instead
-		// of an O(N) linear scan over s_Textures. The previous linear scan
-		// was hot during sprite load + every FileWatcher hot-reload event.
-		// 0 is a valid slot index, so we store (index+1) and use 0 as "miss".
+		// (path, filter, wrapU, wrapV) → slot+1 reverse index; 0 = miss. Stores index+1 since 0 is a valid slot.
 		std::unordered_map<std::uint64_t, std::uint32_t> g_PathIndex;
 
-		// Per-slot canonical key, computed once at insert time and reused on
-		// hot-reload comparisons. Previously ReloadTexturePath called
-		// std::filesystem::weakly_canonical for every loaded texture on every
-		// event — that's N stat() syscalls per FileWatcher tick. Storing the
-		// canonical form here cuts hot-reload to one canonicalization for
-		// the incoming event path plus pure string compares against the
-		// stored keys.
+		// Pre-canonicalized key per slot; avoids N stat() syscalls per FileWatcher tick on hot-reload.
 		std::vector<std::string> g_CanonicalKeys;
 
 		std::string ToLower(std::string value) {
@@ -168,17 +141,11 @@ namespace Index {
 		if (!s_IsInitialized || path.empty()) return TextureHandle{};
 		const std::string pathStr(path);
 
-		// Reuse existing slot when the same (path, filter, wrap) was
-		// already loaded — matches the OpenGL impl's de-dup behaviour.
 		TextureHandle existing = FindTextureByPath(pathStr, filter, u, v);
 		if (existing.index != 0 || (existing.generation != 0)) {
-			// FindTextureByPath returns a default-constructed handle on
-			// miss, so distinguish via slot validity:
 			if (IsValid(existing)) return existing;
 		}
 
-		// Inline slot acquisition — accessing the private statics from
-		// inside a TextureManager:: member rather than a free function.
 		uint16_t idx;
 		if (!s_FreeIndices.empty()) {
 			idx = s_FreeIndices.front();
@@ -189,15 +156,7 @@ namespace Index {
 			s_Textures.emplace_back();
 		}
 		TextureEntry& slot = s_Textures[idx];
-		// flipVertical=false: WebGPU's texture-coordinate origin is
-		// top-left (matching stb_image's default decode order), and the
-		// sprite shader's UV calc (`0.5 - in.position.y` in Shader.cpp
-		// k_SpriteWGSL) already maps quad-up to texture-row-0. Loading
-		// with stb's vertical flip on top of that produced a net flip
-		// — sprites and UI Image components rendered upside-down. This
-		// path is the OpenGL-legacy default that the WebGPU port
-		// inherited; turning it off makes textures display right-side-
-		// up without touching the shader.
+		// flipVertical=false: WebGPU UV origin is top-left (matches stb default); flipping would double-flip and render upside-down.
 		if (!slot.Texture.Load(pathStr.c_str(), /*generateMipmaps=*/true,
 			/*srgb=*/false, /*flipVertical=*/false))
 		{
@@ -210,9 +169,6 @@ namespace Index {
 		slot.WrapU = u;
 		slot.WrapV = v;
 		slot.IsValid = true;
-		// Register in the reverse index so subsequent FindTextureByPath /
-		// LoadTexture calls hit O(1) instead of walking s_Textures. Stored
-		// as (idx + 1) so 0 keeps its "no entry" meaning.
 		g_PathIndex[HashLookupKey(pathStr, filter, u, v)] =
 			static_cast<std::uint32_t>(idx) + 1u;
 		EnsureCanonicalKeyCapacity(s_Textures.size());
@@ -232,10 +188,6 @@ namespace Index {
 		}
 		if (path.empty()) return TextureHandle{};
 
-		// The asset's `.meta` is the authoring surface — its import block
-		// wins over caller-supplied defaults. Falling back to the caller's
-		// values when the meta has no import block keeps every existing
-		// LoadTextureByUUID call site working unchanged.
 		const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
 		if (meta.HasImportBlock) {
 			filter = meta.Import.FilterMode;
@@ -267,27 +219,14 @@ namespace Index {
 				continue;
 			}
 
-			// Re-key g_PathIndex: the lookup hash bakes (path, filter, wrapU,
-			// wrapV), so leaving the old key in place would make a later
-			// LoadTexture(path, oldFilter, ...) find this slot but with the
-			// new sampler — surprising. Drop the old key and insert under
-			// the new combination so subsequent loads with the original
-			// caller defaults spin up a fresh slot (or hit-cache to this
-			// one when those defaults also happen to match the meta).
+			// Hash bakes sampler: must re-key so LoadTexture(path, oldFilter) doesn't find this slot with the new sampler.
 			g_PathIndex.erase(HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV));
 
-			// Update the per-slot cached sampler so any later ReloadTexture
-			// pass (which copies these onto the freshly-decoded Texture2D)
-			// also picks up the new values. SetSampler rebuilds the GPU
-			// sampler immediately — entities rendering this texture next
-			// frame see the new Filter/Wrap.
 			slot.SamplerFilter = meta.Import.FilterMode;
 			slot.WrapU         = meta.Import.WrapU;
 			slot.WrapV         = meta.Import.WrapV;
 			slot.Texture.SetSampler(meta.Import.FilterMode, meta.Import.WrapU, meta.Import.WrapV);
 
-			// Match LoadTexture's value convention: (idx + 1) so the
-			// reverse index reserves 0 as "no entry".
 			g_PathIndex[HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV)] =
 				static_cast<std::uint32_t>(i) + 1u;
 			++count;
@@ -308,10 +247,7 @@ namespace Index {
 		// to capture the soon-to-be-stale GPU pool ID.
 		FireDestroyListeners(handle);
 		TextureEntry& slot = s_Textures[handle.index];
-		// Drop the reverse-index entry BEFORE we clear the name — otherwise
-		// the hash key derived from slot.Name would no longer match what
-		// was inserted. Generation bump below ensures stale handles to this
-		// slot fail IsValid even if the slot gets recycled with a new path.
+		// MUST erase before clearing slot.Name — the hash key is derived from it.
 		g_PathIndex.erase(HashLookupKey(slot.Name, slot.SamplerFilter, slot.WrapU, slot.WrapV));
 		if (handle.index < g_CanonicalKeys.size()) {
 			g_CanonicalKeys[handle.index].clear();
@@ -355,9 +291,7 @@ namespace Index {
 		}
 
 		reloaded.SetSampler(slot.SamplerFilter, slot.WrapU, slot.WrapV);
-		// Notify listeners BEFORE the move-assign destroys the previous
-		// GPU resource — the renderer's bind-group cache is keyed off the
-		// old Texture2D::GetHandle() pool ID and must evict it now.
+		// MUST fire before move-assign destroys the old GPU resource; bind-group cache needs the old pool ID.
 		FireDestroyListeners(handle);
 		slot.Texture = std::move(reloaded);
 		IDX_CORE_INFO_TAG("TextureManager", "Reloaded texture: {}", slot.Name);
@@ -368,11 +302,6 @@ namespace Index {
 		if (!s_IsInitialized || path.empty()) return 0;
 		const std::string targetKey = CanonicalPathKey(path);
 		size_t count = 0;
-		// Compare against the pre-canonicalized keys stored at insert time
-		// instead of re-canonicalizing every slot's stored name. Each
-		// CanonicalPathKey call does a weakly_canonical() — i.e. a stat()
-		// syscall — so the previous N×canonicalize per FileWatcher event
-		// scaled poorly with project size.
 		const std::size_t end = std::min<std::size_t>(s_Textures.size(), g_CanonicalKeys.size());
 		for (size_t i = 0; i < end; ++i) {
 			const TextureEntry& slot = s_Textures[i];
@@ -416,8 +345,7 @@ namespace Index {
 		for (size_t i = 0; i < s_Textures.size(); ++i) {
 			TextureEntry& slot = s_Textures[i];
 			if (slot.IsValid) {
-				// Fire per-slot BEFORE the slot is invalidated so listeners
-				// can still resolve handle -> GPU pool ID.
+				// MUST fire before invalidating so listeners can still resolve handle→GPU pool ID.
 				FireDestroyListeners(TextureHandle{ static_cast<uint16_t>(i), slot.Generation });
 				slot.Texture.Destroy();
 				slot.Name.clear();
@@ -426,9 +354,6 @@ namespace Index {
 				s_FreeIndices.push(static_cast<uint16_t>(i));
 			}
 		}
-		// Reverse index is keyed off names that no longer exist; clearing
-		// it wholesale matches the old behaviour but avoids leaving stale
-		// hash entries that would resolve to recycled-but-different slots.
 		g_PathIndex.clear();
 		for (std::string& key : g_CanonicalKeys) {
 			key.clear();
@@ -441,13 +366,63 @@ namespace Index {
 	}
 
 	size_t TextureManager::PurgeUnreferenced() {
-		// Trust the registered providers + scene scan: every entry not
-		// held by a live ECS component or a registered provider gets
-		// evicted.
-		// Real impl walks every loaded scene; we approximate by having
-		// every provider opt in to keeping its handles alive.
-		// TODO: walk every loaded scene to drop stale handles.
-		return 0;
+		if (!s_IsInitialized) return 0;
+
+		std::unordered_set<TextureHandle> referenced;
+		referenced.reserve(s_Textures.size());
+		const auto emit = [&referenced](TextureHandle handle) {
+			if (TextureManager::IsValid(handle)) {
+				referenced.insert(handle);
+			}
+		};
+
+		for (TextureHandle handle : g_DefaultHandles) {
+			emit(handle);
+		}
+
+		SceneManager::Get().ForeachLoadedScene([&emit](Scene& scene) {
+			entt::registry& registry = scene.GetRegistry();
+
+			auto sprites = registry.view<SpriteRendererComponent>();
+			for (EntityHandle entity : sprites) {
+				emit(sprites.get<SpriteRendererComponent>(entity).TextureHandle);
+			}
+
+			auto images = registry.view<ImageComponent>();
+			for (EntityHandle entity : images) {
+				emit(images.get<ImageComponent>(entity).TextureHandle);
+			}
+
+			auto particles = registry.view<ParticleSystem2DComponent>();
+			for (EntityHandle entity : particles) {
+				emit(particles.get<ParticleSystem2DComponent>(entity).GetTextureHandle());
+			}
+		});
+
+		const std::vector<ProviderEntry> providers = g_Providers;
+		for (const ProviderEntry& provider : providers) {
+			if (provider.Provider) {
+				provider.Provider(emit);
+			}
+		}
+
+		std::vector<TextureHandle> toFree;
+		toFree.reserve(s_Textures.size());
+		for (size_t i = 0; i < s_Textures.size(); ++i) {
+			const TextureEntry& slot = s_Textures[i];
+			if (!slot.IsValid) continue;
+			TextureHandle handle{ static_cast<uint16_t>(i), slot.Generation };
+			if (!referenced.contains(handle)) {
+				toFree.push_back(handle);
+			}
+		}
+
+		for (TextureHandle handle : toFree) {
+			UnloadTexture(handle);
+		}
+
+		IDX_CORE_INFO_TAG("TextureManager", "Purged {} unreferenced texture entries", toFree.size());
+		return toFree.size();
 	}
 
 	uint32_t TextureManager::AddReferenceProvider(ReferenceProvider provider) {
@@ -490,9 +465,6 @@ namespace Index {
 	TextureHandle TextureManager::FindTextureByPath(const std::string& path,
 		Filter filter, Wrap u, Wrap v)
 	{
-		// O(1) hash lookup against the reverse index. The previous linear
-		// scan over s_Textures fired on every LoadTexture call (for dedup)
-		// and dominated repeated sprite loads in scenes with many textures.
 		auto it = g_PathIndex.find(HashLookupKey(path, filter, u, v));
 		if (it == g_PathIndex.end() || it->second == 0u) {
 			return TextureHandle{};
@@ -514,9 +486,6 @@ namespace Index {
 	}
 
 	TextureHandle TextureManager::FindTextureByPath(const std::string& path) {
-		// Sampler-agnostic lookup falls back to a scan — callers that want
-		// O(1) should supply the sampler tuple. This overload is used by
-		// editor / introspection paths, not hot-path renderer code.
 		for (size_t i = 0; i < s_Textures.size(); ++i) {
 			const TextureEntry& e = s_Textures[i];
 			if (e.IsValid && e.Name == path) {
@@ -527,10 +496,7 @@ namespace Index {
 	}
 
 	void TextureManager::LoadDefaultTextures() {
-		// Each enum value in DefaultTexture maps to a PNG shipped under
-		// IndexAssets/Textures/Default/. The order here MUST match the
-		// enum declaration in DefaultTexture.hpp — we index by the
-		// enum's underlying byte value into g_DefaultHandles.
+		// Order MUST match DefaultTexture enum declaration — indexed by underlying byte into g_DefaultHandles.
 		static constexpr const char* k_DefaultPaths[9] = {
 			"Textures/Default/Square.png",            // Square
 			"Textures/Default/Pixel.png",             // Pixel
@@ -559,10 +525,6 @@ namespace Index {
 					fullPath);
 				continue;
 			}
-			// Wrap::Repeat keeps the legacy OpenGL impl's behaviour:
-			// 1×1 white pixels tile harmlessly, and a project-supplied
-			// repeating tile texture authored against the engine's
-			// "Square" default works without a Wrap-mode override.
 			TextureHandle h = LoadTexture(fullPath, Filter::Bilinear, Wrap::Repeat, Wrap::Repeat);
 			if (!IsValid(h)) {
 				IDX_CORE_WARN_TAG("TextureManager",

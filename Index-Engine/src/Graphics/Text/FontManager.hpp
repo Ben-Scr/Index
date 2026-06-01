@@ -11,16 +11,6 @@
 
 namespace Index {
 
-    // Engine-wide font cache. Mirrors the lifecycle and lookup-by-UUID
-    // contract of TextureManager / AudioManager: handles stay valid until
-    // explicitly Unload'd or the engine shuts down.
-    //
-    // Each (path, pixelSize) pair maps to its own slot — a 16px and 32px
-    // bake of the same .ttf are different fonts at the GL level today.
-    // A future SDF atlas would collapse the per-size axis, but not in this
-    // MVP. Components reference fonts by UUID (the .ttf's GUID), so the
-    // pixelSize sits on the consumer (TextRendererComponent::FontSize) and is
-    // resolved at render time.
     class INDEX_API FontManager {
     public:
         static bool Initialize();
@@ -30,20 +20,9 @@ namespace Index {
         static FontHandle LoadFont(std::string_view path, float pixelSize);
         static FontHandle LoadFontByUUID(uint64_t assetId, float pixelSize);
 
-        // Async variant: returns immediately with a handle whose Font is in
-        // the baking state (IsValid()/GetFont() return false/nullptr until
-        // the bake publishes). Re-uses an existing slot if one already exists
-        // for the (uuid, quantized pixelSize) bucket (loaded OR still baking),
-        // so repeated frame-by-frame calls from the render path don't fan out
-        // duplicate workers. Render-path callers should pair this with
-        // GetDefaultFont() as a fallback for the frames before the bake
-        // publishes — TextRenderer::ResolveFontAtPixelSize already does this.
+        // Returns immediately; handle is invalid until the bake publishes. Re-uses an existing slot for the same (uuid, pixelSize) bucket so repeated frame calls don't spawn duplicate workers.
         static FontHandle LoadFontByUUIDAsync(uint64_t assetId, float pixelSize);
 
-        // Drive every pending async bake forward by one step. Cheap when no
-        // bakes are pending (one atomic load per slot). Called once per frame
-        // by TextRenderer at the top of RenderScene so completed bakes become
-        // visible in the same frame.
         static void PollAsync();
 
         static void UnloadFont(const FontHandle& handle);
@@ -53,10 +32,6 @@ namespace Index {
         static Font* GetFont(const FontHandle& handle);
         static uint64_t GetFontAssetUUID(const FontHandle& handle);
 
-        // Returns a shared default font (the engine's bundled GoogleSans
-        // bake at 32 px). Loaded lazily on first request. Used when a
-        // TextRendererComponent has no font assigned so editor/runtime never
-        // shows zero-size empty text.
         static FontHandle GetDefaultFont();
 
     private:
@@ -71,8 +46,6 @@ namespace Index {
         static FontHandle CreateSlot(std::unique_ptr<Font> font, uint64_t assetUUID, float pixelSize);
         static FontHandle FindExisting(uint64_t assetUUID, float pixelSize);
 
-        // Each (uuid, pixelSize) pair gets its own slot — the Font object
-        // owns a GL atlas which is sized for one specific px height.
         struct LookupKey {
             uint64_t Uuid = 0;
             int PixelSizeQuantized = 0;
@@ -91,12 +64,6 @@ namespace Index {
         inline static std::unordered_map<LookupKey, uint16_t, LookupKeyHash> s_Lookup;
         inline static FontHandle s_DefaultFont;
 
-        // Per-UUID cache of the raw .ttf bytes. Loading the same font at a
-        // new pixel size used to re-read the file from disk (a measurable
-        // hit when a UI scene drives dozens of texts at slightly different
-        // baked sizes — every quantize bucket triggered a fresh disk read +
-        // stbtt init). Now we read once and reuse for every subsequent
-        // bake of the same font.
         struct TtfBufferEntry {
             std::vector<uint8_t> Bytes;
             std::string Path;

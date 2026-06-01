@@ -29,10 +29,6 @@ namespace Index::PropertyDrawer {
 
 		constexpr int kMixedValueFlag = 1 << 12; // ImGuiItemFlags_MixedValue (internal)
 
-		// Snapshot the current value across the selection. Returns true iff
-		// every entity holds the same PropertyValue. Either way, `outValue`
-		// is set to the first entity's value so the widget always has
-		// something to render.
 		bool SampleUniform(std::span<const Entity> entities, const PropertyDescriptor& d,
 			PropertyValue& outValue)
 		{
@@ -95,11 +91,6 @@ namespace Index::PropertyDrawer {
 			}
 		}
 
-		// Centralised post-edit hook so every code path through this
-		// translation unit marks the scene dirty, regardless of which
-		// component the descriptor belongs to (built-in, script-exposed
-		// field, managed component, or package component using
-		// Properties::Make). MarkDirty itself is gated on play state.
 		inline void MarkSceneDirty(const Entity& entity) {
 			if (Scene* scene = const_cast<Entity&>(entity).GetScene()) {
 				scene->MarkDirty();
@@ -129,10 +120,7 @@ namespace Index::PropertyDrawer {
 			}
 		}
 
-		// Per-channel write helpers: leave untouched channels alone on each
-		// entity. Used by the vector / colour drawers so that editing only
-		// the Y of a vec3 doesn't blast every entity's X and Z to the
-		// primary entity's values.
+		// Per-channel writes: only the edited channel is broadcast, so multi-select doesn't clobber other channels.
 		void WriteFloatChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, float newValue)
 		{
@@ -226,14 +214,7 @@ namespace Index::PropertyDrawer {
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			bool changed = false;
 			if (d.Metadata.HasClamp) {
-				// Two-widget combo: a slider drives the value visually
-				// across the [Min, Max] range, while a narrow input on the
-				// right lets the user type an exact integer that the same
-				// frame will clamp back into bounds. The native DragInt
-				// path doesn't visualise the range, which is what the
-				// [ClampValue] attribute is asking for. SliderInt is gated
-				// to HasClamp because it requires both bounds — drag-only
-				// mode stays for unclamped fields.
+				// SliderInt + InputInt combo: slider visualises [Min, Max]; input lets user type exact value.
 				const float fullW = ImGui::CalcItemWidth();
 				const float style = ImGui::GetStyle().ItemInnerSpacing.x;
 				const float inputW = std::min(80.0f, fullW * 0.30f);
@@ -331,12 +312,7 @@ namespace Index::PropertyDrawer {
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			bool changed = false;
 			if (d.Metadata.HasClamp && clampMax > clampMin) {
-				// Slider + numeric input combo for [ClampValue]-attributed
-				// fields. The slider gives a visual sense of where the
-				// value sits inside [Min, Max]; the input lets the user
-				// type a precise value that's clamped back on commit. The
-				// non-clamp DragFloat path stays as the default for
-				// unbounded float fields so existing behaviour is preserved.
+				// SliderFloat + InputFloat combo for [ClampValue] fields; DragFloat path stays for unbounded fields.
 				const float fullW = ImGui::CalcItemWidth();
 				const float style = ImGui::GetStyle().ItemInnerSpacing.x;
 				const float inputW = std::min(80.0f, fullW * 0.30f);
@@ -393,14 +369,8 @@ namespace Index::PropertyDrawer {
 
 			bool changed = false;
 			if (d.Metadata.MultiLine) {
-				// Multi-line mode: bigger buffer (4 KB is plenty for
-				// option-list / description-style fields), height
-				// scales with MultiLineRows so authors get something
-				// closer to a textarea than a one-liner.
 				static constexpr int k_MultiLineCapacity = 4096;
-				// Reused scratch: DrawString runs serially on the UI thread, so a
-				// static buffer avoids a 4 KB heap allocation per multi-line field
-				// every frame. Re-null each call (snprintf below fills it when uniform).
+				// Static buffer: DrawString runs serially on the UI thread so no allocation per field per frame.
 				static char buf[k_MultiLineCapacity];
 				buf[0] = '\0';
 				if (uniform) {
@@ -458,10 +428,6 @@ namespace Index::PropertyDrawer {
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
-				// C7: capture pre-edit value, only write on actual delta so
-				// the (possibly "-" mixed) sampled primary value isn't
-				// broadcast onto every selected entity when only one
-				// channel was touched.
 				const float pre = values[c];
 				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
@@ -633,8 +599,6 @@ namespace Index::PropertyDrawer {
 		bool DrawFlagEnum(std::span<const Entity> entities, const PropertyDescriptor& d) {
 			if (!d.Metadata.Enum || d.Metadata.Enum->Options.empty()) return false;
 
-			// Per-flag uniformity. For each option bit, sample whether it's
-			// set on entities[0] and whether every other entity matches.
 			std::vector<bool> bitOn(d.Metadata.Enum->Options.size(), false);
 			std::vector<bool> bitMixed(d.Metadata.Enum->Options.size(), false);
 			int64_t sampleAll = 0;
@@ -658,7 +622,6 @@ namespace Index::PropertyDrawer {
 				}
 			}
 
-			// Build the preview string (combo button label).
 			std::string preview;
 			bool anyMixed = false;
 			for (std::size_t b = 0; b < d.Metadata.Enum->Options.size(); ++b) {
@@ -679,10 +642,7 @@ namespace Index::PropertyDrawer {
 				if (preview.empty()) preview = k_NoneLabel;
 			}
 
-			// Mask of every declared flag value. Any bits outside this mask
-			// represent undeclared/garbage flags — strip them on write so the
-			// drawer doesn't silently propagate bits that no FlagEnum option
-			// describes (M27).
+			// Strip undeclared bits on write so garbage flags from old saves don't propagate (M27).
 			int64_t declaredMask = 0;
 			for (const auto& opt : d.Metadata.Enum->Options) declaredMask |= opt.Value;
 
@@ -697,8 +657,6 @@ namespace Index::PropertyDrawer {
 					if (bitMixed[b]) ImGui::PushItemFlag(static_cast<ImGuiItemFlags>(kMixedValueFlag), true);
 					bool tmp = bitOn[b];
 					if (ImGui::Checkbox(opt.Name.c_str(), &tmp)) {
-						// Per-entity bit toggle so individual entities keep
-						// the bits we didn't touch this frame.
 						for (const Entity& e : entities) {
 							PropertyValue current = d.Get(e);
 							if (tmp) current.IntValue |= opt.Value;
@@ -794,26 +752,13 @@ namespace Index::PropertyDrawer {
 						ReferencePicker::CollectAssetsByKind(kind), style);
 				},
 				[kind](PropertyValue& outValue) {
-					// Slice payload first — when the source is a sprite-sheet
-					// slice tile from the Asset Browser, we want to set BOTH
-					// the texture UUID and the slice name. Generic texture
-					// refs ignore the slice name via the legacy 2-arg setter;
-					// SpriteRenderer / Image consume both via the slice-aware
-					// 3-arg setter. The slice payload is checked before the
-					// generic ASSET_BROWSER_ITEM so a slice drag never
-					// accidentally falls into the texture-only branch when
-					// ImGui's payload dispatcher tries them in registration
-					// order.
+					// Check sprite-slice payload before ASSET_BROWSER_ITEM so a slice drag sets both UUID and slice name rather than falling into the texture-only branch.
 					if (kind == AssetKind::Texture) {
 						if (const ImGuiPayload* slicePayload =
 							ImGui::AcceptDragDropPayload(k_SpriteSliceDragPayloadType))
 						{
 							if (slicePayload->DataSize == sizeof(SpriteSliceDragPayload)) {
 								const auto* p = static_cast<const SpriteSliceDragPayload*>(slicePayload->Data);
-								// Hardening: the payload struct is fixed-size but the
-								// strings inside may have been truncated on copy.
-								// Treat anything past the first NUL as the wire value
-								// and reject empty texture paths outright.
 								const std::string texturePath(p->TexturePath);
 								const std::string sliceName(p->SliceName);
 								if (!texturePath.empty()) {
@@ -897,11 +842,7 @@ namespace Index::PropertyDrawer {
 				},
 				[&componentTypeName](PropertyValue& outValue) {
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("COMPONENT_REF")) {
-						// Build the string size-aware: ImGui drag-drop payloads are
-						// raw byte buffers, not C strings, so a payload that
-						// happens to lack a terminating NUL would otherwise read
-						// past the end. Trim a trailing NUL if the producer sent
-						// one in the payload size for back-compat.
+						// Payload is raw bytes, not a C string; trim trailing NUL for back-compat.
 						std::string refStr(static_cast<const char*>(payload->Data),
 							static_cast<size_t>(payload->DataSize));
 						if (!refStr.empty() && refStr.back() == '\0') refStr.pop_back();
@@ -915,13 +856,7 @@ namespace Index::PropertyDrawer {
 							}
 						}
 					}
-					// Accept a hierarchy-entity drag too: when the dropped
-					// entity owns a component matching `componentTypeName`,
-					// auto-derive the ComponentRef from it. Saves the user
-					// from explicitly dragging the inspector "Component"
-					// header (which produces COMPONENT_REF) — a plain
-					// hierarchy drag now works and silently ignores entities
-					// that lack the required component.
+					// Also accept HIERARCHY_ENTITY: auto-derive ComponentRef if the dropped entity owns the matching component.
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
 						if (payload->DataSize == sizeof(HierarchyDragData)) {
 							const auto* data = static_cast<const HierarchyDragData*>(payload->Data);
@@ -947,12 +882,6 @@ namespace Index::PropertyDrawer {
 				});
 		}
 
-		// Generic list-of-T editor (PropertyType::List). Same UX as
-		// DrawStringList — one row per entry, per-row Remove + bottom
-		// Add — but each row dispatches through the same primitive
-		// widget the standalone field would use, picked from
-		// d.Metadata.ListItemType. The whole vector is written back
-		// on any change so MakeListWith's setter sees the full list.
 		bool DrawList(std::span<const Entity> entities, const PropertyDescriptor& d) {
 			PropertyValue v;
 			const bool uniform = SampleUniform(entities, d, v);
@@ -989,11 +918,6 @@ namespace Index::PropertyDrawer {
 				PropertyValue& item = items[i];
 				item.Type = itemType;
 
-				// Per-item dispatch — limited to scalar / vec / color /
-				// string / enum cases. Asset references inside lists
-				// aren't supported here; if they're needed in future,
-				// route through the existing reference helpers but with
-				// per-row picker keys (not done today).
 				bool itemChanged = false;
 				switch (itemType) {
 				case PropertyType::Bool: {
@@ -1132,14 +1056,6 @@ namespace Index::PropertyDrawer {
 			return changed;
 		}
 
-		// String-list editor: one row per entry with delete button,
-		// add-row button at the end. The whole list is written back
-		// on any change (insert / remove / edit), which matches how
-		// MakeStringList's setter expects the full vector each time.
-		// Multi-selection: if the lists differ across entities the
-		// header shows a "—" hint, but edits still write to all (the
-		// list semantics make per-entity diffing more confusing than
-		// helpful for arrays this small).
 		bool DrawStringList(std::span<const Entity> entities, const PropertyDescriptor& d) {
 			PropertyValue v;
 			const bool uniform = SampleUniform(entities, d, v);
@@ -1161,18 +1077,10 @@ namespace Index::PropertyDrawer {
 			for (size_t i = 0; i < items.size(); ++i) {
 				ImGui::PushID(static_cast<int>(i));
 
-				// Per-row layout: index label · text input (stretched) ·
-				// delete button. The delete button is fixed-width so it
-				// doesn't collapse when the inspector is narrow.
 				ImGui::AlignTextToFramePadding();
 				ImGui::Text("%2zu", i);
 				ImGui::SameLine();
 
-				// "Remove" label (instead of a single-glyph "X") because
-				// dropdown-option rows are visually similar to the regular
-				// inspector field rows above them — a 1-character button
-				// reads as decoration; a worded button reads as an action,
-				// which makes the disposability of each option obvious.
 				const float deleteButtonWidth = ImGui::CalcTextSize("Remove").x
 					+ ImGui::GetStyle().FramePadding.x * 2.0f;
 				const float availWidth = ImGui::GetContentRegionAvail().x;
@@ -1305,11 +1213,6 @@ namespace Index::PropertyDrawer {
 			ImGui::SetTooltip("%s", d.Metadata.Tooltip.c_str());
 		}
 
-		// Variant branches: if the descriptor declares branches, dispatch
-		// to the matching branch by sampling the discriminator value across
-		// the selection. Mixed discriminators show a hint instead of any
-		// branch — there's no sensible way to reconcile different shapes.
-		// The branches' EnabledIf still applies (they go through Draw too).
 		if (!d.VariantBranches.empty() && !entities.empty()) {
 			PropertyValue tag;
 			const bool tagUniform = SampleUniform(entities, d, tag);
@@ -1345,17 +1248,8 @@ namespace Index::PropertyDrawer {
 		std::span<const PropertyDescriptor> descriptors,
 		const std::string& fieldKeyPrefix)
 	{
-		// Section logic: a property with HeaderContent opens a collapsible
-		// CollapsingHeader. Subsequent header-less properties render inside
-		// that section. The next property with HeaderContent closes the
-		// previous section and opens a new one. Properties before the first
-		// header render at top-level. End-of-list closes any open section.
-		//
-		// To avoid the per-property inline separator render in Draw() from
-		// duplicating the section header, we strip HeaderContent on a
-		// per-property copy before passing to Draw. The cost (one std::string
-		// copy per header'd row) is negligible against the rest of the
-		// inspector's work.
+		// HeaderContent on a descriptor opens a CollapsingHeader; subsequent descriptors render inside it.
+		// Strip HeaderContent from the copy passed to Draw() to avoid the inline separator duplicating the header.
 		bool sectionOpen = false;
 		bool sectionVisible = false;
 		for (const PropertyDescriptor& desc : descriptors) {
@@ -1371,15 +1265,6 @@ namespace Index::PropertyDrawer {
 					headerLabel.c_str(),
 					ImGuiTreeNodeFlags_DefaultOpen);
 
-				// Per-section right-click context menu. Only attaches
-				// when the descriptor carries a ResetSectionFn — used by
-				// PostProcessing2D's effect groups so each (Vignette /
-				// Bloom / ...) can be reverted to its default settings
-				// independently of the others. BeginPopupContextItem
-				// targets the last submitted item (the CollapsingHeader
-				// above); on activation we write the reset through to
-				// every selected entity so multi-selection resets behave
-				// like every other inspector edit.
 				if (desc.Metadata.ResetSectionFn) {
 					const std::string popupId = "##ctx_" + headerLabel;
 					if (ImGui::BeginPopupContextItem(popupId.c_str(),
@@ -1399,14 +1284,6 @@ namespace Index::PropertyDrawer {
 				}
 
 				sectionOpen = true;
-				// No Indent() here — earlier we did, but ImGui's inspector
-				// row layout is split into a fixed label column + a value
-				// column, and indenting the row eats label-column width
-				// enough to clip "Control Child Width" / similar long
-				// labels into "Control Child Widt" with the checkbox
-				// pushed onto the next line. The CollapsingHeader itself
-				// is enough visual nesting; the rows inside don't need
-				// extra horizontal offset.
 			}
 
 			if (sectionOpen && !sectionVisible) {

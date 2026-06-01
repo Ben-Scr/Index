@@ -88,11 +88,6 @@ TEST_CASE("Clipboard entity serialization preserves grandchild hierarchy")
 
 TEST_CASE("Editor-style duplicate (re-parenting under source's parent) preserves children")
 {
-	// Mimics ImGuiEditorLayer::DuplicateSelectedEntity: serialize for
-	// clipboard, deserialize, then re-parent the new root under the
-	// original's parent so the duplicate appears as a sibling. The bug
-	// would surface here if SetParent on the clone's root inadvertently
-	// dropped the clone's own children.
 	auto scene = Scene::CreateDetachedScene("Editor Duplicate Test");
 
 	Entity grandparent = scene->CreateEntity("Grandparent");
@@ -107,9 +102,6 @@ TEST_CASE("Editor-style duplicate (re-parenting under source's parent) preserves
 	const EntityHandle cloneHandle = SceneSerializer::DeserializeEntityFromValue(*scene, clipboardValue);
 	REQUIRE(cloneHandle != entt::null);
 
-	// Editor re-parents the clone under the source's parent so it shows
-	// up as a sibling. After this, the clone's own children must remain
-	// attached to the clone — not stripped or moved to grandparent.
 	Entity clone = scene->GetEntity(cloneHandle);
 	clone.SetParent(grandparent);
 
@@ -123,11 +115,6 @@ TEST_CASE("Editor-style duplicate (re-parenting under source's parent) preserves
 
 TEST_CASE("Duplicating a prefab instance preserves prefab origin and PrefabGUID")
 {
-	// Regression: editor-side Duplicate (Ctrl+D) routes through
-	// SerializeEntityForClipboard + DeserializeEntityFromValue. The clipboard
-	// path stripped Origin / PrefabGUID with the rest of the identity members,
-	// so the duplicate came back as a plain Scene entity — no
-	// PrefabInstanceComponent, no asset link, no override tracking.
 	auto scene = Scene::CreateDetachedScene("Prefab Duplicate Test");
 
 	Entity source = scene->CreateEntity("PrefabRoot");

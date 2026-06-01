@@ -132,12 +132,6 @@ namespace Index {
 			return s;
 		}
 
-		//static bool IsDigit(const std::string& str) {
-		//	return !str.empty() && std::all_of(str.begin(), str.end(), std::isdigit);
-		//}
-		//static bool IsAlpha(const std::string& str) {
-		//	return !str.empty() && std::all_of(str.begin(), str.end(), std::isalpha);
-		//}
 	private:
 		static std::string FormatWithPrecision(double value, std::string_view unit) {
 			std::ostringstream oss;

@@ -20,6 +20,7 @@ project "Index-Engine-Tests"
     -- (e.g. ParseInstalledPackagesFromXml).
     UseDependencySet(Dependency.EditorRuntimeCommon)
     defines(GetIndexModuleDefines())
+    ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
 
     -- doctest is a single-header lib at External/doctest/doctest/doctest.h.

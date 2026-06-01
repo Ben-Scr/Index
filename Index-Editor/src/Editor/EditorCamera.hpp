@@ -7,11 +7,7 @@ namespace Index {
 
 	class EditorCamera {
 	public:
-		// Editor-camera zoom range, expressed as orthographic half-height.
-		// Min was tightened from 0.5 so users can zoom into very small
-		// entities; max was added so scroll-zoom doesn't run away to a
-		// state where world-space picking and gizmo hit-tests stop being
-		// usable.
+		// Min tightened from 0.5 to allow close inspection; max prevents scroll-zoom from breaking world-space picking and gizmo hit-tests.
 		static constexpr float k_MinOrthographicSize = 0.05f;
 		static constexpr float k_MaxOrthographicSize = 1000.0f;
 
@@ -34,10 +30,6 @@ namespace Index {
 			UpdateProjection();
 		}
 
-		// Read-only accessors so callers (e.g. prefab-edit mode) can snapshot
-		// the editor's view state when transitioning between contexts and
-		// restore it afterwards. The underlying fields are public for
-		// historical reasons; these getters give a clean read-only surface.
 		Vec2 GetPosition() const { return Position; }
 		float GetOrthographicSize() const { return OrthographicSize; }
 		float GetZoom() const { return Zoom; }

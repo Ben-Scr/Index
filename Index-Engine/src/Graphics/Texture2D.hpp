@@ -49,19 +49,9 @@ namespace Index {
 
 		std::unique_ptr<ImageData> GetImageData() const;
 
-		// CPU-side image decode helper. Goes straight from disk to RGBA8
-		// pixels in an ImageData, never touching the GPU. Texture2D::GetImageData()
-		// uses this path for file-backed textures.
-		// Returns nullptr if stb_image can't decode the file.
 		static std::unique_ptr<ImageData> DecodeFileToCpu(const char* path,
 			bool flipVertical = false);
-		// Returns the WGPU texture-view raw pointer cast to uint64_t under
-		// the WebGPU backend. ImGui's imgui_impl_wgpu reinterpret-casts
-		// ImTextureID directly to WGPUTextureView and dereferences it, so
-		// the editor's ImGui::Image / ImageButton call sites that pass
-		// `tex->GetHandle()` need a real Dawn handle here -- not a small
-		// integer pool counter (which Dawn would dereference at address
-		// 0x1, 0x2, etc. and crash with a 0xC0000005 access violation).
+		// Returns the raw WGPUTextureView pointer cast to uint64_t — ImGui reinterpret-casts ImTextureID directly to WGPUTextureView, so this must not be a pool index.
 		uint64_t GetHandle() const { return m_Tex; }
 		Vec2 Size() const { return Vec2{ float(m_Width), float(m_Height) }; }
 		float GetWidth() const { return m_Width; }
@@ -69,17 +59,9 @@ namespace Index {
 
 		float AspectRatio() const { return m_Height != 0 ? float(m_Width) / float(m_Height) : 0.0f; }
 
-		// True when the texture rows were uploaded bottom-up (the stb_image
-		// "flipVertical=true" load path). Editor preview helpers consult
-		// this so a single canonical UV-mapping rule covers every preview
-		// path — the bug was previously fixed per-call-site.
 		bool IsFlippedY() const { return m_FlippedY; }
 
 	private:
-		// Under WebGPU this holds the raw WGPUTextureView pointer (cast to
-		// uint64_t). 0 stays the "unset" sentinel; IsValid() compares
-		// against 0 unchanged. The Texture2D_WebGPU.cpp pool uses this
-		// same value as its key.
 		uint64_t m_Tex = 0;
 		int m_Width = 0, m_Height = 0, m_Channels = 0;
 

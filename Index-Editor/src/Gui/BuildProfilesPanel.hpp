@@ -6,11 +6,6 @@
 
 namespace Index {
 
-	// Editor panel for managing `.indexbuild` files under
-	// <ProjectRoot>/BuildProfiles/. Modeled on PackageManagerPanel's
-	// list-left / inspector-right layout. Synchronous (no worker threads):
-	// profile edits are tiny JSON writes so the disk roundtrip stays well
-	// inside one frame.
 	class BuildProfilesPanel {
 	public:
 		void Initialize();

@@ -22,14 +22,7 @@
 
 namespace Index {
 	namespace {
-		// Instance-id encoding: low 8 bits hold (index + 1) so 0 stays "invalid";
-		// high 24 bits hold the slot's generation so a recycled slot does not silently
-		// alias a stale handle. ~16M generations per slot before wrap (~277x the
-		// previous 65k headroom): at MAX_CONCURRENT_SOUNDS = 64 with a worst-case
-		// recycle every frame at 60 FPS, that's ~77 hours of continuous churn per
-		// slot before a collision is theoretically possible. Index width = 8 bits
-		// gives a hard ceiling of 255 concurrent sounds, well above the configurable
-		// cap of 128.
+		// Low 8 bits = (index+1), high 24 bits = generation; 0 is always invalid. 8-bit index caps at 255 concurrent sounds (above the 128 config max).
 		constexpr uint32_t k_AudioInstanceIndexBits = 8u;
 		constexpr uint32_t k_AudioInstanceIndexMask = (1u << k_AudioInstanceIndexBits) - 1u;
 		constexpr uint32_t k_AudioInstanceGenerationMask = (1u << (32u - k_AudioInstanceIndexBits)) - 1u;
@@ -179,9 +172,6 @@ namespace Index {
 
 		s_soundsPlayedThisFrame = 0;
 		CleanupFinishedSounds();
-		// One recalc — ProcessSoundQueue and the cleanup pass keep s_activeSoundCount
-		// accurate via direct increments, so a second post-pass scan would just clobber
-		// any in-flight increments and waste an O(N) walk.
 		RecalculateActiveSoundCount();
 		ProcessSoundQueue();
 		UpdateListener();
@@ -206,24 +196,13 @@ namespace Index {
 	}
 
 	void AudioManager::ProcessSoundQueue() {
-		// Bound the work this frame: at most maxStartsPerFrame *successful* starts.
-		// Stale (age > 200ms) and throttled requests are skipped without consuming
-		// the start-budget so they don't starve legitimate sounds — only successful
-		// starts (or hard rejections like StartOneShotInstance failure) count.
+		// Stale (>200ms) and throttled requests skip the start-budget; only successful starts count against maxStartsPerFrame.
 		const uint32_t maxStartsPerFrame = 4;
 		uint32_t startsThisCall = 0;
 		uint32_t requeueGuard = 0;
 		const uint32_t requeueGuardLimit = static_cast<uint32_t>(s_soundQueue.size()) + 16;
 
-		// Local in-flight counter — added to s_activeSoundCount *only for the loop
-		// bound check*. We deliberately do NOT mutate s_activeSoundCount here:
-		// RecalculateActiveSoundCount (called once per Update tick) is the single
-		// source of truth, since incrementing here would drift under any unmodelled
-		// lifecycle event (failed start that half-allocated a slot, mid-frame
-		// stop race with the audio thread, RecycleSoundInstance that bypassed
-		// CleanupFinishedSounds). The recalc is O(MAX_CONCURRENT_SOUNDS)=64 —
-		// cheap enough to stay authoritative, and we just avoid burning it
-		// per-iteration of the queue drain.
+		// inFlightStarts is loop-bound only; do NOT mutate s_activeSoundCount here — RecalculateActiveSoundCount is the single source of truth.
 		uint32_t inFlightStarts = 0;
 
 		while (!s_soundQueue.empty() && startsThisCall < maxStartsPerFrame &&
@@ -296,9 +275,7 @@ namespace Index {
 
 		const std::string requestedPath(path);
 
-		// Raw-string fast path: hot scripts re-issue LoadAudio for the same
-		// literal path many times. Probe the raw cache before touching the
-		// filesystem so cache-hit cost is one hash lookup, not three syscalls.
+		// Probe raw-string cache first to avoid filesystem hits on repeated LoadAudio calls.
 		if (const AudioHandle existing = FindAudioByRawPath(requestedPath); existing.IsValid()) {
 			return existing;
 		}
@@ -346,10 +323,7 @@ namespace Index {
 			return AudioHandle();
 		}
 
-		// Optimistic path: probe both predicates first, only burn a full
-		// AssetRegistry Sync (filesystem scan) if either misses. Collapses
-		// two MarkDirty + Sync cycles into at most one, so a successful
-		// lookup costs zero filesystem hits.
+		// Probe registry without Sync first; only do the expensive filesystem scan on a miss.
 		bool isAudio = AssetRegistry::IsAudio(assetId);
 		std::string path = isAudio ? AssetRegistry::ResolvePath(assetId) : std::string{};
 
@@ -379,18 +353,15 @@ namespace Index {
 		if (it != s_audioMap.end()) {
 			if (it->second) {
 				s_audioPathToHandle.erase(it->second->GetFilepath());
+				// Eagerly purge raw-path cache entries for this handle; lazy self-heal in FindAudioByRawPath could alias a stale handle after id reuse.
+				const auto unloadedHandleValue = audioHandle.GetHandle();
+				for (auto rit = s_audioRawPathToHandle.begin(); rit != s_audioRawPathToHandle.end(); ) {
+					if (rit->second == unloadedHandleValue) rit = s_audioRawPathToHandle.erase(rit);
+					else ++rit;
+				}
 			}
 
-			// Lifetime ordering — DO NOT REORDER:
-			//   1. Recycle every SoundInstance referencing this audio. Each
-			//      calls ma_sound_uninit + ma_resource_manager_data_source_uninit,
-			//      so miniaudio's audio thread releases its hold on the buffer.
-			//   2. Unregister the resource manager entry. miniaudio drops its
-			//      pointer to audio->GetData() / GetFilepath().
-			//   3. Erase from s_audioMap. Audio destructor runs HERE, freeing
-			//      the PCM buffer and the filepath string. By this point no
-			//      miniaudio code path can reach the buffer — without the
-			//      ordering, the audio thread could read a freed buffer.
+			// DO NOT REORDER: (1) recycle all SoundInstances (uninit ma_sound), (2) unregister resource, (3) erase Audio. Prevents audio thread from reading a freed PCM buffer.
 			for (size_t i = 0; i < s_soundInstances.size(); ++i) {
 				auto& slot = s_soundInstances[i];
 				if (slot && slot->IsValid && slot->AudioHandle == audioHandle) {
@@ -578,13 +549,6 @@ namespace Index {
 
 		if (StartOneShotInstance(audioHandle, volume)) {
 			s_soundsPlayedThisFrame++;
-			// Don't recalc here. The next Update tick's
-			// CleanupFinishedSounds + RecalculateActiveSoundCount pair is
-			// the single source of truth (see ProcessSoundQueue). A local
-			// increment would risk drift, and the once-per-frame recalc
-			// is cheap enough to handle this slot count too — keeping it
-			// out of the hot PlayOneShot path matters when scripts fire
-			// many one-shots in a single frame.
 			ThrottleSound(audioHandle);
 		}
 	}
@@ -683,11 +647,7 @@ namespace Index {
 	}
 
 	AudioHandle AudioManager::FindAudioByRawPath(const std::string& rawPath) {
-		// Fast-path cache probe keyed on whatever the caller handed in.
-		// Skips NormalizeAudioPath (3–4 syscalls) on repeated loads of the
-		// same string. The raw key is not authoritative — if the entry is
-		// stale (audio was unloaded), erase it and let the caller fall
-		// through to the normalized lookup.
+		// Raw key skips NormalizeAudioPath; stale entries (audio unloaded) are erased and caller falls through to normalized lookup.
 		auto it = s_audioRawPathToHandle.find(rawPath);
 		if (it == s_audioRawPathToHandle.end()) {
 			return AudioHandle();
@@ -750,13 +710,7 @@ namespace Index {
 				s_soundInstances.pop_back();
 			}
 			else {
-				// Capture the bumped generation BEFORE resetting the slot. Mirroring
-				// RecycleSoundInstance: write to a brand-new sentinel SoundInstance so
-				// the slot is non-null when CreateSoundInstance reads
-				// s_soundInstances[index]->Generation on the next reuse. The previous
-				// order wrote Generation into the about-to-be-destroyed instance, then
-				// reset() to nullptr, then re-queued an index whose slot lookup yielded
-				// reuseGeneration=0 — silently aliasing stale handles.
+				// Capture bumped generation before reset(); slot must be non-null with correct generation for next reuse.
 				const uint32_t nextGeneration = reuseGeneration + 1u;
 				s_soundInstances[index].reset();
 				s_soundInstances[index] = std::make_unique<SoundInstance>();
@@ -777,8 +731,6 @@ namespace Index {
 				s_soundInstances.pop_back();
 			}
 			else {
-				// Same capture-then-rebuild pattern as the data-source-init failure
-				// branch above — see comment there.
 				const uint32_t nextGeneration = reuseGeneration + 1u;
 				s_soundInstances[index].reset();
 				s_soundInstances[index] = std::make_unique<SoundInstance>();
@@ -805,11 +757,7 @@ namespace Index {
 			return;
 		}
 
-		// Only recycle when the generation matches; a stale handle pointing at a
-		// recycled slot must be a no-op rather than freeing the live sound.
-		// Compare the masked low 24 bits of slot->Generation — encoded IDs
-		// only carry that many bits, so the runtime counter is the source
-		// of truth but matching uses the truncated form.
+		// Stale handle (generation mismatch) must be a no-op, not a free of the live sound.
 		auto& slot = s_soundInstances[index];
 		if (!slot || (slot->Generation & k_AudioInstanceGenerationMask)
 				!= DecodeAudioInstanceGeneration(instanceId)) {
@@ -833,10 +781,7 @@ namespace Index {
 		if (!slot || !slot->IsValid) {
 			return nullptr;
 		}
-		// Generation mismatch = the caller's id was minted before this slot was recycled.
-		// Returning nullptr is the whole point of the generation field. Mask the
-		// stored counter to the encoded width so a slot whose runtime counter
-		// has grown past 2^24 still matches the encoded id's low 24 bits.
+		// Mask to encoded width: a counter that has rolled past 2^24 still matches the id's low 24 bits.
 		if ((slot->Generation & k_AudioInstanceGenerationMask) != DecodeAudioInstanceGeneration(instanceId)) {
 			return nullptr;
 		}
@@ -862,21 +807,14 @@ namespace Index {
 			instance.HasDataSource = false;
 		}
 
-		// Bump generation BEFORE tearing down the unique_ptr, so any handle we just
-		// invalidated is recorded against the stale generation rather than the (zero)
-		// default that a freshly-allocated SoundInstance would have.
+		// Bump generation before reset() so stale handles see the old generation, not zero from a fresh alloc.
 		const uint32_t nextGeneration = instance.Generation + 1u;
 
-		// Reset the unique_ptr so the SoundInstance (and its embedded ma_sound, which
-		// the audio thread was reading) is fully torn down before the slot is reused.
 		slot.reset();
 
-		// Re-allocate an empty sentinel that just carries the bumped generation forward,
-		// so CreateSoundInstance's reuseGeneration read sees the correct value next time.
+		// Sentinel slot carries the bumped generation so CreateSoundInstance's reuseGeneration read is correct on next reuse.
 		slot = std::make_unique<SoundInstance>();
 		slot->Generation = nextGeneration;
-		// Mark as not-IsValid so anyone holding the old id who slips past the generation
-		// check (they shouldn't) still sees an inert slot.
 		slot->IsValid = false;
 		s_freeInstanceIndices.push_back(index);
 	}
@@ -887,10 +825,7 @@ namespace Index {
 			if (!slot || !slot->IsValid) continue;
 			SoundInstance& instance = *slot;
 
-			// "not playing && not looping" alone matches *paused* sounds too — recycling
-			// them would silently invalidate AudioSourceComponent::m_InstanceId and break
-			// any later Resume(). Require ma_sound_at_end to distinguish real finishers
-			// from mid-stream pauses (same predicate AudioSourceComponent::IsPaused uses).
+			// ma_sound_at_end required: "not playing && not looping" also matches paused sounds and would break Resume().
 			if (!ma_sound_is_playing(&instance.Sound)
 				&& !ma_sound_is_looping(&instance.Sound)
 				&& ma_sound_at_end(&instance.Sound) == MA_TRUE) {

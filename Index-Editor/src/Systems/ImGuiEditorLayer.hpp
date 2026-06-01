@@ -43,13 +43,6 @@ namespace Index {
 
 	class IndexProject;
 
-	// Editor-view debug draw mode (toolbar dropdown). Default renders
-	// the scene normally; Triangle switches glPolygonMode to GL_LINE so
-	// every quad is drawn as its two constituent triangles' edges only;
-	// Mixed runs the full scene render twice — once normally, once in
-	// wireframe — so the user can see the geometry on top of the
-	// shaded result. Affects only the Editor View FBO; the Game View
-	// always renders Default.
 	enum class EditorViewDrawMode : uint8_t {
 		Default = 0,
 		Triangle,
@@ -100,26 +93,11 @@ namespace Index {
 		void RenderMainMenu(Scene& scene);
 		void RenderToolbar();
 
-		// Spawn Index-Runtime.exe detached against the current project
-		// without going through the Build panel. Sister to the in-editor
-		// Play button: gives the developer a one-click way to verify the
-		// scene in a real standalone window (window decorations, real OS
-		// input rebase, aspect-lock, no editor UI overlay) without baking
-		// a full project build. Saves the project to disk first so the
-		// runtime picks up the latest BuildAspect / scene-list / etc.
-		// Caller-context-only: noop with a warning if no project is loaded
-		// or Index-Runtime.exe can't be located near the editor binary.
 		void LaunchStandalone();
 		void RenderEntitiesPanel();
 		void RenderInspectorPanel(Scene& scene);
 		void RenderEditorView(Scene& scene);
 		void RenderGameView(Scene& scene);
-		// Editor-only particle preview tick. Runs once per frame from
-		// OnPreRender so the simulation keeps advancing while the user
-		// switches between the Editor View and Game View tabs — the
-		// in-viewport Play / Pause / Restart / Stop overlay is the only thing
-		// that gates emission/simulation. No-op in play mode (the
-		// ParticleUpdateSystem owns ticking there).
 		void TickParticlePreview(Scene& scene);
 		void RenderLogPanel();
 		void RenderProjectPanel();
@@ -132,22 +110,10 @@ namespace Index {
 		void RenderSettings_Build(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Editor(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalSystemsChanged, const std::string& filterLower);
-		// Splash preview overlay. Drawn on top of the dockspace with an
-		// ImGui foreground draw list so the editor stays interactive
-		// underneath; the preview self-completes after FadeIn +
-		// Duration + FadeOut seconds.
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
 		void ExecuteBuild();
-		// Async wrapper. Captures the project + output dir on the UI
-		// thread (file access is fine here), then dispatches the bulk
-		// of the build (process spawn, file copies, icon embedding) to
-		// a worker. The returned future completes when the worker has
-		// finished — RenderBuildPanel polls it once per frame.
 		void ExecuteBuildAsync();
-		// Public-to-private helper: post a stage / progress update
-		// from the build worker. Thread-safe; the UI reads the values
-		// each frame.
 		void ReportBuildProgress(float progress, std::string_view stage);
 		void RenderPackageManagerPanel();
 		void RenderAssetInspector();
@@ -164,23 +130,10 @@ namespace Index {
 		void ToggleEntitySelection(EntityHandle entity, int index);
 		void SelectEntityRange(int index);
 
-		// Maintain the parallel O(1)-lookup set + bump the version counter
-		// that downstream caches (inspector) use to invalidate. Call after
-		// any bulk mutation of m_SelectedEntities (clear + re-fill).
 		void RebuildSelectionSet();
-		// One-pass recomputation of inspector-side derived state. Triggered
-		// lazily when m_InspectorCache.Version != m_SelectionVersion at the
-		// top of RenderInspectorPanel. Keeps the 25k-selection inspector
-		// from doing N-per-component-per-frame work.
 		void RecomputeInspectorSelectionCache(Scene& scene);
 		void DrainPendingLogEntries();
 		void RunAutoSaveTick(Application& app, float dt);
-		// In-viewport prefab edit auto-save: saves m_PrefabEditScene back to
-		// its .prefab file as soon as the user releases the active ImGui
-		// widget. Mirrors the asset-side PrefabInspector pattern. No-op when
-		// the preference is off, no prefab is being edited, or play mode is
-		// active. See RunPrefabAutoSaveTick implementation for the full
-		// trigger conditions.
 		void RunPrefabAutoSaveTick();
 		void AppendLogEntry(LogEntry entry);
 		void ClearLogEntries();
@@ -191,9 +144,6 @@ namespace Index {
 		void DuplicateSelectedEntity(Scene& scene);
 		void DeleteSelectedEntity(Scene& scene);
 		void BeginRenameSelectedEntity(Scene& scene);
-		// Convert every selected entity that's a prefab instance back into a
-		// regular scene entity (drops PrefabInstanceComponent + clears the
-		// prefab GUID via SetEntityMetaData).
 		void UnpackSelectedPrefabs(Scene& scene);
 		void CopySelectedEntities(Scene& scene);
 		void CutSelectedEntities(Scene& scene);
@@ -204,59 +154,20 @@ namespace Index {
 		void EnsureEditorUniqueEntityName(Scene& scene, EntityHandle entity);
 		void EnsureEditorUniqueEntityNames(Scene& scene, const std::vector<EntityHandle>& roots);
 		bool SetEntityParentPreservingWorld(Scene& scene, EntityHandle child, Entity parent);
-		// Reorders `dragged` so it becomes the immediate previous (insertAfter=false)
-		// or next (insertAfter=true) sibling of `target`. Reparents across
-		// branches when needed. Mutates HierarchyComponent::Children for
-		// non-root targets and m_EntityOrder for root-level targets so the
-		// hierarchy panel reflects the new order. Returns true on a real
-		// reorder (caller should mark scene dirty).
+		// Reorders `dragged` to be the previous/next sibling of `target`; reparents across branches; returns true if the scene was actually mutated.
 		bool MoveSiblingNextTo(Scene& scene, EntityHandle dragged, EntityHandle target, bool insertAfter);
 
-		// Resolves a hierarchy drag-drop primary handle into the full set of
-		// entities the gesture should affect. When `primary` is part of the
-		// current multi-selection we return the entire (hierarchy-root-
-		// filtered) selection in selection order; otherwise we return just
-		// `primary`. Filters stale handles. The drag payload itself only
-		// carries the primary entity, so the drop-side resolves the full
-		// set against the editor's selection state at drop time.
 		std::vector<EntityHandle> ResolveDraggedHierarchyEntities(Scene& scene, EntityHandle primary) const;
 
-		// Migrates the given root entities (and their full subtrees) from
-		// `sourceScene` into `targetScene`. Serializes through the
-		// clipboard path (SerializeEntityForClipboard / DeserializeEntityFromValue)
-		// so component data, hierarchy, and asset references survive the
-		// cross-scene hop, then destroys the originals. Optionally reparents
-		// the new roots under `targetParent` (Entity::Null = keep as root).
-		// Marks both scenes dirty when at least one entity actually moved
-		// and returns the new entity handles in target-scene order for
-		// follow-up selection. Used by the Entities panel's cross-scene
-		// drag-drop path; same-scene drops still go through the cheaper
-		// reparent / sibling-insert routines.
+		// Serializes roots + subtrees through the clipboard path and re-creates them in targetScene; used by cross-scene drag-drop.
 		std::vector<EntityHandle> MigrateEntitiesToScene(Scene& sourceScene, Scene& targetScene,
 			const std::vector<EntityHandle>& sourceRoots, Entity targetParent);
 
 		// ── Prefab edit mode ──────────────────────────────────────────
-		// Loads `path` into a detached scene and switches the editor's
-		// hierarchy panel + viewport to that scene. The main scene stays
-		// loaded but is hidden until ClosePrefabEditing runs. Returns
-		// false when the file can't be read or parsed; the editor stays
-		// in scene-edit mode in that case.
 		bool OpenPrefabForEditing(const std::string& path);
-		// `save=true` writes the detached scene back to its source path
-		// before tearing the prefab scene down. Either way, returns the
-		// editor to scene-edit mode and clears the prefab selection.
 		void ClosePrefabEditing(bool save);
-		// Persist the in-flight prefab edits to disk and propagate to
-		// live instances WITHOUT exiting prefab edit mode. Used by the
-		// "Save" button in the hierarchy toolbar so the user can keep
-		// iterating on the prefab between explicit save points.
 		bool SavePrefabEditChanges();
-		// True while a detached prefab scene is the editor's focus. The
-		// hierarchy / viewport / inspector all consult this to decide
-		// whether to operate on the detached scene or the active scene.
 		bool IsInPrefabEditMode() const { return m_PrefabEditScene != nullptr; }
-		// Returns the scene the editor is currently driving — the prefab
-		// edit scene when in prefab mode, otherwise the active scene.
 		Scene* GetContextScene() const;
 
 		bool HasEntityShortcutFocus() const;
@@ -265,16 +176,6 @@ namespace Index {
 		void TrimPreviewTextureCache();
 		void ClearPreviewTextureCache();
 
-		// `onlyPassedScene` skips the SceneManager loop and renders only
-		// the explicit `scene` argument. Used by prefab-edit mode so the
-		// detached prefab scene doesn't get its visuals composited with
-		// the still-loaded "real" scene underneath.
-		//
-		// `uiInWorldSpace` switches the GuiRenderer pass from its default
-		// screen-space ortho to a world-space projection through `vp`.
-		// Used by the Editor View so UI rects pan/zoom with the editor
-		// camera (and selection gizmos line up); the Game View leaves
-		// it false because runtime UI is screen-locked by design.
 		void RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
 			const glm::mat4& vp, const AABB& viewportAABB,
 			bool withGizmos, bool sharedGizmosOnly = false,
@@ -289,12 +190,6 @@ namespace Index {
 		EntityHandle m_SelectedEntity = entt::null;
 		EntityHandle m_PressedEntity = entt::null;
 		std::vector<EntityHandle> m_SelectedEntities;
-		// Parallel index into m_SelectedEntities. The vector remains the
-		// source of truth (range-select / last-selected ordering depends on
-		// it); this set exists purely to make IsEntitySelected and the
-		// dedup pass inside GetSelectedEntities O(1)/O(N) instead of
-		// O(N)/O(N²). Every mutation site updates both containers — see
-		// RebuildSelectionSet for the bulk-rebuild path.
 		std::unordered_set<EntityHandle> m_SelectedEntitySet;
 		// Bumped every time the selection mutates. Inspector / future
 		// consumers compare against their own cached snapshot to decide
@@ -303,13 +198,7 @@ namespace Index {
 		int m_LastEntitySelectionIndex = -1;
 		bool m_IsSceneNodeSelected = false;
 
-		// Inspector-side cache of derived per-selection facts. Recomputed
-		// in one pass when m_SelectionVersion changes — the alternative
-		// (per-frame N×M loops over selection × components) collapses the
-		// editor at 25k selected entities. Sentinel-initialised Version
-		// forces a recompute on first inspector render. CommonComponentTypes
-		// is the gate the per-frame component loop checks: a single O(1)
-		// hash lookup replaces the prior O(N) info.has() sweep per type.
+		// Lazily recomputed when m_SelectionVersion changes; avoids per-frame N×M loops at large selection counts.
 		struct InspectorSelectionCache {
 			std::uint64_t Version = UINT64_MAX;
 			std::vector<EntityHandle> Handles;
@@ -337,88 +226,36 @@ namespace Index {
 		// Entity ordering for hierarchy drag-reorder
 		std::vector<entt::entity> m_EntityOrder;
 
-		// M30: hierarchy panel was rebuilding the registry-sync diff and
-		// the DFS subtree-emit pass on EVERY frame. The user-visible order
-		// usually doesn't change between frames, so cache the most-recently-
-		// rendered flat list + per-row depths, and only rebuild when an
-		// upstream signal flips m_EntityOrderDirty. New entities pushed onto
-		// m_EntityOrder, scene swap, or any other structural change all
-		// flip this flag; per-frame ImGui interaction (selection, expand/
-		// collapse) does not.
+		// Rebuilt only when structural changes flip m_EntityOrderDirty; per-frame UI interactions (select/expand) do not.
 		bool m_EntityOrderDirty = true;
 		std::vector<entt::entity> m_RenderedEntityOrder;
 		std::vector<int> m_RenderedEntityDepths;
-		// Pruned subset of m_EntityOrder: entries under a collapsed parent
-		// are dropped. The hierarchy render loop iterates this list (not
-		// m_EntityOrder) so collapsing a 100k-child subtree turns the
-		// per-frame cost from O(N_total) into O(N_visible). Parallel
-		// `m_VisibleEntityDepths` carries the depth for each entry. Both
-		// are rebuilt by the same DFS pass that produces m_EntityOrder,
-		// so any flip of m_EntityOrderDirty invalidates them together.
 		std::vector<entt::entity> m_VisibleEntityOrder;
 		std::vector<int> m_VisibleEntityDepths;
-		// SceneId the cached order was built for. The active scene can swap
-		// without anyone flipping m_EntityOrderDirty (e.g. a C# script calling
-		// SceneManager.Load between frames). The size-mismatch fallback in the
-		// hierarchy rebuild only catches that when the two scenes' entity
-		// counts differ — when they happen to match, the cached order keeps
-		// pointing at the destroyed scene's now-invalid handles, the clipper
-		// iterates them all, scene.IsValid() filters every row, no widget is
-		// submitted, and ImGui asserts "Failed to calculate item height".
-		uint64_t m_EntityOrderSceneId = 0;
+		// Detects scene swaps that don't flip m_EntityOrderDirty; stale handles from a prior scene cause ImGui to assert if not caught here.
+		// Scene* (not sceneId): two loaded scenes can collide on sceneId — a duplicated .scene file keeps its serialized id, and an
+		// additively loaded script-only scene starts at the UUID default. Scene* is always distinct among currently-loaded scenes.
+		const class Scene* m_EntityOrderSceneId = nullptr;
 
 		// ── Prefab edit mode ──────────────────────────────────────────
-		// Owned detached scene that contains the entity tree of the
-		// .prefab being edited. `nullptr` when the editor is in normal
-		// scene-edit mode. Built via Scene::CreateDetachedScene so the
-		// physics/audio/script subsystems aren't touched by it.
 		std::unique_ptr<Scene> m_PrefabEditScene;
 		std::string m_PrefabEditPath;
 		EntityHandle m_PrefabEditRootEntity = entt::null;
 		bool m_PrefabEditDirty = false;
-		// Snapshot of the scene-edit editor camera taken at OpenPrefabForEditing
-		// time. Restored on ClosePrefabEditing so the user returns to exactly
-		// the view they had before opening the prefab — the prefab's authored
-		// origin is usually nowhere near the active scene's framing, and forcing
-		// the user to manually pan back to where they were is jarring. The
-		// in-between camera mutations (the auto-focus on the prefab root, and
-		// any user pan/zoom while editing the prefab) write through to the
-		// shared m_EditorCamera and are discarded by this restore path.
+		// Camera state saved at OpenPrefabForEditing and restored on close so the user returns to their prior viewport.
 		Vec2 m_PrefabEditSavedCameraPosition{ 0.0f, 0.0f };
 		float m_PrefabEditSavedCameraOrthoSize = 5.0f;
 		float m_PrefabEditSavedCameraZoom = 1.0f;
 		bool m_PrefabEditHasSavedCameraState = false;
-		// Discard-confirmation modal state. Fired when the user clicks
-		// "< Back" (or otherwise tries to leave) while the prefab edit
-		// scene has unsaved changes. The user can Save+Close, Discard
-		// (close without save), or Cancel (stay in edit mode).
 		bool m_ShowPrefabEditDiscardPrompt = false;
-		// Override clear color for the editor viewport while in prefab-
-		// edit mode. The blue tint matches the user-supplied palette and
-		// clearly differentiates prefab editing from scene editing.
 		static constexpr float k_PrefabEditClearR = 0.13f;
 		static constexpr float k_PrefabEditClearG = 0.21f;
 		static constexpr float k_PrefabEditClearB = 0.32f;
 
-		// Hierarchy panel: entities whose subtrees are folded shut. Stored as
-		// raw uint32 keys so destroyed entities don't dangle as enttity handles;
-		// stale entries are harmless (they never match a live id) and only
-		// risk a freshly-recycled id starting collapsed.
 		std::unordered_set<uint32_t> m_CollapsedHierarchyEntities;
 
-		// Entities currently sitting in the cut "clipboard". They remain
-		// alive in the scene (and functional at runtime) but render dimmed
-		// in the hierarchy until Paste destroys them or Esc/another Cut
-		// clears the marker. Stored as raw uint32 so destroyed entities
-		// don't dangle as entity handles — stale entries are harmless.
 		std::unordered_set<uint32_t> m_CutEntities;
 
-		// When multiple scenes are loaded, the user's last hierarchy
-		// interaction (clicking the scene node, expanding it, right-
-		// clicking it, or selecting one of its entities) wins as the
-		// "create entity" target. Falls back to SceneManager's active
-		// scene when empty or stale. Cleared when the named scene is
-		// unloaded so GetContextScene doesn't dangle.
 		std::string m_LastInteractedSceneName;
 
 		EntityHandle m_RenamingEntity = entt::null;
@@ -430,20 +267,10 @@ namespace Index {
 		bool m_IsEditorViewHovered = false;
 		bool m_IsEditorViewFocused = false;
 		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
-		// Per-Editor-View gizmo visibility toggle (toolbar button next to
-		// the draw-mode selector). Affects only the Editor View FBO; the
-		// Game View's gizmo state is unaffected. When off, selection
-		// outlines, collider/camera/particle indicators, and any
-		// package-registered viewport gizmos are skipped for this panel.
 		bool m_ShowGizmos = true;
 		bool m_EditorCameraFocusActive = false;
 		Vec2 m_EditorCameraFocusTarget{ 0.0f, 0.0f };
 		float m_EditorCameraFocusOrthoSize = 5.0f;
-		// Snapshot of the camera at the moment a focus animation begins,
-		// plus elapsed time. The interpolation drives off these instead of
-		// the live camera position so the animation always takes the same
-		// wall-clock duration regardless of how far the camera has to
-		// travel or how zoomed-out it starts.
 		Vec2 m_EditorCameraFocusStartPosition{ 0.0f, 0.0f };
 		float m_EditorCameraFocusStartOrthoSize = 5.0f;
 		float m_EditorCameraFocusElapsed = 0.0f;
@@ -467,18 +294,10 @@ namespace Index {
 		int m_LastGameViewFbH = 0;
 		std::chrono::steady_clock::time_point m_LastGameViewRenderTime{};
 
-		// Game View overlays. The Stats / Logs buttons next to VSync toggle
-		// these flags; when on, the engine-level Diagnostics overlays draw
-		// pinned to the top-right of the rendered FBO area. Both share the
-		// same implementation as the runtime F6/F7 overlays. When both are
-		// visible the log window stacks below the stats window.
 		bool m_ShowGameViewStats = false;
 		bool m_ShowGameViewLogs  = false;
 		Index::Diagnostics::StatsOverlay m_GameViewStatsOverlay;
-		// unique_ptr so LogOverlay's constructor (which subscribes to
-		// Log::OnLog) only fires once Log is up. The editor's ImGuiEditorLayer
-		// constructor runs before Application::Initialize on some paths;
-		// we lazily new the overlay on first use to avoid that ordering risk.
+		// unique_ptr: lazily constructed to avoid subscribing to Log::OnLog before Application::Initialize.
 		std::unique_ptr<Index::Diagnostics::LogOverlay> m_GameViewLogOverlay;
 
 		Viewport m_EditorViewport{ 1, 1 };
@@ -491,25 +310,13 @@ namespace Index {
 		FileWatcher m_AssetWatcher;
 		std::string m_AssetWatcherRoot;
 
-		// Editor-side inspector for `.prefab` assets. Owns a detached preview
-		// scene (Scene::CreateDetachedScene) where the prefab is unpacked
-		// for editing. RenderAssetInspector dispatches to it when the selected
-		// asset's extension is `.prefab`.
 		PrefabInspector m_PrefabInspector;
-		// Tracks the path the prefab inspector has currently loaded; used to
-		// detect selection changes and drive the dirty-prompt dialog.
 		std::string m_PrefabInspectorPath;
 		// Save/discard prompt state for switching away from a dirty prefab.
 		bool m_ShowPrefabSavePrompt = false;
 		std::string m_PendingPrefabSwitchPath;
 
-		// Sprite Editor panel + integration plumbing. The "Open Sprite Editor"
-		// button in the texture asset inspector flips m_ShowSpriteEditor and
-		// queues the asset path / UUID; the chrome's render dispatch drains
-		// the queue into m_SpriteEditorPanel.OpenTexture(...) the next frame.
-		// Queuing rather than calling directly keeps the OpenTexture →
-		// unsaved-changes-prompt flow happening at ImGui-render time, not
-		// mid-inspector-build.
+		// Queued rather than called directly to keep the OpenTexture → unsaved-changes-prompt flow at ImGui-render time.
 		bool m_ShowSpriteEditor = false;
 		std::string m_PendingSpriteEditorPath;
 		uint64_t m_PendingSpriteEditorAssetId = 0;
@@ -527,18 +334,13 @@ namespace Index {
 		std::string m_ComponentClipboardJson;
 		std::string m_EntityClipboardJson;
 
-		// (scene name, on-disk path) for EVERY scene loaded at play-mode entry.
-		// Play mode is restored by reloading each scene from disk, so all loaded
-		// scenes must be snapshotted — not just the active one, or additive
-		// scenes leak their play-mode runtime state back into edit mode.
 		std::vector<std::pair<std::string, std::string>> m_PlayModeScenes;
+		// Name of the active scene at play-mode entry. Restored after exit so
+		// a script-side LoadScene during play doesn't leak its choice into edit mode.
+		std::string m_PlayModeActiveScene;
 		bool m_PlayModeRecompilePending = false;
 		int m_StepFrames = 0;
 
-		// Auto-save: accumulates real time since the last successful save
-		// of a dirty active scene. Reset on save (manual or auto), or when
-		// the active scene swaps. Driven by Project.AutoSaveScenes /
-		// AutoSaveIntervalSeconds — see RunAutoSaveTick.
 		float m_AutoSaveAccumulator = 0.0f;
 		std::string m_AutoSaveLastScenePath;
 
@@ -551,19 +353,10 @@ namespace Index {
 		bool m_ShowProfiler = false;
 		ProfilerPanel m_ProfilerPanel;
 
-		// Scene list for build. Re-synced with disk every frame in
-		// RenderBuildPanel so newly-imported scenes auto-appear; manual
-		// drag-drop reordering is preserved across syncs.
 		std::vector<std::string> m_BuildSceneList;
 		int m_DraggedSceneIndex = -1;
 		bool m_ShowProjectSettings = false;
 	public:
-		// Side-tab nav state for the unified Project Settings window.
-		// Selection persists across panel close/open within a session;
-		// not serialized — opening the panel after restart lands on Display.
-		// Public so the file-local k_SettingsIndex table in
-		// ImGuiEditorLayerPanels.cpp can reference it; the member that
-		// stores the active selection stays private below.
 		enum class SettingsCategory : uint8_t {
 			Display = 0,
 			Graphics,
@@ -577,12 +370,6 @@ namespace Index {
 		bool m_ShowEditorPreferences = false;
 		EditorPreferencesPanel m_EditorPreferencesPanel;
 		bool m_PackageManagerInitialized = false;
-		// Splash preview state. Set by the Show Preview button in the
-		// Project Settings panel (Branding tab); consumed by the editor's chrome update
-		// each frame to advance + render the preview overlay. Mirrors
-		// the runtime's RuntimeSplashLayer timeline (fade in → hold →
-		// fade out) but draws on top of the editor's main viewport
-		// instead of locking the application.
 		bool m_SplashPreviewRequest = false;
 		bool m_SplashPreviewActive = false;
 		float m_SplashPreviewElapsed = 0.0f;
@@ -594,21 +381,9 @@ namespace Index {
 		std::string m_BuildOutputDir;
 		char m_BuildOutputDirBuffer[512]{};
 		char m_CustomDefineEntryBuffer[128]{}; // Build panel custom-define text input
-		// Build state machine:
-		//   0 = idle
-		//   1 = pending (render overlay one frame so the user sees it)
-		//   2 = launch worker (transition only — kicks off m_BuildFuture, becomes 3)
-		//   3 = running (worker thread alive, polled by RenderBuildPanel)
-		int m_BuildState = 0;
+		int m_BuildState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running
 		bool m_BuildAndPlay = false;
-		// Cross-thread build progress. ExecuteBuildAsync runs on
-		// m_BuildThread / m_BuildFuture and writes progress + stage
-		// together under m_BuildProgressMutex; the UI thread reads them
-		// under the same lock so it never observes a stage that doesn't
-		// match the displayed progress. (The previous design split
-		// progress into a relaxed atomic and stage under the mutex,
-		// which could surface mismatched pairs.) m_BuildSucceeded stays
-		// atomic — it's a single value the UI polls for completion.
+		// Progress + stage written together under m_BuildProgressMutex so UI never observes a mismatched pair.
 		std::future<void> m_BuildFuture;
 		std::atomic<bool>  m_BuildSucceeded{ true };
 		std::mutex m_BuildProgressMutex;

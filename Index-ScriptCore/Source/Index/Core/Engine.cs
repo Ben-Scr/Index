@@ -79,11 +79,7 @@ public static class Engine
     public static string VersionLong => InternalCalls.Engine_GetVersionLong();
     public static string ConfigurationName => BuildConfiguration.ToString();
 
-    /// <summary>
-    /// Active build configuration (Debug / Development / Release). Mirrors
-    /// the INDEX_BUILD_* defines but resolved at runtime so callers don't
-    /// need #if directives.
-    /// </summary>
+    /// <summary>Active build configuration, resolved at runtime (no #if needed).</summary>
     public static BuildConfiguration BuildConfiguration
         => (BuildConfiguration)InternalCalls.Engine_GetBuildConfiguration();
 

@@ -1,31 +1,7 @@
 #pragma once
 
-// EntityScriptOps
-// ===============
-// Free helper templates that route Entity::AddComponent<TScript>() /
-// HasComponent<TScript>() / GetComponent<TScript>() / TryGetComponent /
-// RemoveComponent calls to the engine's native-script subsystem
-// (NativeScriptHost + ScriptComponent storage), so script types and
-// component types share one API on Entity.
-//
-// Cycle-safe by construction: this header pulls in NO heavy script /
-// scene machinery. The templates take a forward-declared `Scene*` and
-// route through small non-template helpers in `EntityScriptOps.cpp`
-// where Scene + NativeScriptHost + ScriptComponent are all complete.
-// The template bodies themselves use only:
-//   - NativeScriptRegistry::NameOfType (header-only, leaf include)
-//   - dynamic_cast<T*>(NativeScript*) — requires NativeScript complete
-//     at the call site (i.e. wherever a user instantiates these
-//     templates), which is satisfied because the user's script type
-//     itself derives from NativeScript and so transitively includes
-//     NativeScript.hpp.
-//
-// Why this matters: Entity.hpp ends with `#include "EntityScriptOps.hpp"`,
-// and Scene.hpp includes Entity.hpp at its top. If THIS header brought in
-// Scene.hpp or NativeScript.hpp, the chain `Scene.hpp -> Entity.hpp ->
-// EntityScriptOps.hpp -> NativeScript.hpp -> Scene.hpp (guard hit, no-op
-// but Scene still incomplete)` would leave Scene's class members
-// referenced in inline bodies undefined at compile time.
+// EntityScriptOps — routes AddComponent/HasComponent/GetComponent/RemoveComponent for native-script types through NativeScriptHost.
+// Cycle-safe: intentionally avoids including Scene.hpp or NativeScript.hpp to prevent a circular dependency via Entity.hpp.
 
 #include "Scene/EntityHandle.hpp"
 #include "Scripting/NativeScriptRegistry.hpp"
@@ -39,12 +15,6 @@ namespace Index {
 }
 
 namespace Index::EntityScriptOps::detail {
-	// Non-template low-level helpers. Defined in EntityScriptOps.cpp
-	// where Scene + NativeScriptHost + ScriptComponent are complete.
-	// The template wrappers below resolve T -> name string via
-	// NativeScriptRegistry (registered by REGISTER_SCRIPT), then
-	// bounce through these. Pointer return is null when the entity
-	// is invalid / not in the right state for the operation.
 	NativeScript* AddScriptByName(Scene* scene, EntityHandle entity, const char* name);
 	NativeScript* GetNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);
 	bool HasNativeScriptOnEntity(Scene* scene, EntityHandle entity, const char* name);

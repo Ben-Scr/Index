@@ -201,13 +201,7 @@ public class SpriteRenderer : Component
         set => InternalCalls.SpriteRenderer_SetFilter(RequireComponent<SpriteRenderer>(), (int)value);
     }
 
-    /// <summary>
-    /// Name of the sprite slice to render, from the bound texture's `.meta`.
-    /// Empty (or null) = render the full texture (default). Set to one of
-    /// the slice names authored in the Sprite Editor to draw only that
-    /// rectangle of the texture. Stale names silently fall back to the full
-    /// texture with a one-shot warning in the editor log.
-    /// </summary>
+    /// <summary>Sprite slice name from the texture's .meta. Empty = full texture. Stale names fall back to full texture with a log warning.</summary>
     public string SpriteName
     {
         get => InternalCalls.SpriteRenderer_GetSpriteName(RequireComponent<SpriteRenderer>());
@@ -275,11 +269,6 @@ public class TextRenderer : Component
         set => InternalCalls.TextRenderer_SetWrapMode(RequireComponent<TextRenderer>(), (int)value);
     }
 
-    // WrapWidth was removed — wrap area now comes from the host
-    // RectTransform2D's width minus the (Left + Right) Margin
-    // components on this TextRenderer. Adjust Margin instead to inset
-    // wrapped lines.
-
     public int SortingOrder
     {
         get => InternalCalls.TextRenderer_GetSortingOrder(RequireComponent<TextRenderer>());
@@ -309,12 +298,6 @@ public class Camera2D : Component
         set => InternalCalls.Camera2D_SetZoom(RequireComponent<Camera2D>(), value);
     }
 
-    // Returns the active scene's main Camera2D, or null when no
-    // enabled camera exists. Resolves to the entity backing
-    // `Scene::GetMainCameraEntity()` on the native side, then wraps it through
-    // the standard `Entity.GetComponent<Camera2D>()` lookup so the
-    // returned component shares the entity's component cache and is
-    // invalidated alongside other component references.
     public static Camera2D? Main
     {
         get
@@ -376,12 +359,7 @@ public class Camera2D : Component
 
     private void GetCameraBasis(float viewportWidth, float viewportHeight, out Vector2 position, out float cos, out float sin, out float halfWidth, out float halfHeight)
     {
-        // Camera2D math has no meaningful answer without a host
-        // Transform2D — short-circuit with a descriptive message.
-        // Entity.Transform itself returns null instead of throwing
-        // (so user scripts can probe for it on tag entities); this
-        // throw preserves the diagnostic at the one site inside the
-        // engine that genuinely requires the component.
+        // Entity.Transform returns null for tag entities; throw here to preserve the diagnostic at the one required call site.
         Transform2D transform = Entity.Transform
             ?? throw new InvalidOperationException(
                 "Camera2DComponent.GetCameraBasis: host entity has no Transform2D component.");
@@ -400,16 +378,6 @@ public class Camera2D : Component
 
 public enum BodyType { Static = 0, Kinematic = 1, Dynamic = 2 }
 
-/// <summary>
-/// Bitmask of physics constraints for <see cref="Rigidbody2D"/>. Mirrors
-/// Unity's RigidbodyConstraints2D so scripts ported from Unity read
-/// almost-verbatim. The flag values match Box2D's b2MotionLocks order so
-/// the bridge is a one-shot bitwise check per axis on the native side.
-///
-/// Composite values (<see cref="FreezePosition"/>, <see cref="FreezeAll"/>)
-/// are convenience aliases; setting them is exactly equivalent to OR-ing
-/// the individual flags.
-/// </summary>
 [Flags]
 public enum RigidbodyConstraints2D
 {
@@ -458,49 +426,25 @@ public class Rigidbody2D : Component
         set => InternalCalls.Rigidbody2D_SetMass(RequireComponent<Rigidbody2D>(), value);
     }
 
-    /// <summary>
-    /// Lock translation along the world X axis. Routed through Box2D's
-    /// native motion-locks; the solver treats a locked axis as infinite
-    /// mass, so an external force / impulse on that axis is discarded
-    /// without changing the body's linear velocity on the other axis.
-    /// </summary>
     public bool FreezePositionX
     {
         get => InternalCalls.Rigidbody2D_GetFreezePositionX(RequireComponent<Rigidbody2D>());
         set => InternalCalls.Rigidbody2D_SetFreezePositionX(RequireComponent<Rigidbody2D>(), value);
     }
 
-    /// <summary>
-    /// Lock translation along the world Y axis. See <see cref="FreezePositionX"/>.
-    /// </summary>
     public bool FreezePositionY
     {
         get => InternalCalls.Rigidbody2D_GetFreezePositionY(RequireComponent<Rigidbody2D>());
         set => InternalCalls.Rigidbody2D_SetFreezePositionY(RequireComponent<Rigidbody2D>(), value);
     }
 
-    /// <summary>
-    /// Lock rotation around the Z axis. Same effect as Unity's
-    /// Rigidbody2D.constraints.FreezeRotation — the body keeps its angular
-    /// velocity at zero regardless of torques / impacts, but linear motion
-    /// is unchanged.
-    /// </summary>
     public bool FreezeRotation
     {
         get => InternalCalls.Rigidbody2D_GetFreezeRotation(RequireComponent<Rigidbody2D>());
         set => InternalCalls.Rigidbody2D_SetFreezeRotation(RequireComponent<Rigidbody2D>(), value);
     }
 
-    /// <summary>
-    /// All constraints as a bitmask — the convenience overload over the three
-    /// individual <see cref="FreezePositionX"/>, <see cref="FreezePositionY"/>,
-    /// <see cref="FreezeRotation"/> properties. Reads compose a fresh bitmask
-    /// from the live body's motion locks; writes set each flag explicitly so
-    /// `rb.Constraints = RigidbodyConstraints2D.FreezePosition` not only
-    /// enables the two position locks but also clears any rotation lock that
-    /// was previously set — same idempotent-replace semantics as Unity's
-    /// equivalent setter.
-    /// </summary>
+    // Writes clear unmentioned flags (idempotent replace), unlike OR-ing individual properties.
     public RigidbodyConstraints2D Constraints
     {
         get
@@ -629,9 +573,6 @@ public class PolygonCollider2D : Component
     public void SetSides(int sides)
         => InternalCalls.PolygonCollider2D_SetSides(RequireComponent<PolygonCollider2D>(), sides);
 
-    // Set the polygon's local-space vertex list. Caller must provide 3..MaxVertices
-    // points; the native side runs ComputeHull so winding doesn't matter, but
-    // duplicate / collinear points may still drop the count.
     public void SetPoints(ReadOnlySpan<Vector2> points)
     {
         if (points.Length < MinVertices || points.Length > MaxVertices)
@@ -651,10 +592,6 @@ public class PolygonCollider2D : Component
         InternalCalls.PolygonCollider2D_SetPoints(RequireComponent<PolygonCollider2D>(), packed, points.Length);
     }
 
-    // Snapshot of the polygon's world-space vertices (after offset, scale, and
-    // any custom hull). Fills `outPoints` and returns the number of vertices
-    // copied; the slice may be shorter than `outPoints` if the polygon has
-    // fewer vertices than the buffer.
     public int GetWorldPoints(Span<Vector2> outPoints)
     {
         if (outPoints.Length == 0) return 0;
@@ -673,11 +610,6 @@ public class PolygonCollider2D : Component
 
 public class AudioSource : Component
 {
-    // Audio asset assigned to this source. Mirrors the
-    // `SpriteRenderer.Texture` pattern: round-trips the asset UUID
-    // through the native binding, returns null when no clip is assigned or
-    // the UUID resolves to an asset that doesn't actually exist on disk.
-    // Setting null clears the assignment.
     public Audio? Audio
     {
         get
@@ -727,6 +659,16 @@ public class ParticleSystem2D : Component
 
     public bool IsPlaying => InternalCalls.ParticleSystem2D_IsPlaying(RequireComponent<ParticleSystem2D>());
 
+    public Texture Texture
+    {
+        get
+        {
+            ulong assetId = InternalCalls.ParticleSystem2D_GetTexture(RequireComponent<ParticleSystem2D>());
+            return Texture.FromAssetUUID(assetId)!;
+        }
+        set => InternalCalls.ParticleSystem2D_SetTexture(RequireComponent<ParticleSystem2D>(), value?.UUID ?? 0);
+    }
+
     public Vector4 Color
     {
         get
@@ -768,10 +710,7 @@ public class ParticleSystem2D : Component
     public void Emit(int count) => InternalCalls.ParticleSystem2D_Emit(RequireComponent<ParticleSystem2D>(), count);
 }
 
-// ── Axiom-Physics Components ─────────────────────────────────────────
-// These use the lightweight Axiom-Physics engine (AABB-based collision).
-// For full physics (rotation, friction, CCD), use Rigidbody2D and
-// BoxCollider2D instead (Box2D-backed).
+// ── Axiom-Physics Components (AABB-based; for full physics use Rigidbody2D/Box2D) ─────────────────────────────────────────
 
 public enum FastBodyType { Static = 0, Dynamic = 1, Kinematic = 2 }
 

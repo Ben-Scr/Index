@@ -114,13 +114,7 @@ namespace Index {
 
 		void Clear() { m_Particles.clear(); m_Bursts.clear();  m_EmitAccumulator = 0.f; }
 
-		// Re-point this component's emitter back to a (scene, entity) pair.
-		// Used by the duplicate / copy path: assign-copying a component
-		// bypasses the on_construct hook that originally bound m_EmitterScene
-		// / m_EmitterEntity, so the destination would otherwise inherit the
-		// source entity's pointers and drift across scenes / outlive the
-		// original entity. The copyTo callback in the component registry calls
-		// this on the destination after the value-copy.
+		// MUST call after value-copying a component: assign-copy bypasses on_construct, so the destination inherits the source's stale scene/entity pointers.
 		void RebindEmitter(Scene* scene, EntityHandle entity) {
 			m_EmitterScene = scene;
 			m_EmitterEntity = entity;
@@ -143,12 +137,7 @@ namespace Index {
 		std::vector<Particle> m_Particles;
 		std::vector<Burst> m_Bursts;
 
-		// NOTE: Don't deep-copy m_EmitterScene/m_EmitterEntity — they refer to
-		// scene-local runtime state that must be re-initialized via on_construct hook.
-		// EnTT requires components to be copyable for snapshot/restore, so we cannot
-		// delete the copy-ctor outright; if entity duplication ships, add a custom
-		// copy override that re-runs the emitter-binding hook on the destination
-		// entity instead of carrying these raw fields across.
+		// EnTT requires copyability for snapshot/restore; m_EmitterScene/m_EmitterEntity must be rebound after copy via RebindEmitter.
 		Scene* m_EmitterScene{ nullptr };
 		EntityHandle m_EmitterEntity{ entt::null };
 		float m_EmitAccumulator{ 0.0f };

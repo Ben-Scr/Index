@@ -63,12 +63,6 @@ namespace Index {
         bool GetMouseDown(MouseButton keycode) const;
         bool GetMouseUp(MouseButton keycode) const;
 
-        // Gamepad. Gamepad slots 0..k_MaxGamepads-1 are polled at the
-        // start of every Update() via glfwGetGamepadState, so callers
-        // see the same state for the duration of a frame.
-        // IsConnected returns true when a recognised gamepad mapping is
-        // bound to that slot — call before reading buttons / axes if
-        // you want to differentiate "no controller" from "all buttons up".
         static constexpr int k_MaxGamepads = 4;
         bool IsGamepadConnected(int gamepadIndex = 0) const;
         bool GetGamepadButton(GamepadButton button, int gamepadIndex = 0) const;

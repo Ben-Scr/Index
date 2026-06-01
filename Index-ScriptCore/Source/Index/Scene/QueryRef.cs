@@ -6,28 +6,7 @@ using Index.Interop;
 
 namespace Index;
 
-// ECS ref-API query system. Yields raw component refs from EnTT storage with
-// one native call per `foreach`, regardless of row count — replaces the
-// per-entity managed-wrapper allocation + per-property P/Invoke that the
-// legacy `Scene.Query<T>()` paid.
-//
-// Iteration-stability contract: no structural changes (Add/Remove/Destroy/
-// Create on any of the involved component pools) inside the foreach body.
-// EnTT pools may reallocate on structural ops; a pointer collected at the
-// top of iteration would dangle. The legacy class-API `Scene.Query<T>()`
-// stays available for code that needs mid-iteration mutation — it works
-// by snapshotting entity IDs and re-resolving per row.
-//
-// Entry point: `scene.QueryRef<NativeTransform2D>()` (extension method on Scene).
-// `scene.QueryRef<TWrite, TFilter...>()` supports up to 8 component types and
-// yields `ref TWrite`, using the rest as required filters. Chain
-// `.Without<T>()`, `.With<T>()`, `.EnabledOnly()`/`.IncludeDisabled()`/
-// `.DisabledOnly()`, `.Readonly<T>()` (adds a readonly component row).
-//
-// All `T` parameters here are the `Native*` blittable structs from
-// `Index.Native` — the constraint `where T : unmanaged, IComponent` only
-// admits those, the managed wrapper classes (`Index.Transform2D` etc.)
-// won't compile here.
+// MUST NOT perform structural changes (Add/Remove/Destroy/Create) inside a QueryRef foreach body — EnTT pools may reallocate and invalidate the pointers. Use Scene.Query<T>() for mid-iteration mutation.
 
 internal struct QueryRefFilters
 {
@@ -55,12 +34,6 @@ internal struct QueryRefFilters
 
 internal static class QueryRefBuffers
 {
-    // One thread-local IntPtr[] reused across queries on the same thread.
-    // Sized for the largest query seen so far — for a typical scene this
-    // stabilises at the worst-case row count × pool count after a few
-    // frames and never reallocates. Pointers stored inside are native
-    // addresses into EnTT storage; the managed array is just a value
-    // holder so no pinning is needed.
     [ThreadStatic]
     private static IntPtr[]? s_Buffer;
 
@@ -208,16 +181,6 @@ public ref struct QueryRefBuilder1_RO1<TW1, TRO1>
         }
     }
 
-    // Two access styles. Pick the one that fits the code site:
-    //   - Direct ref access (no `.Value`, no deconstruct ceremony):
-    //         row.W.LocalPosition += row.R.Linear * Time.DeltaTime;
-    //   - Deconstruction (closer to the legacy class-API shape):
-    //         var (tr, vel) = row;
-    //         tr.Value.LocalPosition += vel.Value.Linear * Time.DeltaTime;
-    //
-    // The direct form is shorter and saves the Ref<>/RefRO<> wrapper construction.
-    // The deconstruct form reads better for >2 components and lets the user
-    // name fields meaningfully.
     public readonly ref struct Row
     {
         private readonly unsafe TW1*  m_W1;

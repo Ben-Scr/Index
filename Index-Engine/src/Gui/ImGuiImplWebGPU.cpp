@@ -14,10 +14,7 @@
 #include <backends/imgui_impl_wgpu.h>
 
 #if defined(IDX_PLATFORM_WINDOWS)
-    // Needed for the per-viewport HWND adjustments below: owner-relationship
-    // wiring (SetWindowLongPtrW + GWLP_HWNDPARENT) and DWM titlebar-theme
-    // override (DwmSetWindowAttribute + DWMWA_USE_IMMERSIVE_DARK_MODE).
-    // dwmapi.lib is already linked into engine.dll by Win32Titlebar.cpp.
+    // Needed for HWND owner-wiring and DWM dark-mode; dwmapi.lib linked via Win32Titlebar.cpp.
     #define GLFW_EXPOSE_NATIVE_WIN32
     #include <GLFW/glfw3.h>
     #include <GLFW/glfw3native.h>
@@ -32,28 +29,8 @@
     #pragma comment(lib, "dwmapi.lib")
 #endif
 
-// =============================================================================
-// imgui_impl_wgpu wrapper.
-// -----------------------------------------------------------------------------
-// Thin Index shim around Dear ImGui's official imgui_impl_wgpu backend (in
-// External/imgui/backends/).
-//
-// Why a wrapper rather than calling imgui_impl_wgpu directly from the
-// editor / launcher / runtime:
-//   1. wgpu::Device + Queue + per-frame command encoder live in engine.dll
-//      (WebGPUApi.cpp). The backend has to call into those, so it must run
-//      in the same module.
-//   2. PackageImGuiBridge synchronises the consumer's ImGuiContext into
-//      engine.dll's ImGui copy on every entry. Without this, the engine
-//      DLL would see a null GImGui pointer and crash inside ImGui::GetIO.
-//   3. The ABI-stable INDEX_API surface (`Init`, `NewFrame`,
-//      `RenderDrawData(d, viewId)`, `Shutdown`) keeps editor/launcher/
-//      runtime call sites backend-neutral.
-//
-// imgui_impl_wgpu uses Dawn's C API (`WGPUDevice`, `WGPURenderPassEncoder`).
-// We pass wgpu::Device through .Get() to drop into the C ABI; equivalent
-// for the pass encoder when we hand it to ImGui_ImplWGPU_RenderDrawData.
-// =============================================================================
+// Thin shim around imgui_impl_wgpu. Must live in engine.dll: WebGPU device/queue live here, and
+// PackageImGuiBridge must resync the consumer's ImGuiContext on every entry (null GImGui → crash).
 
 namespace Index::ImGuiImplWebGPU {
 
@@ -70,55 +47,15 @@ namespace Index::ImGuiImplWebGPU {
 		void (*g_OriginalPlatformShowWindow)(ImGuiViewport*) = nullptr;
 
 #if defined(IDX_PLATFORM_WINDOWS)
-		// Apply our chrome conventions to a viewport HWND:
-		//   * Strip WS_EX_TOOLWINDOW (which imgui_impl_glfw applies when
-		//     the viewport has NoTaskBarIcon — gives the chunky red close
-		//     button. We use owner-window relationship to hide from the
-		//     taskbar instead).
-		//   * Strip WS_EX_APPWINDOW (which GLFW unconditionally sets in
-		//     _glfwCreateNativeWindow on Win32). Without removing it, the
-		//     window forces itself into the taskbar EVEN IF it has an
-		//     owner — the APPWINDOW flag overrides the default "owned
-		//     windows are hidden from taskbar" rule. With it stripped and
-		//     the owner relationship in place, secondary viewports merge
-		//     into the launcher/editor's single taskbar entry (Godot-
-		//     style "one app, many windows").
-		//   * Pick chrome based on the viewport's flags:
-		//       popup  (NoDecoration):   WS_POPUP only — no caption, no border,
-		//                                no thick frame. Combo dropdowns,
-		//                                tooltips, menus, drag previews. ImGui
-		//                                sets NoDecoration on all of these and
-		//                                expects the OS window to be borderless
-		//                                so its own rounded popup background
-		//                                is what the user sees.
-		//       dialog (NoAutoMerge):    WS_CAPTION + WS_SYSMENU + WS_THICKFRAME
-		//                                (just close, no min/max — matches a
-		//                                short modal form)
-		//       panel  (undocked window): WS_CAPTION + WS_SYSMENU + WS_THICKFRAME
-		//                                + WS_MINIMIZEBOX + WS_MAXIMIZEBOX
-		//                                (full app chrome — undocked panels
-		//                                are meant to act like standalone
-		//                                tool windows)
-		//   * SWP_FRAMECHANGED so Windows re-evaluates the non-client area.
-		//   * DWM immersive dark mode so the titlebar matches the launcher/
-		//     editor's dark theme (skipped for popups — no titlebar to tint).
-		//
-		// Called from both MultiViewport_CreateWindow (initial chrome) and
-		// MultiViewport_ShowWindow (re-applied each show — imgui_impl_glfw's
-		// Platform_ShowWindow re-adds WS_EX_TOOLWINDOW and DWM resets the
-		// immersive-dark-mode attribute on first visibility on some builds).
+		// Strip WS_EX_TOOLWINDOW + WS_EX_APPWINDOW (APPWINDOW overrides owner-hiding), apply popup/dialog/panel chrome per flags, dark titlebar.
+		// Re-applied in ShowWindow: imgui_impl_glfw's Platform_ShowWindow re-adds WS_EX_TOOLWINDOW and DWM resets dark-mode on first visibility.
 		void ApplyViewportChrome(HWND hwnd, ImGuiViewport* viewport) {
 			if (!hwnd) return;
 
 			const bool isDialog =
 				viewport != nullptr &&
 				(viewport->Flags & ImGuiViewportFlags_NoAutoMerge) != 0;
-			// ImGui sets NoDecoration on combo popups, tooltips, menus, and
-			// drag previews — anything that should look like a transient
-			// floating UI element, not an OS window. Without this branch we
-			// were adding WS_CAPTION + WS_THICKFRAME unconditionally, giving
-			// every combo dropdown and tooltip a real Win32 titlebar + the
-			// white thick-frame border, which is what the user was reporting.
+			// NoDecoration = transient popup (tooltip, combo, menu) — must not get a titlebar or thick frame.
 			const bool noDecoration =
 				viewport != nullptr &&
 				(viewport->Flags & ImGuiViewportFlags_NoDecoration) != 0;
@@ -206,10 +143,6 @@ namespace Index::ImGuiImplWebGPU {
 			return false;
 		}
 
-		// Render target format = swap-chain format. The editor draws ImGui
-		// directly onto the OS window (the per-FBO scene panels are ImGui
-		// images, not ImGui draw lists). One pipeline per session is
-		// enough — Dawn caches it internally.
 		ImGui_ImplWGPU_InitInfo info{};
 		info.Device                          = device.Get();
 		info.NumFramesInFlight               = 3;
@@ -238,16 +171,7 @@ namespace Index::ImGuiImplWebGPU {
 		// ImGui call.
 		SyncImGuiContextFromBridge();
 
-		// Translate any pending OS-level close requests (X-button clicks on
-		// secondary viewports → WM_CLOSE → glfwSetWindowCloseCallback →
-		// viewport->PlatformRequestClose = true) into ImGui popup closes.
-		// ImGui only auto-handles PlatformRequestClose for top-level Begin()
-		// windows with a `&p_open` pointer — popups stay on the popup stack
-		// regardless, so without this step clicking the X on a
-		// BeginPopupModal viewport is a no-op (the X visibly depresses but
-		// the modal stays open). Walk the open popup stack and, for each
-		// popup whose window lives in a viewport with PlatformRequestClose
-		// set, close that popup level (and everything stacked on top of it).
+		// ImGui only auto-handles PlatformRequestClose for top-level Begin() windows; popup stack entries need manual close or clicking X on a BeginPopupModal is a no-op.
 		if (ImGui::GetCurrentContext() != nullptr) {
 			ImGuiContext& g = *ImGui::GetCurrentContext();
 			for (int i = g.OpenPopupStack.Size - 1; i >= 0; --i) {
@@ -269,14 +193,7 @@ namespace Index::ImGuiImplWebGPU {
 		if (!g_Initialized || drawData == nullptr || drawData->CmdListsCount <= 0) {
 			return;
 		}
-		// Resync engine.dll's ImGui context from the consumer's bridge so
-		// every helper inside ImGui_ImplWGPU_RenderDrawData (notably
-		// ImGui_ImplWGPU_CreateImageBindGroup, which re-fetches the
-		// backend data via ImGui::GetIO() each time it's called) sees
-		// the right ImGuiContext. Without this, the inner re-fetch can
-		// see a stale/null GImGui inside engine.dll and dereference a
-		// null `bd` -> 0xC0000005 access violation reading at
-		// `bd->wgpuDevice` offset.
+		// Resync required: ImGui_ImplWGPU_RenderDrawData re-fetches backend data via GetIO() internally; stale GImGui in engine.dll → null `bd` → crash at bd->wgpuDevice.
 		SyncImGuiContextFromBridge();
 		if (ImGui::GetCurrentContext() == nullptr) return;
 		if (ImGui::GetIO().BackendRendererUserData == nullptr) {
@@ -291,10 +208,6 @@ namespace Index::ImGuiImplWebGPU {
 		const float fbH = drawData->DisplaySize.y * drawData->FramebufferScale.y;
 		if (fbW <= 0.0f || fbH <= 0.0f) return;
 
-		// Resolve the current target. Editor's ImGui pass typically runs
-		// last in the frame on the swap chain (after Renderer2D / Gui-
-		// Renderer / Text / Gizmo passes). Whatever the most recent
-		// BindFramebuffer set is what we draw onto.
 		auto target = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!target.Valid) return;
 
@@ -308,11 +221,7 @@ namespace Index::ImGuiImplWebGPU {
 		colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
 
 		wgpu::RenderPassDepthStencilAttachment depthAtt{};
-		// We initialised ImGui_ImplWGPU with DepthStencilFormat=Undefined,
-		// so the pipeline doesn't expect a depth attachment. Always omit
-		// it from the pass descriptor even if the target has one — the
-		// underlying texture stays untouched.
-		(void)depthAtt;
+		(void)depthAtt; // DepthStencilFormat=Undefined: pipeline expects no depth attachment even if the target has one.
 
 		wgpu::RenderPassDescriptor passDesc{};
 		passDesc.label                  = "imgui-pass";
@@ -341,11 +250,7 @@ namespace Index::ImGuiImplWebGPU {
 		g_Initialized = false;
 	}
 
-	// ── Multi-viewport renderer callbacks ───────────────────────────────
-	// Ground truth on the data layout: imgui_impl_glfw stores the GLFWwindow*
-	// in viewport->PlatformHandle and the HWND in viewport->PlatformHandleRaw
-	// on Win32 (set inside its Renderer_CreateWindow). We don't need to
-	// reach back into glfw3native.h here — the HWND is already exposed for us.
+	// imgui_impl_glfw stores GLFWwindow* in PlatformHandle and HWND in PlatformHandleRaw on Win32.
 
 	namespace {
 
@@ -376,24 +281,7 @@ namespace Index::ImGuiImplWebGPU {
 #if defined(IDX_PLATFORM_WINDOWS)
 			HWND viewportHwnd = static_cast<HWND>(hwnd);
 
-			// (1) Owner-window relationship: tie the popup's z-order to the
-			// main app HWND. Effects:
-			//   * The popup is always rendered ABOVE its owner in z-order
-			//     (the user can't accidentally bury a dialog by clicking
-			//     the launcher/editor behind it),
-			//   * But NOT above unrelated apps (an Alt-Tab to a browser
-			//     still puts the popup behind the browser — the right
-			//     behaviour for a dialog),
-			//   * Minimising the owner hides the popup too; closing the
-			//     owner destroys it.
-			//   * Windows also excludes owned windows from the taskbar by
-			//     default — so this alone is what hides the popup from the
-			//     taskbar; we don't need WS_EX_TOOLWINDOW for that, and
-			//     in fact strip it below.
-			//
-			// GWLP_HWNDPARENT is misnamed in the Win32 API — it sets the
-			// *owner*, not the parent. Allowed at any time on a top-level
-			// HWND.
+			// Set GWLP_HWNDPARENT (misnamed — sets *owner*, not parent) to tie z-order and taskbar hiding to the main HWND without needing WS_EX_TOOLWINDOW.
 			HWND ownerHwnd = nullptr;
 			Window* mainWindow = Application::GetWindow();
 			GLFWwindow* mainGlfw = mainWindow ? mainWindow->GetGLFWWindow() : nullptr;
@@ -407,22 +295,9 @@ namespace Index::ImGuiImplWebGPU {
 				}
 			}
 
-			// (2) Apply our standard viewport chrome (strip WS_EX_TOOLWINDOW,
-			// pick dialog-vs-panel style based on NoAutoMerge, force dark
-			// titlebar). ApplyViewportChrome is shared with the ShowWindow
-			// hook — see its definition above for the full rationale. Note
-			// that Platform_ShowWindow runs AFTER us and would re-add
-			// WS_EX_TOOLWINDOW; the ShowWindow hook re-applies this same
-			// chrome to win that race.
 			ApplyViewportChrome(viewportHwnd, viewport);
 
-			// (2b) Inherit the owner's icon so the popup's titlebar shows
-			// the Index app icon next to the title (matching the launcher's
-			// chrome). Owned windows don't auto-pick up their owner's icon
-			// in Win32 — you have to push it explicitly via WM_SETICON.
-			// Fall back to the window-class icon if WM_GETICON returns null
-			// (the executable manifest puts the icon on the class, not
-			// directly on the HWND, on some Windows builds).
+			// Owned windows don't inherit the owner's icon — push via WM_SETICON; fall back to the window-class icon (manifest puts it there on some builds).
 			if (ownerHwnd) {
 				HICON smallIcon = reinterpret_cast<HICON>(
 					SendMessageW(ownerHwnd, WM_GETICON, ICON_SMALL, 0));
@@ -447,12 +322,6 @@ namespace Index::ImGuiImplWebGPU {
 				}
 			}
 
-			// (3) DWM dark titlebar — match the launcher/editor's chrome.
-			// Both main apps run with DWM immersive dark mode on (see
-			// Win32Titlebar.cpp / SetTitlebarDarkMode), so popup titlebars
-			// should be dark too. Hard-coded TRUE for now; if/when the
-			// engine grows a runtime light-theme switch, this should read
-			// the same flag the main window uses.
 			BOOL useDarkMode = TRUE;
 			DwmSetWindowAttribute(
 				viewportHwnd,
@@ -460,21 +329,7 @@ namespace Index::ImGuiImplWebGPU {
 				&useDarkMode,
 				sizeof(useDarkMode));
 
-			// (4) Install GLFW window-refresh callback so we re-render
-			// during Win32's modal sizing loop (WM_ENTERSIZEMOVE..WM_EXIT-
-			// SIZEMOVE). The main thread is blocked in DefWindowProc during
-			// that loop, so our normal frame loop doesn't run, and the OS
-			// just stretches the last-rendered framebuffer to fit the new
-			// window size — the "UI gets stretched while dragging" artifact.
-			// Windows still dispatches WM_PAINT periodically inside the
-			// modal loop, which GLFW routes to this callback. The callback
-			// runs a full Application::RenderOnceForRefresh so ImGui re-
-			// lays-out the popup for the new size and emits fresh DrawData;
-			// the standard RenderPlatformWindowsDefault path inside Render-
-			// OnceForRefresh then resizes this viewport's WebGPU surface
-			// and re-renders it. See MultiViewport_RefreshCallback below.
-			// imgui_impl_glfw does not install a refresh callback, so we
-			// don't have to chain — we own this slot.
+			// Refresh callback re-renders during Win32's modal sizing loop (main thread blocked in DefWindowProc); prevents the "stretched framebuffer" artifact on resize.
 			GLFWwindow* viewportGlfw =
 				static_cast<GLFWwindow*>(viewport->PlatformHandle);
 			if (viewportGlfw) {
@@ -519,13 +374,6 @@ namespace Index::ImGuiImplWebGPU {
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			if (!device) return;
 
-			// Per-viewport encoder + submit. Atomic w.r.t. ImGui_ImplWGPU's
-			// internal queue.WriteBuffer uploads: Dawn flushes pending writes
-			// at Submit time, so vertex/index/uniform copies queued by THIS
-			// RenderDrawData call land in the buffers immediately before
-			// THIS pass executes — even though every viewport shares the
-			// same FrameResources slot (indexed by ImGui_ImplWGPU's internal
-			// frameIndex, which advances once per NewFrame, not per viewport).
 			wgpu::CommandEncoderDescriptor encDesc{};
 			encDesc.label = "imgui-viewport-encoder";
 			wgpu::CommandEncoder encoder = device.CreateCommandEncoder(&encDesc);
@@ -563,31 +411,7 @@ namespace Index::ImGuiImplWebGPU {
 		}
 
 #if defined(IDX_PLATFORM_WINDOWS)
-		// GLFW window-refresh callback installed on every viewport HWND
-		// in MultiViewport_CreateWindow. Fires on WM_PAINT, including
-		// during Win32's modal sizing/moving loop when the main thread
-		// would otherwise be blocked in DefWindowProc and our normal
-		// frame loop wouldn't run. Without this, dragging a viewport
-		// edge shows the last-rendered framebuffer stretched to the new
-		// window size.
-		//
-		// We delegate to Application::RenderOnceForRefresh — the same
-		// entry point Window::RefreshCallback uses for the main window —
-		// so the resizing secondary viewport gets a full re-layout pass
-		// through ImGui::NewFrame, not just a re-present of stale Draw-
-		// Data. ImGui picks up the new GLFW window size via Platform-
-		// RequestResize (set by ImGui_ImplGlfw_WindowSizeCallback), the
-		// popup window inside the viewport resizes to match (see
-		// imgui.cpp's `if (window->Viewport->PlatformRequestResize)`
-		// path), and the resulting frame emits fresh DrawData sized to
-		// the new surface. The standard RenderPlatformWindowsDefault
-		// path inside the ImGuiContextLayer's OnPostRender then resizes
-		// the per-viewport WebGPU surface (Renderer_SetWindowSize →
-		// ResizeViewportSurface) and re-renders each viewport with its
-		// freshly-laid-out DrawData. This fixes both shrink (which the
-		// previous re-present path skipped entirely because the cached
-		// scissor rects no longer fit) and grow (which previously left
-		// the old layout in the upper-left with clear-color elsewhere).
+		// Fires on WM_PAINT during Win32's modal sizing loop (main thread blocked in DefWindowProc); runs a full re-layout pass so the viewport isn't just stretched stale framebuffer.
 		void MultiViewport_RefreshCallback(GLFWwindow* /*glfwWindow*/) {
 			Application* app = Application::GetInstance();
 			if (!app) return;
@@ -595,32 +419,7 @@ namespace Index::ImGuiImplWebGPU {
 		}
 #endif
 
-		// Wrapper around imgui_impl_glfw's Platform_ShowWindow that fixes
-		// two things the upstream backend gets wrong for our use case:
-		//
-		//   1. Chrome regression. imgui_impl_glfw's Platform_ShowWindow
-		//      forcibly sets WS_EX_TOOLWINDOW when the viewport has
-		//      ImGuiViewportFlags_NoTaskBarIcon. Tool-window chrome strips
-		//      WS_THICKFRAME and triggers the chunky "compact dialog"
-		//      close button (the red X). MultiViewport_CreateWindow stripped
-		//      WS_EX_TOOLWINDOW already, but Platform_ShowWindow runs AFTER
-		//      Renderer_CreateWindow and re-adds it. We re-strip it here.
-		//      Owner relationship (set in MultiViewport_CreateWindow) keeps
-		//      the popup out of the taskbar without needing WS_EX_TOOLWINDOW.
-		//
-		//   2. No auto-focus for dialogs. GLFW creates viewport windows with
-		//      GLFW_FOCUSED=false / GLFW_FOCUS_ON_SHOW=false so they don't
-		//      steal focus during routine dock/undock. For modal dialogs
-		//      opened by an explicit button click this is the wrong default:
-		//      the user expects to start typing into the dialog immediately.
-		//      SetForegroundWindow is allowed here because the recent user-
-		//      input click that triggered the open grants us the foreground-
-		//      steal permission Windows requires. ImGui marks transient UI
-		//      that must NOT take focus (tooltips, menus, combo popups, drag
-		//      previews) with ImGuiViewportFlags_NoFocusOnAppearing — we
-		//      honor that flag so hovering an item inside a secondary
-		//      dialog doesn't yank focus back to the main window when its
-		//      tooltip viewport appears.
+		// Hooks Platform_ShowWindow: re-strips WS_EX_TOOLWINDOW (upstream re-adds it for NoTaskBarIcon) and gives keyboard focus to dialogs (GLFW defaults to FOCUSED=false).
 		void MultiViewport_ShowWindow(ImGuiViewport* viewport) {
 			// Chain to imgui_impl_glfw first — it actually shows the GLFW
 			// window (and re-applies WS_EX_TOOLWINDOW we're about to undo).
@@ -638,14 +437,6 @@ namespace Index::ImGuiImplWebGPU {
 			// the window first becomes visible).
 			ApplyViewportChrome(hwnd, viewport);
 
-			// Pull the popup forward and give it keyboard focus. Both calls
-			// matter: SetForegroundWindow handles z-order + taskbar focus
-			// notification; SetFocus routes keystrokes to the new HWND.
-			// The recent-user-input click that triggered the open grants
-			// us the foreground-steal permission Windows requires.
-			// Skip both for viewports ImGui flagged NoFocusOnAppearing —
-			// those are transient (tooltip, menu, combo, drag preview) and
-			// must leave keyboard focus on whatever the user was using.
 			const bool noFocusOnAppearing =
 				(viewport->Flags & ImGuiViewportFlags_NoFocusOnAppearing) != 0;
 			if (!noFocusOnAppearing) {
@@ -673,10 +464,7 @@ namespace Index::ImGuiImplWebGPU {
 		pio.Renderer_RenderWindow  = MultiViewport_RenderWindow;
 		pio.Renderer_SwapBuffers   = MultiViewport_SwapBuffers;
 
-		// Wrap the platform-side Show handler. Must run AFTER
-		// ImGui_ImplGlfw_InitForOther (which sets Platform_ShowWindow on
-		// platform_io). RegisterMultiViewportHandlers is called from the
-		// consumer's OnAttach right after Init, so the ordering is correct.
+		// Must run AFTER ImGui_ImplGlfw_InitForOther, which sets Platform_ShowWindow; consumer calls this from OnAttach right after Init so the ordering is guaranteed.
 		g_OriginalPlatformShowWindow = pio.Platform_ShowWindow;
 		pio.Platform_ShowWindow = MultiViewport_ShowWindow;
 
@@ -694,13 +482,7 @@ namespace Index::ImGuiImplWebGPU {
 		ImGuiWindowClass wc{};
 		// NoAutoMerge — always its own OS window.
 		wc.ViewportFlagsOverrideSet = ImGuiViewportFlags_NoAutoMerge;
-		// Clear everything ImGui's popup logic hardcodes that would damage
-		// our chrome:
-		//   NoDecoration → native OS titlebar instead of ImGui's drawn one
-		//   TopMost      → keep WS_THICKFRAME (resizable, normal close button)
-		//   NoTaskBarIcon → don't trip imgui_impl_glfw into re-applying
-		//                   WS_EX_TOOLWINDOW. Owner relationship hides the
-		//                   window from the taskbar without needing it.
+		// Clear these or ImGui popup logic re-applies them: NoDecoration strips titlebar; TopMost strips WS_THICKFRAME; NoTaskBarIcon trips imgui_impl_glfw into re-adding WS_EX_TOOLWINDOW.
 		wc.ViewportFlagsOverrideClear =
 			ImGuiViewportFlags_NoDecoration |
 			ImGuiViewportFlags_TopMost |
@@ -718,11 +500,7 @@ namespace Index::ImGuiImplWebGPU {
 			return;
 		}
 
-		// Flush the engine's per-frame encoder so the main window's
-		// queued WriteBuffer uploads land before viewport renders
-		// queue their own (shared FrameResources slot — see header
-		// comment). Surface texture stays alive for Window::SwapBuffers
-		// to present later in the frame.
+		// Flush before viewport renders queue writes into the same shared FrameResources slot.
 		WebGPUBackend::FlushCommands();
 
 		ImGui::UpdatePlatformWindows();

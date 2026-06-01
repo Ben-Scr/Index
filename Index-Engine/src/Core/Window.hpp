@@ -38,11 +38,7 @@ namespace Index {
 		void SetPosition(Vec2Int pos) { glfwSetWindowPos(m_GLFWwindow, pos.x, pos.y); }
 		void SetSize(Vec2Int size) { glfwSetWindowSize(m_GLFWwindow, size.x, size.y); }
 
-		// Resize limits — components <= 0 are treated as "no constraint"
-		// (passed to GLFW as GLFW_DONT_CARE). Re-applies the full (min,max)
-		// pair via glfwSetWindowSizeLimits each call. The cached members
-		// keep the most recent values so GetMinSize/GetMaxSize don't have
-		// to query GLFW (GLFW has no public getter for the limits).
+		// Components <= 0 are treated as GLFW_DONT_CARE; cached because GLFW has no getter for size limits.
 		void SetMinSize(Vec2Int size);
 		void SetMaxSize(Vec2Int size);
 		Vec2Int GetMinSize() const { return m_MinSize; }
@@ -54,13 +50,6 @@ namespace Index {
 		void SetCursorMode(int mode);
 		int GetCursorMode() const { return m_CursorMode; }
 
-		// Per-state cursor variants. SetUICursorImage stages the cursor
-		// the window will switch to whenever SetCursorOverUI(true) is
-		// called; SetCursorImage stages the always-on default. Pass
-		// nullptr to clear a slot back to the OS default. Both swaps
-		// are no-ops when the requested state already matches what the
-		// window currently shows, so calling SetCursorOverUI every frame
-		// from UIEventSystem doesn't churn GLFW cursor handles.
 		void SetUICursorImage(const Texture2D* tex2D);
 		void SetCursorOverUI(bool overUI);
 
@@ -78,21 +67,10 @@ namespace Index {
 		void SetResizeable(bool enabled);
 		void SetTitle(const std::string& title) { glfwSetWindowTitle(m_GLFWwindow, title.c_str()); }
 
-		// Locks the rendered game area to a target aspect ratio. A positive
-		// value enables letterbox/pillarbox; 0.0f disables the lock so the
-		// renderer fills the whole framebuffer. Re-syncs the main viewport
-		// so cameras see the new logical size on the next frame.
 		void SetAspectLock(float aspect);
 		float GetAspectLock() const { return m_AspectLock; }
 
-		// One-shot reapply after the GPU surface comes up. RenderApi::Init
-		// re-configures the swap chain and resets the cached viewport to
-		// the full surface dimensions; the GLFW framebuffer-size callback
-		// — the only other path that applies the aspect-lock sub-rect —
-		// does not fire on initial window creation. Call this once after
-		// RenderApi::Init so frame 0 already renders into the locked
-		// sub-rect instead of having to wait for the first resize / focus
-		// event to retroactively apply it.
+		// MUST be called once after RenderApi::Init: the framebuffer-size callback doesn't fire on initial window creation, so frame 0 would miss the aspect-lock sub-rect without this.
 		void ResyncViewportAfterRenderApiInit();
 
 		std::string GetTitle() const { return std::string(glfwGetWindowTitle(m_GLFWwindow)); }
@@ -121,20 +99,11 @@ namespace Index {
 		bool IsDecorated() const;
 		bool IsResizeable() const;
 
-		// True when the window was created with WindowSpecification::
-		// CustomTitlebar = true and the engine owns the decoration via
-		// the Win32Titlebar WndProc subclass.
 		bool IsCustomTitlebarEnabled() const { return m_CustomTitlebar; }
-		// Logical-pixel height of the custom titlebar row, as configured
-		// via WindowSpecification or SetTitlebarHeight. Used by titlebar
-		// layers to size their ImGui row + by other panels to offset
-		// content below it.
 		int GetTitlebarHeight() const;
 		void SetTitlebarHeight(int logicalPx);
 
-		// Titlebar color overrides. Alpha = 0 means "no override". Native
-		// Windows chrome applies these through DWM; custom titlebars read the
-		// same values while drawing their ImGui row.
+		// Alpha = 0 means "no override"; applied via DWM on native chrome or read by the custom ImGui titlebar.
 		Color GetTitlebarColor() const { return m_TitlebarColor; }
 		void  SetTitlebarColor(Color color) { m_TitlebarColor = color; ApplyTitlebarAppearance(); }
 		Color GetTitlebarTextColor() const { return m_TitlebarTextColor; }
@@ -161,17 +130,7 @@ namespace Index {
 		static Window* GetActiveWindow() { return s_ActiveWindow; }
 		static Viewport* GetMainViewport() { return s_MainViewport.get(); }
 
-		// UI panel region: when running inside an editor that hosts the
-		// engine inside a sub-window (e.g. the Game View ImGui panel),
-		// the engine still receives mouse events in OS-window pixel
-		// coordinates and Window::GetMainViewport() still reports the OS
-		// window size. UI hit-tests and layout would otherwise resolve
-		// against the wrong coordinate space and miss the visually-
-		// rendered widgets. The editor publishes the panel's pixel rect
-		// (top-left origin, OS-window space) here every frame; engine UI
-		// systems prefer this region when active and fall back to the
-		// main viewport for standalone runtime builds (where the region
-		// stays unset).
+		// Panel pixel rect (OS-window space) published by the editor each frame so UI hit-tests use game-panel coords instead of OS-window coords. Inactive in standalone builds.
 		struct UIRegion {
 			int OffsetX = 0;
 			int OffsetY = 0;
@@ -186,13 +145,6 @@ namespace Index {
 		}
 		static void ClearUIRegion() { s_UIRegion = UIRegion{}; }
 
-		// Custom titlebar hit-region publish API. The application-side
-		// titlebar layer (editor / launcher / runtime default) calls
-		// these once per frame so the Win32 WndProc knows which window-
-		// local pixels are draggable (caption) vs which are interactive
-		// widgets (non-client overrides like menu items + buttons). All
-		// coordinates are in window-local pixels, origin top-left. No-op
-		// on non-Windows platforms.
 		static void SetTitlebarCaptionRect(int x, int y, int w, int h);
 		static void AddTitlebarNonClientRect(int x, int y, int w, int h);
 		static void ResetTitlebarNonClientRects();
@@ -202,11 +154,7 @@ namespace Index {
 		void ApplyTitlebarAppearance();
 		void SyncViewportFromFramebuffer();
 		void UpdateViewport();
-		// Present the rendered frame to the OS window. Delegates to
-		// RenderApi::Present(), which submits the per-frame command
-		// buffer and calls surface.Present(). GLFW's glfwSwapBuffers
-		// can't be used here because the window is created with
-		// GLFW_NO_API (no GL context to swap).
+		// GLFW_NO_API window — glfwSwapBuffers is not available; delegates to RenderApi::Present().
 		void SwapBuffers() const;
 
 		bool ShouldClose() const { return glfwWindowShouldClose(m_GLFWwindow); }
@@ -216,14 +164,6 @@ namespace Index {
 		static void FocusCallback(GLFWwindow* window, int focused);
 		static void RefreshCallback(GLFWwindow* window);
 		static void IconifyCallback(GLFWwindow* window, int iconified);
-		// Fired by GLFW when Windows posts WM_CLOSE — generated by both
-		// the title-bar X button and the Alt+F4 system shortcut. We
-		// translate it to a WindowCloseEvent so layers (the editor's
-		// dirty-scene save-before-quit dialog in particular) get a
-		// chance to intercept before the main loop exits. Without
-		// this callback registered, GLFW's default behaviour just sets
-		// the window's shouldClose flag and the main loop tears the
-		// app down with no warning.
 		static void CloseCallback(GLFWwindow* window);
 		static void SetKeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
 		static void SetCharCallback(GLFWwindow* window, unsigned int codepoint);
@@ -236,11 +176,6 @@ namespace Index {
 		static Window* s_ActiveWindow;
 
 		GLFWwindow* m_GLFWwindow = nullptr;
-		// m_Cursor holds the currently-applied GLFW cursor — kept around
-		// so destroy-after-set ordering stays correct on swap. m_DefaultCursor
-		// and m_UICursor are the persistent cursors loaded from project
-		// settings; m_Cursor is one of them at any time, or nullptr if
-		// the OS default is in use.
 		GLFWcursor* m_Cursor = nullptr;
 		GLFWcursor* m_DefaultCursor = nullptr;
 		GLFWcursor* m_UICursor = nullptr;

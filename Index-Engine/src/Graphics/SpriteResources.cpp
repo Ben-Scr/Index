@@ -125,10 +125,6 @@ namespace Index::WebGPUSpriteResources {
 			wgpu::ShaderModule module, wgpu::PipelineLayout layout,
 			wgpu::TextureFormat colorFormat, bool hasDepth, SpritePipelineMode mode)
 		{
-			// Two vertex buffers:
-			//   Buffer 0 (per-vertex):   position vec3<f32>, stride 12
-			//   Buffer 1 (per-instance): four vec4<f32>, stride 64
-			//                             ^^^ +1 (Uv rect for sprite slicing)
 			wgpu::VertexAttribute vertexAttrs[1] = {};
 			vertexAttrs[0].format         = wgpu::VertexFormat::Float32x3;
 			vertexAttrs[0].offset         = 0;
@@ -170,19 +166,11 @@ namespace Index::WebGPUSpriteResources {
 
 			wgpu::ColorTargetState colorTarget{};
 			colorTarget.format    = colorFormat;
-			// Wireframe is the editor's debug-overlay pipeline; it writes
-			// opaque black edge pixels and must NOT be alpha-blended against
-			// the underlying filled pass (otherwise a forced (0,0,0,1) line
-			// write blends to dst*0, masking out previously-drawn sprites
-			// near the edge).
+			// Wireframe MUST use nullptr blend: a forced (0,0,0,1) line blended against the filled pass would mask out nearby sprites via dst*0.
 			colorTarget.blend     = mode == SpritePipelineMode::Wireframe ? nullptr : &blend;
 			colorTarget.writeMask = wgpu::ColorWriteMask::All;
 
-			// Wireframe pipeline uses a dedicated fragment entry point that
-			// returns solid opaque black — keeps the "debug overlay is black"
-			// decision in the shader instead of mutating the shared instance
-			// buffer at submit time (which aliased the filled-pass's instance
-			// data in Mixed draw mode and rendered the entire sprite black).
+			// fs_wire_main returns solid opaque black; mutating the shared instance buffer at submit time aliased filled-pass data and rendered entire sprites black.
 			wgpu::FragmentState fragState{};
 			fragState.module        = module;
 			fragState.entryPoint    = mode == SpritePipelineMode::Wireframe ? "fs_wire_main" : "fs_main";
@@ -369,20 +357,11 @@ namespace Index::WebGPUSpriteResources {
 		dst.Color[1] = src.Color.g;
 		dst.Color[2] = src.Color.b;
 		dst.Color[3] = src.Color.a;
-		// Rotation is forwarded as raw radians; the sprite vertex shader
-		// (k_SpriteWGSL in Shader.cpp) computes sin/cos per vertex. Moving
-		// the trig to the GPU removes the per-instance std::sin + std::cos
-		// pair that dominated this hot loop at large sprite counts. The
-		// remaining Rot slots stay zero so the attribute keeps its vec4
-		// layout — the shader ignores them.
+		// Raw radians forwarded to GPU so the shader computes sin/cos per-vertex; removed the per-instance std::sin+std::cos pair that dominated this hot loop.
 		dst.Rot[0] = src.Rotation;
 		dst.Rot[1] = 0.0f;
 		dst.Rot[2] = 0.0f;
 		dst.Rot[3] = 0.0f;
-		// Sprite slice UV rect. The default-constructed Instance44 carries
-		// IsFullTexture=true with U/V = (0,0,1,1); the shader's mix-against-
-		// unit-quad produces the natural full-texture sampling for every
-		// legacy SpriteRenderer that hasn't set SpriteName.
 		dst.Uv[0] = src.UvRect.U0;
 		dst.Uv[1] = src.UvRect.V0;
 		dst.Uv[2] = src.UvRect.U1;

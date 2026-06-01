@@ -47,13 +47,7 @@
 
 namespace Index {
 
-	// Resolves this process's own executable path so we can relaunch
-	// ourselves after the CJK font download finishes. A restart is
-	// the only way to get the merged CJK glyphs into the ImGui font
-	// atlas — the launcher's ImGui context doesn't carry
-	// ImGuiBackendFlags_RendererHasTextures (see comment in
-	// Index-Engine/src/Gui/ImGuiFonts.hpp), so the atlas is baked
-	// statically at startup and can't grow at runtime.
+	// Restart is the only way to add CJK glyphs: the atlas is baked statically at startup (no RendererHasTextures).
 	static std::string ResolveOwnExecutablePath() {
 #ifdef IDX_PLATFORM_WINDOWS
 		std::vector<wchar_t> buf(MAX_PATH);
@@ -276,11 +270,7 @@ namespace Index {
 			return false;
 		}
 
-		// Require at least 2 path components past the root. This blocks
-		// disasters like `C:\Windows` or `/usr` while still allowing any
-		// legitimate `<drive>/parent/project` layout. `relative()` against
-		// the root_path drops the drive/leading-slash so its components are
-		// strictly post-root.
+		// Require 2+ components past the root to block disasters like C:\Windows or /usr.
 		std::filesystem::path postRoot = absolutePath.lexically_relative(absolutePath.root_path());
 		std::size_t componentCount = 0;
 		for (const auto& part : postRoot) {
@@ -292,11 +282,7 @@ namespace Index {
 			return false;
 		}
 
-		// Reject paths whose leading component matches a well-known system
-		// folder name. Defense-in-depth — the depth check above already
-		// rules out most danger, but a corrupted registry pointing at
-		// `C:\Windows\Temp\SomethingProjecty` shouldn't reach remove_all
-		// just because something forged an index-project.json there.
+		// Defense-in-depth: block system folder names even if depth check passes (e.g. C:\Windows\Temp\FakeProject).
 		static constexpr const char* k_SystemFolderNames[] = {
 			"Windows", "Program Files", "Program Files (x86)", "ProgramData",
 			"System Volume Information", "$Recycle.Bin",
@@ -313,12 +299,7 @@ namespace Index {
 		return true;
 	}
 
-	// Project-tailored .gitignore for newly created Index projects. Picked
-	// to ignore the noisy build artefacts (bin/, obj/, .vs/, .index/build/)
-	// and per-user editor state, while keeping the project file, scenes,
-	// scripts, packages, and assets tracked. Asset .meta files MUST be
-	// committed — they hold the stable AssetGUID that scene/prefab files
-	// reference, so dropping them silently breaks every cross-asset link.
+	// Asset .meta files MUST NOT be gitignored — they carry the stable AssetGUID that all scene/prefab references depend on.
 	static constexpr const char* k_ProjectGitignore = R"(# Index engine — project .gitignore
 # Build artefacts
 [Bb]in/
@@ -358,15 +339,8 @@ artifacts/
 # AssetGUID for every asset and must be checked in alongside the asset.
 )";
 
-	// Look up git on PATH. Returns the resolved absolute path or just "git"
-	// when CreateProcess / fork+exec can still find it via the OS path
-	// resolver. Empty string when git can't be found at all (caller logs
-	// and skips the init step gracefully).
 	static std::string FindGitExecutable() {
 #ifdef IDX_PLATFORM_WINDOWS
-		// `where git` exits 0 and writes the resolved path on the first line
-		// when git.exe is on PATH. Anything else (1 = not found, 2 = error)
-		// falls through and we report "git not found".
 		Process::Result whereResult = Process::Run({ "where", "git" });
 		if (whereResult.Succeeded() && !whereResult.Output.empty()) {
 			// Take only the first line — `where` prints one path per location.
@@ -397,13 +371,7 @@ artifacts/
 #endif
 	}
 
-	// Runs `git init` in `projectRoot` and writes a project-tailored
-	// `.gitignore`. Stops short of staging/committing — the user may want
-	// to set their git identity, add a remote, or amend the initial commit
-	// before anything lands. Failures here do NOT fail the create-project
-	// task; we log a warning so the user can run git init by hand if
-	// needed. `outError` receives a human-readable summary when the
-	// operation fails, empty on success.
+	// Does NOT stage/commit — leaves that to the user. Failure is non-fatal; caller logs and continues.
 	static bool InitializeGitRepository(const std::string& projectRoot, std::string& outError) {
 		outError.clear();
 
@@ -446,10 +414,7 @@ artifacts/
 			return true;
 		}
 
-		// `git init -b main` sets the default branch to `main` without
-		// touching the user's global init.defaultBranch config. Falls back
-		// to the legacy two-step (init + checkout) if the host's git is
-		// older than 2.28 (where -b first landed).
+		// -b main sets the branch without touching init.defaultBranch; fallback omits -b for git < 2.28.
 		Process::Result initResult = Process::Run(
 			{ gitExe, "init", "-b", "main" }, rootPath);
 		if (!initResult.Succeeded()) {
@@ -473,14 +438,7 @@ artifacts/
 		(void)app;
 		Application::SetIsPlaying(false);
 
-		// Keep the launcher's main loop ticking even when the OS window
-		// loses focus. Without this, opening a project while the launcher
-		// is in the background made the progress overlay freeze (worker
-		// kept running, but the polling that surfaces stage/progress was
-		// gated on the render loop). With it, the launcher renders in the
-		// background and the open pipeline reports progress regardless of
-		// focus, plus the editor process spawns at the moment the worker
-		// actually finishes — not whenever the user clicks back.
+		// MUST be true: background polling drives open/create progress; without it the progress overlay freezes while the launcher is unfocused.
 		Application::SetRunInBackground(true);
 
 		m_Registry.Load();
@@ -490,19 +448,10 @@ artifacts/
 		LoadLauncherSettings();
 		ApplyLauncherThemeIfNeeded();
 
-		// "Auto" language mode: override Localization's persisted choice with
-		// the current OS language. Runs every startup so a user who changes
-		// their OS UI language sees the launcher follow without revisiting
-		// the settings popup. No-op when the user has explicitly picked a
-		// language (m_LanguageAuto == false).
 		if (m_LanguageAuto) {
 			Localization::SetLanguage(Localization::GetSystemLanguage());
 		}
 
-		// Default projects location falls back to the engine's default if
-		// the settings file hasn't been written yet — matches the prior
-		// hard-coded behaviour without requiring a settings round-trip on
-		// the first launch.
 		const std::string defaultLocation = m_DefaultProjectsLocation.empty()
 			? IndexProject::GetDefaultProjectsDir()
 			: m_DefaultProjectsLocation;
@@ -515,24 +464,14 @@ artifacts/
 	void LauncherLayer::OnPreRender(Application& app) {
 		(void)app;
 		ApplyLauncherThemeIfNeeded();
-		// FontGlobalScale must be assigned before any ImGui::Begin/Text calls
-		// this frame — ImGuiContextLayer::OnPreRender already ran
-		// ImGui::NewFrame, so glyph metrics this layer queries (button sizes,
-		// text widths) will reflect the new scale immediately.
+		// MUST precede Begin/Text calls: NewFrame already ran, so scale takes effect immediately for this frame's metrics.
 		ImGui::GetIO().FontGlobalScale = GetEffectiveFontScale();
 		Localization::Poll();
 		PollCreateProjectTask();
-		// Drawn before the main panel so the panel can offset itself by
-		// the titlebar row height; titlebar publishes its drag region +
-		// non-client button rects to the Win32 hit-test layer here.
 		const std::string titlebarText = IDX_TR("launcher.title") + std::string(" ") + std::string(IDX_VERSION);
 		EditorRuntime::RenderTitlebar(EditorRuntime::TitlebarConfig{ titlebarText, /*Centered=*/false });
 		RenderLauncherPanel();
 
-		// Drive the OS-level progress popup last: every Poll*Task above has
-		// run for this frame, so task state is current. Single decision point
-		// keeps the popup's title/stage/progress consistent regardless of
-		// which task is in flight.
 		UpdateProgressPopup();
 	}
 
@@ -579,16 +518,11 @@ artifacts/
 		if (m_OpenTask.Worker.joinable()) {
 			m_OpenTask.Worker.join();
 		}
-		// Asset-library fetch/download workers — join before teardown so the
-		// thread's destructor doesn't terminate(). In-flight downloads are
-		// allowed to finish; the user closing the launcher mid-fetch will
-		// see a brief delay rather than data loss.
+		// Join before teardown: destructor would call terminate() if the thread is still joinable.
 		if (m_AssetLibraryTask.Worker.joinable()) {
 			m_AssetLibraryTask.Worker.join();
 		}
-		// Signal stop to all size-calc workers before clearing. Each task's jthread
-		// destructor will block until the worker observes the stop or finishes, so
-		// asking them all to stop first lets the joins overlap rather than serializing.
+		// Request stop on all workers before clearing so jthread destructors can overlap rather than serialize.
 		for (auto& [_, task] : m_ProjectSizeTasks) {
 			if (task) {
 				task->Worker.request_stop();
@@ -596,9 +530,7 @@ artifacts/
 		}
 		m_ProjectSizeTasks.clear();
 
-		// Drop the shared icon cache before the renderer winds down. Each
-		// cached Texture2D talks to engine.dll's WebGPU device on destruct;
-		// running these destructors here keeps that sequencing safe.
+		// MUST precede renderer teardown: Texture2D destructors access the WebGPU device.
 		Icons::Shutdown();
 	}
 
@@ -666,27 +598,7 @@ artifacts/
 					IDX_WARN_TAG("Launcher", "Solution regeneration returned non-zero ({}); continuing anyway.", regen.ExitCode);
 				}
 
-				// Project-local packages are NOT built here. Index.sln is now
-				// engine-only (premake/package-loader.lua stopped reading
-				// --index-project), so there are no Pkg.<Name>.* targets in it
-				// to build. The launcher's MSBuild step has been removed pending
-				// the per-project package workspace (project-packages premake
-				// script + per-project .sln under <project>/.index/build/) that
-				// will land in a follow-up refactor.
-				//
-				// Until then, package DLLs need to come from:
-				//   * Cloud install — IndexPackageInstaller already drops the
-				//     prebuilt DLL into <project>/Packages/<Name>/Bin/<Plat>/
-				//     and writes IndexPackages.props. PackageHost::LoadInstalled
-				//     hot-loads it. No build step required.
-				//   * Engine devs authoring a project-local source package —
-				//     build it manually via VS (the per-project .sln from the
-				//     follow-up refactor will automate this) or temporarily
-				//     move the package under <repo>/packages/ during dev.
-				//
-				// Cloud-only / binary-only projects (the common case for end
-				// users) work fine without this build step.
-
+				// Package MSBuild step removed: Index.sln is engine-only; cloud-installed packages arrive as prebuilt DLLs via IndexPackageInstaller.
 				updateProgress(0.86f, "Compiling starter scripts...");
 				const std::string buildConfiguration = IndexProject::GetActiveBuildConfiguration();
 				Process::Result buildResult = Process::Run({
@@ -700,11 +612,6 @@ artifacts/
 					"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants("INDEX_EDITOR")
 					});
 
-				// Optional git init — runs after the project is on disk so
-				// .gitignore / .git/ land alongside everything else. Failure
-				// here is non-fatal: the project still opens, the user can
-				// run `git init` themselves later. We surface the warning
-				// through the engine log rather than failing the task.
 				if (initializeGit) {
 					updateProgress(0.95f, "Initializing Git repository...");
 					std::string gitError;
@@ -804,11 +711,7 @@ artifacts/
 		ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + titlebarH));
 		ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, viewport->Size.y - titlebarH));
 
-		// NoBringToFrontOnFocus keeps the panel pinned at the back of the
-		// window z-stack so the floating settings gear (created later
-		// below) stays visually on top. Without it, the panel reclaims
-		// the front on its first Begin and any subsequent click, and
-		// the full-viewport panel then covers the gear's hit rect.
+		// NoBringToFrontOnFocus: keeps panel pinned to back so the floating gear overlay stays on top.
 		ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize
 			| ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking
 			| ImGuiWindowFlags_NoBringToFrontOnFocus;
@@ -824,18 +727,7 @@ artifacts/
 			ImGui::Spacing();
 		}
 
-		// Open-project / execute-project progress is surfaced via the shared
-		// OS-level popup (Win32BuildProgressWindow), driven from
-		// UpdateProgressPopup() at the end of OnPreRender. Same indicator the
-		// editor uses for "Compiling Scripts...", so the experience is
-		// consistent across launcher and editor.
-		//
-		// We still own the post-launch grace period here: once the worker
-		// reports success the popup hides immediately (Running flips to
-		// false), but m_IsOpening keeps the launcher in its "just launched"
-		// state for 1.5s before the registry's LastOpened timestamp is
-		// committed. Without this, a fast launch could update the registry
-		// before the OS even brings the spawned editor's window forward.
+		// m_IsOpening holds for 1.5s after the worker reports success so LastOpened is committed after the editor window appears.
 		bool taskRunning = false;
 		{
 			std::scoped_lock lock(m_OpenTask.Mutex);
@@ -854,15 +746,8 @@ artifacts/
 			}
 		}
 
-		// Poll the asset-library download worker once per frame; it writes
-		// progress under m_AssetLibraryTask.Mutex and the overlay reads the
-		// same fields below the BeginTabBar block.
 		PollAssetLibraryTask();
 
-		// Tab bar: My Projects (existing UX) and Asset Library (community
-		// downloads). The tab bar pulls a few px below the panel's top edge,
-		// which is fine — the floating status overlay still sits in the
-		// bottom-right and is independent of the tab.
 		if (ImGui::BeginTabBar("##LauncherTabs", ImGuiTabBarFlags_None)) {
 			if (ImGui::BeginTabItem(IDX_TR("launcher.tab.my_projects").c_str())) {
 				RenderMyProjectsTab();
@@ -894,14 +779,7 @@ artifacts/
 
 		ImGui::End();
 
-		// Floating settings gear anchored to the bottom-right of the
-		// viewport. Lives in its own borderless, transparent overlay
-		// window because SetCursorScreenPos inside the launcher panel
-		// — after the tabs' BeginChild scopes ended — left the hit
-		// rect being shadowed by the tab-content child windows, so
-		// the button rendered but wouldn't accept clicks. A standalone
-		// overlay window is the standard ImGui pattern for this and
-		// guarantees proper input ownership.
+		// Standalone overlay window: SetCursorScreenPos inside the panel left the hit rect shadowed by child windows, so the button wouldn't click.
 		{
 			const ImGuiViewport* vp = ImGui::GetMainViewport();
 			constexpr float k_GearSize = 32.0f;
@@ -912,11 +790,7 @@ artifacts/
 			ImGui::SetNextWindowSize(ImVec2(k_GearSize, k_GearSize));
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-			// No NoBringToFrontOnFocus here — we *want* this overlay to
-			// reach the front on first appearance so it lands on top of
-			// the launcher panel (which has NoBringToFrontOnFocus and is
-			// thus pinned to the back). NoFocusOnAppearing stays so it
-			// doesn't steal keyboard focus from modals that may open.
+			// Intentionally no NoBringToFrontOnFocus: this overlay must reach the front over the back-pinned panel.
 			constexpr ImGuiWindowFlags k_GearFlags =
 				ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
 				ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
@@ -946,11 +820,6 @@ artifacts/
 		float panelWidth = ImGui::GetContentRegionAvail().x;
 		float rightColWidth = 200.0f;
 
-		// Search bar above the sort strip. Drives m_LauncherSearch which
-		// RenderProjectList reads when filtering. Lives inside this tab
-		// (rather than at panel scope) so the affordance only appears on
-		// the tab that actually uses it; the Asset Library tab has its
-		// own tag filter and doesn't need a free-text search.
 		{
 			Icons::TextIcon(Icons::Type::Search);
 			char searchBuf[256];
@@ -965,11 +834,6 @@ artifacts/
 			ImGui::Spacing();
 		}
 
-		// Sort + refresh strip above the project list. The combo controls
-		// the sort axis (Last Opened, Name, Created), the arrow button
-		// flips the direction, and the refresh icon re-loads launcher.json
-		// + clears the size cache so projects added or modified outside
-		// the launcher show up without restarting the app.
 		const float strip_h = ImGui::GetFrameHeight();
 		const float refreshW = strip_h;
 		const float reverseW = strip_h;
@@ -1024,12 +888,6 @@ artifacts/
 		// Right column: actions (L4: removed selection-dependent buttons)
 		ImGui::BeginChild("##Actions", ImVec2(rightColWidth, 0));
 
-		// "+" entry point — opens a small popup with the two ways to
-		// add a project ("New Project" creates an empty one in the
-		// default location; "From Disk" picks an existing folder via
-		// the OS file dialog). Settings used to live here too but
-		// moved to the bottom-right gear; the only remaining
-		// non-selection action on this column is the +.
 		if (Icons::IconButton("##LauncherAddProject", Icons::Type::Plus)) {
 			ImGui::OpenPopup("##LauncherAddProjectPopup");
 		}
@@ -1063,10 +921,6 @@ artifacts/
 			ImGui::EndPopup();
 		}
 
-		// Selection-dependent buttons. Disabled (greyed) when no row is
-		// selected; the BeginDisabled / EndDisabled pair lets the buttons
-		// stay visible at full width so the layout doesn't reflow as the
-		// user selects/deselects a project.
 		ImGui::Spacing();
 		ImGui::Separator();
 		ImGui::Spacing();
@@ -1115,11 +969,6 @@ artifacts/
 			return;
 		}
 
-		// Case-insensitive match against the panel-level search field.
-		// Empty search matches everything, so the existing "no projects
-		// yet" path above still runs only when the registry itself is
-		// empty — a search miss falls through to the "no matches" line at
-		// the bottom of this function instead.
 		const std::string lowerSearch = [&]() {
 			std::string s = m_LauncherSearch;
 			std::transform(s.begin(), s.end(), s.begin(),
@@ -1155,12 +1004,6 @@ artifacts/
 			float buttonWidth = 60.0f;
 			float rowHeight = 68.0f;
 
-			// Draw an invisible item spanning the row for layout + right-click context.
-			// Left-clicking it toggles selection (click again to deselect — matches
-			// most file explorers); double-clicking opens the project in the editor
-			// (matches file-explorer "open" gesture); right-click both selects and
-			// opens the context menu so the menu always acts on the row the user
-			// actually pointed at.
 			ImGui::InvisibleButton("##Row", ImVec2(rowWidth - buttonWidth - 8, rowHeight));
 			const bool rowClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
 			const bool rowRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
@@ -1302,12 +1145,7 @@ artifacts/
 			ImGui::TextDisabled("%s", IDX_TR("launcher.asset_library.empty").c_str());
 		}
 
-		// Deferred removal to avoid modifying the list during iteration.
-		// Keying by path (not index) because the displayed order is a
-		// sorted *view* over the registry — the index in `sortedProjects`
-		// doesn't map back to the registry's underlying storage. Goes
-		// through RemoveProjectFromList so the selection state is cleared
-		// alongside the registry entry.
+		// Deferred: keyed by path because sortedProjects is a view and its indices don't map to registry storage.
 		if (!removePath.empty()) {
 			for (const auto& e : m_Registry.GetProjects()) {
 				if (e.Path == removePath) {
@@ -1380,10 +1218,7 @@ artifacts/
 	}
 
 	void LauncherLayer::RemoveProjectFromList(const LauncherProjectEntry& entry) {
-		// Copy the path BEFORE mutating the registry — `entry` may reference
-		// a string that lives inside m_Registry's vector, and RemoveProject
-		// shuffles elements via std::remove_if (which would invalidate any
-		// reference back into the same vector).
+		// Copy path before mutating: entry may reference a string inside m_Registry's vector (invalidated by remove_if).
 		const std::string path = entry.Path;
 		m_Registry.RemoveProject(path);
 		m_Registry.Save();
@@ -1400,10 +1235,6 @@ artifacts/
 		for (const auto& entry : m_Registry.GetProjects()) {
 			if (entry.Path == m_SelectedProjectPath) return &entry;
 		}
-		// Selected project was removed (e.g. by RefreshProjectsList dropping a
-		// missing one) — fall through to nullptr. Caller's nullptr check is
-		// the same path as "no selection", so the side buttons re-disable
-		// gracefully on the next frame.
 		return nullptr;
 	}
 
@@ -1689,11 +1520,7 @@ artifacts/
 		}
 
 #ifdef IDX_PLATFORM_WINDOWS
-		// Refuse to spawn a duplicate of the SAME kind (editor or runtime)
-		// for the same project. The other kind is independent — running the
-		// runtime via "Execute" must not block "Open In Editor" or the user
-		// can never have both alive at once. Stale PIDs (process already
-		// exited) get cleared so the next launch can proceed.
+		// Blocks duplicate editor OR runtime for the same project; the two kinds are independent and may coexist.
 		{
 			auto it = m_RunningProjects.find(entry.Path);
 			if (it != m_RunningProjects.end()) {
@@ -1774,26 +1601,7 @@ artifacts/
 			return;
 		}
 
-		// Project-local packages are NOT built here. Index.sln is now
-		// engine-only (premake/package-loader.lua stopped reading
-		// --index-project), so there are no Pkg.<Name>.* targets in it to
-		// build. The launcher's MSBuild step has been removed pending the
-		// per-project package workspace (project-packages premake script +
-		// per-project .sln under <project>/.index/build/) that will land in
-		// a follow-up refactor.
-		//
-		// Until then, package DLLs need to come from:
-		//   * Cloud install — IndexPackageInstaller drops the prebuilt DLL
-		//     into <project>/Packages/<Name>/Bin/<Plat>/ and writes
-		//     IndexPackages.props. PackageHost::LoadInstalled hot-loads it.
-		//   * Engine devs authoring a project-local source package — build
-		//     it via VS manually, or temporarily move it under
-		//     <repo>/packages/ during dev.
-		//
-		// The runtime safety net below (`dotnet build` on the project's
-		// .csproj) is unchanged — Play still refuses to launch if game
-		// scripts won't compile.
-
+		// Package MSBuild step removed: Index.sln is engine-only; cloud-installed packages arrive as prebuilt DLLs.
 		if (launchRuntime) {
 			setStage("Compiling runtime scripts...", 0.70f);
 			if (!IndexProject::Validate(entry.Path)) {
@@ -1943,11 +1751,6 @@ artifacts/
 	}
 
 	void LauncherLayer::UpdateProgressPopup() {
-		// Priority: Open > Create > AssetLibrary. The popup carries one
-		// task at a time; the user can only initiate one of these per
-		// click anyway (each task disables its own trigger button while
-		// Running), so prioritising on display is purely cosmetic — whoever
-		// is in flight wins.
 		std::string title;
 		std::string stage;
 		float progress = 0.0f;
@@ -2041,10 +1844,7 @@ artifacts/
 	}
 
 	bool LauncherLayer::DeleteProjectFromDisk(const LauncherProjectEntry& entry) {
-		// m_DeleteError surfaces inside the (still-open) delete confirmation
-		// modal; ShowError() opens the generic OK dialog once that modal
-		// closes. Both are populated so the user can see the message in the
-		// confirm dialog AND get a follow-up acknowledgement.
+		// Both m_DeleteError (shown inline in modal) and ShowError (generic dialog) are set so the message appears in both places.
 		auto fail = [this](std::string message) -> bool {
 			m_DeleteError = std::move(message);
 			ShowError(m_DeleteError);
@@ -2451,12 +2251,6 @@ artifacts/
 		if (!ImGui::BeginPopupModal(settingsTitle.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
 			return;
 		}
-		// The "effective" path — what `Create New Project` would use right
-		// now if the user clicked it. Falls back to the engine's bundled
-		// default when the user hasn't authored an override. Always
-		// non-empty (modulo a missing engine install), so the input below
-		// always shows something the user can edit instead of looking
-		// blank-by-default the first time the popup is opened.
 		const std::string effectiveDefault = m_DefaultProjectsLocation.empty()
 			? IndexProject::GetDefaultProjectsDir()
 			: m_DefaultProjectsLocation;
@@ -2464,19 +2258,11 @@ artifacts/
 		ImGui::TextUnformatted(IDX_TR("launcher.settings.default_location").c_str());
 		ImGui::TextDisabled("%s", IDX_TR("launcher.settings.default_location_subtitle").c_str());
 
-		// Surface the current value as a small read-only line so the user
-		// can compare what's saved vs. what they're typing — particularly
-		// useful when the input is the engine fallback (no explicit
-		// override) so it's clear they haven't customised anything yet.
 		const std::string currentLine = Localization::Format("launcher.settings.current", effectiveDefault)
 			+ (m_DefaultProjectsLocation.empty() ? IDX_TR("launcher.settings.engine_default_suffix") : std::string{});
 		ImGui::TextDisabled("%s", currentLine.c_str());
 		ImGui::Spacing();
 
-		// Editable buffer kept on the popup itself — sized for typical
-		// long Windows paths plus a margin. Pre-fill with the effective
-		// path (override or engine default) so the user immediately sees
-		// what's in use rather than an empty field.
 		static char s_LocationBuffer[1024]{};
 		if (ImGui::IsWindowAppearing()) {
 			std::snprintf(s_LocationBuffer, sizeof(s_LocationBuffer), "%s",
@@ -2526,23 +2312,11 @@ artifacts/
 		ImGui::Separator();
 		ImGui::Spacing();
 
-		// Language selector. Persists immediately on selection — separate
-		// from the Save/Cancel buttons below which only commit the
-		// default-projects-location override. Hot reload is supported by
-		// the Localization service: switching here re-translates every
-		// IDX_TR() lookup next frame, including this popup's own labels.
-		// Entries that aren't installed yet are decorated with a status
-		// suffix; picking one kicks off an async download whose progress
-		// shows inline below the combo (see Localization::Poll()).
 		ImGui::TextUnformatted(IDX_TR("launcher.settings.language").c_str());
 		const auto& languages = Localization::GetAvailableLanguages();
 		const std::string& currentCode = Localization::GetCurrentLanguage();
 		const std::string notInstalledSuffix = IDX_TR("launcher.settings.language.not_installed_suffix");
 
-		// Display name shown inside the "Auto (...)" label. Looks up the
-		// OS-resolved code in the available-languages list so the localised
-		// name appears (e.g. "Deutsch" rather than "de"); falls back to the
-		// raw tag if the OS reports a language we don't have a table for.
 		const std::string sysCode = Localization::GetSystemLanguage();
 		std::string sysDisplay = sysCode;
 		for (const auto& lang : languages) {
@@ -2665,10 +2439,6 @@ artifacts/
 		ImGui::Separator();
 		ImGui::Spacing();
 
-		// Font scale picker. Persists immediately on selection — same pattern
-		// as the language combo above. FontGlobalScale is re-applied next
-		// frame in OnPreRender so the popup itself (and the whole launcher)
-		// rescales live.
 		ImGui::TextUnformatted(IDX_TR("launcher.settings.font_scale").c_str());
 		{
 			struct FontScaleEntry {
@@ -2723,10 +2493,7 @@ artifacts/
 		ImGui::Spacing();
 
 		if (ImGui::Button(IDX_TR("launcher.settings.save").c_str(), ImVec2(100, 0))) {
-			// If the user left the field at the engine default verbatim,
-			// don't persist it as an override — the empty-string sentinel
-			// keeps the "follows engine default" behaviour even if the
-			// engine's default path changes in a future version.
+			// Empty string = "follow engine default"; don't persist verbatim engine default as an override.
 			const std::string typed(s_LocationBuffer);
 			if (typed == IndexProject::GetDefaultProjectsDir()) {
 				m_DefaultProjectsLocation.clear();
@@ -2745,10 +2512,6 @@ artifacts/
 		ImGui::EndPopup();
 	}
 
-	// Formats a filesystem timestamp (seconds since epoch in system_clock terms)
-	// as "YYYY-MM-DD HH:MM" in local time. Returns "unknown" for zero/invalid
-	// timestamps. Local time matches the user's expectation when the dialog
-	// reads "Created on …".
 	static std::string FormatLocalDateTime(std::int64_t secondsSinceEpoch) {
 		if (secondsSinceEpoch <= 0) return "unknown";
 		std::time_t t = static_cast<std::time_t>(secondsSinceEpoch);
@@ -2791,10 +2554,6 @@ artifacts/
 
 		const LauncherProjectEntry& entry = *m_PendingInfoProject;
 
-		// Lazily look up the engine version from index-project.json. Cached per
-		// path so re-renders don't re-parse the file every frame. IndexProject::Load
-		// is only called on paths that pass Validate(), guarding against partially-
-		// deleted projects whose entry still lingers in the registry.
 		auto versionIt = m_EngineVersionCache.find(entry.Path);
 		if (versionIt == m_EngineVersionCache.end()) {
 			std::string version;
@@ -2812,11 +2571,6 @@ artifacts/
 			? IDX_TR("launcher.info.unknown")
 			: engineVersionCached;
 
-		// Lazily look up the creation/modification timestamp of the project
-		// directory. Reuses m_CreatedAtCache so this shares state with the
-		// "Created" sort axis and stays consistent across the UI. Note that on
-		// Windows std::filesystem::last_write_time is mtime, not true ctime —
-		// matching what the existing "Created" sort axis surfaces.
 		auto createdIt = m_CreatedAtCache.find(entry.Path);
 		if (createdIt == m_CreatedAtCache.end()) {
 			std::error_code ec;
@@ -2855,9 +2609,6 @@ artifacts/
 				ImGui::TextWrapped("%s", value && *value ? value : "—");
 			};
 
-			// Path row gets a special right side: read-only input for selecting
-			// + copying, plus an Open button that hands off to the existing
-			// "Open in Explorer" path. Sized so the button always fits.
 			ImGui::TableNextRow();
 			ImGui::TableSetColumnIndex(0);
 			ImGui::TextUnformatted(IDX_TR("launcher.info.path").c_str());
@@ -2954,18 +2705,9 @@ artifacts/
 
 	namespace {
 
-		// Hardcoded source index URL. The plan calls for surfacing this as a
-		// read-only field in Settings and eventually supporting multiple
-		// community feeds, but v1 ships one. Point at the canonical asset
-		// library repo on GitHub — the launcher fetches `index.json` from
-		// the default branch and downloads release-asset archives from there.
 		constexpr const char* k_DefaultAssetLibraryUrl =
 			"https://raw.githubusercontent.com/Ben-Scr/Index-AssetLibrary/main/index.json";
 
-		// Resolves the current source URL: env var override (used for QA and
-		// pinning to a local http.server) takes precedence over the hardcoded
-		// default. The result is cached per-call rather than memoized so a
-		// session-spawned-via-env-var picks up changes immediately.
 		std::string ResolveAssetLibraryUrl() {
 			if (const char* env = std::getenv("INDEX_ASSET_LIBRARY_URL"); env && *env) {
 				return env;
@@ -2973,10 +2715,7 @@ artifacts/
 			return k_DefaultAssetLibraryUrl;
 		}
 
-		// Only these hosts are accepted in `archive.url`. Narrowing the
-		// trust surface to GitHub means a compromised mirror can't redirect
-		// downloads. Easily relaxable later if community-hosted CDNs become
-		// a thing.
+		// Whitelist limits to GitHub: prevents a compromised mirror redirecting downloads.
 		bool IsTrustedArchiveHost(std::string_view url) {
 			constexpr std::string_view k_Trusted[] = {
 				"https://github.com/",
@@ -3035,11 +2774,7 @@ artifacts/
 			return e;
 		}
 
-		// Picks the project root inside an extracted archive. Returns:
-		//   <stagingDir>           if it already contains index-project.json
-		//   <stagingDir>/<one>     if the archive has exactly one subdir
-		//                          containing index-project.json
-		// Returns empty path if neither shape is found.
+		// Accepts flat archives (index-project.json at root) and single-subdir archives; rejects anything else.
 		std::filesystem::path PickExtractedProjectRoot(const std::filesystem::path& stagingDir) {
 			std::error_code ec;
 			if (std::filesystem::exists(stagingDir / "index-project.json", ec)) {
@@ -3102,9 +2837,6 @@ artifacts/
 	}
 
 	void LauncherLayer::StartFetchAssetLibraryIndex() {
-		// Refuse to start a second fetch while one is in flight. Mutex is
-		// acquired just to read FetchInFlight under the same memory ordering
-		// the worker uses.
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			if (m_AssetLibrary.FetchInFlight) return;

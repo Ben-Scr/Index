@@ -33,6 +33,7 @@ project "Index-EditorRuntime"
     -- includes / defines / build-order from the dep set.
     UseDependencySetNoLink(Dependency.EngineSelectedModules)
     defines(GetIndexModuleDefines())
+    ApplyIndexEditorModuleDefine()
 
     -- INDEX_API resolves to __declspec(dllimport) here so this lib's TUs
     -- agree with the consumer .exe's view of engine.dll symbols.

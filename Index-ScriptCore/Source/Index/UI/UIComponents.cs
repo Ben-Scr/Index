@@ -4,14 +4,6 @@ using static System.Net.Mime.MediaTypeNames;
 
 namespace Index.UI;
 
-// ── RectTransform ───────────────────────────────────────────────────
-//
-// Screen-space rectangle on a UI entity. Mirrors the C++
-// RectTransform2DComponent — the engine's UILayoutSystem walks the
-// hierarchy each frame and writes resolved corners back into the
-// component, so reads of `Size` / `Position` reflect anchor + parent
-// composition, not just the authored fields.
-
 public class RectTransform : Component
 {
     public Vector2 AnchorMin
@@ -69,11 +61,7 @@ public class RectTransform : Component
         set => InternalCalls.RectTransform_SetSizeDelta(RequireComponent<RectTransform>(), value.X, value.Y);
     }
 
-    // World rotation/scale — composed from this rect's Local* values
-    // and every ancestor's. The getter returns the resolved world value
-    // written by UILayoutSystem each frame; the setter writes the
-    // authored Local* value (writing to the world cache directly would
-    // be overwritten on the next layout pass). Mirrors Transform2D.
+    // Getter = resolved world value from UILayoutSystem; setter writes the Local* field (world cache overwrites next pass).
     public float Rotation
     {
         get => InternalCalls.RectTransform_GetRotation(RequireComponent<RectTransform>()) * Mathf.Rad2Deg;
@@ -91,9 +79,6 @@ public class RectTransform : Component
         set => InternalCalls.RectTransform_SetScale(RequireComponent<RectTransform>(), value.X, value.Y);
     }
 
-    // Local rotation/scale — the authored values stored on this rect.
-    // For root rects these match Rotation/Scale; for parented rects
-    // they're the offset from the parent's world rotation/scale.
     public float LocalRotation
     {
         get => InternalCalls.RectTransform_GetLocalRotation(RequireComponent<RectTransform>()) * Mathf.Rad2Deg;
@@ -111,11 +96,6 @@ public class RectTransform : Component
         set => InternalCalls.RectTransform_SetLocalScale(RequireComponent<RectTransform>(), value.X, value.Y);
     }
 
-    // Resolved screen-space size as computed by UILayoutSystem this
-    // frame. Combines anchor stretch + SizeDelta + parent rect; useful
-    // for code that wants the actual on-screen size (e.g. positioning
-    // a tooltip or scaling a child element). Read-only — set the
-    // underlying values via SizeDelta / AnchorMin / AnchorMax.
     public Vector2 Size
     {
         get
@@ -126,8 +106,6 @@ public class RectTransform : Component
         }
     }
 }
-
-// ── Image ───────────────────────────────────────────────────────────
 
 public class Image : Component
 {
@@ -165,41 +143,17 @@ public class Image : Component
     }
 }
 
-// ── Interactable ────────────────────────────────────────────────────
-//
-// Per-frame UI input state. Reads of IsHovered/IsClicked/etc are
-// updated by UIEventSystem before any user code runs, so a script's
-// OnUpdate() can react to clicks the same frame they happen.
-//
-// Events fire per-instance from UIEventDispatcher after UIEventSystem
-// updates each frame. Subscribe on the specific Interactable whose
-// transitions you care about — the handler receives that Interactable
-// so you can check IsFocused / IsHovered / Entity directly:
-//   interactable.OnClicked += i => Debug.Log($"{i.Entity.Name} clicked");
-
 public class Interactable : Component
 {
     public event Action<Interactable>? OnHovered;
     public event Action<Interactable>? OnClicked;
 
-    // Fires every frame the user is holding the mouse down on this
-    // Interactable — continuous, not edge. Use OnMouseDown for the
-    // rising edge (one fire per press).
-    public event Action<Interactable>? OnPressed;
+    public event Action<Interactable>? OnPressed; // continuous; use OnMouseDown for rising edge
     public event Action<Interactable>? OnMouseDown;
 
-    // OnMouseUp pairs 1:1 with OnMouseDown — it fires on whichever
-    // Interactable received the press, even if the cursor has since
-    // left the rect. Use this for drag-style widgets that need to
-    // release state on "let go" (joysticks, scrubbers, sliders). For
-    // the hover-gated completion event (press AND release while still
-    // over the widget), use OnClicked instead.
+    // Fires on the original pressed Interactable even if cursor left the rect. For hover-gated completion use OnClicked.
     public event Action<Interactable>? OnMouseUp;
 
-    // Keyboard / controller focus transitions. OnFocusEnter fires on
-    // the rising edge of IsFocused, OnFocusExit on the falling edge.
-    // Both pass the Interactable so the handler can grab .Entity or
-    // any sibling component without a closure-captured reference.
     public event Action<Interactable>? OnFocusEnter;
     public event Action<Interactable>? OnFocusExit;
 
@@ -209,41 +163,25 @@ public class Interactable : Component
         set => InternalCalls.Interactable_SetInteractable(RequireComponent<Interactable>(), value);
     }
 
-    // Opt-in to keyboard / controller focus navigation. Defaults to
-    // false (preserving simple mouse-only UI) — flip this to true on
-    // any widget you want UIFocusSystem to include in Tab / D-pad /
-    // arrow-key cycling. Existing scenes don't gain any focus-ring
-    // visual unless you also set FocusedColor on the widget itself.
     public bool Focusable
     {
         get => InternalCalls.Interactable_GetFocusable(RequireComponent<Interactable>());
         set => InternalCalls.Interactable_SetFocusable(RequireComponent<Interactable>(), value);
     }
 
-    // Read-only: these are driven entirely by UIEventSystem's hit-test
-    // and press-tracking. Setting them from script wouldn't be honored
-    // (they get overwritten next frame).
     public bool IsHovered => InternalCalls.Interactable_GetIsHovered(RequireComponent<Interactable>());
     public bool IsClicked => InternalCalls.Interactable_GetIsClicked(RequireComponent<Interactable>());
     public bool IsPressed => InternalCalls.Interactable_GetIsPressed(RequireComponent<Interactable>());
     public bool IsMouseDown => InternalCalls.Interactable_GetIsMouseDown(RequireComponent<Interactable>());
     public bool IsMouseUp => InternalCalls.Interactable_GetIsMouseUp(RequireComponent<Interactable>());
 
-    // The currently-focused state, owned by UIFocusSystem. Setting
-    // this from script is honoured for one frame as a programmatic
-    // "give this widget focus" gesture; the system reconciles next
-    // tick (and clears it if Focusable is false).
+    // Script writes are honoured for one frame as a focus grant; system reconciles next tick.
     public bool IsFocused
     {
         get => InternalCalls.Interactable_GetIsFocused(RequireComponent<Interactable>());
         set => InternalCalls.Interactable_SetIsFocused(RequireComponent<Interactable>(), value);
     }
 
-    // Instance-side raisers used by UIEventDispatcher. Kept internal
-    // (the events are public-subscribe only) so external code can't
-    // synthesize fake transitions — only the engine pipeline drives
-    // them. Each passes `this` to the handler so subscribers can read
-    // any sibling state without a captured reference.
     internal void RaiseHovered() => OnHovered?.Invoke(this);
     internal void RaiseClicked() => OnClicked?.Invoke(this);
     internal void RaisePressed() => OnPressed?.Invoke(this);
@@ -253,52 +191,13 @@ public class Interactable : Component
     internal void RaiseFocusExit() => OnFocusExit?.Invoke(this);
 }
 
-// ── Button ──────────────────────────────────────────────────────────
-//
-// State-tint preset that the engine applies to the Image on the same
-// entity each frame. Click semantics live on the sibling Interactable;
-// the Button events fan out from the sibling Interactable's per-frame
-// flags so a button with a separate TargetGraphic still receives them.
-// OnClickDown / OnClicked / OnClickUp are edges (one fire per press);
-// OnPressed is continuous (fires every frame the button is held).
-// Each handler receives the Button so it can read any sibling
-// component (Image, RectTransform, etc.) directly:
-//   button.OnClickDown += b => b.PressedColor = Color.Red;
-//   button.OnClicked   += b => Audio.Play("click");
-//   button.OnClickUp   += b => b.PressedColor = Color.White;
-//   button.OnPressed   += b => chargeAmount += Time.DeltaTime;
-
 public class Button : Component
 {
-    // Rising edge of mouse-button-down while the cursor is over the
-    // button (or its TargetGraphic). Fires once on the frame the press
-    // starts.
     public event Action<Button>? OnClickDown;
-
-    // Completed click: fires once on the frame the user releases the
-    // mouse over the same button they pressed on. Mirrors the
-    // sibling Interactable.OnClicked semantics.
     public event Action<Button>? OnClicked;
-
-    // Rising edge of mouse-button-up while the cursor is over the
-    // button (or its TargetGraphic). Fires whether or not the release
-    // forms a completed click — pair with OnClickDown for hold-style
-    // interactions (charge attacks, drag-to-cancel).
     public event Action<Button>? OnClickUp;
+    public event Action<Button>? OnPressed; // continuous — fires every frame held
 
-    // Fires every frame the button is being held — i.e. for the entire
-    // span between OnClickDown and OnClickUp. Unlike the three edge
-    // events above, this is continuous: a 30-frame press calls the
-    // handler 30 times. Pair with Time.DeltaTime for charge meters,
-    // auto-fire, hold-to-scroll, drag-preview behaviours.
-    public event Action<Button>? OnPressed;
-
-    // Optional explicit visual target. When set, the button retints /
-    // sprite-swaps the ImageComponent (or, lacking one, the
-    // TextRendererComponent) on this entity. Leaving it null falls
-    // back to the button's own entity, picking Image first then
-    // TextRenderer — so a button with a single Text child works
-    // with no preset wiring.
     public Entity? TargetGraphic
     {
         get
@@ -353,11 +252,7 @@ public class Button : Component
         set => InternalCalls.Button_SetDisabledColor(RequireComponent<Button>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Tint applied when the sibling Interactable is focused via
-    // UIFocusSystem. Alpha == 0 (the default) is treated as a
-    // sentinel — the widget falls through to Hovered / Normal as if
-    // focus didn't exist, so users who want navigation without any
-    // visible indicator simply leave this color zeroed.
+    // Alpha == 0 = no focus tint (falls through to Hovered/Normal).
     public Vector4 FocusedColor
     {
         get
@@ -369,18 +264,12 @@ public class Button : Component
         set => InternalCalls.Button_SetFocusedColor(RequireComponent<Button>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Picks between color-swap, sprite-swap, and "no automatic
-    // transition" for this widget. Default ColorSwap preserves the
-    // original mouse-only behaviour. See UITransitionMode for details.
     public UITransitionMode TransitionMode
     {
         get => (UITransitionMode)InternalCalls.Button_GetTransitionMode(RequireComponent<Button>());
         set => InternalCalls.Button_SetTransitionMode(RequireComponent<Button>(), (int)value);
     }
 
-    // Per-state texture overrides used when TransitionMode is
-    // SpriteSwap. null leaves the slot unset; unset slots fall back
-    // to NormalSprite. NormalSprite being null disables the swap.
     public Texture? NormalSprite
     {
         get => Index.Texture.FromAssetUUID(InternalCalls.Button_GetNormalSprite(RequireComponent<Button>()));
@@ -407,10 +296,6 @@ public class Button : Component
         set => InternalCalls.Button_SetFocusedSprite(RequireComponent<Button>(), value?.UUID ?? 0);
     }
 
-    // Convenience: returns true on the frame the user clicked the
-    // button. Reads the sibling Interactable component's IsClicked
-    // flag, so the host entity must have one (the Button preset adds
-    // it automatically).
     public bool WasClicked
     {
         get
@@ -426,14 +311,8 @@ public class Button : Component
     internal void RaisePressed() => OnPressed?.Invoke(this);
 }
 
-// ── Slider ──────────────────────────────────────────────────────────
-
 public class Slider : Component
 {
-    // Fires when the engine commits a value change this frame (drag /
-    // keyboard / SetValue with notify), passing the new value. Subscribe
-    // per-instance:
-    //   slider.OnValueChanged += v => Debug.Log($"Volume = {v}");
     public event Action<float>? OnValueChanged;
 
 
@@ -461,19 +340,12 @@ public class Slider : Component
         set => InternalCalls.Slider_SetWholeNumbers(RequireComponent<Slider>(), value);
     }
 
-    // When true the slider's Value can't be changed by user drag /
-    // keyboard / controller input. Programmatic Value writes still
-    // work; visual state tracks normally.
     public bool IsReadOnly
     {
         get => InternalCalls.Slider_GetIsReadOnly(RequireComponent<Slider>());
         set => InternalCalls.Slider_SetIsReadOnly(RequireComponent<Slider>(), value);
     }
 
-    // Static track background entity. The slider system never mutates
-    // it, but exposing the ref lets script tweak / theme it without
-    // re-finding the child by name. UIEventSystem auto-resolves a
-    // child named "Background" into this slot when it's null.
     public Entity? BackgroundEntity
     {
         get
@@ -484,7 +356,6 @@ public class Slider : Component
         set => InternalCalls.Slider_SetBackgroundEntity(RequireComponent<Slider>(), value?.ID ?? 0);
     }
 
-    // Optional fill rect: child Image whose width grows with Value.
     public Entity? FillEntity
     {
         get
@@ -495,8 +366,6 @@ public class Slider : Component
         set => InternalCalls.Slider_SetFillEntity(RequireComponent<Slider>(), value?.ID ?? 0);
     }
 
-    // Optional handle (thumb) entity. Drag interactable usually lives
-    // on the handle in the preset; the slider parent is the fallback.
     public Entity? HandleEntity
     {
         get
@@ -507,14 +376,7 @@ public class Slider : Component
         set => InternalCalls.Slider_SetHandleEntity(RequireComponent<Slider>(), value?.ID ?? 0);
     }
 
-    // Programmatic value set with optional event suppression. Two
-    // jobs in one call:
-    //  - notifyEvent=true: fire OnValueChanged synchronously with the
-    //    new value, the same way a same-frame consumer would expect.
-    //  - notifyEvent=false: stay silent for this assignment.
-    // Both branches call Slider_MarkValueObserved so UIEventSystem's
-    // diff (which now catches inspector / property-setter changes too)
-    // doesn't double-fire on the next tick.
+    // notifyEvent=false suppresses OnValueChanged; either way MarkValueObserved prevents UIEventSystem double-fire.
     public void SetValue(float value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<Slider>();
@@ -529,8 +391,6 @@ public class Slider : Component
         }
     }
 
-    // Normalized [0, 1] value — convenient for piping into colors,
-    // alphas, audio volumes, etc. without re-deriving from MinValue/MaxValue.
     public float NormalizedValue
     {
         get
@@ -586,7 +446,6 @@ public class Slider : Component
         set => InternalCalls.Slider_SetDisabledColor(RequireComponent<Slider>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
     public Vector4 FocusedColor
     {
         get
@@ -632,13 +491,8 @@ public class Slider : Component
     internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
 }
 
-// ── Toggle ──────────────────────────────────────────────────────────
-
 public class Toggle : Component
 {
-    // Fires when IsOn flips this frame, passing the new state.
-    // Subscribe per-instance:
-    //   toggle.OnValueChanged += isOn => audio.Mute = isOn;
     public event Action<bool>? OnValueChanged;
 
     public bool IsOn
@@ -647,18 +501,12 @@ public class Toggle : Component
         set => InternalCalls.Toggle_SetIsOn(RequireComponent<Toggle>(), value);
     }
 
-    // When true the toggle ignores user clicks (mouse + keyboard
-    // activate). Programmatic IsOn writes still work; visual state
-    // tracks normally so the widget feels alive.
     public bool IsReadOnly
     {
         get => InternalCalls.Toggle_GetIsReadOnly(RequireComponent<Toggle>());
         set => InternalCalls.Toggle_SetIsReadOnly(RequireComponent<Toggle>(), value);
     }
 
-    // The entity whose ImageComponent is shown / hidden as IsOn flips.
-    // null clears the link. Writes resolve via the persistent UUID so
-    // refs survive scene reload.
     public Entity? CheckmarkEntity
     {
         get
@@ -669,7 +517,6 @@ public class Toggle : Component
         set => InternalCalls.Toggle_SetCheckmarkEntity(RequireComponent<Toggle>(), value?.ID ?? 0);
     }
 
-    // Programmatic toggle with optional event suppression. See Slider.SetValue.
     public void SetValue(bool value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<Toggle>();
@@ -726,7 +573,6 @@ public class Toggle : Component
         set => InternalCalls.Toggle_SetDisabledColor(RequireComponent<Toggle>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
     public Vector4 FocusedColor
     {
         get
@@ -772,17 +618,9 @@ public class Toggle : Component
     internal void RaiseValueChanged() => OnValueChanged?.Invoke(IsOn);
 }
 
-// ── InputField ──────────────────────────────────────────────────────
-
 public class InputField : Component
 {
-    // Fires when the typed text changes (engine-driven keystroke or
-    // SetValue with notify), passing the new text. Subscribe per-instance:
-    //   field.OnValueChanged += text => searchSystem.Filter = text;
     public event Action<string>? OnValueChanged;
-
-    // Focus gained / lost — pass the field so the handler can read
-    // .Text or other state without a closure.
     public event Action<InputField>? OnSelect;
     public event Action<InputField>? OnDeselect;
 
@@ -804,9 +642,6 @@ public class InputField : Component
         set => InternalCalls.InputField_SetIsFocused(RequireComponent<InputField>(), value);
     }
 
-    // The child entity whose TextRendererComponent shows the typed
-    // text (or PlaceholderText). Auto-resolved by name "Text" when
-    // null — set explicitly to point at a different entity.
     public Entity? TextEntity
     {
         get
@@ -817,8 +652,6 @@ public class InputField : Component
         set => InternalCalls.InputField_SetTextEntity(RequireComponent<InputField>(), value?.ID ?? 0);
     }
 
-    // True on the frame the user pressed Enter while the field was
-    // focused. Read once and act — clears at the start of next tick.
     public bool SubmittedThisFrame => InternalCalls.InputField_GetSubmittedThisFrame(RequireComponent<InputField>());
 
     public int CharacterLimit
@@ -827,11 +660,7 @@ public class InputField : Component
         set => InternalCalls.InputField_SetCharacterLimit(RequireComponent<InputField>(), value);
     }
 
-    // Programmatic text set with optional event suppression. The Text
-    // setter alone never raises OnValueChanged; use this method when
-    // you want script-driven changes to fan out to subscribers. The
-    // dispatcher's text-diffing pass also ignores this assignment when
-    // notifyEvent is false (the cached "last seen" string is bumped).
+    // Text setter alone never raises OnValueChanged; this method fans out to subscribers and bumps the dispatcher cache.
     public void SetValue(string value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<InputField>();
@@ -887,7 +716,6 @@ public class InputField : Component
         set => InternalCalls.InputField_SetDisabledColor(RequireComponent<InputField>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
     public Vector4 FocusedColor
     {
         get
@@ -935,14 +763,8 @@ public class InputField : Component
     internal void RaiseDeselect() => OnDeselect?.Invoke(this);
 }
 
-// ── Dropdown ────────────────────────────────────────────────────────
-
 public class Dropdown : Component
 {
-    // Fires when the user (or a script with notifyEvent) picks a
-    // different option this frame. Passes the new index so handlers
-    // don't have to re-read the property.
-    //   dropdown.OnSelectedIndexChange += i => qualityPreset = i;
     public event Action<int>? OnSelectedIndexChange;
 
     public int SelectedIndex
@@ -957,17 +779,12 @@ public class Dropdown : Component
         set => InternalCalls.Dropdown_SetIsOpen(RequireComponent<Dropdown>(), value);
     }
 
-    // When true the dropdown can't be opened or have its selection
-    // changed by user input. Programmatic IsOpen / SelectedIndex /
-    // option mutation still work.
     public bool IsReadOnly
     {
         get => InternalCalls.Dropdown_GetIsReadOnly(RequireComponent<Dropdown>());
         set => InternalCalls.Dropdown_SetIsReadOnly(RequireComponent<Dropdown>(), value);
     }
 
-    // Optional child entity whose TextRendererComponent shows the
-    // currently-selected option's text on the closed header cell.
     public Entity? LabelEntity
     {
         get
@@ -978,10 +795,7 @@ public class Dropdown : Component
         set => InternalCalls.Dropdown_SetLabelEntity(RequireComponent<Dropdown>(), value?.ID ?? 0);
     }
 
-    // Per-option-row tints for the popup. Alpha == 0 = "no override":
-    // unset states fall through to the next-lower precedence and
-    // ultimately to PopupBackgroundColor. Precedence:
-    // pressed > hovered > selected > normal.
+    // Alpha == 0 = no override; precedence: pressed > hovered > selected > normal > PopupBackgroundColor.
     public Vector4 OptionNormalColor
     {
         get
@@ -1023,9 +837,6 @@ public class Dropdown : Component
         set => InternalCalls.Dropdown_SetOptionSelectedColor(RequireComponent<Dropdown>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // The container background colour drawn behind every popup option
-    // row. Acts as the implicit fallback when OptionNormalColor is
-    // unset (alpha == 0).
     public Vector4 PopupBackgroundColor
     {
         get
@@ -1037,8 +848,6 @@ public class Dropdown : Component
         set => InternalCalls.Dropdown_SetPopupBackgroundColor(RequireComponent<Dropdown>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Tint applied to each popup option's label text. Independent of
-    // the per-state row tints — it only stains the glyphs.
     public Vector4 OptionTextColor
     {
         get
@@ -1054,7 +863,6 @@ public class Dropdown : Component
 
     public int OptionCount => InternalCalls.Dropdown_GetOptionCount(RequireComponent<Dropdown>());
 
-    // Currently-selected option text. Empty when no options exist.
     public string SelectedOption
     {
         get
@@ -1093,7 +901,6 @@ public class Dropdown : Component
         InternalCalls.Dropdown_ClearOptions(RequireComponent<Dropdown>());
     }
 
-    // Convenience: replace the entire option list in one call.
     public void SetOptions(params string[] options)
     {
         ClearOptions();
@@ -1159,7 +966,6 @@ public class Dropdown : Component
         set => InternalCalls.Dropdown_SetDisabledColor(RequireComponent<Dropdown>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
     public Vector4 FocusedColor
     {
         get
@@ -1205,17 +1011,8 @@ public class Dropdown : Component
     internal void RaiseSelectedIndexChange() => OnSelectedIndexChange?.Invoke(SelectedIndex);
 }
 
-// ── Scrollbar ───────────────────────────────────────────────────────
-//
-// Draggable handle inside a track that produces a normalised [0, 1]
-// Value. Mirrors Unity's Scrollbar — see
-// Index-Engine/src/Components/UI/ScrollbarComponent.hpp for the full
-// state-machine notes (page-clicks, snapping, drag thresholds).
-
 public class Scrollbar : Component
 {
-    // Fires when Value changes this frame (drag, page-click, SetValue
-    // with notify). Passes the new normalized value.
     public event Action<float>? OnValueChanged;
 
     public float Value
@@ -1224,18 +1021,13 @@ public class Scrollbar : Component
         set => InternalCalls.Scrollbar_SetValue(RequireComponent<Scrollbar>(), value);
     }
 
-    // Handle's length as a fraction of the track in [0, 1]. Larger
-    // values give a chunkier handle; pair with a ScrollRect to track
-    // viewport / content ratio automatically.
     public float Size
     {
         get => InternalCalls.Scrollbar_GetSize(RequireComponent<Scrollbar>());
         set => InternalCalls.Scrollbar_SetSize(RequireComponent<Scrollbar>(), value);
     }
 
-    // 0 = smooth drag; > 1 snaps Value to (NumberOfSteps - 1)
-    // equal divisions across the track. Set to (rowCount + 1) for a
-    // scrollbar that snaps row-by-row through a list.
+    // 0 = smooth; >1 snaps to (NumberOfSteps-1) divisions. Set to rowCount+1 for per-row snapping.
     public int NumberOfSteps
     {
         get => InternalCalls.Scrollbar_GetNumberOfSteps(RequireComponent<Scrollbar>());
@@ -1254,9 +1046,6 @@ public class Scrollbar : Component
         set => InternalCalls.Scrollbar_SetIsReadOnly(RequireComponent<Scrollbar>(), value);
     }
 
-    // The child entity whose RectTransform is rewritten each frame to
-    // position + size the visual handle. UIEventSystem auto-resolves a
-    // child named "Handle" with an ImageComponent when null.
     public Entity? HandleEntity
     {
         get
@@ -1269,8 +1058,6 @@ public class Scrollbar : Component
 
     public bool ValueChangedThisFrame => InternalCalls.Scrollbar_GetValueChangedThisFrame(RequireComponent<Scrollbar>());
 
-    // Programmatic value set with optional event suppression. Mirrors
-    // Slider.SetValue — see that method for the rationale.
     public void SetValue(float value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<Scrollbar>();
@@ -1329,7 +1116,6 @@ public class Scrollbar : Component
         set => InternalCalls.Scrollbar_SetDisabledColor(RequireComponent<Scrollbar>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Alpha == 0 sentinel = no focus tint; see Button.FocusedColor.
     public Vector4 FocusedColor
     {
         get
@@ -1376,19 +1162,8 @@ public class Scrollbar : Component
     internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
 }
 
-// ── ScrollRect ──────────────────────────────────────────────────────
-//
-// Clipping viewport that scrolls a Content rect to reveal off-screen
-// children. Mirrors Unity's ScrollRect — see
-// Index-Engine/src/Components/UI/ScrollRectComponent.hpp for the drag /
-// inertia / elastic-rebound semantics. Pair with a Mask on the
-// Viewport to clip overflow.
-
 public class ScrollRect : Component
 {
-    // Fires when NormalizedPosition changes this frame (drag, wheel,
-    // scrollbar drag, programmatic SetNormalizedPosition with notify).
-    // Passes the new position so handlers don't have to re-read.
     public event Action<Vector2>? OnValueChanged;
 
     public Entity? Content
@@ -1401,9 +1176,6 @@ public class ScrollRect : Component
         set => InternalCalls.ScrollRect_SetContent(RequireComponent<ScrollRect>(), value?.ID ?? 0);
     }
 
-    // Optional explicit viewport rect (defaults to the ScrollRect entity
-    // itself when unset). The viewport is the clipping region; usually
-    // hosts a Mask so off-viewport content doesn't bleed out.
     public Entity? Viewport
     {
         get
@@ -1432,8 +1204,6 @@ public class ScrollRect : Component
         set => InternalCalls.ScrollRect_SetMovementType(RequireComponent<ScrollRect>(), (int)value);
     }
 
-    // Rubber-band rebound rate when MovementType==Elastic. Smaller =
-    // springier; larger = stiffer. Default 0.1.
     public float Elasticity
     {
         get => InternalCalls.ScrollRect_GetElasticity(RequireComponent<ScrollRect>());
@@ -1446,17 +1216,12 @@ public class ScrollRect : Component
         set => InternalCalls.ScrollRect_SetInertia(RequireComponent<ScrollRect>(), value);
     }
 
-    // Per-second friction applied to inertia drift. 0 = velocity decays
-    // immediately; 1 = no decay. Default 0.135 ≈ Unity's default.
     public float DecelerationRate
     {
         get => InternalCalls.ScrollRect_GetDecelerationRate(RequireComponent<ScrollRect>());
         set => InternalCalls.ScrollRect_SetDecelerationRate(RequireComponent<ScrollRect>(), value);
     }
 
-    // Wheel scroll multiplier in inspector-friendly units (5 = default
-    // speed, 10 = double, 1 = ⅕). See the native struct for the
-    // /100 scaling rationale.
     public float ScrollSensitivity
     {
         get => InternalCalls.ScrollRect_GetScrollSensitivity(RequireComponent<ScrollRect>());
@@ -1507,11 +1272,6 @@ public class ScrollRect : Component
         set => InternalCalls.ScrollRect_SetVerticalScrollbarSpacing(RequireComponent<ScrollRect>(), value);
     }
 
-    // Current normalized scroll position. X = horizontal in [0..1]
-    // (0 = left, 1 = right); Y = vertical in [0..1] (0 = bottom,
-    // 1 = top). Outside [0,1] is allowed during Elastic / Unrestricted
-    // drag — handlers wanting the resolved bounds-checked value should
-    // wait for ValueChangedThisFrame.
     public Vector2 NormalizedPosition
     {
         get
@@ -1525,8 +1285,6 @@ public class ScrollRect : Component
 
     public bool ValueChangedThisFrame => InternalCalls.ScrollRect_GetValueChangedThisFrame(RequireComponent<ScrollRect>());
 
-    // Programmatic position set with optional event suppression. Same
-    // pattern as Slider.SetValue.
     public void SetNormalizedPosition(Vector2 value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<ScrollRect>();
@@ -1544,18 +1302,9 @@ public class ScrollRect : Component
     internal void RaiseValueChanged() => OnValueChanged?.Invoke(NormalizedPosition);
 }
 
-// ── Mask ────────────────────────────────────────────────────────────
-//
-// Clips descendant rendering to the entity's resolved rect. See
-// Index-Engine/src/Components/UI/MaskComponent.hpp for the nesting and
-// scissor-rect details.
-
 public class Mask : Component
 {
-    // When true the mask entity's own ImageComponent (if any) still
-    // renders normally. When false, the entity's image is suppressed at
-    // draw time and only the clipping effect remains — useful for an
-    // invisible viewport clipper.
+    // When false the mask entity's own image is suppressed — only the clipping region remains.
     public bool ShowMaskGraphic
     {
         get => InternalCalls.Mask_GetShowMaskGraphic(RequireComponent<Mask>());
@@ -1563,17 +1312,8 @@ public class Mask : Component
     }
 }
 
-// ── CircularSlider ──────────────────────────────────────────────────
-//
-// Ring-shaped value control. Same value semantics as Slider but the
-// drag math is polar and rendering is a pair of arcs. See
-// Index-Engine/src/Components/UI/CircularSliderComponent.hpp for the
-// geometry / hit-test notes.
-
 public class CircularSlider : Component
 {
-    // Fires when Value changes this frame (drag, programmatic
-    // SetValue with notify). Passes the new value.
     public event Action<float>? OnValueChanged;
 
     public float Value
@@ -1606,16 +1346,13 @@ public class CircularSlider : Component
         set => InternalCalls.CircularSlider_SetIsReadOnly(RequireComponent<CircularSlider>(), value);
     }
 
-    // Standard math convention: 0° = +X right, 90° = +Y up, etc.
-    // Default 90° puts Value=Min at 12 o'clock.
+    // Default 90° puts Value=Min at 12 o'clock (standard math: 0° = +X right).
     public float StartAngleDegrees
     {
         get => InternalCalls.CircularSlider_GetStartAngleDegrees(RequireComponent<CircularSlider>());
         set => InternalCalls.CircularSlider_SetStartAngleDegrees(RequireComponent<CircularSlider>(), value);
     }
 
-    // How much of the ring the slider covers. 360 = full ring,
-    // 270 = quarter gap ("C" shape), etc.
     public float SweepDegrees
     {
         get => InternalCalls.CircularSlider_GetSweepDegrees(RequireComponent<CircularSlider>());
@@ -1634,8 +1371,6 @@ public class CircularSlider : Component
         set => InternalCalls.CircularSlider_SetRingThickness(RequireComponent<CircularSlider>(), value);
     }
 
-    // Approximation density of the rendered arc. 64 is plenty for a
-    // 200 px ring; bump it if you scale up.
     public int RingSegments
     {
         get => InternalCalls.CircularSlider_GetRingSegments(RequireComponent<CircularSlider>());
@@ -1664,8 +1399,6 @@ public class CircularSlider : Component
         set => InternalCalls.CircularSlider_SetFillColor(RequireComponent<CircularSlider>(), value.X, value.Y, value.Z, value.W);
     }
 
-    // Optional child whose RectTransform is rewritten each frame to sit
-    // on the ring at the current Value angle.
     public Entity? HandleEntity
     {
         get
@@ -1678,8 +1411,6 @@ public class CircularSlider : Component
 
     public bool ValueChangedThisFrame => InternalCalls.CircularSlider_GetValueChangedThisFrame(RequireComponent<CircularSlider>());
 
-    // Programmatic value set with optional event suppression. Mirrors
-    // Slider.SetValue.
     public void SetValue(float value, bool notifyEvent = true)
     {
         ulong id = RequireComponent<CircularSlider>();
@@ -1694,8 +1425,6 @@ public class CircularSlider : Component
         }
     }
 
-    // Normalized [0, 1] value — convenient for piping into colors,
-    // alphas, audio volumes, etc.
     public float NormalizedValue
     {
         get
@@ -1707,8 +1436,6 @@ public class CircularSlider : Component
         }
     }
 
-    // Per-state handle palette. Mirrors Slider — these tint the
-    // HandleEntity's ImageComponent, not the ring itself.
     public Vector4 NormalColor
     {
         get
@@ -1796,13 +1523,6 @@ public class CircularSlider : Component
     internal void RaiseValueChanged() => OnValueChanged?.Invoke(Value);
 }
 
-// ── HorizontalLayoutGroup ───────────────────────────────────────────
-//
-// Lays out direct children left-to-right (or right-to-left) inside the
-// parent rect. See
-// Index-Engine/src/Components/UI/HorizontalLayoutGroupComponent.hpp
-// for the padding / spacing / alignment / expand semantics.
-
 public class HorizontalLayoutGroup : Component
 {
     public float PaddingLeft
@@ -1877,12 +1597,6 @@ public class HorizontalLayoutGroup : Component
         set => InternalCalls.HorizontalLayoutGroup_SetChildForceExpandHeight(RequireComponent<HorizontalLayoutGroup>(), value);
     }
 }
-
-// ── VerticalLayoutGroup ─────────────────────────────────────────────
-//
-// Top-to-bottom (or bottom-to-top) sibling of HorizontalLayoutGroup —
-// same field set, dominant axis flipped. See
-// Index-Engine/src/Components/UI/VerticalLayoutGroupComponent.hpp.
 
 public class VerticalLayoutGroup : Component
 {
@@ -1959,11 +1673,6 @@ public class VerticalLayoutGroup : Component
     }
 }
 
-// ── GridLayoutGroup ─────────────────────────────────────────────────
-//
-// Lays out direct children in a 2D grid of uniform cells. See
-// Index-Engine/src/Components/UI/GridLayoutGroupComponent.hpp.
-
 public class GridLayoutGroup : Component
 {
     public float PaddingLeft
@@ -1987,7 +1696,6 @@ public class GridLayoutGroup : Component
         set => InternalCalls.GridLayoutGroup_SetPaddingBottom(RequireComponent<GridLayoutGroup>(), value);
     }
 
-    // Per-cell pixel size. Applied to every child's SizeDelta.
     public Vector2 CellSize
     {
         get
@@ -1999,7 +1707,6 @@ public class GridLayoutGroup : Component
         set => InternalCalls.GridLayoutGroup_SetCellSize(RequireComponent<GridLayoutGroup>(), value.X, value.Y);
     }
 
-    // Per-axis gap between cells (X = horizontal, Y = vertical).
     public Vector2 Spacing
     {
         get
@@ -2041,22 +1748,12 @@ public class GridLayoutGroup : Component
         set => InternalCalls.GridLayoutGroup_SetConstraintCount(RequireComponent<GridLayoutGroup>(), value);
     }
 
-    // When true, children map onto cells in reverse hierarchy order
-    // (last child → first cell). Cell positions still flow from
-    // StartCorner along StartAxis as usual.
     public bool Reverse
     {
         get => InternalCalls.GridLayoutGroup_GetReverse(RequireComponent<GridLayoutGroup>());
         set => InternalCalls.GridLayoutGroup_SetReverse(RequireComponent<GridLayoutGroup>(), value);
     }
 }
-
-// ── ContentSizeFitter ───────────────────────────────────────────────<div style='direction:ltr;border-width:100%'>
-//
-// Auto-resizes the entity's RectTransform along enabled axes to fit the
-// bounding box of its direct children. See
-// Index-Engine/src/Components/UI/ContentSizeFitterComponent.hpp for the
-// per-axis fit semantics and nested-fitter resolution order.
 
 public class ContentSizeFitter : Component
 {
@@ -2093,12 +1790,6 @@ public class ContentSizeFitter : Component
         set => InternalCalls.ContentSizeFitter_SetPaddingBottom(RequireComponent<ContentSizeFitter>(), value);
     }
 }
-
-// ── WidthConstraint ─────────────────────────────────────────────────
-//
-// Clamps the entity's RectTransform.SizeDelta.x to [MinWidth, MaxWidth]
-// each frame. A negative bound disables that side of the clamp. See
-// Index-Engine/src/Components/UI/WidthConstraintComponent.hpp.
 
 public class WidthConstraint : Component
 {

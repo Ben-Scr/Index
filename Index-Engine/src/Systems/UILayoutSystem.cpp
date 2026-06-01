@@ -28,42 +28,9 @@ namespace Index {
 
 	namespace {
 
-		// Compose this entity's authored rect against a parent rect to get
-		// the resolved screen-space AABB.
-		//
-		//   parentMin / parentMax — the parent's resolved rect (or the
-		//     window viewport for root entities), in centered screen
-		//     space (origin = window centre, +Y up).
-		//
-		//   parentRotation — the accumulated world rotation of all
-		//     ancestors. Children inherit it so rotated panels rotate
-		//     their kids.
-		//
-		//   parentScale — the accumulated world scale of all ancestors
-		//     ((1, 1) at the root). Children inherit it as their own
-		//     world Scale (read by sprite / text renderers for visual
-		//     scaling), but *not* into their pixel Width/Height — see
-		//     the size note below.
-		//
-		// Width/height inheritance contract:
-		//   A child's pixel size = SizeDelta × world Scale (parent ⊙ local).
-		//   The parent's resolved width/height does NOT contribute (so a
-		//   stretch anchor doesn't inflate the child's authored size on
-		//   its own), but the parent's accumulated world scale DOES
-		//   multiply through — that's how scaling a panel scales every
-		//   widget inside it. Anchors still control where in the parent
-		//   the child sits.
-		//
-		// Rotation contract:
-		//   A child's world rotation is parent.Rotation + LocalRotation.
-		//   Children also have their pivot rotated AROUND the parent's
-		//   pivot by the parent's rotation, so rotating a panel rotates
-		//   the whole subtree as one rigid body. ResolvedMin/Max stay
-		//   axis-aligned (the renderer reads them as the unrotated
-		//   layout rect and rotates the quad around ResolvedPivot itself
-		//   using the per-rect Rotation), so layout-group code continues
-		//   to operate in unrotated parent-local space.
-		void ResolveRect(RectTransform2DComponent& rect,
+		// Width/height: SizeDelta*worldScale (parent*local); parent resolved size does NOT propagate, but world scale does.
+		// Rotation: child world = parent.Rotation+LocalRotation; pivot rotated around parentPivot; ResolvedMin/Max stay axis-aligned.
+				void ResolveRect(RectTransform2DComponent& rect,
 			const Vec2& parentMin, const Vec2& parentMax,
 			float parentRotation, const Vec2& parentScale,
 			const Vec2& parentPivot)
@@ -74,15 +41,7 @@ namespace Index {
 
 			const Vec2 parentSize{ parentMax.x - parentMin.x, parentMax.y - parentMin.y };
 
-			// Inverted anchors (Min > Max on either axis) get tolerated
-			// here rather than asserted: the inspector lets the user type
-			// or drag anchor values one component at a time, so an
-			// intermediate inverted state during a single edit is normal.
-			// Asserting in the per-frame layout pass would crash the
-			// editor mid-drag. Use clamped local copies for the math
-			// instead — the user's authored values are preserved on the
-			// component, so unswapping them re-yields the intended layout
-			// on the very next frame.
+			// Inverted anchors tolerated (inspector allows mid-drag inversion); use clamped local copies, preserve authored values.
 			const Vec2 normMin{
 				std::min(rect.AnchorMin.x, rect.AnchorMax.x),
 				std::min(rect.AnchorMin.y, rect.AnchorMax.y)
@@ -92,11 +51,6 @@ namespace Index {
 				std::max(rect.AnchorMin.y, rect.AnchorMax.y)
 			};
 
-			// Anchor span: a sub-rectangle inside the parent where the
-			// child's anchor reference lives. AnchorMin == AnchorMax →
-			// point anchor at a single fraction of the parent. When
-			// AnchorMin != AnchorMax the centre of this span is the
-			// reference point; the span itself does NOT scale the child.
 			const Vec2 anchorBL{
 				parentMin.x + parentSize.x * normMin.x,
 				parentMin.y + parentSize.y * normMin.y
@@ -106,11 +60,7 @@ namespace Index {
 				parentMin.y + parentSize.y * normMax.y
 			};
 
-			// Final size = SizeDelta × world Scale (parent ⊙ local). This
-			// is the change from the prior "LocalScale only" formula —
-			// without it, scaling a parent translated children but never
-			// resized them, breaking the obvious "panel scales as a unit"
-			// expectation.
+			// finalSize = SizeDelta*worldScale: world = parent*local; parent scale must resize children too.
 			const Vec2 finalSize{
 				rect.SizeDelta.x * rect.Scale.x,
 				rect.SizeDelta.y * rect.Scale.y
@@ -131,14 +81,7 @@ namespace Index {
 				anchorCenter.y + rect.AnchoredPosition.y * parentScale.y
 			};
 
-			// Apply the parent's rotation around its pivot. parentMin/Max
-			// describe the parent's UNROTATED rect (renderer rotates the
-			// final quad), so without this step a rotated parent would
-			// keep its children visually pinned to the unrotated layout
-			// position — drawn at the parent's pre-rotation slot but
-			// individually rotated by the same angle, producing the
-			// shifted-fill / floating-handle artefacts visible on a
-			// rotated slider.
+			// Rotate pivotWorld around parentPivot; without this, children stay at their unrotated slot and float visually.
 			if (parentRotation != 0.0f) {
 				const float c = std::cos(parentRotation);
 				const float s = std::sin(parentRotation);
@@ -150,10 +93,6 @@ namespace Index {
 				};
 			}
 
-			// Bottom-left = pivotWorld - pivot * size, i.e. the rect grows
-			// from the pivot. Stays axis-aligned at this stage; the per-
-			// rect Rotation applied during draw rotates the quad around
-			// pivotWorld using the renderer's rotation step.
 			const Vec2 bottomLeft{
 				pivotWorld.x - finalSize.x * rect.Pivot.x,
 				pivotWorld.y - finalSize.y * rect.Pivot.y
@@ -169,11 +108,6 @@ namespace Index {
 			rect.ResolvedValid = true;
 		}
 
-		// Collect the children of `entity` that have a RectTransform2D and
-		// aren't disabled, in the registry's hierarchy order. Used by the
-		// layout-group passes so they can rewrite child anchors / sizes
-		// before the children are resolved. Skips disabled children so
-		// hidden rows don't take up a slot.
 		std::vector<EntityHandle> CollectLaidOutChildren(entt::registry& registry, EntityHandle entity) {
 			std::vector<EntityHandle> out;
 			if (auto* hierarchy = registry.try_get<HierarchyComponent>(entity)) {
@@ -188,22 +122,8 @@ namespace Index {
 			return out;
 		}
 
-		// Pin a child's RectTransform to the upper-left corner of the layout
-		// frame and let AnchoredPosition + SizeDelta describe its slot in
-		// pixels. Anchors of (0,1) put the child's pivot at the parent's
-		// top-left, +X right and +Y down become +X right and -Y down once
-		// flipped through pivot/anchored offsets, so the pixel math below
-		// reads naturally as "left-of-frame, top-of-frame, width, height".
-		//
-		// `parentScale` is the parent's accumulated world scale (project UI
-		// scale × LocalScale chain). Layout groups operate in scaled screen
-		// pixels (so padding/spacing line up with the rendered frame), but
-		// SizeDelta and AnchoredPosition feed back through ResolveRect which
-		// multiplies them by the SAME parent scale. Without dividing here we
-		// would scale twice and the child would overflow the parent. Dividing
-		// out the parent scale produces an "unscaled" value that re-multiplies
-		// to the intended scaled pixel size on the next ResolveRect call.
-		void PinChildToTopLeft(RectTransform2DComponent& rect,
+		// Divides by parentScale before storing so ResolveRect's multiply doesn't double-scale child dimensions.
+				void PinChildToTopLeft(RectTransform2DComponent& rect,
 			float xLeft, float yTop, float width, float height, float parentScale)
 		{
 			const float invScale = parentScale != 0.0f ? 1.0f / parentScale : 1.0f;
@@ -214,17 +134,8 @@ namespace Index {
 			rect.SizeDelta = Vec2{ width * invScale, height * invScale };
 		}
 
-		// Rewrites every direct child of `entity` so they sit in a single
-		// row inside the parent's authored rect, separated by Spacing px,
-		// respecting Padding and the alignment / expand flags.
-		//
-		// `parentWorldScale` is the parent's accumulated world scale and is
-		// used to keep authored Padding/Spacing/CellSize values in screen
-		// pixels: the parent's resolved frame is already in scaled pixels,
-		// so subtracting unscaled padding would leave the frame too wide.
-		// Multiplying padding/spacing by the parent's scale puts them in the
-		// same coordinate system as the frame.
-		void ApplyHorizontalLayout(entt::registry& registry, EntityHandle entity,
+		// Rewrites child anchors/positions for one row; Padding/Spacing are scaled by parentWorldScale to match resolved frame units.
+				void ApplyHorizontalLayout(entt::registry& registry, EntityHandle entity,
 			const HorizontalLayoutGroupComponent& layout, const Vec2& parentMin, const Vec2& parentMax,
 			float parentWorldScale)
 		{
@@ -242,11 +153,6 @@ namespace Index {
 			const int n = static_cast<int>(children.size());
 			const float totalSpacing = layout.Spacing * s * static_cast<float>(std::max(0, n - 1));
 
-			// Two width strategies: equal slots (ControlChildWidth +
-			// ChildForceExpandWidth) or authored widths summed up. Equal-
-			// slot wins when both are on; otherwise children keep their
-			// authored SizeDelta.x. Authored sizes scale by `s` so they
-			// share units with the frame.
 			const bool equalSlots = layout.ControlChildWidth && layout.ChildForceExpandWidth;
 			std::vector<float> widths(n);
 			float sumWidth = 0.0f;
@@ -433,31 +339,14 @@ namespace Index {
 				if (flipY) row = (rows - 1) - row;
 				const float x = originX + static_cast<float>(col) * (cellW + spacingX);
 				const float y = originY + static_cast<float>(row) * (cellH + spacingY);
-				// Reverse swaps which child lands in which cell: cell index
-				// i now receives child[n-1-i] instead of child[i]. Cell
-				// positions are still derived from StartCorner/StartAxis
-				// (so the same on-screen geometry), only the children
-				// list is mirrored. Done at consumption time so a layout
-				// with Reverse=true on a 1-child grid behaves identically
-				// to Reverse=false; only multi-child grids visibly flip.
 				const int childIdx = layout.Reverse ? (n - 1 - i) : i;
 				auto& cr = registry.get<RectTransform2DComponent>(children[childIdx]);
 				PinChildToTopLeft(cr, x, y, cellW, cellH, s);
 			}
 		}
 
-		// Per-entity natural-size pass: when a TextRendererComponent has
-		// WrapMode::None, its host RectTransform2D's SizeDelta should hug
-		// the text's measured dimensions instead of whatever the user
-		// authored. The inspector disables the Width/Height fields in
-		// this case (see DrawRectTransform2DInspector), and this pass
-		// keeps the in-component values in sync each frame so other
-		// systems (ContentSizeFitter on a parent, layout groups, the
-		// renderer's text-positioning math) see the natural size.
-		// Returns true if SizeDelta was rewritten — used by the caller
-		// to skip the FitContentSize bubble-up when the rect is owned
-		// entirely by the text.
-		void FitTextNaturalSize(entt::registry& registry, EntityHandle entity)
+		// Sizes rect to the measured text when WrapMode::None; runs before ContentSizeFitter so a parent fitter sees fresh dimensions.
+				void FitTextNaturalSize(entt::registry& registry, EntityHandle entity)
 		{
 			auto* text = registry.try_get<TextRendererComponent>(entity);
 			auto* rect = registry.try_get<RectTransform2DComponent>(entity);
@@ -470,9 +359,6 @@ namespace Index {
 			const Vec2 naturalAtlasPx = TextRenderer::MeasureNaturalSize(
 				*font, text->Text, text->LetterSpacing);
 
-			// Convert atlas-pixel space → screen-pixel space (the same
-			// `drawScale = FontSize / bakedSize` factor the renderer
-			// uses on the way to the GPU).
 			const float bakedSize = font->GetPixelSize() > 0.0f
 				? font->GetPixelSize()
 				: text->FontSize;
@@ -482,14 +368,8 @@ namespace Index {
 			rect->SizeDelta.y = naturalAtlasPx.y * pxScale;
 		}
 
-		// Bottom-up pre-pass that resolves ContentSizeFitter sizes against
-		// each child's *authored* SizeDelta * LocalScale. Runs before the
-		// top-down ResolveHierarchy so by the time a parent layout-group
-		// reads this rect's SizeDelta, the fitted size is already in.
-		// Recursive: a fitter whose child is also a fitter sees the inner
-		// fitted size first because the inner runs as part of the descent.
-		// Disabled children are skipped, matching CollectLaidOutChildren.
-		void FitContentSize(entt::registry& registry, EntityHandle entity)
+		// Bottom-up pass: updates SizeDelta on fitter entities before the top-down ResolveHierarchy so layout-groups see fitted sizes.
+				void FitContentSize(entt::registry& registry, EntityHandle entity)
 		{
 			if (auto* hierarchy = registry.try_get<HierarchyComponent>(entity)) {
 				for (EntityHandle child : hierarchy->Children) {
@@ -499,18 +379,11 @@ namespace Index {
 				}
 			}
 
-			// Text natural-size hugs its rect when WrapMode::None; runs
-			// after the recurse but before ContentSizeFitter so a parent
-			// fitter measuring this entity sees the freshly-fitted text
-			// dimensions, not the stale authored SizeDelta.
 			FitTextNaturalSize(registry, entity);
 
 			auto* rect = registry.try_get<RectTransform2DComponent>(entity);
 			if (!rect) return;
 
-			// ContentSizeFitter pass — wrapped so the WidthConstraint pass
-			// below still runs on entities that have no fitter or no enabled
-			// fit axes (the constraint is independent of CSF).
 			if (auto* csf = registry.try_get<ContentSizeFitterComponent>(entity);
 				csf && (csf->HorizontalFit || csf->VerticalFit))
 			{
@@ -525,24 +398,10 @@ namespace Index {
 						if (registry.all_of<DisabledTag>(child)) continue;
 						auto* childRect = registry.try_get<RectTransform2DComponent>(child);
 						if (!childRect) continue;
-						// Authored extent ignores anchors deliberately — the
-						// fitter assumes children carry their own size via
-						// SizeDelta (the common, point-anchored case). Children
-						// that stretch via AnchorMin != AnchorMax would feed
-						// the fitter a degenerate size; avoid that pairing.
 						const float w = childRect->SizeDelta.x * childRect->LocalScale.x;
 						const float h = childRect->SizeDelta.y * childRect->LocalScale.y;
-						// Compute the full bounding box of the child relative to
-						// its AnchoredPosition, accounting for both sides of the
-						// pivot. A centered child (pivot 0.5) at AnchoredPosition 0
-						// with width 100 occupies [-50, +50] — the previous
-						// formula only counted the +50 side and the parent ended
-						// up at half the expected size.
 						const float left   = childRect->AnchoredPosition.x - w * childRect->Pivot.x;
 						const float right  = childRect->AnchoredPosition.x + w * (1.0f - childRect->Pivot.x);
-						// AnchoredPosition.y uses screen-Y-down convention here
-						// (positive Y goes downward inside the parent), so the
-						// vertical extent flips relative to X.
 						const float top    = -childRect->AnchoredPosition.y - h * (1.0f - childRect->Pivot.y);
 						const float bottom = -childRect->AnchoredPosition.y + h * childRect->Pivot.y;
 						minLeft   = std::min(minLeft, left);
@@ -562,11 +421,7 @@ namespace Index {
 				}
 			}
 
-			// WidthConstraint pass — clamps SizeDelta.x to [MinWidth, MaxWidth]
-			// after the fitter has resolved, so a CSF that would otherwise
-			// produce a row wider than MaxWidth is clipped before any parent
-			// layout-group reads this rect's size. Negative bound = side
-			// disabled (Unity LayoutElement convention).
+			// WidthConstraint clamps SizeDelta.x after CSF so a fitted row can still be capped at MaxWidth.
 			if (auto* wc = registry.try_get<WidthConstraintComponent>(entity)) {
 				if (wc->MinWidth >= 0.0f) {
 					rect->SizeDelta.x = std::max(rect->SizeDelta.x, wc->MinWidth);
@@ -577,11 +432,6 @@ namespace Index {
 			}
 		}
 
-		// Recursive walk. Always resolves the rect when present (even on
-		// disabled entities) so children of a disabled subtree still
-		// inherit a sensible parent rect for their own resolution. The
-		// renderer / event system filter on DisabledTag separately, so
-		// resolving a disabled rect just costs a few floats.
 		void ResolveHierarchy(entt::registry& registry, EntityHandle entity,
 			const Vec2& parentMin, const Vec2& parentMax,
 			float parentRotation, const Vec2& parentScale,
@@ -603,16 +453,7 @@ namespace Index {
 				childParentScale = rect->Scale;
 				childParentPivot = rect->ResolvedPivot;
 
-				// Apply layout-group rewrites NOW — after the parent's
-				// rect is resolved (so we know the frame size) but before
-				// children are resolved (so the rewritten anchors /
-				// sizes propagate). Mutually exclusive via the conflict
-				// declarations in BuiltInComponentRegistration, so at
-				// most one branch runs per entity. Pass childParentScale.x
-				// so layout groups can scale Padding/Spacing/CellSize the
-				// same way ResolveRect scales SizeDelta — without it, a
-				// layout in a non-1.0 scale tree would have the right
-				// frame size but the wrong cell pitch.
+				// Apply layout-group rewrites AFTER parent resolves but BEFORE children, so rewritten anchors/sizes propagate.
 				const float layoutScale = childParentScale.x;
 				if (auto* h = registry.try_get<HorizontalLayoutGroupComponent>(entity)) {
 					ApplyHorizontalLayout(registry, entity, *h, childParentMin, childParentMax, layoutScale);
@@ -645,17 +486,7 @@ namespace Index {
 			return;
 		}
 
-		// Resolve against the window viewport, NOT the camera viewport —
-		// the UI is screen-space and must not move when the camera moves.
-		// We always use the window's framebuffer-pixel size so DPI scaling
-		// works the same way as everything else in the engine.
-		//
-		// In editor mode the UI is rendered into a sub-panel of the OS
-		// window; the editor publishes that panel's pixel region via
-		// Window::SetUIRegion so layout resolves against the same size
-		// the renderer (and hit-tester) use. Without this, the layout
-		// would be sized to the full OS window while only a sub-rect is
-		// actually visible, putting widgets far outside the panel.
+		// Use window viewport (not camera): UIRegion overrides with panel rect in editor mode so layout matches the visible sub-panel.
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		int vpW = 0;
 		int vpH = 0;
@@ -673,17 +504,7 @@ namespace Index {
 			vpH = vp->GetHeight();
 		}
 
-		// Canvas-Scaler-style "Scale With Screen Size": SizeDelta /
-		// AnchoredPosition / Padding values are interpreted as reference
-		// pixels at the project's authored resolution. The actual canvas
-		// uses the window's pixel size, but every UI dimension is scaled
-		// by `s = (curW/refW)^(1-match) × (curH/refH)^match` so a 1080p-
-		// authored layout shrinks to fit a 720p window or grows to fill a
-		// 4K window automatically. Match=0.5 (geometric mean) is the
-		// neutral default; bump toward 1.0 for HUDs anchored to top/bottom
-		// edges, toward 0.0 for side-bar menus. Anchors stay relative to
-		// the actual canvas so corners/edges still pin where the user
-		// placed them.
+		// Scale-with-screen-size: blend x/y ratios in log space via match weight; match=0.5 gives geometric mean.
 		float uiScale = 1.0f;
 		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
 			const int refW = std::max(1, project->UIReferenceWidth);
@@ -691,14 +512,10 @@ namespace Index {
 			const float xRatio = static_cast<float>(vpW) / static_cast<float>(refW);
 			const float yRatio = static_cast<float>(vpH) / static_cast<float>(refH);
 			const float match  = std::clamp(project->UIScaleMatch, 0.0f, 1.0f);
-			// Log-space blend so match=0/1 give pure x/y ratios and 0.5 gives
-			// the geometric mean. Equivalent to xRatio^(1-match) × yRatio^match.
 			if (xRatio > 0.0f && yRatio > 0.0f) {
 				const float logBlend = (1.0f - match) * std::log(xRatio) + match * std::log(yRatio);
 				uiScale = std::exp(logBlend);
 			}
-			// Defensive clamp: a degenerate project file with a near-zero
-			// reference resolution could otherwise produce inf/NaN.
 			if (!std::isfinite(uiScale) || uiScale <= 0.0f) {
 				uiScale = 1.0f;
 			}
@@ -709,32 +526,11 @@ namespace Index {
 		const Vec2 windowMin{ -halfW, -halfH };
 		const Vec2 windowMax{ +halfW, +halfH };
 
-		// Reset every rect's ResolvedValid first — entities whose subtree
-		// hasn't been visited (orphan entities, refs from dangling parent
-		// pointers) end the pass with ResolvedValid=false so the renderer
-		// / event system fall back to authored values.
 		auto rectView = registry.view<RectTransform2DComponent>();
 		for (auto entity : rectView) {
 			rectView.get<RectTransform2DComponent>(entity).ResolvedValid = false;
 		}
 
-		// Walk UI entities (RectTransform2DComponent) and recurse into each
-		// subtree from the topmost UI-bearing ancestor. The previous
-		// implementation iterated `view<entt::entity>()` and filtered to
-		// roots — fine when entity counts were small, but at 1M empty
-		// entities the outer loop ran 1M iterations to find a handful of
-		// UI roots, dominating the frame at ~14ms. Iterating the rect view
-		// makes this O(#UI entities) instead of O(#total entities).
-		//
-		// "UI root" here means: no UI ancestor. A UI element parented
-		// under a non-UI entity is treated as a screen-space root, which
-		// matches the previous behaviour — ResolveHierarchy on such a
-		// chain would have descended with window-space parameters anyway
-		// because the non-UI parent contributed no rect.
-		//
-		// We don't filter on DisabledTag here: a disabled root's children
-		// might still be enabled (DisabledTag doesn't propagate) and they
-		// need their parent's resolved rect to compute correctly.
 		auto uiView = registry.view<RectTransform2DComponent>();
 		auto isUIRoot = [&](EntityHandle entity) {
 			const HierarchyComponent* hierarchy = registry.try_get<HierarchyComponent>(entity);
@@ -742,10 +538,6 @@ namespace Index {
 			return !registry.all_of<RectTransform2DComponent>(hierarchy->Parent);
 		};
 
-		// First pass: bottom-up ContentSizeFitter resolution. Updates
-		// SizeDelta on fitter entities so the next pass's ResolveRect
-		// reflects fitted dimensions, and any parent layout-group sees
-		// the fitted child size when computing its own layout.
 		for (auto entity : uiView) {
 			if (!isUIRoot(entity)) continue;
 			FitContentSize(registry, entity);
@@ -758,24 +550,12 @@ namespace Index {
 		for (auto entity : uiView) {
 			if (!isUIRoot(entity)) continue;
 
-			// Roots get the window centre as their "parent pivot" so root
-			// rotation rotates around the screen centre — matches the
-			// existing renderer behaviour where Rotation pivots about
-			// ResolvedPivot. Root parentScale = (uiScale, uiScale) so the
-			// project's reference-resolution scale propagates through every
-			// rect's worldScale chain (consumed by ResolveRect for SizeDelta /
-			// AnchoredPosition and by text rendering for font sizing).
+			// parentPivot=windowCenter so root rotation pivots at screen center; parentScale=uiScale propagates reference-res scaling.
 			ResolveHierarchy(registry, entity, windowMin, windowMax, 0.0f, Vec2{ uiScale, uiScale }, windowCenter);
 		}
 	}
 
 	void UILayoutSystem::Update(Scene& scene) {
-		// view<T>().size() on a single-component view is O(1) — skips the
-		// full registry walk in ComputeUILayout for scenes with no UI at
-		// all (e.g. gameplay scenes with thousands of Transform2D-only
-		// entities, where the inner view<entt::entity> + per-entity
-		// try_get<RectTransform> probe at 100k entities dominated the
-		// frame).
 		if (scene.GetRegistry().view<RectTransform2DComponent>().size() == 0) return;
 		// Scope after the gate — non-zero readings prove the gate fired and
 		// ComputeUILayout actually ran. Stays 0.0 in scenes with no UI.

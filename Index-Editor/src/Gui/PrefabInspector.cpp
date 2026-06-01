@@ -59,20 +59,14 @@ namespace Index {
 			return;
 		}
 
-		// Deserialize as a Scene-origin entity (not a Prefab instance) so the
-		// inspector edits a self-contained tree that round-trips back to the
-		// .prefab file via SaveEntityToFile without leaking instance metadata.
+		// Deserialize as a Scene-origin (not Prefab-instance) entity so the inspector round-trips via SaveEntityToFile without leaking instance metadata.
 		m_RootEntity = SceneSerializer::DeserializeEntityFromValue(*m_PrefabScene, root);
-		// DeserializeEntityFromValue has already marked the detached scene
-		// dirty as a side effect of creating the entity. Reset so we only
-		// flag dirty on actual user edits.
+		// DeserializeEntityFromValue marks the scene dirty as a side effect; reset so only real user edits flag dirty.
 		m_PrefabScene->ClearDirty();
 	}
 
 	void PrefabInspector::Close() {
-		// unique_ptr destruction tears down the scene's registry, which fires
-		// destroy hooks. The hooks gated by Scene::IsDetached() will skip,
-		// so we don't leak into the global physics/audio/script subsystems.
+		// Destroy hooks gated by Scene::IsDetached() skip, so physics/audio/script subsystems are not affected.
 		m_RootEntity = entt::null;
 		m_PrefabScene.reset();
 		m_PrefabPath.clear();
@@ -92,9 +86,6 @@ namespace Index {
 		Entity rootEntity = m_PrefabScene->GetEntity(m_RootEntity);
 		const std::span<const Entity> entitySpan(&rootEntity, 1);
 
-		// Header — file path + auto-save status. No Save button: edits are
-		// flushed to disk automatically at the bottom of this function as
-		// soon as the user releases the active widget.
 		const std::string filename = std::filesystem::path(m_PrefabPath).filename().string();
 		ImGui::TextDisabled("Prefab:");
 		ImGui::SameLine();
@@ -150,11 +141,6 @@ namespace Index {
 		// Render the unified reference-picker popup once per inspector frame.
 		ReferencePicker::RenderPopup();
 
-		// Add Component popup. Drives the same categorized + searchable
-		// helper used by the entity inspector so the UX is identical
-		// whether the user is editing a `.prefab` asset directly or a
-		// regular entity. The helper marks the scene dirty on add, which
-		// the auto-save logic below picks up to flush to disk.
 		ImGui::Separator();
 		const float buttonWidth = ImGui::GetContentRegionAvail().x;
 		if (Icons::ButtonWithIcon(Icons::Type::Plus, "Add Component", ImVec2(buttonWidth, 0), true)) {
@@ -162,18 +148,9 @@ namespace Index {
 			m_AddComponentSearchBuffer[0] = '\0';
 		}
 
-		// Drag-drop target on the Add Component button — accept .cs script
-		// files and attach them to the prefab root. Mirrors the entity
-		// inspector's drop behaviour so the UX matches between the two.
-		// GameSystems / GlobalSystems are skipped — those belong on the
-		// Add System button in the scene-systems inspector, not on a prefab.
 		if (ImGui::BeginDragDropTarget()) {
 			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
-				// 1-arg constructor — the asset-browser source sends a
-				// null-terminated path with `size() + 1` bytes; the
-				// (data, DataSize) form embeds the trailing `\0` and breaks
-				// `IsCSharpScriptExtension(".cs\0") == ".cs"` inside
-				// CollectScriptFile, silently dropping every script entry.
+				// Use 1-arg string constructor: the (data, DataSize) form embeds the trailing '\0' and breaks IsCSharpScriptExtension(".cs\0").
 				std::string droppedPath(static_cast<const char*>(payload->Data));
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
@@ -206,23 +183,13 @@ namespace Index {
 		RenderAddComponentPopup("AddPrefabComponentPopup", *m_PrefabScene, entitySpan,
 			m_AddComponentSearchBuffer, sizeof(m_AddComponentSearchBuffer));
 
-		// Dirty signal: only flag when ImGui reports a real value change on the
-		// active widget this frame (drag step, keystroke, etc.). Plain focus or
-		// click does NOT set ActiveIdHasBeenEditedThisFrame, so tabbing through
-		// fields without changing values leaves the prefab clean. Component
-		// add / remove above already handle their own dirtying.
+		// Only dirty on actual value edits (ActiveIdHasBeenEditedThisFrame); plain focus/click does not set this flag, so tabbing through fields without changes is clean.
 		const bool windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 		const ImGuiContext& g = *ImGui::GetCurrentContext();
 		if (windowFocused && g.ActiveId != 0 && g.ActiveIdHasBeenEditedThisFrame) {
 			m_PrefabScene->MarkDirty();
 		}
 
-		// Auto-save: flush as soon as the prefab is dirty AND no widget is
-		// currently being held. During a drag the slider stays active every
-		// frame, so this naturally debounces — Save() fires once on release.
-		// One-shot edits (Add Component, Remove Component) have no held item,
-		// so they save on the same frame they happen. A failing Save() leaves
-		// the dirty flag set; we'll retry next frame.
 		const bool itemActive = ImGui::IsAnyItemActive() && windowFocused;
 		const bool dirtyForSave = m_PrefabScene->IsDirty();
 		if (dirtyForSave && !itemActive) {
@@ -235,10 +202,7 @@ namespace Index {
 	bool PrefabInspector::Save() {
 		if (!m_PrefabScene || m_RootEntity == entt::null) return false;
 
-		// Capture the OLD source JSON before we overwrite it on disk. Live
-		// instance propagation uses this as the baseline for computing each
-		// instance's per-field overrides — diffing against the new source
-		// after save would lose the user's overrides.
+		// Capture old source JSON before overwriting: propagation diffs against the old source to preserve per-instance overrides.
 		Json::Value previousSourceRoot;
 		bool havePreviousSource = false;
 		if (File::Exists(m_PrefabPath)) {
@@ -249,11 +213,7 @@ namespace Index {
 				havePreviousSource = true;
 			}
 			else {
-				// File exists but is unreadable (locked, corrupt, transient I/O).
-				// Overwriting now would orphan every live instance — propagation
-				// needs the OLD source as a baseline for the override diff. Bail
-				// out and leave m_PrefabScene dirty so the next auto-save tick
-				// retries once the file is readable again.
+				// File unreadable (locked/corrupt): bail and leave dirty for retry; overwriting without the old source would orphan live instance overrides.
 				IDX_CORE_WARN_TAG("PrefabInspector",
 					"Pre-save read of '{}' failed ({}); leaving prefab dirty for retry.",
 					m_PrefabPath, readError);
@@ -265,10 +225,7 @@ namespace Index {
 			return false;
 		}
 
-		// Propagate BEFORE clearing the dirty flag: if propagation throws or
-		// otherwise fails mid-loop, the dirty flag stays set so the next tick
-		// retries the whole save+propagate cycle. Previously ClearDirty ran
-		// first, which left live instances stale with no retry hook.
+		// MUST propagate before ClearDirty: a mid-loop failure leaves dirty set for retry; ClearDirty first would leave instances stale with no retry hook.
 		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(m_PrefabPath);
 		if (prefabGuid != 0 && havePreviousSource) {
 			PropagateToLiveInstances(prefabGuid, previousSourceRoot);
@@ -280,12 +237,6 @@ namespace Index {
 
 	void PrefabInspector::PropagateToLiveInstances(uint64_t prefabGuid,
 		const Json::Value& previousSourceEntity) {
-		// For every loaded scene (excluding our own detached preview), refresh
-		// every instance of this prefab. RefreshPrefabInstance snapshots the
-		// instance's overrides relative to the OLD source, re-instantiates
-		// against the NEW source, and re-applies the overrides on top — so
-		// other instances' overrides survive an Apply from any one instance
-		// (the spec's "overrides win over apply" policy).
 		SceneManager::Get().ForeachLoadedScene([&](Scene& scene) {
 			if (&scene == m_PrefabScene.get()) return;
 
@@ -302,11 +253,7 @@ namespace Index {
 			for (EntityHandle instance : instancesToRefresh) {
 				if (!scene.IsValid(instance)) continue;
 				EntityHandle replacement = SceneSerializer::RefreshPrefabInstance(scene, instance, previousSourceEntity);
-				// RefreshPrefabInstance returns the original `instance` handle
-				// when the source prefab is orphaned (nothing changed on disk).
-				// Treat that the same as a no-op — only credit a real swap
-				// (new handle returned), otherwise we'd dirty scenes whose
-				// instances we didn't actually touch.
+				// Returns original handle when the source is orphaned (no-op); only a different handle means a real swap occurred.
 				if (replacement != entt::null && replacement != instance) {
 					anyRefreshed = true;
 				}

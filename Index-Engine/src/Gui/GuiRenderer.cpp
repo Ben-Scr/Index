@@ -42,34 +42,13 @@
 #include <utility>
 #include <vector>
 
-// =============================================================================
-// GuiRenderer — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// CPU-side collection (hierarchy walk, dropdown popups, input-field overlays,
-// mask-based clip resolve, sort by Layer/Order/DrawIndex) drives a single
-// wgpu::RenderPassEncoder + persistent instance VBO + per-batch
-// SetScissorRect.
-//
-// Scope: image quads (RectTransform2D + ImageComponent), dropdown option
-// rows, circular slider geometry, input-field caret/selection overlays.
-// Text is NOT rendered yet — the m_TextScratch collection still runs for
-// sort ordering, but the TextRenderer::RenderInstances call is a no-op
-// stub (the real text path lands later). The visible result: every UI
-// widget shows its background + interactive elements, labels are blank.
-//
-// Per-GuiRenderer GPU state (instance buffer, uniform buffer, per-frame
-// bind-group cache) lives in a TU-local side table keyed by `this`. The
-// editor instantiates two GuiRenderers (Game View + Editor View FBOs),
-// each with its own state entry.
-// =============================================================================
+// GuiRenderer — WebGPU UI renderer. Hierarchy walk + sort drives a single RenderPassEncoder with
+// per-batch SetScissorRect. GPU state (instance VBO, UBO, bind-group cache) is keyed by `this`
+// so the editor's two FBO GuiRenderers don't trample each other.
 
 namespace Index {
 
 	namespace {
-		// ── Input field overlay helpers ─────────────────────────────────────
-		// Pure CPU, no backend deps. Byte-walk + MeasureUpToByteUI logic
-		// drives the caret/selection rect placement.
-
 		bool Utf8DecodeAt(std::string_view s, int idx, uint32_t& outCp, int& outLen) {
 			if (idx < 0 || idx >= static_cast<int>(s.size())) {
 				outCp = 0; outLen = 0; return false;
@@ -224,27 +203,12 @@ namespace Index {
 		}
 
 		// ── WebGPU per-GuiRenderer GPU state ────────────────────────────────
-		// Keyed by `this` so the editor's two GuiRenderers (Game View FBO +
-		// Editor View FBO) don't trample each other's instance VBO or bind
-		// group cache. Cleared on Shutdown.
+		// Keyed by `this` so the editor's two FBO GuiRenderers don't trample each other. Cleared on Shutdown.
 		struct GuiRendererWebGPUState {
 			wgpu::Buffer InstanceBuffer;
 			uint32_t     InstanceBufferCapacity = 0;
 			wgpu::Buffer UniformBuffer;
-			// Keyed by Texture2D::GetHandle() (the raw WGPUTextureView pointer
-			// cast to uint64_t under WebGPU). Matches Renderer2D's per-frame
-			// cache shape so cache lookups are stable across renderer types.
-			// Persisted across multiple RenderScene calls within a single
-			// frame so the editor's two FBO renders (which both call
-			// RenderScene with the same loaded scenes' textures) don't pay
-			// CreateBindGroup twice per texture. LastClearFrameCount tracks
-			// when we last invalidated the cache; the per-frame counter
-			// flips on Application::GetTime().GetFrameCount() rolling over.
-			//
-			// CachedBindGroup also stores the sampler/view the bind group
-			// was created against so a mid-frame filter change
-			// (Texture2D::SetFilter rebuilds the GPU sampler) invalidates
-			// the entry instead of replaying a stale bind group.
+			// Stores Sampler+View so a mid-frame Texture2D::SetFilter (which rebuilds the GPU sampler) invalidates the cached bind group.
 			struct CachedBindGroup {
 				wgpu::BindGroup   Group;
 				wgpu::Sampler     Sampler;
@@ -345,11 +309,6 @@ namespace Index {
 				&& aMax.x == bMax.x && aMax.y == bMax.y;
 		}
 
-		// Project a UI-space clip rect through MVP into NDC, then map NDC to
-		// pixel coords (top-left origin to match WebGPU's SetScissorRect
-		// convention). Returns the computed [x, y, w, h] in framebuffer pixels.
-		// Caller checks `valid`; an invalid rect (NaN, zero-area, fully out
-		// of bounds) leaves the pass with no scissor change.
 		struct ScissorPx { uint32_t X, Y, W, H; bool Valid; };
 		ScissorPx ComputeScissor(const glm::mat4& mvp,
 			const Vec2& clipMin, const Vec2& clipMax,
@@ -488,15 +447,7 @@ namespace Index {
 	void GuiRenderer::CollectAndDraw(const Scene& scene, const glm::mat4& mvp,
 		float halfW, float halfH)
 	{
-		// Publish any async font bakes that finished since last frame, so a
-		// newly-rasterized atlas can be sampled by this frame's text rather
-		// than waiting one more frame to flip from the default fallback.
-		// TextRenderer::RenderScene also calls this, but nothing in the engine
-		// routes UI text through that entry point (it's only the world-space
-		// Transform2D path) — without this call, async bakes started by
-		// ResolveFontAtPixelSize below would never get a chance to publish
-		// on UI-only scenes, leaving the user's font perpetually stuck on
-		// the default fallback.
+		// MUST call here: UI text doesn't go through TextRenderer::RenderScene, so async bakes would never publish on UI-only scenes.
 		FontManager::PollAsync();
 
 		entt::registry& registry = const_cast<entt::registry&>(scene.GetRegistry());
@@ -660,10 +611,6 @@ namespace Index {
 			const float effectivePixelSize = text.FontSize * std::max(0.01f, std::abs(rect.Scale.x));
 			Font* font = TextRenderer::ResolveFontAtPixelSize(text, effectivePixelSize);
 			if (!font || !font->IsLoaded()) continue;
-			// Stage 5: Font_WebGPU stub always reports IsLoaded()=false so we
-			// never reach the cmd-emit path. Stage 6 swaps Font + TextRenderer
-			// to the real WebGPU impls and the rest of this block becomes
-			// live without further GuiRenderer changes.
 			const Vec2 bl = rect.GetBottomLeft();
 			const Vec2 tr = rect.GetTopRight();
 			const Vec2 size{ tr.x - bl.x, tr.y - bl.y };
@@ -703,8 +650,16 @@ namespace Index {
 			if (text.WrapMode != TextWrapMode::None) {
 				const float padPixels = 8.0f * uniformScale;
 				const float marginPixels = marginLeftWorld + marginRightWorld;
-				cmd.WrapWidthPixels = uniformScale > 0.0f
-					? std::max(0.0f, (size.x - padPixels - marginPixels) / uniformScale)
+				// EmitText accumulates raw `g->XAdvance` (baked-atlas pixel
+				// units, unscaled) and compares against wrapWidthPixels — so
+				// the available rect width has to be converted from UI
+				// pixels back to baked-glyph pixels via /drawScale, not
+				// /uniformScale. With the wrong divisor the wrap point
+				// moves by (bakedSize / text.FontSize): a 16pt-on-32pt-bake
+				// wrapped roughly twice as early as the rect actually
+				// allowed, a 64pt-on-32pt-bake overflowed.
+				cmd.WrapWidthPixels = drawScale > 0.0f
+					? std::max(0.0f, (size.x - padPixels - marginPixels) / drawScale)
 					: 0.0f;
 			}
 			cmd.SortingOrder = text.SortingOrder;
@@ -719,13 +674,7 @@ namespace Index {
 		// ── 4. Dropdown popups ───────────────────────────────────────
 		Application* app = Application::GetInstance();
 		Vec2 mouseRaw = app ? app->GetInput().GetMousePosition() : Vec2{ 0, 0 };
-		// Mirror UIEventSystem's mouse remap: when the editor publishes a
-		// UIRegion (Game View FBO inside an ImGui panel), Input still
-		// reports OS-window-space coords. The hover/press visual we
-		// compute below must use panel-local coords or the highlight
-		// floats off to the side of where the user actually points.
-		// Standalone runtime leaves UIRegion inactive ⇒ offset is zero
-		// ⇒ behaviour is unchanged.
+		// Remap to panel-local coords: editor UIRegion is inside an ImGui panel but Input reports OS-window-space.
 		{
 			const Window::UIRegion uiRegion = Window::GetUIRegion();
 			if (uiRegion.IsActive()) {
@@ -936,11 +885,6 @@ namespace Index {
 		}
 
 		// ── 5. Sort image and text instances by unified key ──────────
-		// (SortingLayer, SortingOrder, DrawIndex). DrawIndex comes from
-		// the hierarchy walk above, so equal (layer, order) pairs fall
-		// back to hierarchy order — earlier-in-hierarchy renders behind
-		// later. We need BOTH lists sorted by the same key before the
-		// merge walk below interleaves their phases.
 		std::sort(m_InstancesScratch.begin(), m_InstancesScratch.end(),
 			[](const Instance44& a, const Instance44& b) {
 				if (a.SortingLayer != b.SortingLayer)
@@ -964,16 +908,7 @@ namespace Index {
 
 		// ── WebGPU submit setup ──────────────────────────────────────
 		auto& state = GetState(this);
-		// Clear the bind-group cache only when we cross a frame boundary,
-		// not on every RenderScene call. The editor invokes RenderScene
-		// twice per frame (once per FBO) plus once per loaded scene, so
-		// per-call clearing forced CreateBindGroup to fire for each
-		// texture on every call — a ~Nx multiplier for texture-heavy UI.
-		// Per-frame clearing still releases the cache so a texture
-		// destroyed between frames can't be sampled via a zombie bind
-		// group: a Texture2D::Destroy mid-frame is caught by the
-		// IsValid() guard inside ResolveBindGroup, and any stale entry
-		// is dropped by the next frame's clear.
+		// Clear per-frame, not per-call: the editor calls RenderScene multiple times per frame and per-call clearing forced CreateBindGroup for every texture on every call.
 		const uint64_t currentFrame = app ? app->GetTime().GetFrameCount() : state.LastClearFrameCount;
 		if (state.LastClearFrameCount != currentFrame) {
 			state.BindGroupsThisFrame.clear();
@@ -1018,10 +953,6 @@ namespace Index {
 			return TextureManager::IsValid(h) ? h : defaultTexture;
 		};
 
-		// ── Helper: submit one image-quad phase covering [start, end) ─
-		// Opens a fresh render pass — multiple phases per frame are how
-		// the merge walk interleaves image runs with text runs while
-		// still letting each phase batch by texture run-length.
 		auto submitImagePhase = [&](size_t start, size_t end) {
 			if (!pipeline || start >= end) return;
 
@@ -1124,16 +1055,7 @@ namespace Index {
 		};
 
 		// ── Merge walk: interleave image / text phases ───────────────
-		// The hierarchy panel shows entities top-to-bottom in DrawIndex
-		// order, with later siblings drawn ON TOP. Splitting into
-		// "all images, then all text" passes broke that: text always
-		// painted last regardless of where the TextRenderer entity sat
-		// in the hierarchy. Walking the two pre-sorted lists in tandem
-		// produces a sequence of contiguous-same-type phases that
-		// preserves hierarchy order. Equal sort keys prefer images
-		// (`<=`) so a text + image at identical DrawIndex still has
-		// text behind, matching the design intent that text labels
-		// underneath an image overlay get covered.
+		// Two-pass "all images then all text" broke hierarchy order; tandem walk preserves it. `<=` prefers images so text at equal DrawIndex renders behind.
 		auto imgKey = [&](size_t k) {
 			const auto& inst = m_InstancesScratch[k];
 			return std::make_tuple(inst.SortingLayer, inst.SortingOrder, inst.DrawIndex);
@@ -1170,14 +1092,7 @@ namespace Index {
 				{
 					++txtEnd;
 				}
-				// Second-or-later text phase: flush so the earlier text
-				// pass's vertex buffer write isn't clobbered by this
-				// one's. TextRenderer reuses one vertex buffer per
-				// PerInstance and rewrites it via queue.WriteBuffer on
-				// every RenderInstances call — Dawn's uploader flushes
-				// all pending copies before user submits, so two
-				// recorded text passes without a submit between them
-				// both end up reading the second write's vertices.
+				// MUST flush between text phases: TextRenderer reuses one VBO via WriteBuffer; two recorded passes without a submit both read the second write's vertices.
 				if (anyTextPhaseSubmitted) {
 					WebGPUBackend::FlushCommands();
 				}

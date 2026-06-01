@@ -5,19 +5,7 @@ using Index.Collections.Native;
 
 namespace Index.Jobs.Internal;
 
-/// <summary>
-/// One-shot, per-type reflection pass that walks a job struct's fields and
-/// emits warnings when <see cref="ReadOnlyAttribute"/> / <see cref="WriteOnlyAttribute"/>
-/// markers contradict the field's actual type. Cached after the first walk,
-/// so repeated schedules of the same job type pay only a
-/// <see cref="ConcurrentDictionary{TKey, TValue}"/> lookup.
-///
-/// <para>
-/// Warnings only — never throws. The job runs whether the contract is met or
-/// not; the warning surfaces the mismatch in the log so the author can fix
-/// it without crashing the play session.
-/// </para>
-/// </summary>
+/// <summary>One-shot per-type reflection pass that warns when ReadOnly/WriteOnly markers contradict the field's actual type. Cached after first walk; never throws.</summary>
 internal static class JobLayoutCache
 {
     private static readonly ConcurrentDictionary<Type, byte> s_Validated = new();

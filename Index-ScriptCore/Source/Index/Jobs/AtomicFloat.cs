@@ -48,10 +48,6 @@ public sealed class AtomicFloat
                 return updated;
             }
             current = prev;
-            // On CAS failure another thread won the race — back off so
-            // we don't burn the cache line in a hot retry loop. SpinOnce
-            // ramps from pause instructions to a thread yield as
-            // contention grows.
             spinner.SpinOnce();
         }
     }

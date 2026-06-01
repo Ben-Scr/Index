@@ -27,33 +27,10 @@ namespace Index {
 	namespace {
 		constexpr const char* k_ImGuiIniFileName = "imgui.ini";
 
-		// Set by Reset/Load preset paths; consumed at the very start
-		// of the next OnPreRender, BEFORE NewFrame. ImGui's mid-frame
-		// ClearIniSettings + LoadIniSettingsFromDisk fights the dock
-		// context: dock nodes touched earlier in the frame (notably
-		// the dockspace's own root, which was bound during
-		// RenderDockspaceRoot) don't get properly re-attached when
-		// the new dock tree is built, leaving every dockable window
-		// visually floating. Deferring the reload to the start of
-		// the next frame side-steps that — by then EndFrame has
-		// torn down per-frame dock state, so Clear + Load gets a
-		// clean slate to apply the tree into and Begin() picks up
-		// the new DockId on each window's first call this frame.
+		// MUST be consumed at the start of OnPreRender BEFORE NewFrame: mid-frame ClearIniSettings+LoadIniSettingsFromDisk corrupts the dock context, leaving every dockable window floating.
 		std::string s_PendingLayoutReloadPath;
 
-		// Defensive DockId sync. ImGui's docking branch has a state
-		// divergence we've reproduced: window->DockNode can stay
-		// pointing at a live dock node while window->DockId gets
-		// cleared to 0 (we've observed it specifically for Inspector
-		// / Settings / Debug Info, which are submitted from overlay
-		// layers running after the dockspace's host window; suspect
-		// the path is one of BeginDocked's undock branches that
-		// clears DockId without nulling DockNode in this particular
-		// submission order). WindowSettingsHandler_WriteAll reads
-		// window->DockId verbatim, so in the diverged state the ini
-		// gets a [Window] section with no DockId= line — the next
-		// launch loads it as floating. Force the two back into sync
-		// from the live DockNode pointer right before each save.
+		// ImGui can diverge window->DockId to 0 while window->DockNode stays live (observed for overlay-layer panels); WindowSettingsHandler_WriteAll reads DockId verbatim, serialising them as floating. Sync from the live pointer before every save.
 		void SyncDockIdsFromLiveNodes() {
 			ImGuiContext* ctx = ImGui::GetCurrentContext();
 			if (ctx == nullptr) return;
@@ -132,10 +109,6 @@ namespace Index {
 		}
 
 		std::filesystem::path GetLayoutPresetsDirectory() {
-			// Co-located with the live imgui.ini so a user nuking
-			// %LOCALAPPDATA%\Index\Editor for a clean-slate test wipes
-			// presets in the same gesture (matches user expectation:
-			// "I reset the editor → all my layout state went with it").
 			try {
 				return std::filesystem::path(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData))
 					/ "Index" / "Editor" / "Layouts";
@@ -167,31 +140,10 @@ namespace Index {
 		ImGuiIO& io = ImGui::GetIO();
 		m_IniFilePath = ResolveEditorIniFilePath();
 		io.IniFilename = m_IniFilePath.c_str();
-		// Reduce ImGui's lazy-save timer from 5s → 1s. With the long
-		// timer a user who docked / resized / closed a window inside
-		// the last 5 seconds and then rage-quit (kill from Task
-		// Manager, BSOD, segfault during a hot-reload script,
-		// frame-loop exception, …) loses the layout because the
-		// auto-save timer never expired and the OnDetach explicit
-		// save never ran. 1s is short enough that the dirty window
-		// is small without thrashing the disk on every drag pixel
-		// (ImGui only re-evaluates layout state on widget completion,
-		// not on every mouse move).
+		// 1s: small enough that a hard quit loses minimal layout; large enough to avoid disk thrash.
 		io.IniSavingRate = 1.0f;
-		// Docking + multi-viewport flags MUST be applied BEFORE the
-		// LoadIniSettingsFromDisk below. The ini's [Docking][Data] and
-		// [Viewport] sections parse through SettingsHandlers that are
-		// only registered when those config flags are set; loading first
-		// orphans the dock IDs / viewport positions and the next save
-		// scrubs them, silently destroying the persisted layout.
+		// Docking/viewport flags MUST precede LoadIniSettingsFromDisk: the [Docking][Data] and [Viewport] sections only parse through handlers registered by these flags; loading first silently destroys the persisted layout.
 		EditorRuntime::ImGuiContextSetup::ApplyCommonIoConfigFlags(io);
-		// Belt-and-suspenders load. ImGui's NewFrame would auto-load
-		// on the first frame anyway, but doing it explicitly here
-		// (a) makes it easy to confirm via the log whether the file
-		// was found at the resolved path and (b) means any code path
-		// that touches ImGui state BEFORE the first NewFrame (e.g.
-		// PackageImGuiBridge plumbing) operates against the loaded
-		// settings rather than ImGui's compiled-in defaults.
 		std::error_code loadEc;
 		const bool iniFileExists = std::filesystem::is_regular_file(m_IniFilePath, loadEc);
 		const std::uintmax_t iniFileSize = iniFileExists
@@ -206,24 +158,10 @@ namespace Index {
 			iniFileExists ? "loaded" : "missing — defaults will be used",
 			iniFileSize);
 
-		// One-time HiDPI scale captured from the window's monitor. Applied
-		// below to the UI font and to the theme via ScaleAllSizes. Mid-
-		// session monitor moves are not handled — wire
-		// glfwSetWindowContentScaleCallback if that becomes a real symptom.
 		const float dpiScale = EditorRuntime::ImGuiContextSetup::CaptureDpiScale(glfwWindow);
 		s_DpiScale = dpiScale;
 
-		// Honor the user's Editor Font preference (typeface only — the
-		// size is applied dynamically via style.FontSizeBase, see
-		// ApplyEditorFontSize, which is invoked once EditorPreferences::Load
-		// has actually run on a later layer's OnAttach).
-		// EditorPreferences::Load() has not run yet here (it lives on
-		// ImGuiEditorLayer::OnAttach, which pushes after this layer),
-		// so GetEditorFontAssetId() returns the default for new installs
-		// and the user's saved id only afterwards. Loading a font here
-		// determines the LegacySize used as the initial FontSizeBase;
-		// we pass k_IndexImGuiFontSize * dpiScale so a freshly-launched
-		// editor renders at the engine default until prefs are applied.
+		// EditorPreferences::Load hasn't run yet (ImGuiEditorLayer::OnAttach is later); font size is finalised by ApplyEditorFontSize once prefs load.
 		{
 			const uint64_t fontId = EditorPreferences::GetEditorFontAssetId();
 			bool loadedCustom = false;
@@ -269,18 +207,7 @@ namespace Index {
 			return;
 		}
 
-		// Flush pending layout changes to imgui.ini BEFORE DestroyContext.
-		// ImGui's auto-save is timer-driven (`g.SettingsDirtyTimer`
-		// decays at IniSavingRate, lowered to 1s in OnAttach above);
-		// a user who docks a panel and immediately closes the editor
-		// would otherwise lose that change because the timer never
-		// reached 0. Calling SaveIniSettingsToDisk explicitly drains
-		// the dirty flag regardless of timer state. Skipped when
-		// there's no IniFilename or the path is empty. We also
-		// confirm the file appeared on disk + log the path so a "I
-		// quit and the layout reset" report has actionable evidence
-		// (the path the editor wrote to + whether the write actually
-		// produced a file).
+		// Explicit flush before DestroyContext: the timer-driven auto-save may not have fired yet.
 		const ImGuiIO& io = ImGui::GetIO();
 		if (io.IniFilename != nullptr && *io.IniFilename != '\0') {
 			SyncDockIdsFromLiveNodes();
@@ -304,22 +231,11 @@ namespace Index {
 			return;
 		}
 
-		// Consume pending Reset / Load-preset request BEFORE NewFrame.
-		// The previous frame's EndFrame has already torn down per-
-		// frame dock state, so ClearIniSettings + LoadIniSettings here
-		// gets to populate the dock context cleanly; the panels that
-		// Begin() later in this frame then pick up their new DockId
-		// on first use and attach into the freshly-built tree.
 		if (!s_PendingLayoutReloadPath.empty()) {
 			const std::string path = std::move(s_PendingLayoutReloadPath);
 			s_PendingLayoutReloadPath.clear();
 			ImGui::ClearIniSettings();
 			ImGui::LoadIniSettingsFromDisk(path.c_str());
-			// LoadIniSettingsFromDisk silently flips WantSaveIniSettings
-			// off; suppress the next periodic-save trigger so it doesn't
-			// immediately re-save the freshly-loaded state (which would
-			// also reset our save-timer baseline to "right now," masking
-			// real subsequent dirty events).
 			ImGui::GetIO().WantSaveIniSettings = false;
 			m_LastSaveTime = std::chrono::steady_clock::now();
 			IDX_CORE_INFO_TAG("ImGui",
@@ -336,22 +252,11 @@ namespace Index {
 		}
 		EditorRuntime::ImGuiContextSetup::RenderAndPresent();
 
-		// Belt-and-suspenders settings flush — runs after ImGui::Render
-		// has finalised the frame's settings state, so any dock split,
-		// window close, or layout mutation issued during this frame is
-		// guaranteed visible to SaveIniSettingsToDisk.
 		FlushSettingsIfDirtyOrPeriodic();
 	}
 
 	void ImGuiContextLayer::ApplyEditorFontSize() {
-		// ImGui 1.92+ exposes dynamic font sizing via style.FontSizeBase
-		// — the dynamic atlas re-bakes glyphs at the new size on the
-		// next frame and the WebGPU backend re-uploads the texture
-		// through its ImGuiBackendFlags_RendererHasTextures path. No
-		// atlas mutation, no ImFont* invalidation, safe to call mid-
-		// frame from the prefs panel. `_NextFrameFontSizeBase`
-		// is the documented hack (see ImGui demo's FontSizeBase
-		// DragFloat handler) for the mid-frame case.
+		// _NextFrameFontSizeBase: documented mid-frame hack for FontSizeBase changes (see ImGui demo).
 		ImGuiContext* ctx = ImGui::GetCurrentContext();
 		if (ctx == nullptr) return;
 		const float zoom = static_cast<float>(EditorPreferences::GetEditorFontZoomPercent()) / 100.0f;
@@ -362,11 +267,6 @@ namespace Index {
 	}
 
 	void ImGuiContextLayer::FlushSettingsIfDirtyOrPeriodic() {
-		// 5 second cap between forced saves. Tight enough that a hard
-		// quit (process kill, BSOD) loses at most a few seconds of
-		// layout work; slow enough that the editor isn't writing the
-		// same bytes hundreds of times per session under steady-state
-		// (no layout edits happening).
 		constexpr float k_PeriodicSaveSeconds = 5.0f;
 
 		if (!m_IsInitialized) return;
@@ -377,12 +277,6 @@ namespace Index {
 		const float secondsSinceSave = std::chrono::duration<float>(
 			now - m_LastSaveTime).count();
 
-		// `WantSaveIniSettings` flips true when ImGui has a dirty
-		// settings state that its internal auto-save couldn't flush
-		// for some reason (e.g. a late-frame mutation past the timer
-		// expiry). The periodic save catches the rest — anything
-		// that ImGui's MarkSettingsDirty path missed because the
-		// caller didn't trip a known-dirty hook.
 		const bool shouldSave = io.WantSaveIniSettings
 			|| secondsSinceSave >= k_PeriodicSaveSeconds;
 		if (!shouldSave) return;
@@ -396,18 +290,6 @@ namespace Index {
 	void ImGuiContextLayer::OnEvent(Application& app, IndexEvent& event) {
 		(void)app;
 		if (!m_IsInitialized) return;
-		// Save on focus loss (Alt-Tab away, click into a different
-		// app). The user typically iterates layout → switch to docs /
-		// IDE / Photoshop → back, and a session that crashes or is
-		// killed in that "background" interval would lose the most
-		// recent layout work without this. Triggered via the event
-		// system (registered as a Layer::OnEvent) so we don't have to
-		// poll glfwGetWindowAttrib(GLFW_FOCUSED) every frame.
-		// Also save on the X-button close: the WindowCloseEvent runs
-		// before the layer stack tears down, but a layout mutation
-		// made within the past tick (lazy-save still ticking) would
-		// otherwise wait for OnDetach. Saving here closes that gap if
-		// any subsequent shutdown step throws or aborts.
 		const EventType type = event.GetEventType();
 		if (type == EventType::WindowLostFocus || type == EventType::WindowClose) {
 			ImGuiIO& io = ImGui::GetIO();
@@ -423,11 +305,6 @@ namespace Index {
 	bool ImGuiContextLayer::IsValidLayoutPresetName(const std::string& name) {
 		if (name.empty() || name.size() > 64) return false;
 		if (name == "." || name == "..") return false;
-		// Reject every char that's illegal in a Windows filename OR
-		// would let the name escape its directory. We're stricter than
-		// strictly necessary on POSIX so a preset authored on Windows
-		// keeps the same name verbatim if the user ever moves their
-		// %LOCALAPPDATA% snapshot to a Linux build.
 		for (char c : name) {
 			if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
 				c == '"' || c == '<' || c == '>' || c == '|') {
@@ -437,9 +314,7 @@ namespace Index {
 			// produce filenames that can't be displayed in the menu.
 			if (static_cast<unsigned char>(c) < 0x20) return false;
 		}
-		// Trailing dot / space → Windows silently strips on save, then
-		// the next ListLayoutPresets() won't find the file the user
-		// just "saved". Easier to refuse up front.
+		// Windows silently strips a trailing dot/space on save; refuse up front so ListLayoutPresets finds the file.
 		if (name.back() == ' ' || name.back() == '.') return false;
 		return true;
 	}
@@ -460,9 +335,6 @@ namespace Index {
 			result.push_back(p.stem().string());
 		}
 		std::sort(result.begin(), result.end(), [](const std::string& a, const std::string& b) {
-			// Case-insensitive sort so "MyLayout" and "mylayout" land
-			// next to each other in the menu rather than splitting by
-			// ASCII codepoint.
 			return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
 				[](char x, char y) { return std::tolower((unsigned char)x) < std::tolower((unsigned char)y); });
 		});
@@ -519,13 +391,7 @@ namespace Index {
 				"LoadLayoutPreset: no IniFilename set; ignoring.");
 			return false;
 		}
-		// Persist the preset content to the user's imgui.ini path
-		// immediately (so a hard quit between this call and the
-		// deferred reload doesn't lose the choice), then queue the
-		// in-context reload for the start of the next frame. See the
-		// long comment on s_PendingLayoutReloadPath for the timing
-		// reason — calling ClearIniSettings + LoadIniSettingsFromDisk
-		// mid-frame leaves dockable windows floating.
+		// Write to the user ini immediately (survives a hard quit), then defer the in-context reload to start-of-next-frame (see s_PendingLayoutReloadPath).
 		std::filesystem::copy_file(presetPath, io.IniFilename,
 			std::filesystem::copy_options::overwrite_existing, ec);
 		if (ec) {
@@ -577,11 +443,6 @@ namespace Index {
 			return;
 		}
 
-		// Copy bundled → user ini eagerly so the new layout survives a
-		// crash between this call and the deferred reload, then queue
-		// the in-context reload. See s_PendingLayoutReloadPath for why
-		// mid-frame ClearIniSettings + LoadIniSettingsFromDisk produced
-		// the "everything floats" symptom.
 		std::error_code ec;
 		std::filesystem::copy_file(defaultIniFile, io.IniFilename,
 			std::filesystem::copy_options::overwrite_existing, ec);
@@ -628,10 +489,7 @@ namespace Index {
 		style.WindowMenuButtonPosition = ImGuiDir_None;
 		style.SeparatorTextBorderSize  = 2.0f;
 
-		// Colour body lives in ApplyIndexThemeColors so EditorPreferences
-		// can re-apply just the palette on a runtime theme switch without
-		// stomping the DPI-scaled sizing that ScaleAllSizes layered on top
-		// of the values we just set.
+		// Separate from sizing: EditorPreferences re-applies just the palette on theme switch without stomping DPI-scaled sizing.
 		ApplyIndexThemeColors();
 	}
 

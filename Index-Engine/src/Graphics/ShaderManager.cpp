@@ -10,13 +10,6 @@
 #include <unordered_set>
 #include <utility>
 
-// =============================================================================
-// ShaderManager — slot table + handle-generation pool for compiled shader
-// programs. Dedup key is the (vsPath, fsPath) pair. Mirrors TextureManager's
-// internal layout; see Graphics/TextureManager.cpp for the reference
-// implementation and design notes.
-// =============================================================================
-
 namespace Index {
 
     std::vector<ShaderEntry> ShaderManager::s_Shaders;

@@ -59,10 +59,6 @@ namespace Index {
 	}
 
 	void ParticleSystem2DComponent::Update(float deltaTime) {
-		// E20: dt-aware path — ParticleUpdateSystem passes the system's dt
-		// once per frame, eliminating the per-particle-system Application
-		// indirection (was Application::GetInstance()->GetTime().GetDeltaTime()
-		// per Update() call).
 		if (deltaTime == 0.f) return;
 
 		if (m_IsEmitting) {
@@ -104,10 +100,6 @@ namespace Index {
 		if (m_Particles.size() >= maxParticles)
 			return;
 
-		// E20: reserve to MaxParticles once on first emission to eliminate
-		// the per-Emit growth-and-reallocate pattern. The previous incremental
-		// reserve (size + count) reallocated repeatedly as the buffer grew,
-		// invalidating Particle pointers and stalling the simulation loop.
 		if (m_Particles.capacity() < maxParticles) {
 			m_Particles.reserve(maxParticles);
 		}

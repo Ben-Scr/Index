@@ -6,11 +6,7 @@
 #include "Physics/CollisionDispatcher.hpp"
 
 namespace Index {
-	// Mutator guard: every b2Body_* call needs a valid body. The body can be torn down
-	// out from under a mutator if a sibling component (BoxCollider2DComponent::Destroy)
-	// destroys the shared b2Body and zeroes only its own id field, leaving this one
-	// stale. Calling b2Body_* with a stale id mutates an unrelated body that Box2D has
-	// since recycled into the same slot — a silent UB hazard the audit caught (H15).
+	// Guard against stale b2BodyId: a sibling Destroy() can zero its own id leaving this one dangling (audit H15).
 	#define IDX_RB_GUARD() do { if (!IsValid()) return; } while (0)
 
 	void Rigidbody2DComponent::SetBodyType(BodyType bodyType) {
@@ -86,12 +82,7 @@ namespace Index {
 			massData.rotationalInertia *= newMass / previousMass;
 		}
 		else {
-			// Promoting from zero mass: don't zero the rotational inertia (which would
-			// silently lock the body's rotation against torque/impulse). Box2D will
-			// recompute inertia from attached shapes; if no shapes exist this stays 0
-			// but at least we don't actively erase a value the user / shape density
-			// might have set.
-			// (Audit: Rigidbody2DComponent::SetMass discarded inertia on first call.)
+			// Zero-mass promotion: don't touch rotationalInertia — Box2D recomputes it from shapes.
 		}
 		massData.mass = newMass;
 		b2Body_SetMassData(m_BodyId, massData);
@@ -133,11 +124,6 @@ namespace Index {
 		return b2Rot_GetAngle(b2Body_GetRotation(m_BodyId));
 	}
 
-	// ── Motion locks ────────────────────────────────────────────
-	// Mutate one axis / rotation without disturbing the others — round-
-	// trip through b2Body_GetMotionLocks so a partial set never silently
-	// clears flags the user enabled through a sibling setter, the C#
-	// binding, or the inspector earlier in the same frame.
 	void Rigidbody2DComponent::SetFreezePositionX(bool freeze) {
 		IDX_RB_GUARD();
 		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
@@ -195,11 +181,7 @@ namespace Index {
 
 	void Rigidbody2DComponent::Destroy() {
 		if (IsValid()) {
-			// Unregister every attached shape from the contact dispatcher before
-			// the body (and its shapes) are destroyed. Without this, the
-			// dispatcher's m_begin/m_end/m_hit/m_activeContacts retain stale
-			// b2ShapeIds; if Box2D recycles a stored id for a future shape,
-			// callbacks fire on the wrong entity.
+			// Unregister shapes before body destroy: Box2D recycles ids, so stale b2ShapeIds would fire callbacks on wrong entities.
 			if (PhysicsSystem2D::IsInitialized()) {
 				constexpr int kInlineShapes = 8;
 				b2ShapeId stack[kInlineShapes];

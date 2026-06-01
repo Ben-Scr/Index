@@ -33,14 +33,7 @@
 
 namespace Index::Version {
 
-	// Compare two dotted-numeric version strings (e.g. "2026.1.0").
-	// Each segment is read as an int up to the first non-digit, missing
-	// segments are treated as 0, and any trailing suffix (e.g. "-rc1",
-	// "+build5") is ignored. Returns `actual >= required`.
-	//
-	// Examples (true):  ("2026.1.0", "2026.1.0"), ("2026.2.0", "2026.1.0"),
-	//                   ("2026.1.0-rc1", "2026.1.0"), ("2026.1", "2026.1.0")
-	// Examples (false): ("2026.0.9", "2026.1.0"), ("2025.5.0", "2026.1.0")
+	// Returns actual >= required; missing segments = 0, trailing suffix (e.g. "-rc1") ignored.
 	inline bool IsAtLeast(std::string_view actual, std::string_view required) {
 		auto nextSegment = [](std::string_view& s) -> std::int64_t {
 			std::int64_t value = 0;

@@ -1,22 +1,14 @@
 #pragma once
 
 #include "Core/Layer.hpp"
+#ifdef INDEX_PROFILER_ENABLED
 #include "Gui/ProfilerPanel.hpp"
+#endif
 
 namespace Index {
 
-	// Runtime-side host for the in-game profiler panel.
-	//
-	// Activated only when the loaded project's
-	// `index-project.json:profiler.enableInRuntime` is true. Sets up its
-	// own ImGui context (the runtime doesn't otherwise use ImGui) and
-	// reuses the editor's ProfilerPanel for the actual UI. Ctrl+F6 toggles
-	// visibility — same shortcut as the editor for muscle-memory parity.
-	//
-	// The whole layer is gated behind INDEX_PROFILER_ENABLED at compile
-	// time. With --no-profiler this file does nothing meaningful (no ImGui
-	// init, no panel) — but it stays in the build so RuntimeApplication.cpp
-	// doesn't need its own #ifdef around the layer push.
+	// In-game profiler panel (profiler.enableInRuntime=true). Ctrl+F6 toggles visibility.
+	// Stays compiled under --no-profiler so RuntimeApplication.cpp needs no #ifdef around the layer push.
 	class RuntimeProfilerLayer : public Layer {
 	public:
 		using Layer::Layer;
@@ -30,7 +22,9 @@ namespace Index {
 	private:
 		bool m_ShowPanel = false;
 		bool m_ImGuiInitialized = false;
+#ifdef INDEX_PROFILER_ENABLED
 		ProfilerPanel m_Panel;
+#endif
 	};
 
 } // namespace Index

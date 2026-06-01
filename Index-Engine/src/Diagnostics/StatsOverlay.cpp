@@ -1,10 +1,4 @@
-// NOTE: this .cpp uses <imgui.h>. The Index-Engine premake EXCLUDES this
-// file from the engine DLL's compile set. Index-Editor and Index-Runtime
-// both pull it in via their own premake `files {}` entries — same pattern
-// as `Index-Editor/src/Gui/ProfilerPanel.cpp` being compiled into Runtime.
-//
-// The header (StatsOverlay.hpp) only forward-declares ImVec2, so consumers
-// that include the header but don't compile this .cpp don't pull ImGui.
+// NOT compiled into engine.dll — Index-Editor and Index-Runtime each include this .cpp via their own premake files{} entries.
 
 #include "Diagnostics/StatsOverlay.hpp"
 
@@ -41,11 +35,6 @@ namespace Index::Diagnostics {
 		}
 
 		std::size_t CountLoadedEntities() {
-			// Scene::GetEntityCount() returns a cached scalar — the same
-			// helper Application::Run uses for its per-frame profiler
-			// value. The previous std::distance walk over view<entt::entity>
-			// was O(N) and showed up in profiles on scenes with 10k+
-			// entities (see comment in Application.cpp:252).
 			std::size_t count = 0;
 			SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
 				count += scene.GetEntityCount();
@@ -98,10 +87,6 @@ namespace Index::Diagnostics {
 			GetCurrentProcess(),
 			reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
 			sizeof(pmc))) {
-			// WorkingSetSize = bytes of physical RAM the process holds
-			//                  ("allocated" / resident).
-			// PrivateUsage   = committed virtual memory (Windows' closest
-			//                  analogue of "reserved").
 			m_Cached.MemAllocBytes    = static_cast<std::size_t>(pmc.WorkingSetSize);
 			m_Cached.MemReservedBytes = static_cast<std::size_t>(pmc.PrivateUsage);
 		}

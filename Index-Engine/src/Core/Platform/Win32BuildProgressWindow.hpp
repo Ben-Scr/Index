@@ -2,24 +2,11 @@
 #include "Core/Export.hpp"
 #include <string>
 
-// Windows-only standalone OS window that shows progress for any
-// long-running editor operation (project build, script recompile,
-// anything else that needs a "please wait" indicator). The window is
-// a real top-level OS window rather than an ImGui overlay so the
-// status stays crisp even if the editor's render thread is briefly
-// busy. It is pinned in place — users can't drag it — because it is
-// a transient progress indicator, not a managed window.
-//
-// All entry points are no-ops on non-Windows platforms — the editor
-// can call them unconditionally without #ifdef guards at the call site.
+// Windows-only progress popup (real OS window, not ImGui overlay). No-ops on non-Windows.
 namespace Index::Win32BuildProgressWindow {
 
 #ifdef IDX_PLATFORM_WINDOWS
 
-    // Creates and shows the popup centered on the editor's main window
-    // (or main monitor if the editor window isn't resolvable). Idempotent:
-    // calling while the window already exists just re-titles it and
-    // brings it forward — safe to invoke every frame.
     INDEX_API void Show(const std::string& title);
 
     // Pushes the latest progress (0..1) and stage label into the popup.

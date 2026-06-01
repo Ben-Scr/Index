@@ -11,20 +11,7 @@ namespace Index {
 
 namespace Index::Serialization {
 
-	// JsonArchive backs IArchive with an Index::Json::Value tree. The on-disk
-	// JSON layout matches what the legacy hand-coded serializer produces, so
-	// projects on JSON format keep loading without conversion: field names
-	// match (the component's Serialize method calls Field with the same names
-	// the old code used), Color writes as a 4-member object, UUID writes as a
-	// numeric string, and field order follows whatever order Serialize uses.
-	//
-	// SceneSerializer drives the archive by setting the per-entity scope
-	// (PushEntityScope) before invoking each component's serializeArchive
-	// callback. The component itself only calls IArchive::Field / Object /
-	// Array — it never touches Json::Value directly.
-	//
-	// Read semantics: a Field call whose name is absent leaves the variable
-	// unchanged (forward-compatible field evolution).
+	// Backed by Index::Json::Value; on-disk layout is backward-compatible with the legacy hand-coded serializer. Missing fields on read are silently skipped (forward-compatible evolution).
 	class INDEX_API JsonArchive final : public IArchive {
 	public:
 		// Write mode: the archive mutates `target` directly, adding per-component

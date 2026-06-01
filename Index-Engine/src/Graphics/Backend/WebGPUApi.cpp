@@ -29,54 +29,6 @@
     #include <Windows.h>
 #endif
 
-// =============================================================================
-// WebGPU backend (Dawn).
-// -----------------------------------------------------------------------------
-// Implements the RenderApi static surface against Google's Dawn WebGPU
-// implementation.
-//
-// Scope:
-//   * wgpu::Instance / Adapter / Device / Queue creation, with a Win32 HWND
-//     surface from the engine's GLFW window. macOS (NSView) + Linux (X11/
-//     Wayland) come later.
-//   * Per-frame command encoder, surface-texture acquisition, swap-chain
-//     present via Present() — invoked from Window::SwapBuffers. The encoder
-//     is lazy-created on first use this frame so "no-op frames" (engine
-//     paused, window minimized) don't pay for an empty submit.
-//   * Clear / SetClearColor / SetViewport / SetScissor / OnWindowResize
-//     dispatch onto the equivalent WebGPU primitives. Clear opens a load-
-//     op-clear render pass on the current target and closes it immediately.
-//   * Other state calls (blend / cull / polygon / line width / color mask /
-//     logic-op clear) are documented no-ops. WebGPU expresses those
-//     per-pipeline (not as global state), so they fold into the per-renderer
-//     port when Renderer2D / GizmoRenderer / TextRenderer learn to build
-//     wgpu::RenderPipelines.
-//   * BindFramebuffer just records the target — Framebuffer is a stub for
-//     now and will be ported to a wgpu::Texture-backed render-target
-//     wrapper later.
-//
-// Frame lifecycle:
-//   WebGPU is immediate-recording: a wgpu::CommandEncoder records render
-//   passes, then wgpu::Queue::Submit() executes them. Each pass is scoped
-//   (BeginRenderPass / End) and must be open to record draws.
-// We hide this with a small lazy-init helper (EnsureFrameEncoder /
-// EnsureSurfaceTexture) so the call-site model in the engine — "set state,
-// clear, draw, present" — keeps working without rewriting the renderers.
-//
-// Dawn API version assumption: webgpu_cpp.h as shipped by Dawn ~2024 H2 or
-// newer. Specifically expects:
-//   * wgpu::SurfaceSourceWindowsHWND chained-struct (older name was
-//     SurfaceDescriptorFromWindowsHWND — if your Dawn checkout is from
-//     before that rename, the type lives under that older name).
-//   * wgpu::SurfaceCapabilities + Surface::GetCapabilities.
-//   * RequestAdapter / RequestDevice with the wgpu::CallbackMode +
-//     Future / WaitAny pattern (added 2024).
-//   * SetUncapturedErrorCallback / SetDeviceLostCallback on
-//     wgpu::DeviceDescriptor.
-// If the Dawn checkout post-dates further API churn, the symbol names in
-// this file are the surface to update — RenderApi.hpp is backend-neutral
-// and doesn't change.
-// =============================================================================
 
 namespace Index {
 
@@ -100,38 +52,12 @@ namespace Index {
 		wgpu::Surface       g_Surface;
 		wgpu::TextureFormat g_SurfaceFormat = wgpu::TextureFormat::Undefined;
 
-		// Whether the active adapter advertised TimestampQuery at adapter
-		// time AND we successfully enabled it on the device. GpuTimer reads
-		// this to decide whether to allocate wgpu::QuerySet objects vs. stay
-		// dormant (panel "GPU" module renders "N/A"). Falsified on Metal /
-		// some Vulkan drivers; truthful on Windows D3D12.
 		bool g_HasTimestampQuery = false;
 
-		// Whether the active adapter advertised the Dawn-experimental
-		// bindless / binding-array feature AND we successfully enabled it
-		// on the device. Renderer2D reads this through
-		// WebGPUBackend::HasBindlessTextures() to decide whether to take
-		// a single-DrawIndexed-with-texture-array path (Phase 5 of the
-		// 100k-sprite plan) or fall back to the N-DrawIndexed-per-
-		// texture-run path (today's implementation).
-		//
-		// The gate is currently always false: baseline WebGPU has no
-		// portable bindless feature, and Dawn's experimental flag set
-		// changes between releases. Wiring the bindless render path
-		// behind this gate keeps the integration surface ready — when
-		// Dawn settles on a stable feature name (likely
-		// `wgpu::FeatureName::BindlessTextureArrays` or similar), the
-		// only change here will be requesting that feature alongside
-		// TimestampQuery in RequestDeviceSync.
+		// Always false until Dawn stabilises a portable bindless feature name; gate kept ready for when it does.
 		bool g_HasBindlessTextures = false;
 
 		// ── Per-frame transient state ───────────────────────────────────────
-		// The encoder + surface view are lazy-created on first use this frame
-		// (Clear / SetClearColor / future draws) and torn down by Present().
-		// Tracking HasActivePass lets us coalesce subsequent state ops onto
-		// the same pass when possible — Stage 1 only opens clear-only passes
-		// so the boolean stays mostly false, but Stage 2+ renderers will keep
-		// a pass open across multiple draws.
 		struct FrameState {
 			wgpu::CommandEncoder    Encoder;
 			wgpu::Texture           SurfaceTexture;
@@ -140,18 +66,10 @@ namespace Index {
 			bool HasEncoder = false;
 			bool HasSurfaceTexture = false;
 			bool HasActivePass = false;
-			// At least one render pass executed against the swap chain this
-			// frame? If false at Present() time, we issue a "touch" clear so
-			// the swap-chain frame advances regardless.
 			bool PresentedSwapChain = false;
 		};
 		FrameState g_Frame;
 
-		// Currently-bound render target. Stage 2 added FBO routing via
-		// WebGPUBackend::LookupFramebufferByFboId, so non-swap-chain targets
-		// now resolve to real wgpu::TextureViews. The DepthView is kept
-		// here so Clear can attach + clear depth alongside colour on FBO
-		// targets that include a depth attachment.
 		struct TargetState {
 			wgpu::TextureView ColorView;       // null -> use swap chain's per-frame view
 			wgpu::TextureView DepthView;       // null -> no depth attachment
@@ -162,9 +80,6 @@ namespace Index {
 		};
 		TargetState g_CurrentTarget;
 
-		// Cached viewport / scissor (in pixels, top-left origin). Applied at
-		// render-pass-start time in Stage 2+ when actual draws run; Stage 1
-		// just caches the values.
 		uint32_t g_ViewportX = 0, g_ViewportY = 0, g_ViewportW = 0, g_ViewportH = 0;
 		uint32_t g_ScissorX  = 0, g_ScissorY  = 0, g_ScissorW  = 0, g_ScissorH  = 0;
 		bool     g_ScissorActive = false;
@@ -238,20 +153,11 @@ namespace Index {
 			return caps.presentModeCount > 0 ? caps.presentModes[0] : wgpu::PresentMode::Fifo;
 		}
 
-		// Convert wgpu::StringView (Dawn's non-null-terminated string view)
-		// into std::string. StringView has .data + .length; copying is the
-		// only safe option because the underlying buffer is callee-owned.
 		std::string FromStringView(wgpu::StringView sv) {
 			if (sv.data == nullptr || sv.length == 0) return {};
 			return std::string(sv.data, sv.length);
 		}
 
-		// Drain Dawn's internal event loop until predicate returns true.
-		// Native WebGPU's adapter / device requests are async by spec; on
-		// Dawn we satisfy them synchronously via WaitAny + the WaitAnyOnly
-		// callback mode below, but Instance::ProcessEvents is the equivalent
-		// for fire-and-forget paths (validation errors arriving out-of-band,
-		// for instance).
 		void PumpEvents() {
 			if (g_Instance) g_Instance.ProcessEvents();
 		}
@@ -289,9 +195,7 @@ namespace Index {
 			return true;
 		}
 
-		// Translate the project's preferred backend to a wgpu::BackendType.
-		// Returns Undefined for Auto (let Dawn pick) or when no project is
-		// loaded (engine boot before ProjectManager has anything to read).
+		// Returns Undefined (let Dawn pick) for Auto or when no project is loaded yet.
 		wgpu::BackendType PreferredBackendType() {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			if (!project) return wgpu::BackendType::Undefined;
@@ -307,11 +211,6 @@ namespace Index {
 			return wgpu::BackendType::Undefined;
 		}
 
-		// Issue a RequestAdapter call with a specific backendType + power
-		// preference, blocking on the resulting wgpu::Future. The boolean
-		// return reflects callback success; on failure, `outAdapter` is
-		// left empty and `outError` carries Dawn's message (often empty
-		// when the backend simply isn't available on the host).
 		bool TryRequestAdapter(wgpu::BackendType backendType,
 			wgpu::Adapter& outAdapter, std::string& outError)
 		{
@@ -346,10 +245,6 @@ namespace Index {
 		}
 
 		bool RequestAdapterSync() {
-			// Read the project's preferred backend. If it can't be honoured on
-			// the host (e.g. D3D12 on Linux), retry with Undefined so Dawn
-			// picks the best available — matches the "graceful fallback with
-			// warning" behaviour documented on IndexProject::RenderBackend.
 			const wgpu::BackendType preferred = PreferredBackendType();
 
 			wgpu::Adapter adapter;
@@ -378,15 +273,6 @@ namespace Index {
 
 		bool RequestDeviceSync() {
 			wgpu::DeviceDescriptor desc{};
-			// Opt into TimestampQuery if the adapter advertises it. With the
-			// feature on, render passes can attach a
-			// wgpu::RenderPassTimestampWrites that writes GPU-time samples
-			// into a wgpu::QuerySet at beginning-/end-of-pass. GpuTimer
-			// owns the QuerySet + resolve + readback buffers and pushes
-			// the ms delta into the "GPU" profiler module each frame; without
-			// this feature the panel's GPU row stays at "N/A", but the
-			// engine still runs (rest of the code paths are gated on
-			// WebGPUBackend::HasTimestampQuery()).
 			static wgpu::FeatureName s_RequestedFeatures[1] = {};
 			uint32_t requestedFeatureCount = 0;
 			if (g_Adapter && g_Adapter.HasFeature(wgpu::FeatureName::TimestampQuery)) {
@@ -395,10 +281,6 @@ namespace Index {
 			desc.requiredFeatureCount = requestedFeatureCount;
 			desc.requiredFeatures     = requestedFeatureCount > 0 ? s_RequestedFeatures : nullptr;
 
-			// Surface-the-uncaptured-error-callback so validation failures
-			// land in the engine log instead of vanishing. Dawn calls this
-			// for any wgpu validation error that isn't tied to a specific
-			// future (e.g. binding a wrong-format texture mid-pass).
 			desc.SetUncapturedErrorCallback(
 				[](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView msg) {
 					const char* kind = "Unknown";
@@ -411,9 +293,6 @@ namespace Index {
 					IDX_CORE_ERROR_TAG("WebGPUApi", "WebGPU [{}]: {}",
 						kind, FromStringView(msg));
 				});
-			// Device-lost is recoverable in principle (re-request, re-create
-			// resources) but Stage 1 just logs and lets the next frame fail.
-			// Stage 6 of the port (general robustness) handles re-init.
 			desc.SetDeviceLostCallback(
 				wgpu::CallbackMode::AllowSpontaneous,
 				[](const wgpu::Device&, wgpu::DeviceLostReason reason, wgpu::StringView msg) {
@@ -456,9 +335,6 @@ namespace Index {
 			wgpu::SurfaceCapabilities caps{};
 			g_Surface.GetCapabilities(g_Adapter, &caps);
 
-			// First reported format is the adapter's preferred swap-chain
-			// format. Dawn typically returns BGRA8Unorm on Windows / Linux
-			// and BGRA8Unorm-srgb on macOS — both are RenderAttachment-able.
 			g_SurfaceFormat = (caps.formatCount > 0)
 				? caps.formats[0]
 				: wgpu::TextureFormat::BGRA8Unorm;
@@ -543,29 +419,9 @@ namespace Index {
 			g_Frame.HasActivePass = false;
 		}
 
-		// Submit whatever's been recorded on the per-frame encoder so far
-		// and reset it, while keeping the per-frame swap-chain acquisition
-		// and present-tracking flags intact. Used when the bound render
-		// target changes mid-frame: every renderer (Renderer2D, GuiRenderer,
-		// TextRenderer, GizmoRenderer) uploads its per-draw uniform / vertex
-		// data via `queue.WriteBuffer`, which Dawn services by enqueueing
-		// internal copy commands on its dynamic uploader. Those uploader
-		// copies are flushed BEFORE the user's command buffer executes —
-		// in the *order they were called*, but with no synchronisation
-		// between the upload-copy timeline and the user's render-pass
-		// timeline. So if frame N records:
-		//   WriteBuffer(uniform, VP_editor); BeginPass(editorFBO); ...
-		//   WriteBuffer(uniform, VP_game);   BeginPass(gameFBO);   ...
-		//   Submit
-		// Dawn applies BOTH writes first (the second overwrites the first),
-		// THEN executes BOTH passes — so the editor's pass ends up reading
-		// VP_game out of the shared uniform buffer. Visible symptom: the
-		// editor viewport flickers when both views are open, because the
-		// game view's vsync gate makes its WriteBuffer happen on some
-		// frames and not others.
-		// Submitting between the two target switches turns each FBO's
-		// WriteBuffer + pass pair into its own atomic submission unit,
-		// closing the window.
+		// MUST submit between target switches: Dawn flushes ALL WriteBuffer calls before ANY pass executes,
+		// so a second WriteBuffer(uniform) on the same buffer overwrites the first before the first pass runs.
+		// Separate submissions give each FBO its own atomic WriteBuffer+pass unit.
 		void FlushFrameCommands() {
 			EndActivePassIfAny();
 			if (!g_Frame.HasEncoder) return;
@@ -576,29 +432,14 @@ namespace Index {
 
 			g_Frame.Encoder    = nullptr;
 			g_Frame.HasEncoder = false;
-			// Surface texture + view stay alive — they're tied to the
-			// per-frame swap-chain acquisition, not the encoder, and the
-			// ImGui pass later in the frame still needs to render against
-			// them. PresentedSwapChain stays too: it tracks whether any
-			// pass in *this whole frame* targeted the swap chain, so
-			// Present()'s touch-fallback gets the right answer.
+			// Surface texture/view and PresentedSwapChain stay alive — ImGui pass still needs them.
 		}
 	}  // anonymous namespace
 
-	// ── Backend-internal hooks (consumed by Window::SwapBuffers) ─────────────
-	// Helper namespace giving engine code outside this TU (Window.cpp, the
-	// future imgui_impl_wgpu integration) a typed surface to call into.
 	namespace WebGPUBackend {
-		// End-of-frame: close any active pass, submit the command buffer,
-		// present the surface. Called from Window::SwapBuffers. Safe to
-		// call when nothing was recorded this frame (issues a "touch"
-		// clear so the swap-chain frame still advances).
 		void Present() {
 			if (!g_Initialized) return;
 
-			// Touch-fallback: if no render pass ran this frame, do a
-			// clear-only pass on the swap-chain so the surface still
-			// advances and the visible result matches g_ClearColor.
 			if (!g_Frame.PresentedSwapChain) {
 				EnsureFrameEncoder();
 				if (EnsureSurfaceTexture()) {
@@ -632,46 +473,17 @@ namespace Index {
 				g_Surface.Present();
 			}
 
-			// Drain the Framebuffer deferred-destroy queue. Any Destroy()
-			// call during the frame moved its Dawn resources into a pending
-			// bucket so an ImGui pass holding the raw color-view pointer
-			// could finish without dereferencing freed memory. Two-frame
-			// bucket-roll happens here, after Surface::Present() has
-			// committed the frame and ImGui is no longer in flight.
 			Framebuffer::ProcessFrameEndDeferredDestroy();
-
-			// Reset frame transient state — releases the encoder, the
-			// surface view, and the surface texture handle. Next frame
-			// re-acquires them lazily on first use.
 			g_Frame = FrameState{};
-
-			// Pump Dawn's internal callbacks (validation errors arriving
-			// after submit, device-lost reasons, etc.) so they get logged
-			// in time for the next frame instead of stacking up.
 			PumpEvents();
 		}
 
-		// Returns the active wgpu::Device — exposed so per-resource
-		// _WebGPU.cpp ports (Texture2D, Framebuffer, future Shader /
-		// RenderPipeline, ...) can create GPU objects through the engine's
-		// single device without smuggling it via a Singleton or stuffing
-		// it onto Application. Declared in Backend/WebGPUBackend.hpp.
 		wgpu::Device GetDevice() { return g_Device; }
 		wgpu::Queue  GetQueue()  { return g_Queue; }
 		wgpu::TextureFormat GetSurfaceFormat() { return g_SurfaceFormat; }
 		bool HasTimestampQuery() { return g_HasTimestampQuery; }
 		bool HasBindlessTextures() { return g_HasBindlessTextures; }
-		// Returns true once Init has completed successfully — resource
-		// constructors check this before touching wgpu objects so a
-		// pre-engine-init Texture2D / Framebuffer (e.g. one constructed
-		// during static initialisation of a global asset registry) bails
-		// gracefully instead of crashing inside Dawn.
 		bool IsInitialized() { return g_Initialized; }
-
-		// ── Render-pass plumbing for renderer-side BeginRenderPass ──────
-		// Declared in Backend/WebGPUBackend.hpp; see the header for the
-		// rationale (renderers drive their own passes, backend owns the
-		// frame-wide encoder + swap-chain surface acquisition).
 
 		wgpu::CommandEncoder GetFrameEncoder() {
 			if (!g_Initialized) return nullptr;
@@ -681,10 +493,7 @@ namespace Index {
 
 		void ApplyCachedViewportToPass(wgpu::RenderPassEncoder& pass) {
 			if (!pass) return;
-			// Degenerate viewport — early frame before any SetViewport, or
-			// the renderer set a 0-sized rect. Skip rather than dispatch an
-			// invalid SetViewport (Dawn validation errors on zero w/h).
-			if (g_ViewportW == 0 || g_ViewportH == 0) return;
+			if (g_ViewportW == 0 || g_ViewportH == 0) return; // Dawn validation errors on zero w/h
 			pass.SetViewport(
 				static_cast<float>(g_ViewportX),
 				static_cast<float>(g_ViewportY),
@@ -719,11 +528,6 @@ namespace Index {
 				out.Height      = g_CurrentTarget.Height;
 			}
 
-			// If WebGPUApi.cpp's Clear path left an active clear-only pass
-			// open (it doesn't today — Clear opens + closes inline — but
-			// renderer-side code should still be defensive against future
-			// refactors), end it so the renderer's pass starts on a clean
-			// state.
 			EndActivePassIfAny();
 
 			out.Valid = true;
@@ -750,10 +554,6 @@ namespace Index {
 		}
 
 		void RestoreBoundTarget(const BoundTargetSnapshot& snap) {
-			// Flush commands recorded against the intervening target so any
-			// per-pass uniform/instance WriteBuffer copies take effect before
-			// subsequent passes on the restored target overwrite the same
-			// buffer offsets. Same rationale as BindFramebuffer's flush.
 			FlushFrameCommands();
 
 			g_CurrentTarget = TargetState{};
@@ -780,19 +580,9 @@ namespace Index {
 			bool                     HasCurrent  = false;
 		};
 
-		// Tracks every live ViewportSurface so RenderApi::SetVsync can re-apply
-		// the new present mode to all of them (CreateViewportSurface reads
-		// g_VsyncEnabled at creation time only). Main-thread-only: ImGui
-		// platform IO and scripts both run on the main thread, so no mutex.
 		std::vector<ViewportSurface*> g_LiveViewportSurfaces;
 
 		namespace {
-			// Configure a viewport's surface at a given size. Format is FIXED
-			// to g_SurfaceFormat so all viewports share the ImGui_ImplWGPU
-			// pipeline (configured for the main format) without per-format
-			// pipeline variants. Reuses the main path's ChoosePresentMode /
-			// alpha-mode preference logic so viewport vsync follows the main
-			// window's setting.
 			bool ConfigureViewportSurface(ViewportSurface* vs,
 				uint32_t width, uint32_t height)
 			{
@@ -832,14 +622,7 @@ namespace Index {
 			}
 		}
 
-		// Re-apply the current g_VsyncEnabled to every live ViewportSurface.
-		// Mirrors the main-surface fix in RenderApi::SetVsync: drop cached
-		// views/textures first, then Unconfigure, then ConfigureViewportSurface.
-		// Same Dawn requirement — re-Configure with a new presentMode is a
-		// no-op on some backends unless preceded by Unconfigure. Lives at
-		// outer-anonymous scope so RenderApi::SetVsync (in namespace Index)
-		// can resolve it through the same transparent-import path it uses
-		// for ConfigureSurface.
+		// Re-Configure requires Unconfigure first on D3D12; called by SetVsync to propagate mode change to all viewport surfaces.
 		void ReconfigureAllViewportSurfaces() {
 			for (ViewportSurface* vs : g_LiveViewportSurfaces) {
 				if (!vs || !vs->Surface || vs->Width == 0 || vs->Height == 0) continue;
@@ -958,28 +741,7 @@ namespace Index {
 		if (g_Initialized) return false;
 
 #if defined(IDX_PLATFORM_WINDOWS)
-		// Dawn's `DynamicLib::Open` (src/dawn/common/DynamicLib.cpp) calls
-		// `LoadLibraryExA(name, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-		// LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`. On Windows 11 24H2 the
-		// combination of these flags with a bare-name (no directory) DLL
-		// argument can return ERROR_INVALID_PARAMETER (87) even after
-		// SetDefaultDllDirectories has enabled safe-search mode -- the
-		// LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR flag has no well-defined
-		// "DLL load dir" when the name has no path prefix.
-		//
-		// Two-step workaround:
-		//   1. SetDefaultDllDirectories enables the safe-search mode so
-		//      Dawn's LOAD_LIBRARY_SEARCH_* flags are accepted by the
-		//      loader (this is necessary on its own; without it, Dawn's
-		//      flag combo always fails).
-		//   2. Preload d3dcompiler_47.dll + vulkan-1.dll from System32
-		//      via plain LoadLibraryW. Once loaded into the process,
-		//      Dawn's subsequent LoadLibraryEx calls for the same name
-		//      short-circuit to "already loaded" and return the existing
-		//      module handle -- bypassing whatever flag path was failing.
-		//      vulkan-1.dll is optional (Vulkan SDK isn't always installed);
-		//      d3dcompiler_47.dll ships with Windows so this should always
-		//      succeed via the default DLL search.
+		// Win11 24H2: Dawn's LoadLibraryExA fails (error 87) on bare names without SetDefaultDllDirectories first; preloading short-circuits Dawn's own calls.
 		const BOOL didSetDirs = ::SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 		const HMODULE d3dCompiler = ::LoadLibraryW(L"d3dcompiler_47.dll");
 		const HMODULE vulkan      = ::LoadLibraryW(L"vulkan-1.dll");
@@ -1002,13 +764,7 @@ namespace Index {
 		if (g_BackbufferWidth == 0)  g_BackbufferWidth  = 1280;
 		if (g_BackbufferHeight == 0) g_BackbufferHeight = 720;
 
-		// Create the wgpu::Instance. We MUST opt into TimedWaitAny here:
-		// RequestAdapterSync / RequestDeviceSync below call
-		// `g_Instance.WaitAny(future, UINT64_MAX)` to block until the
-		// adapter/device callback fires. Without the TimedWaitAny feature
-		// on the instance, any non-zero timeout argument to WaitAny is
-		// rejected with "Timeout waits are either not enabled or not
-		// supported." and the request silently fails to complete.
+		// TimedWaitAny is REQUIRED: without it WaitAny rejects any non-zero timeout and adapter/device requests silently fail.
 		const wgpu::InstanceFeatureName requiredFeatures[] = {
 			wgpu::InstanceFeatureName::TimedWaitAny,
 		};
@@ -1026,9 +782,6 @@ namespace Index {
 		if (!RequestDeviceSync())   { Shutdown(); return false; }
 		ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
 
-		// Adapter info -> About / Stats overlay strings. The native backend
-		// (D3D12 / Vulkan / Metal) Dawn picked is informational here — the
-		// per-project "preferred backend" knob comes in Stage 5.
 		wgpu::AdapterInfo info{};
 		g_Adapter.GetInfo(&info);
 		g_VendorString   = FromStringView(info.vendor);
@@ -1048,21 +801,13 @@ namespace Index {
 	}
 
 	void RenderApi::Present() {
-		// Routes to the backend-internal hook so the implementation can
-		// live in the anonymous-namespace state above without leaking
-		// FrameState's layout into the header.
 		WebGPUBackend::Present();
 	}
 
 	void RenderApi::Shutdown() {
 		if (!g_Initialized && !g_Instance) return;
 
-		// Drop frame transient state first so no in-flight pass / encoder
-		// outlives the device.
 		g_Frame = FrameState{};
-
-		// Releasing in reverse-init order keeps Dawn's internal validation
-		// happy (queue belongs to device; surface belongs to instance; etc.)
 		if (g_Surface) g_Surface.Unconfigure();
 		g_CurrentTarget = TargetState{};
 		g_Queue   = nullptr;
@@ -1094,11 +839,6 @@ namespace Index {
 	// ── Per-frame state ─────────────────────────────────────────────────────
 
 	void RenderApi::Clear(ClearFlags /*flags*/) {
-		// A Clear runs a clear-only render pass on the current target. The
-		// target's colour view is either the per-frame swap-chain surface
-		// view (lazy-acquired) or an FBO's persistent colour view (looked
-		// up by BindFramebuffer). If the target has a depth attachment
-		// (FBOs always do), it's cleared alongside.
 		EnsureFrameEncoder();
 
 		wgpu::TextureView targetColorView;
@@ -1127,11 +867,6 @@ namespace Index {
 		passDesc.colorAttachmentCount = 1;
 		passDesc.colorAttachments     = &colorAtt;
 
-		// Depth/stencil attachment — present only when the target is an FBO
-		// with a depth view. Swap-chain passes don't include depth here
-		// because Stage 1's swap-chain configuration doesn't attach one;
-		// when 3D scene rendering lands (Stage 5+) the swap chain gets a
-		// matching depth target.
 		wgpu::RenderPassDepthStencilAttachment depthAtt{};
 		if (!g_CurrentTarget.IsSwapChain && g_CurrentTarget.DepthView) {
 			depthAtt.view              = g_CurrentTarget.DepthView;
@@ -1166,10 +901,6 @@ namespace Index {
 		g_ViewportY = static_cast<uint32_t>(y < 0 ? 0 : y);
 		g_ViewportW = static_cast<uint32_t>(width  > 0 ? width  : 1);
 		g_ViewportH = static_cast<uint32_t>(height > 0 ? height : 1);
-		// SetViewport in WebGPU is a per-pass op (RenderPassEncoder::SetViewport).
-		// We just cache the rect here — Stage 2+ renderers apply it on their
-		// SetPipeline + SetViewport pair before each batched draw. Apply-now
-		// is impossible: there's no implicit pass to set it on.
 	}
 
 	void RenderApi::OnWindowResize(int width, int height) {
@@ -1186,18 +917,8 @@ namespace Index {
 			g_BackbufferWidth, g_BackbufferHeight, uw, uh);
 #endif
 
-		// Any in-flight surface texture is now invalid — Dawn detects the
-		// stale view at submit time but explicit cleanup avoids the
-		// validation chatter.
 		g_Frame = FrameState{};
-
-		// Unconfigure before Configure for the same reason SetVsync does:
-		// Dawn's D3D12 backend reuses the swap chain across re-Configure,
-		// which can preserve stale per-swap-chain flags (notably the
-		// DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING / Independent Flip state set
-		// when the window first transitioned to/from fullscreen). Doing a
-		// clean teardown forces a fresh swap chain that picks up the
-		// current g_VsyncEnabled and present-mode flags from scratch.
+		// Unconfigure before Configure: D3D12 re-Configure reuses the swap chain and can preserve stale flags; clean teardown forces a fresh one.
 		g_Surface.Unconfigure();
 		ConfigureSurface(uw, uh);
 	}
@@ -1210,22 +931,10 @@ namespace Index {
 		IDX_CORE_INFO_TAG("WebGPUApi",
 			"SetVsync: enabled={} -> unconfigure + reconfigure", enabled);
 
-		// Order: drop frame refs → Unconfigure → Configure. Dawn's
-		// Surface.Configure is a no-op for presentMode changes on D3D12
-		// unless preceded by Unconfigure (the field is only sampled on
-		// first configuration). Without this, toggling vsync off at
-		// runtime leaves the swap-chain stuck in Fifo and FPS pinned to
-		// the display refresh rate. g_Frame must reset BEFORE Unconfigure
-		// or Dawn validation complains about views outliving the surface.
+		// g_Frame MUST reset before Unconfigure (Dawn rejects views that outlive the surface).
 		g_Frame = FrameState{};
 		g_Surface.Unconfigure();
 		ConfigureSurface(g_BackbufferWidth, g_BackbufferHeight);
-
-		// ImGui multi-viewport platform windows each own a ViewportSurface
-		// that read g_VsyncEnabled at creation/resize time only — without
-		// this they'd stay locked to whatever mode was active when the user
-		// dragged the panel out. The viewport helpers live in
-		// namespace WebGPUBackend, so the call needs explicit qualification.
 		WebGPUBackend::ReconfigureAllViewportSurfaces();
 	}
 
@@ -1235,22 +944,10 @@ namespace Index {
 		g_ScissorW = static_cast<uint32_t>(width  > 0 ? width  : 0);
 		g_ScissorH = static_cast<uint32_t>(height > 0 ? height : 0);
 		g_ScissorActive = (g_ScissorW > 0 && g_ScissorH > 0);
-		// Per-pass via RenderPassEncoder::SetScissorRect — cached here for
-		// Stage 2+. WebGPU has no global "scissor disabled" state; passes
-		// default to the full attachment size which matches the engine's
-		// expectation when scissor isn't explicitly enabled.
 	}
 
 	void RenderApi::EnableScissorTest()  { g_ScissorActive = (g_ScissorW > 0 && g_ScissorH > 0); }
 	void RenderApi::DisableScissorTest() { g_ScissorActive = false; }
-
-	// ── Per-draw / per-pipeline state (Stage 2+ folds into pipelines) ───────
-	// WebGPU expresses depth, cull, blend, polygon mode, line width, color
-	// mask, and logic-op as part of the wgpu::RenderPipeline (BlendState,
-	// PrimitiveState, ColorTargetState). They aren't global state at all
-	// — there's no equivalent of glEnable here. The renderer ports
-	// (Renderer2D / GizmoRenderer / TextRenderer) will bake these into
-	// their pipelines in Stage 2; until then these are documented no-ops.
 
 	void RenderApi::EnableDepthTest()                            { /* per-pipeline via DepthStencilState; Stage 2 */ }
 	void RenderApi::DisableDepthTest()                           { /* per-pipeline via DepthStencilState; Stage 2 */ }
@@ -1264,14 +961,6 @@ namespace Index {
 		// Per-pipeline via ColorTargetState::writeMask; Stage 2.
 	}
 
-	// ── Framebuffer binding ────────────────────────────────────────────────
-	// Resolves the FBO's opaque backend ID into the wgpu::TextureView pair
-	// (colour + depth) registered by Framebuffer_WebGPU.cpp's pool. The
-	// resolved views become g_CurrentTarget — Clear opens render passes
-	// against them, and Stage 3+ renderers will too. An FBO with an
-	// unresolved ID (no matching pool entry — shouldn't happen in normal
-	// operation; would indicate use-after-destroy) falls back to the swap
-	// chain with a warning.
 	void RenderApi::BindFramebuffer(const Framebuffer& fbo) {
 		const uint32_t backendId = fbo.GetBackendId();
 		if (backendId == 0) {
@@ -1288,14 +977,6 @@ namespace Index {
 			return;
 		}
 
-		// Target actually changing? If we're already on this FBO, don't
-		// pay for a flush + resubmit. If we're switching off some other
-		// target (swap chain or a different FBO), flush the previous
-		// target's recorded commands so its per-pass queue.WriteBuffer
-		// uploads (uniform / instance buffers shared with every other
-		// renderer pass this frame) take effect before the next target
-		// stomps the same buffer offsets. See FlushFrameCommands for the
-		// full rationale.
 		const bool sameTarget = !g_CurrentTarget.IsSwapChain
 			&& g_CurrentTarget.ColorView.Get() == lookup.ColorView.Get();
 		if (!sameTarget) {
@@ -1314,11 +995,6 @@ namespace Index {
 	}
 
 	void RenderApi::BindDefaultFramebuffer() {
-		// Switching off an FBO back to the swap chain — submit the FBO's
-		// recorded commands so any uniform / instance WriteBuffer copies
-		// it queued take effect before subsequent passes overwrite the
-		// same buffer offsets. No-op when we were already on the swap
-		// chain. (Same rationale as the BindFramebuffer flush above.)
 		if (!g_CurrentTarget.IsSwapChain) {
 			FlushFrameCommands();
 		} else {

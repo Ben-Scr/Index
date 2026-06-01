@@ -21,11 +21,7 @@ namespace Index {
 		void Initialize();
 		void Shutdown();
 
-		// Returns the backend texture handle for the given asset, or 0 if none.
-		// Under WebGPU this is the raw WGPUTextureView pointer (cast to uint64_t)
-		// so the value can be passed straight to ImGui::Image as an ImTextureID.
-		// For image files, loads and caches the actual image as a thumbnail.
-		// For other types, returns 0 (caller should use DrawAssetIcon instead).
+		// Returns raw WGPUTextureView handle (cast to uint64_t) for ImGui::Image; 0 for non-image types.
 		uint64_t GetThumbnail(const std::string& absolutePath);
 
 		// Returns the cached Texture2D for an already-loaded thumbnail, or nullptr.

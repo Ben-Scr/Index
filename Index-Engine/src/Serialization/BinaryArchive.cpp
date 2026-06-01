@@ -133,9 +133,7 @@ namespace Index::Serialization {
 	}
 
 	bool BinaryArchive::RawReadBytes(void* dst, std::size_t size) {
-		// Overflow-safe bound check: comparing as `cursor + size > readSize`
-		// wraps when `size` (originating from an attacker-controlled varint)
-		// is near SIZE_MAX, letting the check pass before memcpy reads OOB.
+		// Use subtraction form to avoid size_t wrap when `size` is near SIZE_MAX (attacker-controlled varint).
 		if (m_ReadCursor > m_ReadSize || size > m_ReadSize - m_ReadCursor) return false;
 		std::memcpy(dst, m_ReadData + m_ReadCursor, size);
 		m_ReadCursor += size;
@@ -215,13 +213,6 @@ namespace Index::Serialization {
 	}
 
 	void BinaryArchive::BeginComponent(std::uint64_t nameHash, std::uint16_t version) {
-		// SceneSerializer owns the outer component framing: <u64 nameHash>
-		// <u16 version> are written/read by the entity-record loop, BEFORE
-		// it calls BeginComponent. That layout lets the reader dispatch to
-		// the right ComponentInfo (or skip cleanly if the hash is unknown)
-		// before this archive ever sees the payload. BeginComponent only
-		// frames the payload itself (<u32 payloadLen><payload...>) so the
-		// behavior is symmetric between write and read.
 		(void)nameHash;
 		m_CurrentComponentVersion = version;
 		BeginScope(/*indexFields=*/true);
@@ -237,8 +228,6 @@ namespace Index::Serialization {
 
 	bool BinaryArchive::SkipFieldValue(TypeTag tag, std::size_t& cursor) const {
 		auto require = [&](std::size_t n) {
-			// Overflow-safe bound check: see RawReadBytes — varint-derived `n`
-			// near SIZE_MAX would wrap `cursor + n` and let the check pass.
 			if (cursor > m_ReadSize || n > m_ReadSize - cursor) return false;
 			cursor += n;
 			return true;
@@ -507,11 +496,6 @@ namespace Index::Serialization {
 		} else {
 			const FieldIndexEntry* e = FindField(name);
 			if (e == nullptr || e->tag != TypeTag::Object) return;
-			// Object payload layout (after the field hash+tag header):
-			// <u32 lenInsideObject><inner-payload-of-that-length>.
-			// payloadStart points at the u32, payloadLen = 4 + len.
-			// Position cursor at the length prefix, let BeginScope consume
-			// it and build the inner field index.
 			const std::size_t savedCursor = m_ReadCursor;
 			m_ReadCursor = e->payloadStart;
 			BeginScope(/*indexFields=*/true);
@@ -545,12 +529,7 @@ namespace Index::Serialization {
 			BeginScope(/*indexFields=*/false);
 			std::uint32_t storedCount = 0;
 			if (!RawReadU32(storedCount)) { EndScope(); m_ReadCursor = savedCursor; count = 0; return; }
-			// Guard against a malformed/hostile element count. Each element scope
-			// carries at least a 4-byte length prefix, so a count far past the
-			// buffer can only be corruption — looping over e.g. 0xFFFFFFFF would
-			// be a multi-billion-iteration CPU DoS before the reads run dry. Cap
-			// to the same 16M ceiling the JSON array parser uses and treat
-			// anything larger as malformed.
+			// Cap at 16M: an attacker-controlled count of 0xFFFFFFFF would be a CPU DoS before reads run dry.
 			constexpr std::uint32_t kMaxArrayElements = 16u * 1024u * 1024u;
 			if (storedCount > kMaxArrayElements) { EndScope(); m_ReadCursor = savedCursor; count = 0; return; }
 			count = storedCount;

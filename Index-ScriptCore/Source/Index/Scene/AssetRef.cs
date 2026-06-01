@@ -3,11 +3,7 @@ using Index.Interop;
 
 namespace Index;
 
-// Display label used for empty / cleared asset references across every
-// managed wrapper's Name / ToString (TextureRef, AudioRef, Texture, Audio,
-// Font, ...). Mirror of the C++ `Index::k_NoneLabel` in
-// `Index-Engine/src/Inspector/PropertyType.hpp` — keep the two in sync if
-// you retheme one (e.g. to "<None>").
+// Mirror of C++ Index::k_NoneLabel in Inspector/PropertyType.hpp — keep in sync if rethemed.
 internal static class AssetDisplay
 {
     public const string NoneLabel = "(None)";

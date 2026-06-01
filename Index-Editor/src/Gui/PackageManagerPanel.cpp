@@ -35,10 +35,6 @@ namespace Index {
 
 	namespace {
 
-		// Hardcoded for v1. v2 promotes this to an editable Project Settings
-		// field stored in index-project.json. The publishing convention is a
-		// static index.json in a public GitHub repo (raw.githubusercontent.com
-		// CDN-caches it), so changing this string is the only deploy step.
 		constexpr const char* k_IndexRegistryUrl =
 			"https://raw.githubusercontent.com/Ben-Scr/Index-PackageRegistry/main/index.json";
 
@@ -62,6 +58,13 @@ namespace Index {
 				if (std::tolower(ca) != std::tolower(cb)) return false;
 			}
 			return true;
+		}
+
+		bool IsSha256Hex(std::string_view value) {
+			return value.size() == 64
+				&& std::all_of(value.begin(), value.end(), [](unsigned char c) {
+					return std::isxdigit(c) != 0;
+				});
 		}
 
 	} // namespace
@@ -96,11 +99,7 @@ namespace Index {
 		if (m_NewPackageWorker.joinable()) {
 			m_NewPackageWorker.join();
 		}
-		// std::async-policy futures join in their destructors, so a still-running
-		// search or install would otherwise stall the UI thread on shutdown by
-		// blocking until dotnet returns. Drain explicitly here so we know exactly
-		// when the wait happens (and can sequence it before we null out m_Manager,
-		// which the worker may still be touching).
+		// Drain futures explicitly before nulling m_Manager: std::async destructors block, which would stall the UI thread.
 		if (m_OperationFuture.valid()) {
 			m_OperationFuture.wait();
 		}
@@ -174,19 +173,7 @@ namespace Index {
 		RefreshManifestsIfDirty();
 		RefreshRegistryIfDirty();
 
-		// Cloud-install + post-install automation no longer paint an in-panel
-		// progress strip — the editor chrome polls GetActiveLoadingPopup each
-		// frame and routes the status into the shared Win32BuildProgressWindow
-		// (the same OS-level popup the build / script-compile pipelines drive),
-		// matching the Launcher's "Downloading <Project>..." indicator.
-
-		// Tab bar + content. The tab body used to be wrapped in BeginChild
-		// for an "anchored bar / scrolling content" effect, but in ImGui
-		// 1.92 the child's size param + ImGuiChildFlags interaction left
-		// the content area collapsed to zero height inside a docked tab
-		// page — so the tab strip rendered while every tab body looked
-		// blank. Letting the parent window scroll directly avoids that
-		// failure mode and matches every other panel in the editor.
+		// Tab bar without BeginChild: ImGui 1.92 collapsed child content to zero height inside docked tabs.
 		if (ImGui::BeginTabBar("##PackageManagerTabs")) {
 			if (ImGui::BeginTabItem("Search Packages")) {
 				m_TabIndex = 0;
@@ -221,10 +208,6 @@ namespace Index {
 
 	bool PackageManagerPanel::GetActiveLoadingPopup(std::string& outTitle,
 		std::string& outStage, float& outProgress) {
-		// Cloud-install runs first; post-install automation chains after it
-		// when the download succeeds. Probe in the same order so the popup
-		// transitions smoothly from "Downloading <Name>..." to "Installing
-		// <Name>..." without a single-frame disappearance in between.
 		if (m_CloudInstallTask && m_CloudInstallTask->Running.load(std::memory_order_acquire)) {
 			std::scoped_lock lock(m_CloudInstallTask->Mutex);
 			outTitle = m_CloudInstallTask->Title;
@@ -401,11 +384,6 @@ namespace Index {
 			&& m_AutomationTask->Running.load(std::memory_order_acquire);
 		const bool canInstall = (project != nullptr) && !m_IsOperating && !automating && !cloudInstalling;
 
-		// Render project-local packages whose name appears in the registry —
-		// these are cloud-installed Index packages and belong here, not under
-		// "User Packages". We let RenderIndexPackageRow handle the row UI so
-		// they look identical to engine-shipped packages (no special badge —
-		// the registry is the default source).
 		for (const auto& manifest : m_AllManifests) {
 			if (manifest.IsEngine) continue;
 			const bool inRegistry = std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
@@ -553,12 +531,7 @@ namespace Index {
 
 			{
 				std::scoped_lock lock(state->Mutex);
-				// Clear Running first, while still holding the mutex that
-				// guards Finished/PickedPath. This way any observer that
-				// sees Running==false is guaranteed to either (a) read
-				// Finished==true on its next mutex-guarded poll, or
-				// (b) be the next HandleDiskInstall caller, which now
-				// joins this thread before mutating state.
+				// Clear Running inside the mutex so any observer seeing Running==false is guaranteed to see Finished==true.
 				state->Running.store(false, std::memory_order_release);
 				state->PickedPath = std::move(picked);
 				state->Finished = true;
@@ -696,7 +669,8 @@ namespace Index {
 				&& !(m_NewPackageLayerNative && m_NewPackageLayerStandalone);
 			const bool nameOk = std::strlen(m_NewPackageNameBuffer) > 0;
 			const bool canCreate = layerOk && nameOk && !m_NewPackageIsCreating
-				&& !m_IsOperating && !automating;
+				&& !m_IsOperating && !automating
+				&& !(m_GitInstallTask && m_GitInstallTask->Running.load(std::memory_order_acquire));
 
 			if (!canCreate) ImGui::BeginDisabled();
 			if (ImGui::Button("Create", ImVec2(120, 0))) {
@@ -782,10 +756,6 @@ namespace Index {
 		m_StatusMessage = std::string("Creating package '") + newPackageName + "'...";
 		m_StatusIsError = false;
 
-		// NewPackage.py shells out to Python; its startup is environment-dependent
-		// (cold disk / CI can take seconds), so run it on a worker to keep the
-		// editor responsive. The InstallToProject + automation continuation runs
-		// on the main thread in PollNewPackageTask().
 		if (m_NewPackageWorker.joinable()) m_NewPackageWorker.join();
 		auto state = m_NewPackageTask;
 		const auto engineRootCopy = engineRoot;
@@ -827,10 +797,6 @@ namespace Index {
 
 			if (!canInstall) ImGui::BeginDisabled();
 			if (ImGui::Button("Install", ImVec2(120, 0))) {
-				// `git clone` is a network op that can take many seconds — run it on
-				// a worker so the editor stays responsive. PollGitInstallTask() runs
-				// the InstallToProject + automation continuation on the main thread
-				// once the clone finishes (project state is main-thread-only).
 				const std::string url = m_GitHubUrlBuffer;
 				const std::string packagesDir = project->PackagesDirectory;
 				if (m_GitInstallTask && !m_GitInstallTask->Running.load(std::memory_order_acquire)) {
@@ -959,10 +925,6 @@ namespace Index {
 			return;
 		}
 
-		// "Index Packages" covers BOTH engine-shipped packages and
-		// project-local packages installed from the official Index registry.
-		// Project-local packages NOT in the registry (Git/local/manual
-		// installs) live in "User Packages" instead.
 		auto isFromRegistry = [&](const std::string& name) {
 			return std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
 				[&](const RegistryEntry& e) { return e.Name == name; });
@@ -994,10 +956,6 @@ namespace Index {
 			return;
 		}
 
-		// Project-local Index packages NOT in the official registry — i.e.
-		// Git/local/manual installs. Registry-sourced ones live in the
-		// "Index Packages" section above. NuGet PackageReferences are
-		// shown in their own panel below.
 		auto isFromRegistry = [&](const std::string& name) {
 			return std::any_of(m_RegistryEntries.begin(), m_RegistryEntries.end(),
 				[&](const RegistryEntry& e) { return e.Name == name; });
@@ -1275,16 +1233,9 @@ namespace Index {
 		if (!m_AutomationTask) return;
 		if (m_AutomationTask->Running.load(std::memory_order_acquire)) return;
 
-		// Remember which package (if any) is being added so PollAutomationTask
-		// can verify it actually loaded after PackageHost::LoadInstalled() and
-		// roll back the project mutation on failure. Empty for uninstalls /
-		// generic refreshes — no rollback in that case.
+		// Track the package name so PollAutomationTask can roll back on load failure; empty = no rollback.
 		m_PendingPostInstallPackageName = justInstalledPackageName;
 
-		// Reset task state. Title is the OS-popup header — "Installing <Name>..."
-		// while a package is being added, "Refreshing Packages..." for the
-		// uninstall / generic-refresh paths where no specific package is
-		// being introduced.
 		{
 			std::scoped_lock lock(m_AutomationTask->Mutex);
 			m_AutomationTask->Title = justInstalledPackageName.empty()
@@ -1309,23 +1260,13 @@ namespace Index {
 		// shared_ptr keeps task state alive if panel shuts down mid-flight.
 		auto state = m_AutomationTask;
 		m_AutomationWorker = std::thread([state]() {
-			// Precompiled package model: there's nothing to build at install
-			// time — the .dll the user references was placed on disk by the
-			// extract step already. PollAutomationTask still triggers a
-			// PackageHost::LoadInstalled() rescan after this worker finishes,
-			// so native .Native.dll(s) get loaded into the running editor.
-			// Future work (not blocking): copy prebuilt deps to a known scan
-			// path if PackageHost can't find them in <project>/Packages/...
 			{
 				std::scoped_lock lock(state->Mutex);
 				state->Stage = "Refreshing package host...";
 				state->Progress = 0.5f;
 			}
 
-			// Tiny pause so the spinner is visible for at least one frame —
-			// otherwise the user clicks Install and the strip flashes from
-			// "Installing..." straight to "Done", which feels glitchy.
-			std::this_thread::sleep_for(std::chrono::milliseconds(80));
+			std::this_thread::sleep_for(std::chrono::milliseconds(80)); // ensure spinner is visible for at least one frame.
 
 			{
 				std::scoped_lock lock(state->Mutex);
@@ -1363,25 +1304,15 @@ namespace Index {
 			m_AutomationWorker.join();
 		}
 
-		// Snapshot + clear the pending-install state up-front: even if
-		// LoadInstalled throws (it shouldn't — the SEH guard in PackageHost
-		// keeps faults contained) we don't want the name to linger and
-		// cause a phantom rollback on a later automation.
+		// Clear up-front so a fault in LoadInstalled doesn't leave the name and cause a phantom rollback later.
 		const std::string pendingInstall = std::move(m_PendingPostInstallPackageName);
 		m_PendingPostInstallPackageName.clear();
 
 		if (success) {
-			// Hot-load new package DLLs so their components appear in the Add Component popup without a restart.
 			const size_t newlyLoaded = PackageHost::LoadInstalled();
 
-			// Crash-safety rollback: if we just installed a package and it
-			// didn't make it into PackageHost's loaded list, PackageHost's
-			// SEH guard caught a fault (or LoadLibrary returned null) and
-			// skipped it. Without rollback the broken package stays in
-			// index-project.json's `packages` array and PackageHost::LoadAll()
-			// would attempt to load it again on every editor relaunch — the
-			// "destroyed project" symptom we're fixing. Roll it back so the
-			// user's project keeps working, then surface a clear error.
+			// SEH rollback: if the DLL failed to load it stays in index-project.json causing repeated crash-on-open;
+			// remove it from the allow-list immediately so the project stays usable.
 			bool didRollback = false;
 			if (!pendingInstall.empty() && !PackageHost::IsPackageLoaded(pendingInstall)) {
 				IndexProject* project = ProjectManager::GetCurrentProject();
@@ -1392,13 +1323,6 @@ namespace Index {
 			}
 
 			if (didRollback) {
-				// LoadInstalled's failure modes are: incompatible ABI (most
-				// common — package built against a different engine), missing
-				// import (the engine the package references doesn't export
-				// what it expects), or an OnLoad that returned-and-immediately-
-				// faulted. The host's IDX_CORE_ERROR log carries the precise
-				// diagnostic; this popup tells the user "your project is OK,
-				// here's what happened".
 				m_StatusMessage.clear();
 				m_StatusIsError = false;
 				m_InstallErrorMessage =
@@ -1528,9 +1452,6 @@ namespace Index {
 	// ── Cloud Registry ─────────────────────────────────────────────────────────────
 
 	namespace {
-		// Slurp a UTF-8 file into a string. Used to read the registry cache
-		// after the C# tool writes it. Returns false if the file is missing
-		// or unreadable; the caller surfaces a status message in that case.
 		bool ReadFileUtf8(const std::filesystem::path& path, std::string& outText) {
 			std::ifstream in(path, std::ios::binary);
 			if (!in.is_open()) return false;
@@ -1540,18 +1461,10 @@ namespace Index {
 			return true;
 		}
 
-		// Per-project cache path: <project>/.index/registry-cache.json.
-		// Hidden ".index/" folder keeps tool state out of the user's
-		// scene/assets browsing path while staying inside the project so
-		// it travels with VCS (a .gitignore entry for ".index/" is the
-		// publisher's responsibility).
 		std::filesystem::path RegistryCachePath(const IndexProject& project) {
 			return std::filesystem::path(project.RootDirectory) / ".index" / "registry-cache.json";
 		}
 
-		// Build the argv for invoking Index-PackageTool, handling both the
-		// native-exe and the .dll-via-dotnet forms the same way LanguageDownloader
-		// does. Caller appends the subcommand + args.
 		std::vector<std::string> BuildPackageToolBase(const std::filesystem::path& toolPath) {
 			std::vector<std::string> command;
 			if (toolPath.extension() == ".dll") {
@@ -1613,7 +1526,8 @@ namespace Index {
 					else if (name == "csharp") entry.HasCSharpLayer = true;
 				}
 			}
-			if (entry.Name.empty() || entry.Version.empty() || entry.DownloadUrl.empty()) {
+			if (entry.Name.empty() || entry.Version.empty() || entry.DownloadUrl.empty()
+				|| !IsSha256Hex(entry.Sha256)) {
 				continue; // skip malformed rows; required fields missing
 			}
 			outEntries.push_back(std::move(entry));
@@ -1627,9 +1541,6 @@ namespace Index {
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
-			// Without a project we have no cache location and no install target.
-			// Clear dirty so we don't spin every frame; a project-open event
-			// (or the user clicking Refresh) re-triggers.
 			m_RegistryDirty = false;
 			m_RegistryEntries.clear();
 			m_RegistryStatusMessage = "Open a project to browse the Index registry.";
@@ -1681,10 +1592,6 @@ namespace Index {
 			std::scoped_lock lock(state->Mutex);
 			state->Success = result.Succeeded();
 			if (!state->Success) {
-				// The C# tool prefixes its own "Registry fetch failed:" /
-				// "Registry fetch timed out." message; only synthesize one
-				// here if it didn't get a chance to (process wrapper timed
-				// out before the tool wrote anything).
 				if (result.TimedOut && result.Output.empty()) {
 					state->Error = "Registry fetch timed out.";
 				}
@@ -1770,6 +1677,11 @@ namespace Index {
 		}
 		if (!m_CloudInstallTask) return;
 		if (m_CloudInstallTask->Running.load(std::memory_order_acquire)) return;
+		if (!IsSha256Hex(entry.Sha256)) {
+			m_StatusMessage = "Registry package '" + entry.Name + "' has no valid SHA-256 digest.";
+			m_StatusIsError = true;
+			return;
+		}
 
 		const std::filesystem::path toolPath = Index::PackageTool::ResolveExecutable();
 		if (toolPath.empty()) {
@@ -1785,9 +1697,6 @@ namespace Index {
 
 		{
 			std::scoped_lock lock(m_CloudInstallTask->Mutex);
-			// Title drives the OS-level Win32BuildProgressWindow header; stays
-			// "Downloading <Name>..." across both download + verify phases so
-			// the popup label matches what the user clicked Install on.
 			m_CloudInstallTask->Title = "Downloading " + entry.Name + "...";
 			m_CloudInstallTask->Stage = "Downloading " + entry.Name + " v" + entry.Version + "...";
 			m_CloudInstallTask->Progress = 0.1f;
@@ -1813,9 +1722,6 @@ namespace Index {
 			command.push_back(sha256);
 			command.push_back(packagesDir);
 
-			// Bump the stage so the UI shows progress while dotnet works. The
-			// C# tool also emits @event=progress lines we could parse to drive
-			// a real bytes-based bar; for v1 the coarse stage labels are enough.
 			{
 				std::scoped_lock lock(state->Mutex);
 				state->Stage = "Downloading " + expectedName + "...";
@@ -1832,9 +1738,6 @@ namespace Index {
 				state->PackageName = expectedName;
 			}
 			else {
-				// Tool prefixes its own "Registry download failed:" or
-				// "SHA-256 mismatch ..." message; only synthesize if it
-				// didn't get a chance to.
 				if (result.TimedOut && result.Output.empty()) {
 					state->Error = "Cloud install timed out.";
 				}
@@ -1884,10 +1787,6 @@ namespace Index {
 			return;
 		}
 
-		// Worker landed the package on disk. Now run the same flow the
-		// on-disk Install button uses: update the project allow-list, write
-		// index-project.json, regenerate IndexPackages.props, then kick the
-		// post-install hot-load.
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (!project) {
 			m_StatusMessage = "Downloaded " + packageName + " but no project is open to install it into.";

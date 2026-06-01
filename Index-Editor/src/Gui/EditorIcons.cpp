@@ -66,10 +66,7 @@ namespace Index {
 		entry.Size = snapped;
 
 		if (!entry.Texture.IsValid()) {
-			// Negative-cache: insert an empty entry so the next per-frame call doesn't
-			// retry the load (which constructs a Texture2D, opens stb_image, hits the
-			// missing file, and warn-logs every frame). The cached entry has handle 0
-			// and the cache lookup above hands it back unchanged.
+			// Negative-cache: empty entry prevents per-frame retry (Texture2D construction + stb_image + warn-log on every call).
 			IDX_CORE_WARN("Editor icon not found: {}", fullpath);
 			s_Icons[key] = std::move(entry);
 			return 0;

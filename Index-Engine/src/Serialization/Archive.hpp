@@ -17,15 +17,7 @@ namespace Index::Serialization {
 		Read
 	};
 
-	// On-wire type tag for a single Field record in BinaryArchive. The values
-	// are persisted in saved scenes — DO NOT renumber or remove existing tags
-	// without bumping the file's fileVersion in the IDXBIN2 header.
-	//
-	// Tags are also used by CaptureArchive (in-memory) so JsonArchive's
-	// override capture path emits typed records without needing a parallel
-	// enum. Keep the set minimal — anything componentSerialize wants to write
-	// reduces to one of these primitive shapes, or to a length-prefixed
-	// OBJECT / ARRAY recursion.
+	// On-wire type tag — values are persisted; DO NOT renumber or remove without bumping kBinaryFileVersion.
 	enum class TypeTag : std::uint8_t {
 		Null    = 0,
 		Bool    = 1,
@@ -45,20 +37,7 @@ namespace Index::Serialization {
 		Array   = 15
 	};
 
-	// IArchive is the bidirectional, format-agnostic visitor that every
-	// component implements once. The same Serialize(IArchive&) method is
-	// called for both writing and reading — concrete backends (JsonArchive,
-	// BinaryArchive, CaptureArchive) decide what each Field(...) call means.
-	//
-	// Read semantics for Field(name, v&): when reading and the named field
-	// is absent in the payload, `v` is left unchanged. This matches the
-	// existing JSON deserialization pattern (AsDoubleOr(c.x)) and gives
-	// forward-compatible field evolution for free — adding a new Field call
-	// in a component method does NOT invalidate older saved files.
-	//
-	// BeginComponent / EndComponent are framing calls used by SceneSerializer,
-	// not by the component author. The component's Serialize body only calls
-	// Field / Object / Array.
+	// Read semantics: absent fields leave `v` unchanged — adding new Field calls never invalidates older saves. BeginComponent/EndComponent are for SceneSerializer, not component authors.
 	class INDEX_API IArchive {
 	public:
 		virtual ~IArchive() = default;
@@ -87,12 +66,7 @@ namespace Index::Serialization {
 		virtual void Field(std::string_view name, std::string& v) = 0;
 		virtual void Field(std::string_view name, UUID& v) = 0;
 		virtual void Field(std::string_view name, Color& v) = 0;
-		// glm::vec2 / glm::vec3 are intentionally NOT in this interface for v1:
-		// the existing JSON layout flattens them as scalar fields (posX/posY,
-		// not pos:{x,y}), and components migrating from the hardcoded path need
-		// to call Field twice with those exact scalar names to preserve byte
-		// parity with old saves. The Vec2 / Vec3 TypeTag values are reserved
-		// for a future revision where the binary backend can pack them.
+		// Vec2/Vec3 deliberately absent: JSON layout flattens them as scalar fields (posX/posY) for back-compat. TypeTag values reserved for a future packed revision.
 
 		// Nested object: backend wraps a named scope; `fn` calls Field/Object/Array.
 		// On read, missing objects skip the fn call entirely (no defaults overwritten).

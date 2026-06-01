@@ -5,25 +5,7 @@
 
 namespace Index {
 
-	// In-engine ImGui dashboard for the Index profiler.
-	//
-	// Layout:
-	//   [Track in Background]  [Sampling Hz: __]  [Tracking Span: __]
-	//   ─────────────────────────────────────────────────────────────
-	//   [✓] FPS          Current 142.0  Avg 140.3  Min 60  Max 200  [graph]
-	//   [✓] Frame        Current  6.9ms Avg  7.1   Min 4   Max 16   [graph]
-	//   [✓] Physics      ...
-	//   ...
-	//
-	// Reads from Index::Profiler::AllModules() each frame; the panel itself
-	// holds zero collection state. When the window is collapsed or closed
-	// it sets Profiler::SetPanelVisible(false), which (combined with the
-	// Track-in-Background toggle) gates whether modules continue to push
-	// samples.
-	//
-	// Always compilable (the .cpp is gated internally on INDEX_PROFILER_ENABLED
-	// — when stripped it renders a single "Profiler disabled" line so the
-	// menu item still works).
+	// Always compilable: the .cpp is gated on INDEX_PROFILER_ENABLED; when stripped it renders a "Profiler disabled" stub so the menu item still works.
 	class ProfilerPanel {
 	public:
 		void Initialize();
@@ -44,10 +26,6 @@ namespace Index {
 		bool m_SettingsLoaded = false;
 
 		void RenderModuleRow(const std::string& moduleName);
-		// Implementation helper. Takes the registered module name (used to
-		// look up the live ProfilerModule in the registry), the human-
-		// friendly label shown in the panel, and the unit ("ms", "MB", or
-		// empty for counts).
 		void RenderModuleRowImpl(const char* registeredName,
 			const char* displayLabel,
 			const char* unit);

@@ -4,39 +4,10 @@ using System.Threading;
 
 namespace Index.Jobs.Internal;
 
-// Per-thread, per-type pool of pre-allocated boxes used to dispatch jobs
-// to the .NET ThreadPool without allocating a closure on every Schedule.
-//
-// Schedule path, before:
-//
-//     Job.Schedule(new MyJob { ... });
-//     // → Task.Factory.StartNew(() => job.Execute(), ...)
-//     // → ONE closure allocation (boxes `job`) per call
-//
-// Schedule path, with these boxes:
-//
-//     Job.Schedule(new MyJob { ... });
-//     // → JobBox<MyJob> box = JobBoxPool<MyJob>.Rent();
-//     //   box.Job = job; box.Token = ct;
-//     //   Task.Factory.StartNew(box.ExecuteAction, ...)
-//     //   (ExecuteAction is cached on the box itself, target == box)
-//     // → ZERO allocations on the steady-state path (pool reused)
-//
-// The box's Execute*Action delegate is built once in the constructor and
-// always points at the box's own Run method, so we can hand it to the
-// task scheduler without any per-call delegate allocation either.
-//
-// Thread-static, per-type pool: a worker thread that schedules MyJob a
-// lot ends up with a Stack<JobBox<MyJob>> holding ~Cap warm boxes,
-// reused across schedules. Bounded so a one-off Schedule from a worker
-// thread doesn't permanently grow the pool.
-
 internal static class JobPoolConfig
 {
     internal const int Cap = 4;
 }
-
-// ── IJob (single Execute) ─────────────────────────────────────────────
 
 internal sealed class JobBox<TJob> : JobNativeDispatch.IJobBox where TJob : struct, IJob
 {
@@ -105,8 +76,6 @@ internal static class JobBoxPool<TJob> where TJob : struct, IJob
         }
     }
 }
-
-// ── IJobFor sequential (Execute over [0, Length)) ─────────────────────
 
 internal sealed class JobForBox<TJob> : JobNativeDispatch.IJobBox where TJob : struct, IJobFor
 {
@@ -184,8 +153,6 @@ internal static class JobForBoxPool<TJob> where TJob : struct, IJobFor
     }
 }
 
-// ── IJobParallelFor (per-batch invocations from native parallel-for) ──
-
 internal sealed class JobParallelForBox<TJob> : JobNativeDispatch.IJobRangeBox where TJob : struct, IJobFor
 {
     internal TJob Job;
@@ -202,9 +169,6 @@ internal sealed class JobParallelForBox<TJob> : JobNativeDispatch.IJobRangeBox w
         ExecuteAction = Run;
     }
 
-    // .NET Task fallback path — only hit when native bindings haven't
-    // been wired (e.g. unit tests / mock harness). The native path uses
-    // InvokeRange() below for per-batch dispatch.
     private void Run()
     {
         try
@@ -267,13 +231,6 @@ internal static class JobParallelForBoxPool<TJob> where TJob : struct, IJobFor
     }
 }
 
-// ── Action<int,int> range-body adapter ────────────────────────────────
-//
-// Used by Job.ScheduleParallelForRange when the caller hands us an
-// untyped Action<int,int>. Wraps the delegate in an IJobRangeBox so the
-// native-pool dispatcher can dispatch it the same way it dispatches
-// JobParallelForBox<TJob>. Pool is per-thread, capped, single shape —
-// the same Cap as the typed box pools.
 internal sealed class RangeBodyBox : JobNativeDispatch.IJobRangeBox
 {
     internal Action<int, int>? Body;

@@ -1,21 +1,5 @@
 #pragma once
 
-// Shared API surface for Index packages.
-//
-// Every engine_core / standalone_cpp package compiles into its own SharedLib
-// (`Pkg.<Name>.Native`). The runtime PackageHost LoadLibrary's the binary and
-// resolves the standard entry points by name. Each package's TUs need to
-// dllexport those entry points so GetProcAddress can find them.
-//
-// Including this header in a package source file gives it:
-//   - INDEX_PACKAGE_API           — visibility macro for exported symbols.
-//   - IndexPackage_OnLoad         — declared entry point (the package defines it).
-//   - IndexPackage_OnUnload       — optional entry point.
-//
-// INDEX_PACKAGE_API is always export-side because this header is only included
-// from package source. Consumers of a package's exports must use platform
-// dlopen / GetProcAddress, not link-time imports.
-
 #if defined(_WIN32)
     #define INDEX_PACKAGE_API __declspec(dllexport)
 #else

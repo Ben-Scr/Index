@@ -16,11 +16,6 @@ namespace Index {
 		// Hard cap recursion depth so a corrupted hierarchy can't infinite-loop.
 		constexpr int kMaxHierarchyDepth = 1024;
 
-		// Compose `child`'s authored Local* against `parent`'s world transform.
-		// Box2D and the Axiom-Physics body components own their entity's world
-		// position/rotation, so we leave their fields untouched — but we still
-		// recurse into their children with the body-driven world transform as
-		// the parent so the visual subtree follows the body.
 		void ProcessSubtree(entt::registry& registry, EntityHandle entity,
 			const Transform2DComponent* parentWorld, int depth)
 		{
@@ -46,9 +41,7 @@ namespace Index {
 			}
 
 			if (registry.all_of<HierarchyComponent>(entity)) {
-				// Snapshot the children list so structural edits during the
-				// pass (rare, but possible if a script mutates) don't iterate
-				// over invalidated storage.
+				// Snapshot children so a script mutating the hierarchy during the pass doesn't invalidate the iterator.
 				const auto childrenSnapshot = registry.get<HierarchyComponent>(entity).Children;
 				for (EntityHandle child : childrenSnapshot) {
 					ProcessSubtree(registry, child, tr, depth + 1);
@@ -102,10 +95,7 @@ namespace Index {
 				return;
 			}
 
-			// Scope sits *after* the early-exit so a non-zero "TransformHierarchy"
-			// reading in the panel means the gate is being defeated — i.e. some
-			// caller is marking transforms dirty every frame. With 100k empty
-			// entities and no scripts touching transforms, this should read ~0.0.
+			// Non-zero profiler reading here means something marks transforms dirty every frame.
 			INDEX_PROFILE_SCOPE("TransformHierarchy");
 
 			std::vector<EntityHandle> dirtyTransforms = scene.ConsumeDirtyTransformEntities();
@@ -117,18 +107,6 @@ namespace Index {
 				return;
 			}
 
-			// Two-view split: previously we scanned every Transform2D and
-			// did a per-entity `all_of<HierarchyComponent>` probe just to
-			// learn whether the entity even had a parent slot. That probe
-			// was the per-frame O(N) cost flagged in the perf audit. With
-			// the split below entt's storage filtering does the partition
-			// for free — entities without HierarchyComponent are all roots
-			// by definition, and the remaining ones already have the
-			// component in scope so we read Parent directly.
-			//
-			// Children are still processed recursively from each root via
-			// ProcessSubtree, so non-root entities are visited the same way
-			// they were before.
 			auto orphanRoots = registry.view<Transform2DComponent>(entt::exclude<HierarchyComponent>);
 			for (auto entity : orphanRoots) {
 				ProcessSubtree(registry, entity, nullptr, 0);

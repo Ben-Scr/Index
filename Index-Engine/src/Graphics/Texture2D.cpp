@@ -15,41 +15,7 @@
 #include <utility>
 #include <vector>
 
-// =============================================================================
-// Texture2D — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// `m_Tex` is the raw WGPUTextureView pointer (cast to uint64_t) for this
-// texture, and indexes into a TU-local pool of
-//   { wgpu::Texture, wgpu::TextureView, wgpu::Sampler, width, height,
-//     filter, wrap-u, wrap-v }
-// keyed by that same pointer value. 0 stays reserved as the "unset"
-// sentinel — the existing `IsValid() => m_Tex != 0` contract from the
-// header is preserved. Storing the raw pointer in m_Tex means editor
-// code that passes `tex->GetHandle()` as an ImTextureID to ImGui::Image
-// hands imgui_impl_wgpu a real Dawn handle, rather than a pool ID that
-// imgui_impl_wgpu would reinterpret_cast and dereference as a pointer
-// (crashing with 0xC0000005 at addresses like 0x1, 0x2, ...).
-//
-// What this DOES:
-//   * Decodes file via stbi_load, forces RGBA8.
-//   * Creates a 2D wgpu::Texture with TextureBinding | CopyDst usage so it
-//     can be sampled and uploaded into.
-//   * Uploads via wgpu::Queue::WriteTexture — one upload per Load(); no
-//     staging buffer is exposed by the wrapper for the simple case.
-//   * Creates a default 2D wgpu::TextureView covering the full mip range.
-//   * Creates a wgpu::Sampler matching the Filter/Wrap inputs and caches
-//     it on the pool entry. SetFilter / SetWrap rebuilds the sampler on
-//     change (WebGPU samplers are immutable; you replace them).
-//
-// What this does NOT do yet:
-//   * Mipmap chain. Mipmap-gen on Dawn is "render to each mip level" or
-//     "use a compute shader" — neither is in the engine yet. Single-mip
-//     uploads are correct for now; revisit when actual scenes start
-//     needing minification quality.
-//   * sRGB. Deferred.
-//   * GPU readback. GetImageData re-decodes file-backed textures from disk;
-//     generated GPU-only textures still need a dedicated readback path.
-// =============================================================================
+// Texture2D WebGPU impl. m_Tex stores the raw WGPUTextureView pointer as uint64_t — this lets imgui_impl_wgpu receive a real Dawn handle directly from GetHandle() rather than a pool index it would crash dereferencing.
 
 namespace Index {
 
@@ -65,12 +31,6 @@ namespace Index {
 			Wrap              CachedWrapU  = Wrap::Clamp;
 			Wrap              CachedWrapV  = Wrap::Clamp;
 		};
-		// Pool keyed by the raw WGPUTextureView pointer (cast to uint64_t).
-		// Storing the pointer in Texture2D::m_Tex means editor ImGui::Image
-		// callers can pass tex->GetHandle() straight to imgui_impl_wgpu
-		// (which casts it back to WGPUTextureView and dereferences). The
-		// pointer is also unique per GpuTexture entry for the duration of
-		// its lifetime, so it works as a stable map key.
 		std::unordered_map<uint64_t, GpuTexture> g_Textures;
 
 		uint64_t RegisterTexture(GpuTexture&& tex) {
@@ -120,11 +80,6 @@ namespace Index {
 		}
 	}
 
-	// ── WebGPUBackend pool exports + sampler factory ────────────────────────
-	// Definitions for the lookup / sampler-construction declarations in
-	// Backend/WebGPUBackend.hpp. Living next to the pool that owns the
-	// state means callers can't see the pool's storage layout — they get
-	// just the wgpu handles + metadata.
 
 	namespace WebGPUBackend {
 
@@ -284,10 +239,6 @@ namespace Index {
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 
-		// Create the 2D texture. Usage = TextureBinding (sampled in shaders)
-		// + CopyDst (target of queue.WriteTexture). RenderAttachment isn't
-		// needed here — this class is for sampled images, not render targets;
-		// Framebuffer_WebGPU.cpp owns the render-target side.
 		wgpu::TextureDescriptor texDesc{};
 		texDesc.dimension       = wgpu::TextureDimension::e2D;
 		texDesc.size            = { static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1 };
@@ -304,12 +255,7 @@ namespace Index {
 			return false;
 		}
 
-		// Upload via Queue::WriteTexture. Dawn copies the source bytes into
-		// an internal staging buffer, so we can stbi_image_free immediately
-		// after the call returns.
-		// Dawn renamed these structs mid-2025: ImageCopyTexture ->
-		// TexelCopyTextureInfo, TextureDataLayout -> TexelCopyBufferLayout.
-		// Layout + semantics are unchanged; only the type names moved.
+		// Dawn mid-2025 rename: ImageCopyTexture -> TexelCopyTextureInfo, TextureDataLayout -> TexelCopyBufferLayout (layout unchanged). stbi pixels freed immediately after WriteTexture (Dawn has its own staging buffer).
 		wgpu::TexelCopyTextureInfo dst{};
 		dst.texture  = texture;
 		dst.mipLevel = 0;
@@ -355,17 +301,9 @@ namespace Index {
 		return true;
 	}
 
-	// Renderer-side submit path is per-pipeline in WebGPU (BindGroup +
-	// SetPipeline before the draw); Texture2D::Submit is a no-op. The
-	// renderers call `WebGPUBackend::LookupTexture2D(m_Tex)` themselves
-	// at submit time to fetch the view + sampler for the active bind
-	// group.
 	void Texture2D::Submit(uint8_t /*unit*/) const {}
 
-	// Sampler mutations rebuild the wgpu::Sampler on the pool entry — the
-	// next bind-group construction picks up the new one. Samplers are
-	// immutable in WebGPU, so we can't "update" an existing one; replacing
-	// is the spec-correct operation.
+	// WebGPU samplers are immutable; SetFilter/SetWrapU/V replace the pool entry sampler rather than modifying it.
 	void Texture2D::SetFilter(Filter filter) {
 		m_Filter = filter;
 		if (GpuTexture* slot = TryLookup(m_Tex)) {

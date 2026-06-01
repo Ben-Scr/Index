@@ -23,10 +23,6 @@ namespace Index {
 
 	class INDEX_API Renderer2D : public IRenderer {
 	public:
-		// unique_ptr<GpuTimer> with a forward-declared GpuTimer requires the
-		// destructor to be defined where GpuTimer is complete. Out-of-line
-		// in Renderer2D.cpp does that without forcing every Renderer2D.hpp
-		// consumer to also include GpuTimer.hpp.
 		Renderer2D();
 		~Renderer2D() override;
 		Renderer2D(const Renderer2D&) = delete;
@@ -37,14 +33,7 @@ namespace Index {
 		void EndFrame() override;
 		void Shutdown() override;
 
-		// Called once per Application frame, AFTER SwapBuffers (i.e. after
-		// the WebGPU Submit). The GpuTimer uses this to issue MapAsync on
-		// readbacks whose Copy was encoded in the just-finished frame —
-		// doing the MapAsync earlier (in BeginFrame, EndFrame, or inline
-		// in ResolveCurrentFrame) would race against the Submit and Dawn
-		// validates "used in submit while mapped", invalidating the
-		// command buffer and dropping every draw on the floor. Safe to
-		// call when GpuTimer is unavailable.
+		// MUST call after SwapBuffers: GpuTimer needs MapAsync deferred past the Submit to avoid 'used in submit while mapped'.
 		void OnAfterPresent();
 		static void ClearSceneCache(const Scene* scene);
 		void SetEnabled(bool enabled) { m_IsEnabled = enabled; }
@@ -57,11 +46,6 @@ namespace Index {
 			m_OutputHeight = height;
 		}
 
-		// Render takes Scene&, not const Scene&: Renderer2D maintains a
-		// per-frame StaticRenderData cache and clears Transform2D dirty
-		// flags, both of which are real mutations. A const-Scene parameter
-		// would force a const_cast inside that hides those writes from
-		// callers — the explicit non-const signature documents them.
 		void RenderScene(Scene& scene);
 		void RenderSceneWithVP(Scene& scene, const glm::mat4& vp, const AABB& viewportAABB);
 
@@ -74,18 +58,6 @@ namespace Index {
 		using SceneProvider = std::function<void(const std::function<void(Scene&)>&)>;
 		void SetSceneProvider(SceneProvider provider) { m_SceneProvider = std::move(provider); }
 
-		// External instance contribution. Each contributor is invoked once per
-		// scene per frame DURING the renderer's collect phase — after built-in
-		// particles and sprites are appended, before the sort. Lets packages
-		// (e.g. Tilemap2D) push instances into the same per-frame batch so
-		// they participate in sort order, frustum culling, and texture
-		// batching like any built-in renderable. The contributor receives:
-		//   • the scene currently being rendered
-		//   • the camera viewport AABB (for cheap culling)
-		//   • a vector to emplace_back into
-		// Multiple contributors are called in registration order; nothing
-		// stops one from being registered twice (each registration gets its
-		// own token).
 		using InstanceContributor = std::function<void(const Scene& scene, const AABB& viewportAABB, std::vector<Instance44>& outInstances)>;
 		// Returns a token for later removal. Tokens are non-zero on success.
 		static uint32_t RegisterInstanceContributor(InstanceContributor contributor);
@@ -117,25 +89,8 @@ namespace Index {
 		// callers don't need to thread TextRenderer through their own code.
 		std::unique_ptr<TextRenderer> m_TextRenderer;
 
-		// Post-processing intermediate FBO + processor. The scene FBO is
-		// recreated to match the caller's target dimensions on first frame
-		// (or whenever the caller's size changes). PostProcessor owns the
-		// blit pipeline + future effect pipelines. Both stay zero-cost when
-		// the global EnablePostProcessing toggle is off — RenderSceneWithVP
-		// skips the redirect entirely and falls through to the legacy
-		// straight-to-caller render path.
 		Framebuffer    m_SceneFbo;
-		// Aspect-locked-only intermediate: when the runtime has a Window
-		// aspect lock active AND a PostProcessing2DComponent with at least
-		// one effect enabled, PostProcessor::Run's effect chain would
-		// otherwise dump its final pass straight onto the swap chain at
-		// full size (RunEffectPass doesn't apply the cached viewport).
-		// Route the final effect into this FBO instead, then do a
-		// PostProcessor::Blit composite to the swap chain — Blit applies
-		// the cached sub-rect viewport so the bars stay black and the
-		// content lands at the locked aspect. Sized to the sub-rect
-		// (matches m_SceneFbo); zero-cost when the runtime is not
-		// aspect-locked (Recreate is skipped).
+		// Letterbox target: when aspect-lock is active, routes post-effects here then Blits with the sub-rect viewport so bars stay black.
 		Framebuffer    m_LetterboxOutputFbo;
 		PostProcessor  m_PostProcessor;
 

@@ -8,10 +8,7 @@
 
 namespace Index {
 
-    // Slot record for ShaderManager's slot table. Held by pointer so that
-    // s_Shaders.push_back never moves a live Shader (which owns GPU state
-    // and would have to walk move ctors on every vector growth). The cost
-    // is one indirection on GetShader, which is once-per-bind.
+    // unique_ptr<Shader> so vector growth never move-constructs a live GPU object.
     struct ShaderEntry {
         ShaderEntry() = default;
         ShaderEntry(ShaderEntry&&) noexcept = default;

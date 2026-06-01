@@ -12,10 +12,7 @@
 
 namespace Index::Localization {
 
-	// One file the downloader should fetch. Verified after fetch by length and
-	// (if set) SHA-256. The downloader stages every item to a `.tmp` sibling
-	// and only renames-into-place after every check passes — a failed item
-	// never replaces the existing user-writable file.
+	// Staged to a .tmp sibling and renamed-into-place only after length/SHA-256 checks pass; a failed item never overwrites the existing file.
 	struct DownloadItem {
 		std::string Url;
 		std::filesystem::path TargetPath;

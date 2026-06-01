@@ -48,11 +48,6 @@ namespace Index {
 
 	namespace {
 
-		// Common helper for hybrid inspectors: render every PropertyDescriptor
-		// the component declared in BuiltInComponentRegistration.cpp, then the
-		// caller appends its own extras. The component's display name is the
-		// field-key prefix so reference fields don't collide with same-named
-		// fields on other components.
 		template <typename TComponent>
 		void DrawPropertiesFor(std::span<const Entity> entities) {
 			const auto* info = SceneManager::Get().GetComponentRegistry().GetInfo<TComponent>();
@@ -60,10 +55,6 @@ namespace Index {
 			PropertyDrawer::DrawAll(entities, info->properties, info->displayName);
 		}
 
-		// ── RectTransform2D layout helpers ───────────────────────────────
-		// Sample N channels across `entities` via getChan(entity, channel).
-		// Out: per-channel value of entities[0] + per-channel mixed mask.
-		// Used by both DrawColumnLabeledFloatRow and DrawAxisLabeledVecMulti.
 		template <int N, typename ChannelGet>
 		void SampleVecChannels(std::span<const Entity> entities, ChannelGet&& getChan,
 			float (&outValues)[N], bool (&outMixed)[N])
@@ -80,15 +71,6 @@ namespace Index {
 			}
 		}
 
-		// Layout: full inspector width split into N columns; each column is
-		// a stacked (header text, drag-float) pair (Unity's Pos X / Pos Y).
-		// On edit, only the touched channel is written per entity so
-		// untouched channels survive across the selection.
-		// `perColumnDisabled` (optional, may be null) gates each column
-		// individually behind ImGui::BeginDisabled — used by the
-		// RectTransform inspector to lock Width when ContentSizeFitter
-		// or a no-wrap TextRenderer owns the rect, without losing the
-		// drag affordance on the sibling Height column.
 		template <int N, typename ChannelGet, typename ChannelSet>
 		bool DrawColumnLabeledFloatRow(const char* rowId,
 			const char* (&columnLabels)[N],
@@ -140,10 +122,6 @@ namespace Index {
 			return anyChanged;
 		}
 
-		// Layout: standard inspector row (label column + value column), with
-		// the value column carrying N (axis-letter, drag-float) pairs side
-		// by side. Used for the Min / Max / Pivot / Scale rows where the
-		// row's identity comes from the left label.
 		template <int N, typename ChannelGet, typename ChannelSet>
 		bool DrawAxisLabeledVecMulti(const char* rowLabel,
 			const char* (&axisLabels)[N],
@@ -231,20 +209,12 @@ namespace Index {
 
 	} // namespace
 
-	// ── SpriteRenderer ───────────────────────────────────────────────
-	// Properties (Color, SortingOrder, SortingLayer, Texture) flow through
-	// the auto-drawer. Texture picker uses the unified ReferencePicker
-	// (thumbnail style). The extras here are the per-texture preview +
-	// filter/wrap controls that live on Texture2D, not the component.
-
 	void DrawSpriteRendererInspector(std::span<const Entity> entities)
 	{
 		DrawPropertiesFor<SpriteRendererComponent>(entities);
 
 		if (entities.empty()) return;
 
-		// Preview only when the selection's textures are uniform — otherwise
-		// "which texture's filter would we be editing?" has no sane answer.
 		bool textureUniform = true;
 		TextureHandle firstHandle = entities[0].GetComponent<SpriteRendererComponent>().TextureHandle;
 		for (std::size_t i = 1; i < entities.size(); ++i) {
@@ -260,33 +230,12 @@ namespace Index {
 				const float texHeight = texture->GetHeight();
 				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight);
 				ImGui::Text("%.0f x %.0f", texWidth, texHeight);
-				// Filter / Wrap dropdowns are no longer authored here. They
-				// never persisted to disk from this surface (they mutated
-				// the live Texture2D and the change was lost on reload),
-				// which silently confused users who thought the per-entity
-				// value was authoritative. The texture asset inspector
-				// (selecting the .png in the Asset Browser) is now the only
-				// authoring surface; its values round-trip through `.meta`
-				// and re-apply to every loaded entity.
-				//
-				// The per-entity "Sprite" combo that used to live here is
-				// retired too. Slices are picked through the unified texture
-				// reference path now — drag a slice tile from the Asset
-				// Browser onto the Texture row, or open the Texture picker
-				// and choose a `texture.png > slice_name` sub-entry. Both
-				// routes set SpriteName atomically with the texture, which
-				// the legacy combo could only do for the texture that was
-				// already assigned.
 			}
 		}
 		else if (!textureUniform) {
 			ImGui::TextDisabled("Mixed texture - pick to apply to all");
 		}
 	}
-
-	// ── Transform2D ──────────────────────────────────────────────────
-	// Axis labels live inside the value column so Position / Scale expose
-	// X/Y and Rotation exposes the authored Z angle.
 
 	void DrawTransform2DInspector(std::span<const Entity> entities)
 	{
@@ -335,11 +284,6 @@ namespace Index {
 		DrawPropertiesFor<Camera2DComponent>(entities);
 	}
 
-	// ── FastBody2D (Axiom-Physics) ───────────────────────────────────
-	// Properties (Type, Mass, UseGravity, BoundaryCheck) flow through the
-	// auto-drawer. Runtime velocity + position are read each frame from the
-	// physics body; only meaningful when one entity is selected.
-
 	void DrawFastBody2DInspector(std::span<const Entity> entities)
 	{
 		DrawPropertiesFor<FastBody2DComponent>(entities);
@@ -357,20 +301,10 @@ namespace Index {
 		}
 	}
 
-	// ── ParticleSystem2D ─────────────────────────────────────────────
-	// Hybrid: every field is declared in BuiltInComponentRegistration.cpp
-	// (including the Shape variant via Properties::MakeVariantWith and the
-	// Gravity-Value EnabledIf gate). Properties flow through the auto-drawer.
-	// The non-property bit here is the texture preview (only sane with one
-	// entity selected). Runtime preview controls live in the Editor View.
-
 	void DrawParticleSystem2DInspector(std::span<const Entity> entities)
 	{
-		// All declarative fields — auto-drawer renders the standard rows
-		// with proper EnabledIf / Variant / Clamp behavior.
 		DrawPropertiesFor<ParticleSystem2DComponent>(entities);
 
-		// Texture preview is only meaningful with one entity selected.
 		if (entities.size() == 1) {
 			Entity entity = entities[0];
 			auto& ps = const_cast<Entity&>(entity).GetComponent<ParticleSystem2DComponent>();
@@ -426,12 +360,7 @@ namespace Index {
 		}
 	}
 
-	// True when this entity is referenced as the FillEntity of any
-	// SliderComponent in its scene. The slider system writes the
-	// fill's SizeDelta.x each frame; locking the anchors here keeps
-	// the user from authoring a rect setup that the slider's
-	// "anchor=(0,0.5), pivot=(0,0.5), grow rightward" math would
-	// silently break.
+	// MUST lock these fields: SliderComponent writes SizeDelta.x each frame and assumes fixed anchor/pivot geometry.
 	bool IsEntitySliderFill(const Entity& entity) {
 		const Scene* scene = entity.GetScene();
 		if (!scene) return false;
@@ -451,27 +380,12 @@ namespace Index {
 		return false;
 	}
 
-	// ── RectTransform2D ──────────────────────────────────────────────
-	// Unity-style layout: stacked-header columns for Position + Size, then
-	// a collapsible Anchors group with Min / Max, followed by Pivot,
-	// Rotation, and Scale. The auto-drawer fallback can't express the
-	// per-row sub-labels or the column-header-above-value rows, so this
-	// component opts into a fully custom drawer (its property descriptors
-	// are dropped — custom drawer wins over properties anyway).
 	void DrawRectTransform2DInspector(std::span<const Entity> entities)
 	{
 		using RTC = RectTransform2DComponent;
 
-		// Lock the slider-driven rect fields when this entity is a
-		// SliderComponent's FillEntity. The slider system rewrites
-		// SizeDelta.x every frame and assumes the fill is point-anchored
-		// at the parent's left edge with pivot at the fill's left edge —
-		// editing those fields manually would either be overwritten on
-		// the next tick (Width) or would break the fill's geometry
-		// (anchors / pivot / left-edge AnchoredPosition).
 		const bool fillReadOnly = AnyEntitySliderFill(entities);
 
-		// Position (Pos X / Pos Y) — column-header-above-value layout.
 		const char* posLabels[] = { "Pos X", "Pos Y" };
 		DrawColumnLabeledFloatRow<2>("##Position", posLabels, entities,
 			[](const Entity& e, int c) -> float {
@@ -483,19 +397,7 @@ namespace Index {
 				(c == 0 ? p.x : p.y) = v;
 			});
 
-		// Size (Width / Height) — same column-header layout. Drag speed of
-		// 1.0f matches the integer-pixel feel users expect for size fields.
-		// Each axis is disabled when something else owns it:
-		//   • ContentSizeFitter with HorizontalFit / VerticalFit — fitter
-		//     overwrites SizeDelta from children every frame, so manual
-		//     edits would just snap back next tick.
-		//   • TextRendererComponent with WrapMode::None — the text's
-		//     measured natural size is written into SizeDelta by
-		//     UILayoutSystem::FitTextNaturalSize each frame; same snap-
-		//     back risk on both axes if the user edited.
-		// On a multi-selection any entity in the list claiming an axis
-		// disables that axis for the whole row — safer than allowing a
-		// partial write some entities would silently revert.
+		// Disable an axis when ContentSizeFitter or WrapMode::None owns it — edits would be overwritten next tick.
 		bool sizeAxisDisabled[2] = { false, false };
 		for (const Entity& e : entities) {
 			if (e.HasComponent<ContentSizeFitterComponent>()) {
@@ -506,7 +408,16 @@ namespace Index {
 			if (e.HasComponent<TextRendererComponent>()) {
 				const auto& text = e.GetComponent<TextRendererComponent>();
 				if (text.WrapMode == TextWrapMode::None) {
+					// FitTextNaturalSize in UILayoutSystem overwrites both axes.
 					sizeAxisDisabled[0] = true;
+					sizeAxisDisabled[1] = true;
+				}
+				else {
+					// Wrap active: width drives the wrap boundary (user must
+					// set it), height is conceptually owned by the wrapped
+					// line count — locking the field avoids a misleading
+					// "fixed height" authoring surface for content that
+					// auto-flows vertically.
 					sizeAxisDisabled[1] = true;
 				}
 			}
@@ -524,13 +435,82 @@ namespace Index {
 			},
 			1.0f, "%.3f", sizeAxisDisabled);
 
-		// Axis sub-labels reused by every "label + Vec2" row below.
+		// Edge-position view: same rect data as Position + Size, but edits move
+		// one edge while the opposite edge stays pinned. Useful when the user
+		// wants "extend the right edge by 20px" without recalculating
+		// AnchoredPosition + SizeDelta around the pivot in their head. Both
+		// AnchoredPosition and SizeDelta update so the authored representation
+		// stays self-consistent with whatever Position / Size shows above.
+		if (ImGui::CollapsingHeader("Edges")) {
+			ImGui::PushID("Edges");
+			ImGui::Indent(8.0f);
+
+			auto setEdge = [](Entity& e, char which, float newEdge) {
+				auto& rect = e.GetComponent<RTC>();
+				const Vec2 bl = rect.GetAuthoredBottomLeft();
+				const Vec2 tr = rect.GetAuthoredTopRight();
+				float left   = bl.x;
+				float right  = tr.x;
+				float bottom = bl.y;
+				float top    = tr.y;
+				switch (which) {
+					case 'L': left   = newEdge; break;
+					case 'R': right  = newEdge; break;
+					case 'B': bottom = newEdge; break;
+					case 'T': top    = newEdge; break;
+				}
+				// Clamp to non-negative size — flipping edges past each other
+				// would silently produce a negative SizeDelta, which the rest
+				// of the UI math treats as zero-extent (invisible rect).
+				if (right  < left)   right  = left;
+				if (top    < bottom) top    = bottom;
+				const Vec2 newSize{ right - left, top - bottom };
+				rect.SizeDelta = Vec2{
+					rect.LocalScale.x != 0.0f ? newSize.x / rect.LocalScale.x : newSize.x,
+					rect.LocalScale.y != 0.0f ? newSize.y / rect.LocalScale.y : newSize.y
+				};
+				rect.AnchoredPosition = Vec2{
+					left   + newSize.x * rect.Pivot.x,
+					bottom + newSize.y * rect.Pivot.y
+				};
+			};
+
+			// Same axis-disable as the Size row above: editing Left/Right
+			// changes width, editing Bottom/Top changes height — gating these
+			// keeps the alternative edge-edit view consistent with whatever
+			// owns the Width/Height field (UILayoutSystem auto-fit, or the
+			// wrap-active height lock).
+			const bool lrDisabled[2] = { sizeAxisDisabled[0], sizeAxisDisabled[0] };
+			const bool btDisabled[2] = { sizeAxisDisabled[1], sizeAxisDisabled[1] };
+
+			const char* lrLabels[] = { "Left", "Right" };
+			DrawColumnLabeledFloatRow<2>("##LR", lrLabels, entities,
+				[](const Entity& e, int c) -> float {
+					const auto& r = e.GetComponent<RTC>();
+					return c == 0 ? r.GetAuthoredBottomLeft().x : r.GetAuthoredTopRight().x;
+				},
+				[&setEdge](const Entity& e, int c, float v) {
+					setEdge(const_cast<Entity&>(e), c == 0 ? 'L' : 'R', v);
+				},
+				1.0f, "%.3f", lrDisabled);
+
+			const char* btLabels[] = { "Bottom", "Top" };
+			DrawColumnLabeledFloatRow<2>("##BT", btLabels, entities,
+				[](const Entity& e, int c) -> float {
+					const auto& r = e.GetComponent<RTC>();
+					return c == 0 ? r.GetAuthoredBottomLeft().y : r.GetAuthoredTopRight().y;
+				},
+				[&setEdge](const Entity& e, int c, float v) {
+					setEdge(const_cast<Entity&>(e), c == 0 ? 'B' : 'T', v);
+				},
+				1.0f, "%.3f", btDisabled);
+
+			ImGui::Unindent(8.0f);
+			ImGui::PopID();
+		}
+
 		const char* xyLabels[] = { "X", "Y" };
 
-		// Anchors group — collapsible to mirror Unity's foldout. Slow drag
-		// speed because anchors live in [0, 1]. When the entity is a
-		// slider Fill, the rows render disabled (read-only) since the
-		// slider's geometry math depends on a fixed anchor configuration.
 		if (ImGui::CollapsingHeader("Anchors", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::PushID("Anchors");
 			ImGui::Indent(8.0f);
@@ -621,11 +601,6 @@ namespace Index {
 				(c == 0 ? p.x : p.y) = v;
 			});
 
-		// Rotation: 2D engines only need the Z component, edited in degrees
-		// to match the Transform2D inspector (component stores radians).
-		// Edits write LocalRotation — UILayoutSystem composes it against
-		// the parent's world rotation each frame and writes the result
-		// into the rect's Rotation field.
 		ImGuiUtils::DragFloatMulti("Rotation", entities,
 			[](const Entity& e) -> float {
 				return Degrees(e.GetComponent<RTC>().LocalRotation);
@@ -635,8 +610,6 @@ namespace Index {
 			},
 			1.0f);
 
-		// Scale: edits write LocalScale; UILayoutSystem composes it
-		// (Hadamard) with the parent's world scale into the rect's Scale.
 		DrawAxisLabeledVecMulti<2>("Scale", xyLabels, entities,
 			[](const Entity& e, int c) -> float {
 				const Vec2& s = e.GetComponent<RTC>().LocalScale;
@@ -649,14 +622,8 @@ namespace Index {
 			0.1f);
 	}
 
-	// ── Inspector event list editor (used by Button.OnClick + the
-	//   Slider / Toggle / InputField / Dropdown event lists) ────────
 	namespace {
 
-		// Compare two binding vectors element-by-element so multi-select
-		// uniformity check is value-based, not address-based. Includes
-		// the typed argument fields so a class change that also reset
-		// the arg counts as "different" across the selection.
 		bool EventListsEqual(const InspectorEventList& a, const InspectorEventList& b) {
 			if (a.Bindings.size() != b.Bindings.size()) return false;
 			for (std::size_t i = 0; i < a.Bindings.size(); ++i) {
@@ -672,9 +639,6 @@ namespace Index {
 			return true;
 		}
 
-		// Resolve a binding's target-entity UUID into a display string for
-		// the entity-picker button. UUID 0 is the "self" sentinel and shows
-		// as "(Self)" — same UX as Unity's None-but-meaningful fallback.
 		std::string DescribeEventTarget(uint64_t uuid) {
 			if (uuid == 0) return "(Self)";
 			bool missing = false;
@@ -684,15 +648,6 @@ namespace Index {
 			return display;
 		}
 
-		// Distinct script class names on `entity`'s ScriptComponent. The
-		// editor needs ALL classes the entity has authored, regardless of
-		// whether a live managed instance exists yet — managed instances
-		// only get created on play-mode entry, but bindings have to be
-		// authored in edit mode. Empty list means no ScriptComponent.
-		//
-		// Includes both EntityScript-derived `Scripts` and managed-Component
-		// entries (`ManagedComponents`). The C# reflection helper resolves
-		// either kind by name.
 		std::vector<std::string> CollectTargetScriptClasses(const Scene& scene, EntityHandle target) {
 			std::vector<std::string> out;
 			if (target == entt::null) return out;
@@ -716,9 +671,6 @@ namespace Index {
 			return out;
 		}
 
-		// Resolve a row's TargetEntityUUID — including "self" — to a
-		// concrete EntityHandle in the scene the inspector is editing.
-		// Used by the class / method combos to query the right scripts.
 		EntityHandle ResolveRowTarget(const Scene& scene, EntityHandle ownerEntity, uint64_t uuid) {
 			if (uuid == 0) return ownerEntity;
 			EntityHandle resolved = entt::null;
@@ -739,13 +691,6 @@ namespace Index {
 			return resolved ? resolved : SceneManager::Get().GetActiveScene();
 		}
 
-		// Wraps the BeginDragDropTarget pattern so the entity-binding rows
-		// can accept hierarchy drops without duplicating the boilerplate.
-		// Decodes the HIERARCHY_ENTITY payload, resolves the live handle
-		// against the scene that produced the drag, and converts to the persistent UUID
-		// the binding stores. Returns the UUID on a successful drop, or
-		// std::nullopt if no payload arrived this frame. Mirrors the
-		// pattern in PropertyDrawer::DrawEntityRef.
 		std::optional<uint64_t> AcceptEntityDrop() {
 			std::optional<uint64_t> result;
 			if (!ImGui::BeginDragDropTarget()) return result;
@@ -764,10 +709,6 @@ namespace Index {
 			return result;
 		}
 
-		// Method-name combo entries arrive from the C# side as
-		// "<methodName>:<argKindByte>". Split into a bare display name +
-		// the InspectorEventArgKind so the inspector can render the
-		// correct value editor for the chosen method.
 		struct MethodEntry {
 			std::string Name;
 			InspectorEventArgKind Kind = InspectorEventArgKind::Void;
@@ -812,10 +753,6 @@ namespace Index {
 			return "?";
 		}
 
-		// Decode argument string for a numeric kind. Falls back to 0 on
-		// any parse failure — same shape as the C# side, so a saved
-		// binding survives a load-edit-save round-trip even when the
-		// authored value was empty.
 		float DecodeFloat(const std::string& s, float fallback = 0.0f) {
 			if (s.empty()) return fallback;
 			try { return std::stof(s); } catch (...) { return fallback; }
@@ -857,11 +794,6 @@ namespace Index {
 			return out;
 		}
 
-		// Render the value editor for a binding's typed argument. Called
-		// inline next to the method combo. Mutates the binding via
-		// `setValue` (which calls back into the host's mutate-all path
-		// so multi-select edits stay in lockstep). Width is the field
-		// width that was reserved for this column by the row layout.
 		template <typename SetValue>
 		void DrawArgValueEditor(const InspectorEventBinding& row, float width, SetValue&& setValue) {
 			const InspectorEventArgKind k = row.ArgumentKind;
@@ -934,18 +866,9 @@ namespace Index {
 					break;
 				}
 				case InspectorEventArgKind::EntityRef: {
-					// Entity reference renders as a click-to-pick button
-					// just like the row's target-entity button. The
-					// modal picker drives selection through the standard
-					// OpenForFieldKey / ConsumeSelection / RenderPopup
-					// loop; we encode the chosen UUID into ArgumentValue.
 					const uint64_t uuid = DecodeUInt64(row.ArgumentValue);
 					std::string label = uuid == 0 ? k_NoneLabel : DescribeEventTarget(uuid);
 					ImGui::Button((label + "##ArgEntity").c_str(), ImVec2(width, 0.0f));
-					// Picker open is wired by the caller via setValue
-					// keys — left as a placeholder so the value can
-					// still display. The full picker hookup in the
-					// generic editor below opens the modal on click.
 					break;
 				}
 			}
@@ -953,20 +876,6 @@ namespace Index {
 
 	} // namespace
 
-	// Render an "On X ()" foldout body for an arbitrary InspectorEventList
-	// reachable through a per-component getter / mutator. Used by the
-	// Button + Slider + Toggle + InputField + Dropdown inspectors so the
-	// row layout, multi-select uniform-check, and typed-arg editor stay
-	// in one place. Caller supplies:
-	//   `label` — visible foldout label ("On Click ()").
-	//   `idSuffix` — unique ImGui ID suffix so two foldouts on the same
-	//                inspector (e.g. InputField's OnValueChanged + OnSubmitted)
-	//                don't collide.
-	//   `getList` — read-only accessor returning a const InspectorEventList&
-	//                for an entity in the selection.
-	//   `mutate` — write-side accessor; calls a closure with a mutable
-	//                InspectorEventList& for every entity in the selection
-	//                (and marks the scene dirty).
 	template <typename GetList, typename MutateAll>
 	void DrawEventListFoldout(const char* label, const char* idSuffix,
 		std::span<const Entity> entities,
@@ -978,17 +887,9 @@ namespace Index {
 		}
 		if (entities.empty()) return;
 
-		// Scope every control inside this foldout to its own ID space.
-		// Two event lists on the same inspector (e.g. InputField's
-		// OnValueChanged + OnSubmitted) share row indices i = 0..N-1
-		// and bare label IDs ("##Enabled", "##NoArg", "##Method", ...);
-		// without an outer push the row-0 controls of both lists
-		// hash to the same ImGui ID and trigger the
-		// "ID stack collision" assertion. Paired with PopID at the
-		// matching end-of-function early-return points below.
+		// MUST push: two event lists (e.g. OnValueChanged + OnSubmitted) share row IDs; without this outer push they collide and trigger the "ID stack collision" assertion.
 		ImGui::PushID(idSuffix);
 
-		// Uniformity check — same shape as the original Button helper.
 		const InspectorEventList& first = getList(entities[0]);
 		bool uniform = true;
 		for (std::size_t i = 1; i < entities.size(); ++i) {
@@ -1028,10 +929,6 @@ namespace Index {
 				const InspectorEventBinding& row = bindings[i];
 				ImGui::PushID(static_cast<int>(i));
 
-				// Column widths: 4 main combos (target / class / method
-				// / arg-value) + checkbox + minus, separated by 5
-				// inner-spacings. Min 80 px per combo so the names
-				// remain readable on narrow inspectors.
 				const float totalWidth = ImGui::GetContentRegionAvail().x;
 				const float fieldsWidth = std::max(160.0f,
 					totalWidth - checkWidth - minusWidth - spacing * 5.0f);
@@ -1045,7 +942,6 @@ namespace Index {
 				}
 				ImGui::SameLine(0.0f, spacing);
 
-				// Target picker.
 				const std::string targetKey = std::string(idSuffix) + ".target." + std::to_string(i);
 				if (auto picked = ReferencePicker::ConsumeSelection(targetKey)) {
 					uint64_t newUuid = 0;
@@ -1075,7 +971,6 @@ namespace Index {
 				}
 				ImGui::SameLine(0.0f, spacing);
 
-				// Class combo.
 				const EntityHandle resolvedTarget = scene
 					? ResolveRowTarget(*scene, owner, row.TargetEntityUUID)
 					: entt::null;
@@ -1105,10 +1000,6 @@ namespace Index {
 				}
 				ImGui::SameLine(0.0f, spacing);
 
-				// Method combo. The C# side reports each method as
-				// "name:argKind". Display the bare name; on selection
-				// stamp ArgumentKind from the parsed kind so the value
-				// editor that follows knows what widget to render.
 				std::string methodPreview;
 				if (row.MethodName.empty()) {
 					methodPreview = row.ScriptClassName.empty() ? "<pick class>" : "<select>";
@@ -1160,10 +1051,6 @@ namespace Index {
 				}
 				ImGui::SameLine(0.0f, spacing);
 
-				// Typed argument editor for the picked method's parameter.
-				// Entity-ref kind needs the picker hookup that the inline
-				// helper can't do (it doesn't have access to the picker
-				// keys / mutate closure), so route that case here.
 				if (row.ArgumentKind == InspectorEventArgKind::EntityRef) {
 					const std::string argKey = std::string(idSuffix) + ".arg." + std::to_string(i);
 					if (auto picked = ReferencePicker::ConsumeSelection(argKey)) {
@@ -1229,16 +1116,9 @@ namespace Index {
 			});
 		}
 
-		// Closes the PushID(idSuffix) at the top of the function — paired
-		// here so every control inside the foldout (including the
-		// per-row PushID(i) blocks above) ends up under a foldout-unique
-		// ID-stack root.
 		ImGui::PopID();
 	}
 
-	// Render an event-list foldout against a specific component. Used by
-	// every UI component that owns one or more InspectorEventLists —
-	// keeps the per-component inspector down to a single line per list.
 	template <typename TComponent, typename ListPtr>
 	static void DrawComponentEventList(const char* label, const char* idSuffix,
 		std::span<const Entity> entities, ListPtr listPtr)
@@ -1258,8 +1138,6 @@ namespace Index {
 
 	void DrawButtonInspector(std::span<const Entity> entities)
 	{
-		// Standard fields (target graphic, transition, colors, sprites)
-		// flow through the auto-drawer just like every other component.
 		DrawPropertiesFor<ButtonComponent>(entities);
 		if (entities.empty()) return;
 
@@ -1267,14 +1145,8 @@ namespace Index {
 		DrawComponentEventList<ButtonComponent>("On Click ()", "Button.OnClick",
 			entities, &ButtonComponent::OnClick);
 
-		// Picker modal — must be rendered exactly once per frame, after
-		// every field that could open it.
 		ReferencePicker::RenderPopup();
 	}
-
-	// Slider / Toggle / InputField / Dropdown share the same hybrid
-	// "auto-drawn properties + inspector-event-list foldout" shape.
-	// Each adds one or more typed event lists below the standard fields.
 
 	void DrawSliderInspector(std::span<const Entity> entities)
 	{

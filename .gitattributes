@@ -3,6 +3,13 @@
 ###############################################################################
 * text=auto
 
+# The Dawn pin is parsed by scripts/dawn/SetupDawn.bat via `for /f`, which would
+# capture a trailing CR if this file were checked out CRLF on Windows (the CI
+# runner default) — that CR corrupts the git SHA and breaks the pinned fetch.
+# Force LF everywhere. SetupDawn.sh runs under bash, so keep it LF too.
+scripts/dawn/dawn-revision.txt text eol=lf
+scripts/dawn/SetupDawn.sh text eol=lf
+
 External/** linguist-vendored
 Documentation/** linguist-documentation
 

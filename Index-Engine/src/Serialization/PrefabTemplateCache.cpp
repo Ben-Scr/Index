@@ -10,7 +10,7 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Core/Application.hpp"
 
-#if defined(INDEX_WITH_EDITOR)
+#if INDEX_WITH_EDITOR
 #include "Serialization/FileWatcher.hpp"
 #endif
 
@@ -21,12 +21,6 @@ namespace Index {
 
 	namespace {
 
-		// Stable depth-first walk of the live entity tree, capturing the
-		// {handle, parentIndex} pairs that anchor every other lookup in
-		// the bake path. Recursion depth is bounded by the prefab's
-		// hierarchy depth — the same bound the existing DeserializeEntity
-		// path already accepts via parent-link recursion, so no extra
-		// stack-safety policy applies here.
 		void WalkTreeDFS(Scene& scene, EntityHandle root,
 			std::vector<std::pair<EntityHandle, uint32_t>>& outOrdered)
 		{
@@ -41,11 +35,6 @@ namespace Index {
 			recurse(recurse, root, UINT32_MAX);
 		}
 
-		// Snapshot the entity's name out of NameComponent — present on
-		// every entity created by either the slow path or the bulk path
-		// because both go through the same SetEntityMetaData / name-default
-		// path. Defensive empty fallback for the (currently unreachable)
-		// case where a hand-rolled entity skipped NameComponent.
 		std::string CaptureEntityName(Scene& scene, EntityHandle handle) {
 			entt::registry& registry = scene.GetRegistry();
 			if (const NameComponent* nc = registry.try_get<NameComponent>(handle)) {
@@ -58,23 +47,26 @@ namespace Index {
 			return scene.GetEntityPersistentID(handle);
 		}
 
+		// Returns null when no Application/SceneManager exists (headless tools, doctest); callers fall back to the slow path.
+		const ComponentRegistry* TryGetComponentRegistry() {
+			Application* app = Application::GetInstance();
+			if (!app || !app->GetSceneManager()) {
+				return nullptr;
+			}
+			return &app->GetSceneManager()->GetComponentRegistry();
+		}
+
 	} // namespace
 
 	PrefabTemplateCache& PrefabTemplateCache::Get()
 	{
-		// Function-local static: zero-initialized at thread-safe first use,
-		// destroyed in reverse construction order at exit. Matches the
-		// singleton pattern used by SceneManager / AssetRegistry siblings.
 		static PrefabTemplateCache instance;
 		return instance;
 	}
 
 	PrefabTemplateCache::~PrefabTemplateCache() {
-#if defined(INDEX_WITH_EDITOR)
-		// FileWatcher destructor joins its worker thread; release it
-		// explicitly so the dependency order is obvious even if static
-		// destruction runs in an unexpected order.
-		m_Watcher.reset();
+#if INDEX_WITH_EDITOR
+		m_Watcher.reset(); // joins watcher thread before remaining state is torn down
 #endif
 	}
 
@@ -91,13 +83,15 @@ namespace Index {
 	{
 		if (prefabGuid == 0 || root == entt::null) return;
 
+		// No SceneManager (detached/headless): skip caching so the first spawn with a live manager bakes cleanly.
+		const ComponentRegistry* componentRegistryPtr = TryGetComponentRegistry();
+		if (componentRegistryPtr == nullptr) {
+			return;
+		}
+
 		auto tmpl = std::make_unique<PrefabTemplate>();
 
-		// Pre-flight: any fixup added by DeserializeEntityTree means an
-		// internal entity reference fired its deferred-resolve, which v1
-		// has no template-local representation for. Cache the bare
-		// "unbakeable" marker so subsequent spawns short-circuit straight
-		// back to the slow path without rewalking the tree.
+		// Internal entity refs (deferred fixups) can't be represented in v1 templates; mark unbakeable so spawns fall back to the slow path.
 		if (fixupsAddedDuringDeserialize > 0) {
 			tmpl->bakeable = false;
 			tmpl->unbakeableReason = "prefab contains internal entity references; "
@@ -114,8 +108,7 @@ namespace Index {
 		tmpl->entities.resize(entityCount);
 
 		// 2) Per-entity capture: name, source id, component byte slices.
-		const ComponentRegistry& componentRegistry =
-			SceneManager::Get().GetComponentRegistry();
+		const ComponentRegistry& componentRegistry = *componentRegistryPtr;
 		const entt::registry& registry = scene.GetRegistry();
 		const std::type_index nameComponentTypeIndex = typeid(NameComponent);
 		const std::type_index metaComponentTypeIndex = typeid(EntityMetaDataComponent);
@@ -130,12 +123,7 @@ namespace Index {
 			slot.sourceUuid = CapturePersistentId(scene, h);
 			slot.componentRecordBegin = static_cast<uint32_t>(tmpl->components.size());
 
-			// Walk every registered component on the entity. NameComponent
-			// (captured as a std::string in the slot above) and
-			// EntityMetaDataComponent (re-stamped per-hydrate with a fresh
-			// RuntimeID) are excluded — the cache owns their values
-			// directly so the byte path stays memcpy-safe and the metadata
-			// stays consistent across spawns.
+			// NameComponent and EntityMetaDataComponent excluded: the cache owns their values; metadata gets a fresh RuntimeID at hydrate.
 			componentRegistry.ForEachComponentInfo(
 				[&](const std::type_index& typeId, const ComponentInfo& info) {
 					if (!tmpl->bakeable) return;
@@ -157,10 +145,7 @@ namespace Index {
 					const uint32_t byteOffset =
 						static_cast<uint32_t>(tmpl->payloadBlob.size());
 					if (!info.writeBytes(registry, h, tmpl->payloadBlob)) {
-						// has() returned true but writeBytes returned false:
-						// indicates a registry / EnTT-storage drift. Skip
-						// silently rather than crash the spawn loop; the
-						// missing component will simply be absent at hydrate.
+						// has() true but writeBytes false = EnTT-storage drift; skip silently, component absent at hydrate.
 						return;
 					}
 					const uint32_t byteSize =
@@ -173,10 +158,6 @@ namespace Index {
 		}
 
 		if (!tmpl->bakeable) {
-			// Drop the partial bake — Hydrate gates on `bakeable` so these
-			// bytes would never be replayed, and they pin the heap for the
-			// lifetime of the cache entry. Reset to the minimal "unbakeable
-			// marker" form the contract describes.
 			tmpl->entities.clear();
 			tmpl->components.clear();
 			tmpl->payloadBlob.clear();
@@ -190,9 +171,7 @@ namespace Index {
 
 	EntityHandle PrefabTemplateCache::Hydrate(uint64_t prefabGuid, Scene& scene)
 	{
-		// Shared lookup; we hold the read lock only across the pointer
-		// snapshot, not the entire hydrate. Invalidate calls a unique
-		// lock that won't conflict because nothing here mutates the map.
+		// Read lock held only across the pointer snapshot, not the entire hydrate.
 		const PrefabTemplate* tmpl = nullptr;
 		{
 			std::shared_lock lock(m_Mutex);
@@ -239,9 +218,13 @@ namespace Index {
 			return entt::null;
 		}
 
+		// Mirrors CaptureFromLive's guard; a bakeable template presupposes an Application, but guard anyway to avoid assert.
+		const ComponentRegistry* componentRegistryPtr = TryGetComponentRegistry();
+		if (componentRegistryPtr == nullptr) {
+			return entt::null;
+		}
 		entt::registry& registry = scene.GetRegistry();
-		const ComponentRegistry& componentRegistry =
-			SceneManager::Get().GetComponentRegistry();
+		const ComponentRegistry& componentRegistry = *componentRegistryPtr;
 
 		// Identity stamping + name. Origin::Prefab + the prefab's GUID so
 		// downstream queries (Entity.IsPrefabInstance, etc.) return the
@@ -252,12 +235,6 @@ namespace Index {
 			registry.emplace_or_replace<NameComponent>(preAllocated[i], tmpl->entities[i].name);
 		}
 
-		// Component replay. One emplaceFromBytes per recorded slice — the
-		// registry-side lambda does the appropriate memcpy +
-		// emplace_or_replace which fires the component's on_construct
-		// hook so scene-bound state (e.g. ParticleSystem2DComponent's
-		// emitter rebind) is reinitialized correctly even though the
-		// captured bytes carried the source entity's pointers.
 		for (uint32_t i = 0; i < entityCount; ++i) {
 			const PrefabTemplate::EntitySlot& slot = tmpl->entities[i];
 			for (uint32_t r = slot.componentRecordBegin; r < slot.componentRecordEnd; ++r) {
@@ -275,9 +252,7 @@ namespace Index {
 			}
 		}
 
-		// Parent linkage in a second pass — every entity must exist
-		// before SetParent runs so cycle guards and child-list updates
-		// can resolve consistently.
+		// Second pass: every entity must exist before SetParent runs so cycle guards and child-list updates resolve correctly.
 		for (uint32_t i = 0; i < entityCount; ++i) {
 			const uint32_t parentIdx = tmpl->entities[i].parentIndex;
 			if (parentIdx == UINT32_MAX) continue;
@@ -307,7 +282,7 @@ namespace Index {
 		return m_Templates.size();
 	}
 
-#if defined(INDEX_WITH_EDITOR)
+#if INDEX_WITH_EDITOR
 	void PrefabTemplateCache::InitializeForProject(const std::string& assetsRoot)
 	{
 		if (assetsRoot.empty()) {
@@ -316,21 +291,13 @@ namespace Index {
 			return;
 		}
 
-		// Replace any prior watcher so re-opening a project doesn't pile
-		// up watchers on stale roots. The destructor in unique_ptr's
-		// reset() joins the previous worker thread cleanly.
+		// reset() joins the prior watcher thread before replacing it.
 		m_Watcher = std::make_unique<FileWatcher>();
 		m_Watcher->Watch(
 			assetsRoot,
 			".prefab",
 			[]() {
-				// Coarse invalidation: drop the entire map on any
-				// .prefab edit. A finer-grained "invalidate just the
-				// changed GUID" would require the watcher to surface
-				// the path it tripped on, which the current callback
-				// API doesn't carry. The cost is negligible — the
-				// next spawn of any prefab will repopulate its slot
-				// via the existing slow path.
+				// Coarse invalidation on any .prefab edit; finer-grained path tracking requires watcher API changes.
 				PrefabTemplateCache::Get().InvalidateAll();
 			},
 			/*recursive=*/true);

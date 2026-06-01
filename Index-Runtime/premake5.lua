@@ -42,6 +42,7 @@ project "Index-Runtime"
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
     defines(GetIndexModuleDefines())
+    ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
     -- See WriteIndexEntityBitsConfigHeader() in the root premake5.lua.
     includedirs { IndexEntityBitsConfigIncludeDir }

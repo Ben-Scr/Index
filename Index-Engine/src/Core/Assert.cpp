@@ -19,10 +19,7 @@ namespace Index {
 		IDX_CORE_ERROR("{}", formatted);
 
 #if defined(IDX_DEBUG) || defined(IDX_RELEASE)
-		// Debug: hit the debugger if attached. Release: same — Release builds are
-		// developer builds and we want fast-fail. Dist (shipped) builds log the
-		// failure and try to keep running so a single bad assert doesn't kill
-		// the user's session.
+		// Release is a developer build: fast-fail same as Debug. Only Dist (shipped) continues.
 		IDX_DEBUG_BREAK;
 		std::terminate();
 #elif defined(IDX_DIST)

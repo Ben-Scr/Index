@@ -27,12 +27,29 @@ for tool in git cmake python3; do
     fi
 done
 
+# --- Resolve pinned revision -------------------------------------------------
+# DAWN_REVISION (env) wins; otherwise read scripts/dawn/dawn-revision.txt if
+# present; otherwise stay empty and clone tip-of-main (the original behaviour
+# for local devs who want the latest). CI relies on the revision file so the
+# build is reproducible and the Dawn cache key stays stable.
+if [[ -z "${DAWN_REVISION:-}" && -f "scripts/dawn/dawn-revision.txt" ]]; then
+    DAWN_REVISION="$(tr -d '[:space:]' < scripts/dawn/dawn-revision.txt)"
+fi
+
 # --- Clone -------------------------------------------------------------------
-if [[ ! -f "${DAWN_DIR}/CMakeLists.txt" ]]; then
-    echo "[1/3] Cloning Dawn (this may take a few minutes)..."
-    git clone --depth=1 https://dawn.googlesource.com/dawn "${DAWN_DIR}"
-else
+if [[ -f "${DAWN_DIR}/CMakeLists.txt" ]]; then
     echo "[1/3] Dawn already present at ${DAWN_DIR} (skipping clone)."
+elif [[ -n "${DAWN_REVISION:-}" ]]; then
+    echo "[1/3] Fetching Dawn at pinned revision ${DAWN_REVISION} (this may take a few minutes)..."
+    mkdir -p "${DAWN_DIR}"
+    git -C "${DAWN_DIR}" init -q
+    git -C "${DAWN_DIR}" remote add origin https://dawn.googlesource.com/dawn 2>/dev/null \
+        || git -C "${DAWN_DIR}" remote set-url origin https://dawn.googlesource.com/dawn
+    git -C "${DAWN_DIR}" fetch --depth=1 origin "${DAWN_REVISION}"
+    git -C "${DAWN_DIR}" checkout -q --detach FETCH_HEAD
+else
+    echo "[1/3] Cloning Dawn (tip of main; this may take a few minutes)..."
+    git clone --depth=1 https://dawn.googlesource.com/dawn "${DAWN_DIR}"
 fi
 
 # --- Configure ---------------------------------------------------------------

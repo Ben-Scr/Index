@@ -68,18 +68,9 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<int, byte*> GetGameSystemFields;
     public delegate* unmanaged<int, byte*, byte*, void> SetGameSystemField;
 
-    // ── UI event dispatch (appended for binary compat) ──
-    // Native UIEventSystem calls this once per frame after writing
-    // its transient flags so the managed UIEventDispatcher can fan
-    // out the per-instance UI events (Button.OnClick, Slider.OnValueChanged,
-    // etc.) the same frame the engine detected the change.
     public delegate* unmanaged<void> RaiseUiEventDispatch;
 
     // ── Coroutine pump (appended for binary compat) ──
-    // Drains the IndexSynchronizationContext queue and ticks pending
-    // EntityScript coroutine awaiters (frame / seconds / condition).
-    // Called from native ScriptSystem::Update at the top of the frame,
-    // and ScriptSystem::FixedUpdate for fixed-tick continuations.
     public delegate* unmanaged<float, void> PumpCoroutinesUpdate;
     public delegate* unmanaged<void> PumpCoroutinesFixedUpdate;
 
@@ -97,18 +88,11 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<uint, void> RaiseEnterChar;
 
     // ── Play-mode lifecycle (appended for binary compat) ──
-    // Invoked by the editor when stopping play mode, BEFORE the
-    // pre-play scene snapshot is restored. Sweeps every static event
-    // in the managed surface for subscribers whose method lives in the
-    // user assembly and removes them, so a play-mode `Log.LogMessage +=`
-    // doesn't keep firing in edit mode against a destroyed Entity.
+    // Called on stop BEFORE scene snapshot restore; sweeps play-mode static event subscribers to prevent edit-mode ghost firings.
     public delegate* unmanaged<void> OnPlayModeExited;
 }
 
-/// <summary>
-/// Entry point called from C++ via hostfxr load_assembly_and_get_function_pointer.
-/// Exchanges native ↔ managed function pointers. Returns 0 on success.
-/// </summary>
+/// <summary>Entry point called from C++ via hostfxr; exchanges native/managed function pointers.</summary>
 internal static class ScriptHostBridge
 {
     [UnmanagedCallersOnly]
@@ -197,17 +181,8 @@ internal static class ScriptHostBridge
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 
-            // Eager layout-drift guard for the ECS ref-API: force every
-            // ComponentTypes<T> static ctor to run now so a C++/C# size
-            // mismatch surfaces here instead of when the first script
-            // happens to GetRef<T> mid-play. TypeInitializationException
-            // wraps the underlying message; the catch below logs both.
             ComponentTypes.RunAllStaticInitializers();
 
-            // Install the main-thread sync context so any `await` inside
-            // a script resumes on the engine main thread via our per-frame
-            // pump, not on a thread-pool thread. Must run before any user
-            // code (LoadUserAssembly happens later, after this returns).
             SynchronizationContext.SetSynchronizationContext(IndexSynchronizationContext.Instance);
             return 0;
         }

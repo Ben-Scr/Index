@@ -12,11 +12,7 @@ internal enum WaitKind
     Condition,
 }
 
-/// <summary>
-/// Awaiter struct shared by coroutine wait instructions. Public
-/// because user assemblies must be able to call IsCompleted / OnCompleted
-/// / GetResult through the compiler-generated state machine.
-/// </summary>
+/// <summary>Awaiter for coroutine wait instructions. Public so compiler-generated state machines in user assemblies can call it.</summary>
 public struct CoroutineAwaiter : INotifyCompletion
 {
     private readonly WaitKind m_Kind;
@@ -34,11 +30,7 @@ public struct CoroutineAwaiter : INotifyCompletion
         m_Token = token;
     }
 
-    /// <summary>
-    /// True only when the script's destroy token already fired before the
-    /// await began (e.g. awaiting inside OnDestroy). The await completes
-    /// inline and GetResult immediately throws OCE — no scheduler work.
-    /// </summary>
+    /// <summary>True when the cancellation token fired before the await began; completes inline and GetResult throws OCE.</summary>
     public bool IsCompleted => m_Token.IsCancellationRequested;
 
     public void OnCompleted(Action continuation)

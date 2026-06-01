@@ -23,11 +23,7 @@ namespace Index::Json {
 		using Object = std::vector<std::pair<std::string, Value>>;
 		using Array = std::vector<Value>;
 
-		// Internal representation kind for Number values. Public IsNumber()
-		// stays true for all three so existing callers work unchanged. The
-		// distinction only matters when round-tripping integers larger than
-		// 2^53 (UUIDs / AssetGUIDs) — storing those as `double` loses
-		// precision; the integer kinds preserve the exact value.
+		// Int64/UInt64 kinds preserve exact integer values > 2^53 (UUIDs); double loses precision for those.
 		enum class NumberKind {
 			Double,
 			Int64,
@@ -63,20 +59,11 @@ namespace Index::Json {
 		uint64_t AsUInt64Or(uint64_t fallback) const;
 		std::string AsStringOr(std::string fallback = {}) const;
 
-		// Read-only accessors. Return a static empty container if the value
-		// holds the wrong kind so callers don't accidentally retype the value
-		// just by reading it. Use EnsureObject/EnsureArray when you intend to
-		// mutate the value into that kind.
 		Object& GetObject();
 		const Object& GetObject() const;
 		Array& GetArray();
 		const Array& GetArray() const;
 
-		// Make-or-get mutators: convert this value into Object/Array kind (if
-		// it isn't already) and return a mutable reference. This is what the
-		// non-const GetObject/GetArray used to do; that silent retyping caused
-		// data loss when callers happened to reach them in a non-mutating
-		// context.
 		Object& EnsureObject();
 		Array& EnsureArray();
 

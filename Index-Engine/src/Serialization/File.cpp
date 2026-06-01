@@ -12,10 +12,6 @@ namespace Index {
 	}
 
 	bool File::WriteAllText(const std::string& path, const std::string& text) {
-		// Stage to a sibling .tmp first, then rename. A crash mid-stream then loses only
-		// the staging file, leaving the original intact. The previous in-place truncate-
-		// then-write produced corrupted scenes / project files on power loss or process
-		// kill.
 		const std::filesystem::path target(path);
 		std::filesystem::path tmp = target;
 		tmp += ".tmp";
@@ -45,11 +41,7 @@ namespace Index {
 		}
 
 #ifdef IDX_PLATFORM_WINDOWS
-		// MoveFileExW with REPLACE_EXISTING + WRITE_THROUGH gives us a single atomic
-		// swap: no remove-then-rename window where another process could recreate
-		// `target` and have its content silently overwritten. WRITE_THROUGH flushes
-		// the metadata before returning so a power-loss after success leaves a
-		// committed file rather than a directory entry pointing at unflushed data.
+		// REPLACE_EXISTING|WRITE_THROUGH: atomic swap with metadata flush — no rename window, safe on power loss.
 		const std::wstring tmpW = tmp.wstring();
 		const std::wstring targetW = target.wstring();
 		if (!MoveFileExW(tmpW.c_str(), targetW.c_str(),

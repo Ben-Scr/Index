@@ -9,39 +9,6 @@
 #include <unordered_map>
 #include <utility>
 
-// =============================================================================
-// Framebuffer — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// Layout per FBO:
-//   * One colour wgpu::Texture, with usage = RenderAttachment | TextureBinding
-//     so the renderer can write to it AND ImGui::Image can sample it for the
-//     editor's per-panel previews (Editor View + Game View).
-//   * One depth wgpu::Texture (always Depth24PlusStencil8), usage =
-//     RenderAttachment only — nothing samples it.
-//   * A wgpu::TextureView per attachment, cached so render-pass setup
-//     doesn't allocate a fresh view every frame.
-//
-// IDs:
-//   * `m_BackendId`     -> g_Framebuffers map key. A small uint32_t allocated
-//     monotonically; resolved by WebGPUBackend::LookupFramebufferByFboId so
-//     RenderApi::BindFramebuffer can build the render-pass attachments.
-//   * `m_ColorTextureId`-> the raw WGPUTextureView pointer for the colour
-//     attachment, cast to uint64_t. ImGui's imgui_impl_wgpu reinterpret_casts
-//     ImTextureID directly to WGPUTextureView and dereferences it, so this
-//     value MUST be a real Dawn handle (storing a small pool integer here
-//     crashes Dawn with 0xC0000005 at addresses like 0x1 + offset). A reverse
-//     map g_ColorViewToFbo lets non-ImGui consumers go from the pointer back
-//     to the owning Framebuffer.
-//   * `m_DepthRenderbuffer` -> kept non-zero so the existing
-//     "is-this-slot-active" book-keeping in moves works; legacy field name
-//     from the OpenGL era. WebGPU has no separate "renderbuffer" concept;
-//     the depth attachment is just another Texture owned by the entry.
-//
-// `m_BackendId` counter is monotonic with 0 reserved as "unset" — same
-// `IsValid() => m_BackendId != 0` contract from the header. `m_ColorTextureId`
-// is unique-per-instance by construction (it's a unique pointer).
-// =============================================================================
-
 namespace Index {
 
 	namespace {
@@ -57,25 +24,11 @@ namespace Index {
 		};
 
 		std::unordered_map<uint32_t, GpuFramebuffer> g_Framebuffers;
-		// Reverse map: raw WGPUTextureView pointer (cast to uint64_t) -> fboBackendId.
-		// `m_ColorTextureId` now stores the raw view pointer directly so the
-		// editor can pass it straight to ImGui::Image without a lookup; this
-		// map is the inverse so anyone who already has the pointer can find
-		// the owning Framebuffer (mostly diagnostic / future use). The pool
-		// itself remains keyed by the small `fboBackendId` integer.
+		// Reverse map: raw WGPUTextureView pointer → fboBackendId (diagnostic / future consumers; ImGui path uses the pointer directly).
 		std::unordered_map<uint64_t, uint32_t> g_ColorViewToFbo;
 		uint32_t g_NextFbId = 1;
 
-		// Two-frame deferred-destroy queue. When Framebuffer::Destroy runs we
-		// move the entry into g_PendingDestroyThisFrame instead of erasing
-		// immediately, because ImGui may still hold the color view's raw
-		// pointer for the current frame's submitted draws. Each call to
-		// ProcessFrameEndDeferredDestroy (from WebGPUApi::Present) advances
-		// the queue: this-frame entries roll to last-frame, last-frame
-		// entries finally release. So a Destroy() during frame N keeps the
-		// Dawn resources alive through the end of frame N+1, which gives
-		// any in-flight ImGui submit + Dawn command-buffer execution time
-		// to land before the underlying view/texture is dropped.
+		// Two-frame deferred destroy: keeps Dawn resources alive through N+1 so in-flight ImGui draws using the raw view pointer don't dereference a freed handle.
 		std::vector<GpuFramebuffer> g_PendingDestroyThisFrame;
 		std::vector<GpuFramebuffer> g_PendingDestroyLastFrame;
 
@@ -105,12 +58,6 @@ namespace Index {
 		}
 	}
 
-	// ── WebGPUBackend pool exports ──────────────────────────────────────────
-	// Implementations of the LookupFramebuffer* declarations in
-	// Backend/WebGPUBackend.hpp. WebGPUApi.cpp::BindFramebuffer + the future
-	// imgui_impl_wgpu image-binding path call these to resolve a Framebuffer's
-	// opaque IDs into wgpu views.
-
 	namespace WebGPUBackend {
 
 		FramebufferLookup LookupFramebufferByFboId(uint32_t fboBackendId) {
@@ -128,13 +75,7 @@ namespace Index {
 		}
 
 		wgpu::TextureView LookupFramebufferColorViewByTextureId(uint64_t colorTextureViewPtr) {
-			// `m_ColorTextureId` now IS the raw WGPUTextureView pointer
-			// cast to uint64_t. No lookup needed at the engine level:
-			// imgui_impl_wgpu reinterpret_casts ImTextureID -> WGPUTextureView
-			// and dereferences it directly. This function stays so call
-			// sites that want the wgpu::TextureView wrapper (for example,
-			// future Framebuffer-as-sampler-source code paths outside
-			// ImGui) can resolve it back through our pool.
+			// m_ColorTextureId IS the raw WGPUTextureView pointer; this function exists for non-ImGui consumers that need the wgpu::TextureView wrapper.
 			if (colorTextureViewPtr == 0) return nullptr;
 			auto mapIt = g_ColorViewToFbo.find(colorTextureViewPtr);
 			if (mapIt == g_ColorViewToFbo.end()) return nullptr;
@@ -208,11 +149,6 @@ namespace Index {
 		wgpu::Device device = WebGPUBackend::GetDevice();
 		const wgpu::TextureFormat colorWgpuFormat = ToWgpuFormat(colorFormat);
 
-		// Colour attachment. RenderAttachment so we can write to it as a
-		// pass target; TextureBinding so the editor's ImGui::Image preview
-		// can sample it. CopySrc isn't included — readback isn't supported
-		// from the editor yet (same scope as the Stage 1 GetImageData TODO
-		// in Texture2D_WebGPU.cpp).
 		wgpu::TextureDescriptor colorDesc{};
 		colorDesc.dimension       = wgpu::TextureDimension::e2D;
 		colorDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
@@ -266,12 +202,7 @@ namespace Index {
 		wgpu::TextureView depthView = depth.CreateView(&depthViewDesc);
 
 		const uint32_t fbId = AllocateFbId();
-		// Store the raw WGPUTextureView pointer (cast to uint64_t) as the
-		// public "color texture id". ImGui's imgui_impl_wgpu reinterpret-
-		// casts ImTextureID -> WGPUTextureView and dereferences it, so the
-		// value MUST be a real Dawn handle, not a small integer pool key.
-		// .Get() returns the underlying C-ABI handle (a pointer) without
-		// affecting the C++ wrapper's refcount.
+		// MUST be a real Dawn handle (not a pool int): imgui_impl_wgpu reinterpret_casts ImTextureID→WGPUTextureView and dereferences it.
 		const uint64_t colorViewPtr =
 			reinterpret_cast<uint64_t>(colorView.Get());
 
@@ -290,22 +221,13 @@ namespace Index {
 
 		m_BackendId         = fbId;
 		m_ColorTextureId    = colorViewPtr;
-		// Keep m_DepthRenderbuffer non-zero so move ops + IsValid bookkeeping
-		// stays consistent. The depth attachment is owned by the framebuffer
-		// entry, so the value here is informational only.
-		m_DepthRenderbuffer = fbId;
+		m_DepthRenderbuffer = fbId; // kept non-zero for IsValid bookkeeping; depth is owned by the GpuFramebuffer entry
 		return true;
 	}
 
 	void Framebuffer::Destroy() {
 		if (m_BackendId != 0) {
-			// Clear the color-view reverse-map entry before moving the
-			// main entry into the deferred-destroy queue: any future
-			// LookupFramebufferColorViewByTextureId call will fail fast.
-			// The view + texture handles themselves stay alive in the
-			// pending bucket for one extra frame so an in-flight ImGui
-			// frame holding the raw view pointer doesn't dereference a
-			// freed Dawn resource.
+			// Erase the reverse-map entry immediately; Dawn resources move to the deferred bucket so in-flight ImGui draws finish before the handle is freed.
 			if (m_ColorTextureId != 0) {
 				g_ColorViewToFbo.erase(m_ColorTextureId);
 			}
@@ -323,12 +245,6 @@ namespace Index {
 	}
 
 	void Framebuffer::ProcessFrameEndDeferredDestroy() {
-		// Two-frame bucket roll. Entries enqueued during frame N stay alive
-		// through the end of frame N+1: the call at the end of frame N moves
-		// them from ThisFrame -> LastFrame, and the call at the end of
-		// frame N+1 finally releases LastFrame. This window is wide enough
-		// that any ImGui draw issued before Destroy() reaches Dawn's GPU
-		// before the underlying view goes away.
 		g_PendingDestroyLastFrame.clear();
 		g_PendingDestroyLastFrame.swap(g_PendingDestroyThisFrame);
 	}

@@ -181,12 +181,6 @@ namespace Index {
 				}
 			}
 
-			// Push the scene's stored editor-time field values onto the
-			// freshly-created managed instance. Mirrors how ScriptComponent
-			// flushes PendingFieldValues for EntityScripts after their
-			// CreateScriptInstance call: the instance starts with class
-			// defaults, then we overwrite any field the user authored in
-			// the inspector before Awake/Start runs.
 			void ApplyFieldOverrides(Scene& scene)
 			{
 				if (m_Handle == 0) return;
@@ -265,12 +259,7 @@ namespace Index {
 
 	Scene::LoadGuard::LoadGuard(Scene& scene)
 		: m_Scene(scene)
-		// Nested-guard collapse: only the outermost guard flips the flag and
-		// is responsible for clearing it on destruction. Inner guards
-		// observe the flag is already true and become no-ops — this makes
-		// it safe for a bulk-loader (e.g. ECB playback) to call into
-		// another bulk-loader (e.g. prefab instantiation) without worrying
-		// about who owns the suppression scope.
+		// Only the outermost guard owns the suppression scope; inner guards become no-ops.
 		, m_OwnsSuppression(!scene.m_SuppressConstructHooks)
 	{
 		if (m_OwnsSuppression) {
@@ -282,21 +271,14 @@ namespace Index {
 		if (!m_OwnsSuppression) {
 			return;
 		}
-		// Clear the flag FIRST so the recorded hooks run their normal
-		// body when we re-invoke them below (each hook short-circuits
-		// when m_SuppressConstructHooks is true).
+		// Clear FIRST so re-invoked hooks run their body (each hook short-circuits while flag is set).
 		m_Scene.m_SuppressConstructHooks = false;
 
 		if (m_Scene.m_DeferredConstructHooks.empty()) {
 			return;
 		}
 
-		// Move-out so a hook body that itself triggers a new construct
-		// (during the flush) is appended to a fresh vector instead of
-		// silently mutating the one we're iterating. The flushing latch
-		// also keeps any such nested constructs on the "run immediately"
-		// path even if downstream code spins up a new LoadGuard
-		// transiently.
+		// Move-out so hooks triggered during flush append to a fresh vector instead of mutating the one we're iterating.
 		auto hooks = std::move(m_Scene.m_DeferredConstructHooks);
 		m_Scene.m_FlushingDeferredHooks = true;
 		for (auto& h : hooks) {
@@ -308,22 +290,11 @@ namespace Index {
 	void Scene::ReserveForLoadRuntime(std::size_t entityCount,
 		std::span<const std::pair<uint32_t, std::size_t>> /*perTypeCounts*/)
 	{
-		// Entity pool + identity maps — the dominant reservation savings.
-		// EnTT grows the entity pool by powers of two and rehashes the
-		// underlying vector on every threshold, so reserving up front
-		// collapses ~log2(N) pool reallocations into one.
 		m_Registry.storage<EntityHandle>().reserve(entityCount);
 		m_RuntimeIdToEntity.reserve(m_RuntimeIdToEntity.size() + entityCount);
 		m_SceneGuidToEntity.reserve(m_SceneGuidToEntity.size() + entityCount);
-		// NOTE: per-component-storage reservation is intentionally omitted
-		// here. EnTT exposes typed storages via its compile-time type_hash
-		// table, but our stable u32 component ID is registry-private and
-		// doesn't map cleanly back to entt::id_type. The component storages
-		// still grow on demand during emplace — O(log N) reallocations
-		// versus the entity pool's single growth, which is negligible
-		// compared to the eliminated P/Invoke and string-marshal overhead.
-		// The templated Scene::ReserveForLoad<T...> overload remains the
-		// statically-typed fast path for the scene loader.
+		// Per-component reservation is omitted: our stable u32 ID doesn't map back to entt::id_type;
+		// use the templated ReserveForLoad<T...> overload for statically-typed fast path.
 	}
 
 	void Scene::SetEntityMetaDataNoFlags(
@@ -333,15 +304,7 @@ namespace Index {
 		AssetGUID sceneGuid,
 		EntityID runtimeId)
 	{
-		// SetEntityMetaData only pulses m_Dirty for non-Runtime origin
-		// while NOT playing — i.e. the editor case. For ECB playback at
-		// runtime (the dominant case), origin == Runtime and IsPlaying()
-		// is true, so the regular function never touches the flags.
-		// The "NoFlags" suffix is a contract guarantee for callers — we
-		// snapshot the flags around the inner call and restore them, so
-		// the function is a no-op on m_Dirty / m_UIDirty regardless of
-		// origin or play state. End-of-batch MarkAllDirtyOnce() is the
-		// authoritative pulse.
+		// Snapshot + restore m_Dirty/m_UIDirty so this is a no-op on dirty flags regardless of origin/play state; caller calls MarkAllDirtyOnce() for the batch.
 		const bool savedDirty = m_Dirty;
 		const bool savedUIDirty = m_UIDirty;
 		SetEntityMetaData(entity, origin, prefabGuid, sceneGuid, runtimeId);
@@ -351,40 +314,22 @@ namespace Index {
 
 	void Scene::MarkAllDirtyOnce()
 	{
-		// Single end-of-batch pulse for editor save-state and UI rebuild.
-		// Mirrors the two-flag pattern used by CreateEntityHandle, but
-		// without the per-entity edit-mode guard — the bulk caller (ECB
-		// playback, scene deserialize) has already decided to pulse once
-		// for the whole batch.
 		m_Dirty = true;
 		m_UIDirty = true;
 	}
 
 	void Scene::CreateEntitiesBulk(std::size_t n, std::span<EntityHandle> out) {
-		// Caller-allocates so we don't smuggle a heap allocation into the
-		// loader's hot path — the loader typically reuses one buffer across
-		// the entire load. Short-circuit the zero case so EnTT's
-		// range-create isn't asked to operate on an empty iterator pair.
 		if (n == 0) {
 			return;
 		}
 		IDX_CORE_ASSERT(out.size() >= n, IndexErrorCode::InvalidValue,
 			"Scene::CreateEntitiesBulk: output span is smaller than the requested count");
-		// Refuse a batch that would push the live-entity count past EnTT's
-		// configured entity_mask. Beyond the cap, registry.create() returns
-		// a wrapped entity index and the next sparse-set write reaches
-		// garbage memory (Windows surfaces it as 0xC0000005 mid-batch). The
-		// compare is O(1) per call so it's free even at six-figure batches.
-		// The cap is set by the project-level entityBits field — see
-		// External/entt/src/entt/entity/entity.hpp for the bit-split table.
+		// Beyond entity_mask, registry.create() wraps and the next sparse-set write corrupts memory.
 		using EntityTraits = entt::entt_traits<EntityHandle>;
 		constexpr std::size_t kMaxLiveEntities = static_cast<std::size_t>(EntityTraits::entity_mask);
 		IDX_CORE_ASSERT(m_EntityCount + n <= kMaxLiveEntities, IndexErrorCode::InvalidValue,
 			"Scene::CreateEntitiesBulk: batch would exceed the EnTT entity cap. "
 			"Raise 'entityBits' in index-project.json and rebuild.");
-		// EnTT's range-create writes one entity per iterator slot. Reserving
-		// up front bounds the entity pool's growth to a single allocation
-		// even when this is the first batch on a fresh scene.
 		m_Registry.storage<EntityHandle>().reserve(
 			m_Registry.storage<EntityHandle>().size() + n);
 		m_Registry.create(out.begin(), out.begin() + n);
@@ -398,16 +343,8 @@ namespace Index {
 		if (origin != EntityOrigin::Runtime && !Application::GetIsPlaying()) {
 			m_Dirty = true;
 		}
-		// Pulse the UI rebuild gate so freshly-created widgets get their
-		// derived visuals (slider fill stretch, scrollbar handle size,
-		// dropdown label text, etc.) refreshed on the next OnPreRender pass.
-		// Without this, a slider created from EntityHelper::CreateUISlider
-		// or via the editor's "Create UI > Slider" menu has its fill
-		// invisible until the user drags the value off its initial setting,
-		// because UIEventSystem's preview path early-outs on !IsUIDirty().
-		// Runtime-spawned widgets (game code instantiating a Slider prefab
-		// while playing) need the same pulse — m_Dirty's edit-mode guard
-		// would otherwise skip the runtime case entirely.
+		// MUST pulse in both editor and runtime: UIEventSystem preview path early-outs on !IsUIDirty(),
+		// so newly-created widgets would render invisibly until the value was touched.
 		m_UIDirty = true;
 		return entityHandle;
 	}
@@ -567,11 +504,7 @@ namespace Index {
 			return true;
 		}
 
-		// Fall back to a UUIDComponent scan. Saved scene files persist the
-		// SceneGUID (= UUIDComponent.Id for Scene-origin entities); after
-		// reload that ID won't appear in m_RuntimeIdToEntity but UUIDComponent
-		// preserves it. Linear scan is fine: scenes hold O(1k) entities and
-		// this only runs in the editor display + reference-picker path.
+		// Fallback: scan UUIDComponent — SceneGUID isn't in m_RuntimeIdToEntity after reload but UUID preserves it.
 		auto view = m_Registry.view<UUIDComponent>();
 		for (EntityHandle handle : view) {
 			if (static_cast<uint64_t>(view.get<UUIDComponent>(handle).Id) == entityId) {
@@ -589,12 +522,7 @@ namespace Index {
 	}
 
 	void Scene::RunPendingEntityRefFixups() {
-		// Fixups can in principle queue more fixups (a closure that
-		// re-resolves and finds another forward-only ref), so swap-and-
-		// drain in a loop until the queue is stable. In practice one
-		// pass is enough — every fixup just looks up an existing UUID —
-		// but the loop guards against future schemes that build the
-		// scene incrementally.
+		// Swap-and-drain in a loop: fixups can enqueue more fixups (forward refs resolved incrementally).
 		while (!m_PendingEntityRefFixups.empty()) {
 			std::vector<std::function<void()>> batch;
 			batch.swap(m_PendingEntityRefFixups);
@@ -624,18 +552,12 @@ namespace Index {
 	void Scene::DestroyEntity(EntityHandle nativeEntity) { DestroyEntityInternal(nativeEntity, true); }
 
 	void Scene::DestroyEntity(EntityHandle nativeEntity, float delay) {
-		// Non-positive delay collapses to immediate destruction — keeps
-		// Entity::Destroy(e, 0.0f) semantically identical to
-		// Entity::Destroy(e), no surprise one-frame skew when callers
-		// pass a computed delay that happens to be zero.
 		if (delay <= 0.0f) {
 			DestroyEntityInternal(nativeEntity, true);
 			return;
 		}
 		if (!m_Registry.valid(nativeEntity)) return;
-		// Already queued? Keep the SHORTER remaining time so the first
-		// scheduled destruction wins (caller wants the entity gone by
-		// then; later schedules are best treated as redundant).
+		// Keep the shorter remaining time if already queued so the earliest scheduled destruction wins.
 		for (auto& [h, remaining] : m_PendingDestroys) {
 			if (h == nativeEntity) {
 				if (delay < remaining) remaining = delay;
@@ -661,10 +583,7 @@ namespace Index {
 	}
 
 	void Scene::ClearEntities() {
-		// Invalidate the main-camera cache up front and gate the destroy hooks
-		// so each Camera2DComponent destruction doesn't re-enter
-		// RefreshMainCameraSelection mid-iteration (which scans the still-
-		// mutating registry).
+		// Gate m_TearingDown so Camera2D destroy hooks don't re-enter RefreshMainCameraSelection mid-iteration.
 		m_MainCameraEntity = entt::null;
 		m_TearingDown = true;
 
@@ -686,16 +605,53 @@ namespace Index {
 		m_TransformHierarchyDirty = true;
 		m_DirtyTransformEntities.clear();
 		m_DirtyTransformEntitySet.clear();
+		m_PendingDestroys.clear();
 		MarkStaticRenderDataDirty();
 		Renderer2D::ClearSceneCache(this);
 	}
 
+	bool Scene::BeginContentReplacement() {
+		const bool restartLifecycle = m_IsLoaded;
+		if (restartLifecycle) {
+			m_IsLoaded = false;
+			try {
+				DestroyScene();
+			}
+			catch (const std::exception& e) {
+				IDX_CORE_ERROR_TAG("Scene", "System teardown failed during content replacement: {}", e.what());
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("Scene", "Unknown system teardown failure during content replacement");
+			}
+		}
+
+		ClearEntities();
+		ClearGameSystems();
+		return restartLifecycle;
+	}
+
+	void Scene::EndContentReplacement(bool restartLifecycle) {
+		if (!restartLifecycle) return;
+
+		size_t awakenedSystemCount = 0;
+		try {
+			AwakeSystems(&awakenedSystemCount);
+			StartSystems();
+			m_IsLoaded = true;
+		}
+		catch (...) {
+			try {
+				DestroyScene(awakenedSystemCount);
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("Scene", "System rollback failed after content replacement");
+			}
+			throw;
+		}
+	}
+
 	void Scene::MarkDirty() {
 		if (!Application::GetIsPlaying()) m_Dirty = true;
-		// Pulse the UI rebuild signal in both modes: edit-mode edits drive
-		// the OnPreRender refresh path, and runtime calls (e.g. game code
-		// that toggles a slider entity in/out of the scene) still want the
-		// rebuild gate to fire at least once on the next frame.
 		m_UIDirty = true;
 		MarkStaticRenderDataDirty();
 	}
@@ -741,8 +697,6 @@ namespace Index {
 			if (auto* managedSystem = dynamic_cast<ManagedGameSystem*>(it->get());
 				managedSystem && managedSystem->GetClassName() == className) {
 				if (m_IsLoaded) {
-					// Symmetric teardown: disable before destroy, matching the
-					// SetEnabled / OnEnable / OnDisable contract on ISystem.
 					managedSystem->OnDisable(*this);
 					managedSystem->OnDestroy(*this);
 				}
@@ -769,14 +723,7 @@ namespace Index {
 		m_GameSystemClassNames.erase(m_GameSystemClassNames.begin() + static_cast<std::ptrdiff_t>(fromIndex));
 		m_GameSystemClassNames.insert(m_GameSystemClassNames.begin() + static_cast<std::ptrdiff_t>(toIndex), movedClassName);
 
-		// Reorder the m_Systems entries that correspond to managed systems
-		// to match the new name order, WITHOUT calling OnDisable/OnDestroy
-		// on the way out and OnAwake/OnEnable on the way back in. Native
-		// (non-managed) systems keep their slot positions so a simple
-		// reorder doesn't disturb the rest of the system list. Reordering
-		// is a UX-level concern; user OnDestroy/OnAwake callbacks should
-		// not see a phantom destroy+recreate just because someone dragged
-		// a system in the inspector.
+		// Reorder managed systems to match new name order WITHOUT firing OnDisable/OnDestroy — drag-reorder must not trigger lifecycle callbacks.
 		std::vector<std::unique_ptr<ISystem>> managedExtracted;
 		std::vector<size_t> managedSlots;
 		managedExtracted.reserve(m_GameSystemClassNames.size());
@@ -789,10 +736,6 @@ namespace Index {
 			}
 		}
 
-		// Build the reordered managed list following the names order. A name
-		// without a matching extracted system (shouldn't happen in practice,
-		// since AddGameSystem is the only path that grows the list) gets a
-		// fresh ManagedGameSystem so the lists stay in lock-step (L5).
 		std::vector<std::unique_ptr<ISystem>> managedReordered;
 		managedReordered.reserve(m_GameSystemClassNames.size());
 		for (const std::string& className : m_GameSystemClassNames) {
@@ -811,24 +754,14 @@ namespace Index {
 			}
 		}
 
-		// Slot reordered managed systems back into the original managed
-		// positions. Surplus extracted systems (a name was dropped) are
-		// discarded — that path also calls OnDisable/OnDestroy so the
-		// user observes a clean shutdown for the dropped system.
 		for (size_t i = 0; i < managedSlots.size() && i < managedReordered.size(); ++i) {
 			m_Systems[managedSlots[i]] = std::move(managedReordered[i]);
 		}
-		// If managedReordered grew beyond the original slot count (a new
-		// system was injected), append the extras at the back.
 		for (size_t i = managedSlots.size(); i < managedReordered.size(); ++i) {
 			m_Systems.push_back(std::move(managedReordered[i]));
 		}
 
-		// Any unique_ptr left behind in managedExtracted (no matching name in the
-		// reorder) is about to be destroyed when this scope exits. m_AwakenedSystems
-		// stores raw ISystem* — purge any pointers that match the soon-to-be-deleted
-		// systems before they dangle. (Without this, OnDestroy on an unrelated scene
-		// teardown would dereference freed memory.)
+		// Purge m_AwakenedSystems raw pointers that match leftover managedExtracted entries before they dangle.
 		std::erase_if(m_AwakenedSystems, [&](ISystem* awakened) {
 			for (const auto& leftover : managedExtracted) {
 				if (leftover && leftover.get() == awakened) {
@@ -1024,22 +957,12 @@ namespace Index {
 		if (markDirty && !Application::GetIsPlaying()) {
 			m_Dirty = true;
 		}
-		// Symmetric with CreateEntityHandle: destroying an entity (or one
-		// of its children) can change which Fill/Handle/Checkmark/Label a
-		// widget auto-resolves to, or take a tinted Image out of view —
-		// pulse the UI rebuild gate so the next OnPreRender refreshes the
-		// remaining widgets. `markDirty=false` means we're in the middle
-		// of a cascade destroy — the outermost call already pulsed the
-		// flag, so the inner recursion doesn't need to.
+		// markDirty=false during cascade: outermost call already pulsed the flag.
 		if (markDirty) {
 			m_UIDirty = true;
 		}
 
-		// Cascade-destroy any children, and unhook from the parent's child list, before
-		// destroying this entity. Snapshot Children + Parent into locals first: EnTT's default
-		// pool is swap-and-pop, so a recursive child-destroy can relocate this entity's own
-		// HierarchyComponent (or the parent's). Holding a HierarchyComponent& across the
-		// recursion would dangle.
+		// Snapshot Children + Parent before recursing: EnTT's swap-and-pop pool can relocate the HierarchyComponent during child destroys.
 		if (m_Registry.all_of<HierarchyComponent>(nativeEntity)) {
 			std::vector<EntityHandle> childrenSnapshot;
 			EntityHandle parent = entt::null;
@@ -1067,10 +990,10 @@ namespace Index {
 		}
 
 		UnregisterEntityIdentity(nativeEntity);
-		// Dynamic components live outside EnTT and don't get on_destroy
-		// hooks, so without this they leak bytes until scene unload /
-		// assembly reload. Cheap no-op when no dynamics are attached.
-		SceneManager::Get().GetComponentRegistry().ScrubEntity(nativeEntity);
+		// Dynamic components don't get on_destroy hooks; scrub via Application path so detached/headless scenes don't assert.
+		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+			app->GetSceneManager()->GetComponentRegistry().ScrubEntity(nativeEntity);
+		}
 		TrackEntityDestruction(nativeEntity);
 		m_Registry.destroy(nativeEntity);
 		UntrackEntityDestruction(nativeEntity);
@@ -1127,12 +1050,7 @@ namespace Index {
 	}
 
 	void Scene::UpdateSystems() {
-		// Drain delayed-destroy queue first so any entity whose timer
-		// elapsed this frame disappears BEFORE systems iterate views over
-		// it. Decrement-then-test runs the destruction on the same tick
-		// the timer hits zero (i.e. delay 0.5s at 60fps fires at tick 30).
-		// Swap-pop preserves O(1) removal; entries the user added during
-		// system Update will be processed next frame, not this one.
+		// Drain delayed destroys BEFORE system updates so elapsed entities are gone when views are iterated.
 		if (!m_PendingDestroys.empty()) {
 			const float dt = Application::GetInstance()
 				? static_cast<float>(Application::GetInstance()->GetTime().GetDeltaTime())
@@ -1195,10 +1113,7 @@ namespace Index {
 		std::vector<ISystem*> systemsToDestroy;
 		systemsToDestroy.reserve(m_Systems.size());
 
-		// Walk m_Systems as the superset and dedup against m_AwakenedSystems by raw
-		// pointer. Systems added after AwakeSystems (e.g. via AddGameSystem mid-play)
-		// are appended to m_Systems but not to m_AwakenedSystems, so a m_AwakenedSystems-
-		// only walk would silently skip OnDestroy on them and leak their resources.
+		// Walk m_Systems (superset): systems added after AwakeSystems (AddGameSystem mid-play) are in m_Systems but not m_AwakenedSystems.
 		std::unordered_set<ISystem*> alreadyQueued;
 		alreadyQueued.reserve(m_AwakenedSystems.size());
 
@@ -1211,13 +1126,6 @@ namespace Index {
 			}
 		}
 
-		// Second pass: every enabled, not-yet-queued system in m_Systems gets
-		// OnDestroy. The cap (enabledSystemCount) constrains the FIRST pass —
-		// it represents how many m_AwakenedSystems entries the rollback should
-		// cover when a partial Awake failed. Capping the second pass too would
-		// silently skip OnDestroy on systems registered AFTER AwakeSystems
-		// (e.g. AddGameSystem mid-play), leaking their resources. We always
-		// want to tear those down regardless of enabledSystemCount.
 		for (const auto& systemPointer : m_Systems) {
 			ISystem* system = systemPointer.get();
 			if (alreadyQueued.contains(system)) {
@@ -1339,13 +1247,6 @@ namespace Index {
 
 	void Scene::OnTransform2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
-		// LoadGuard suppression: idempotent hook (binds owner + flips dirty
-		// flags, doesn't read siblings), so deferring it during ECB playback
-		// is safe — at flush time the same body runs with no observable
-		// difference. The suppression check itself is the entire deferral
-		// surface for this hook; the flush loop in ~LoadGuard re-invokes
-		// this same member function with the flag cleared, which then runs
-		// the body below normally.
 		if (m_SuppressConstructHooks) {
 			m_DeferredConstructHooks.push_back({ &Scene::OnTransform2DComponentConstruct, entity });
 			return;
@@ -1364,9 +1265,6 @@ namespace Index {
 
 	void Scene::OnSpriteRendererComponentConstruct(entt::registry&, EntityHandle entity)
 	{
-		// LoadGuard suppression: stateless hook (only bumps a version
-		// counter), safe to defer to the end of an ECB / load batch so a
-		// 1 000-entity spawn pulses the version once instead of 1 000 times.
 		if (m_SuppressConstructHooks) {
 			m_DeferredConstructHooks.push_back({ &Scene::OnSpriteRendererComponentConstruct, entity });
 			return;
@@ -1381,17 +1279,7 @@ namespace Index {
 
 	void Scene::OnRigidBody2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
-		// Body adoption invariant: when a Rigidbody2D is added to an entity that already
-		// holds a Box/Circle/Polygon collider, the rigidbody adopts the collider's body
-		// and BOTH components mirror the same b2BodyId. On destroy, whichever path
-		// actually calls b2DestroyBody MUST also zero the sibling component's m_BodyId.
-		// If we don't, Box2D body-id recycling (long sessions / generation wrap) can
-		// alias the stale id to a fresh, unrelated body — silent corruption with no log.
-		//
-		// Skip Box2D body creation for editor-preview scenes (e.g. prefab inspector
-		// thumbnails). Without this gate, every preview entity would push a real body
-		// into the singleton physics world and corrupt simulation state on the live scene.
-		// Drawers must defend against rb2D.IsValid() == false rather than assume.
+		// Body adoption invariant: rigidbody adopts an existing collider's b2BodyId; the destroyer that calls b2DestroyBody MUST zero the sibling's m_BodyId to prevent aliasing on ID recycle.
 		if (m_IsDetached) return;
 
 		if (!registry.all_of<Transform2DComponent>(entity)) {
@@ -1402,10 +1290,6 @@ namespace Index {
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
 		Rigidbody2DComponent& rb2D = registry.get<Rigidbody2DComponent>(entity);
 
-		// All three Box2D-backed colliders (Box / Circle / Polygon) own a b2Body
-		// when added before the rigidbody, so we adopt whichever one is already
-		// on the entity. The mutual-exclusion conflict declarations in
-		// BuiltInComponentRegistration ensure at most one is present.
 		if (HasAnyComponent<BoxCollider2DComponent>(entity)) {
 			rb2D.m_BodyId = GetComponent<BoxCollider2DComponent>(entity).m_BodyId;
 			rb2D.SetBodyType(BodyType::Dynamic);
@@ -1431,22 +1315,12 @@ namespace Index {
 
 		if (!rb2D.IsValid()) return;
 
-		// Match the BoxCollider2D path for circle/polygon: when the entity
-		// itself is being destroyed, route through the collider's Destroy so
-		// it tears down the shape AND the shared body in one step. Otherwise
-		// the rigidbody is being removed in isolation, so demote the body to
-		// static (the collider keeps using it) or fully destroy the body when
-		// no collider remains.
 		const bool hasAnyCollider =
 			registry.all_of<BoxCollider2DComponent>(entity) ||
 			registry.all_of<CircleCollider2DComponent>(entity) ||
 			registry.all_of<PolygonCollider2DComponent>(entity);
 
 		if (IsEntityBeingDestroyed(entity)) {
-			// Body ownership invariant: collider's Destroy() will b2DestroyBody the
-			// shared body, so we MUST zero our mirrored m_BodyId here — otherwise
-			// rb2D.m_BodyId outlives the underlying body and a recycled b2BodyId
-			// can later alias an unrelated entity's body.
 			if (registry.all_of<BoxCollider2DComponent>(entity)) {
 				registry.get<BoxCollider2DComponent>(entity).Destroy();
 				rb2D.m_BodyId = b2_nullBodyId;
@@ -1502,29 +1376,13 @@ namespace Index {
 	void Scene::OnBoxCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached) return;
 		auto& boxCollider2D = GetComponent<BoxCollider2DComponent>(entity);
-		// Body ownership invariant: if a Rigidbody2D is present, IT owns the body's
-		// lifetime — the collider's Destroy must NOT call b2DestroyBody. Otherwise
-		// both hooks fire b2DestroyBody on the same b2BodyId during entity teardown.
-		// b2Body_IsValid catches the second call most of the time via generation
-		// bumps, but if Box2D recycles the slot (long-running session, generation
-		// wrap, or MaxBodyId churn), the second destroy hits an unrelated body —
-		// silent corruption with no log.
+		// Rigidbody2D owns body lifetime when present; collider must NOT call b2DestroyBody or both hooks double-free on ID recycle.
 		if (registry.all_of<Rigidbody2DComponent>(entity)) {
 			boxCollider2D.DestroyShape(false);
 		}
 		else {
 			boxCollider2D.Destroy();
 		}
-		// Body ownership invariant (mirror): if a Rigidbody2D survives the
-		// collider's destroy hook (it was the body owner above, or — for the
-		// belt-and-braces case below — the registry transiently holds both
-		// components while teardown is in flight), make sure no stale b2BodyId
-		// is left pointing at a slot Box2D may recycle. Doing this AFTER
-		// boxCollider2D.Destroy()/DestroyShape() means we zero the mirror
-		// regardless of which branch ran. Previously this clear lived inside
-		// the `else` and tested all_of<Rigidbody2DComponent> a second time —
-		// the inner predicate was always false in that branch, so the guard
-		// the author documented was statically dead.
 		if (registry.all_of<Rigidbody2DComponent>(entity)) {
 			auto& rb = registry.get<Rigidbody2DComponent>(entity);
 			if (!b2Body_IsValid(rb.m_BodyId)) {
@@ -1569,10 +1427,6 @@ namespace Index {
 		else {
 			circleCollider.Destroy();
 		}
-		// Body ownership invariant (mirror): zero a stale rigidbody mirror. Mirrors the
-		// Box variant — must run regardless of which branch above ran, because the with-
-		// Rigidbody2D path can still observe a stale b2BodyId if the rigidbody itself was
-		// torn down earlier in the same teardown cascade.
 		if (registry.all_of<Rigidbody2DComponent>(entity)) {
 			auto& rb = registry.get<Rigidbody2DComponent>(entity);
 			if (!b2Body_IsValid(rb.m_BodyId)) {
@@ -1615,8 +1469,6 @@ namespace Index {
 		else {
 			polygonCollider.Destroy();
 		}
-		// Body ownership invariant (mirror): see Circle/Box variants — must run
-		// regardless of branch.
 		if (registry.all_of<Rigidbody2DComponent>(entity)) {
 			auto& rb = registry.get<Rigidbody2DComponent>(entity);
 			if (!b2Body_IsValid(rb.m_BodyId)) {
@@ -1640,10 +1492,6 @@ namespace Index {
 
 	void Scene::OnCamera2DComponentConstruct(entt::registry& registry, EntityHandle entity)
 	{
-		// Match every other heavy on_construct hook in this file: detached editor
-		// scenes are scratch copies (e.g. play-mode preview rollback) and must not
-		// allocate FBOs / register the entity as a render camera. Doing so leaks
-		// GL resources and confuses RefreshMainCameraSelection across two scenes.
 		if (m_IsDetached) return;
 
 		if (!registry.all_of<Transform2DComponent>(entity)) {
@@ -1668,9 +1516,7 @@ namespace Index {
 		Camera2DComponent& camera2D = GetComponent<Camera2DComponent>(entity);
 		camera2D.Destroy();
 
-		// During ClearEntities() every entity is being destroyed; refreshing
-		// the cache mid-loop would just pick another doomed entity and waste
-		// a registry scan per camera. ClearEntities clears the cache up front.
+		// Skip during ClearEntities: every camera is doomed anyway; cache cleared up front.
 		if (m_TearingDown) {
 			return;
 		}
@@ -1689,12 +1535,7 @@ namespace Index {
 		MarkStaticRenderDataDirty();
 		ApplyEntityEnabledState(registry, entity, false);
 
-		// Propagate to direct children — each child's own on_construct hook
-		// recurses further into the subtree, so we only emplace one level deep
-		// here. Snapshot the children list before iterating because emplace
-		// may reorder pool storage internally.
-		// InheritedDisabledTag lets the re-enable cascade remove only the
-		// DisabledTag values that this parent cascade created.
+		// Snapshot children before iterating (emplace may reorder pool). InheritedDisabledTag tracks which DisabledTags this cascade owns.
 		if (registry.all_of<HierarchyComponent>(entity)) {
 			std::vector<EntityHandle> children = registry.get<HierarchyComponent>(entity).Children;
 			for (EntityHandle child : children) {
@@ -1719,8 +1560,6 @@ namespace Index {
 
 		ApplyEntityEnabledState(registry, entity, true);
 
-		// Mirror the construct-time cascade: each child's own on_destroy hook
-		// continues the descent.
 		if (registry.all_of<HierarchyComponent>(entity)) {
 			std::vector<EntityHandle> children = registry.get<HierarchyComponent>(entity).Children;
 			for (EntityHandle child : children) {
@@ -1736,8 +1575,6 @@ namespace Index {
 
 	void Scene::OnStaticTagConstruct(entt::registry&, EntityHandle entity)
 	{
-		// LoadGuard suppression: stateless hook — defer for the same reason
-		// as the sprite renderer hook above.
 		if (m_SuppressConstructHooks) {
 			m_DeferredConstructHooks.push_back({ &Scene::OnStaticTagConstruct, entity });
 			return;
@@ -1754,8 +1591,6 @@ namespace Index {
 	}
 
 	void Scene::OnParticleSystem2DComponentConstruct(entt::registry& registry, EntityHandle entity) {
-		// LoadGuard suppression: only touches own component fields, no
-		// sibling reads — safe to defer.
 		if (m_SuppressConstructHooks) {
 			m_DeferredConstructHooks.push_back({ &Scene::OnParticleSystem2DComponentConstruct, entity });
 			return;
@@ -1770,12 +1605,6 @@ namespace Index {
 		ps.m_EmitterScene = nullptr;
 		ps.m_EmitterEntity = entt::null;
 	}
-
-	// ── Axiom-Physics component hooks ────────────────────────────────
-	// All Fast* hooks gate on m_IsDetached the same way the Box2D
-	// hooks above do — without it, prefab-inspector preview entities
-	// would push real bodies/colliders into the singleton IndexPhysicsWorld
-	// and corrupt simulation state on the live scene.
 
 	void Scene::OnFastBody2DConstruct(entt::registry& registry, EntityHandle entity) {
 		if (m_IsDetached) return;

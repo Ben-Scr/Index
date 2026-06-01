@@ -92,11 +92,6 @@ namespace Index {
 		static void SetCommandLineArgs(int argc, char** argv) { s_CommandLineArgs = { argc, argv }; }
 
 
-		// Application owns the renderer as an IRenderer* for swappability.
-		// GetRenderer2D() downcasts to the concrete default impl — safe today
-		// because Renderer2D is the only registered implementation, and asserted
-		// in debug. When alternate IRenderer backends ship, callers that still
-		// need Renderer2D-specific operations must check this returns non-null.
 		IRenderer* GetRenderer() { return m_Renderer2D.get(); }
 		Renderer2D* GetRenderer2D();
 		GuiRenderer* GetGuiRenderer() { return m_GuiRenderer.get(); }
@@ -110,22 +105,12 @@ namespace Index {
 		const SceneManager* GetSceneManager() const { return m_SceneManager.get(); }
 
 		static void Quit();
-		// Request the editor to stop play mode on its next pre-render
-		// pass. No-op outside the editor and outside play. Used by the
-		// scripting binding for Application.Quit() so a script-side
-		// "quit the game" call inside the editor exits play mode rather
-		// than closing the editor window.
+		// Routes scripted Application.Quit() inside the editor to stop-play rather than closing the editor window.
 		static void RequestEditorStopPlay() {
 			if (s_Instance) s_Instance->m_EditorStopPlayRequested = true;
 		}
 
-		// Splash-layer status hooks. The runtime splash overlay calls
-		// SignalSplashAttached on push and SignalSplashDetached when it
-		// pops itself at the end of its timeline. The main loop drains
-		// `m_DeferredStartupScenes` once SignalSplashDetached has fired,
-		// so the first scene only begins loading after the splash is
-		// fully gone — matches the user-facing rule "scene loads only
-		// when the splash is over".
+		// MUST be called by splash overlay: deferred scene load begins only once SignalSplashDetached fires.
 		static void SignalSplashAttached() {
 			if (s_Instance) s_Instance->m_SplashLayerActive = true;
 		}
@@ -171,13 +156,7 @@ namespace Index {
 			return layerRef;
 		}
 
-		// Pop an overlay by pointer. Used by self-popping overlays (the
-		// runtime splash) so they can remove themselves at the end of
-		// their timeline without the host layer needing to track them.
-		// PopOverlay is dispatch-safe: when a layer dispatch is in
-		// flight, the actual erase is deferred to dispatch end so the
-		// caller's `this` stays alive for the rest of the OnUpdate
-		// loop. OnDetach runs as part of the deferred erase.
+		// Dispatch-safe: erase is deferred while a dispatch is in flight so the caller's `this` stays valid for the rest of OnUpdate.
 		bool PopOverlay(Layer* layer) {
 			if (!layer) return false;
 			layer->OnDetach(*this);
@@ -189,9 +168,6 @@ namespace Index {
 			return m_EventBus.Subscribe<TEvent>(std::forward<F>(callback));
 		}
 
-		// RAII variant — the returned Subscription unsubscribes on destruction.
-		// Prefer this over SubscribeEvent + manual UnsubscribeEvent for callbacks
-		// whose lifetime is tied to a long-lived owner (panel / system / layer).
 		template<typename TEvent, typename F>
 		EventBus::Subscription SubscribeEventScoped(F&& callback) {
 			return m_EventBus.SubscribeScoped<TEvent>(std::forward<F>(callback));
@@ -206,17 +182,7 @@ namespace Index {
 		}
 
 	private:
-		// Snapshot the current layer order. Two correctness properties matter:
-		//   1. PushLayer inserts at m_InsertIndex, shifting indices, so the previous
-		//      index-based iteration would skip or double-visit siblings during a
-		//      mid-dispatch insert. Snapshotting raw pointers fixes that.
-		//   2. PopLayer used to destroy the layer's unique_ptr immediately, leaving
-		//      stale snapshot pointers dangling. The LayerStack now defers pops while
-		//      a dispatch is in flight (BeginDispatch/EndDispatch) — PendingPop layers
-		//      are skipped during iteration but their memory stays live.
-		// Returns by value: nested dispatches on the same thread (e.g. an OnEvent
-		// callback that triggers another dispatch) used to share a thread_local
-		// buffer that the inner call clear()ed, invalidating the outer iterator.
+		// Returns by value: shared thread_local buffer was cleared by inner nested dispatches, invalidating the outer iterator.
 		using LayerSnapshot = std::vector<Layer*>;
 
 		LayerSnapshot SnapshotLayerOrder() const {
@@ -243,9 +209,6 @@ namespace Index {
 			return snapshot;
 		}
 
-		// RAII helper around LayerStack::BeginDispatch/EndDispatch. Holding one of
-		// these makes PopLayer/PopOverlay defer the actual erase until the helper's
-		// destructor runs, so snapshot pointers stay valid for the whole scope.
 		struct LayerDispatchGuard {
 			explicit LayerDispatchGuard(LayerStack& stack) : Stack(stack) { Stack.BeginDispatch(); }
 			~LayerDispatchGuard() { Stack.EndDispatch(); }
@@ -273,30 +236,15 @@ namespace Index {
 		bool m_CanReload = false;
 		bool m_IsEditorHost = false;
 		bool m_IsPaused = false;
-		// Atomic — written from GLFW window-focus / iconify callbacks (which today
-		// fire from the polling thread, but the data type makes the contract
-		// explicit and survives any future move to a real event thread).
 		std::atomic<bool> m_IsBackgroundPaused{ false };
 		std::atomic<bool> m_IsMinimized{ false };
 		std::atomic<bool> m_WindowHasFocus{ true };
 		bool m_IsPlaying = true;
 		bool m_IsGameplayPaused = false;
 		bool m_IsScriptInputEnabled = true;
-		// Set when a scripted Application.Quit() runs inside the editor —
-		// the editor's pre-render polls this and routes through its
-		// normal stop-play path so quit-from-script doesn't close the
-		// editor window. Cleared after the editor consumes it.
-		bool m_EditorStopPlayRequested = false;
-		// Set when Initialize() saw a splash overlay attached and
-		// skipped the InitializeStartupScenes / RaiseApplicationStart /
-		// MarkGameStart trio. Drained by the main loop once the splash
-		// pops itself (m_SplashLayerActive flips false), so the first
-		// scene only starts loading once the splash is fully done.
+		bool m_EditorStopPlayRequested = false; // polled by editor pre-render to route quit-from-script through stop-play
+		// Set when splash is active; deferred startup-scene trio runs only once splash pops (deferred-load gate).
 		bool m_DeferredStartupScenes = false;
-		// Toggled by the splash layer's OnAttach / OnDetach via
-		// SignalSplashAttached / SignalSplashDetached. Stays false in
-		// the editor and in projects that disable the splash, so the
-		// deferred-load gate is opt-in.
 		bool m_SplashLayerActive = false;
 		bool m_WasEnginePaused = false;
 		bool m_IsRenderingFrame = false;
@@ -345,12 +293,7 @@ namespace Index {
 			}
 		}
 
-		// Iconify (minimize) state. Routed from Window's GLFW iconify callback because the
-		// framebuffer-resize-to-(0,0) path that previously fed m_IsMinimized doesn't fire on
-		// every platform / monitor configuration (multi-monitor, DPI-virtualized layouts, X11
-		// with certain WMs). Without this, the engine kept rendering at full target framerate
-		// while invisible — battery drain on laptops + CPU/GPU usage on a window the user
-		// can't see.
+		// From GLFW iconify callback (not framebuffer resize): resize-to-(0,0) doesn't fire reliably on all platforms/WMs.
 		static void SetWindowMinimized(bool minimized) {
 			if (s_Instance) {
 				s_Instance->m_IsMinimized = minimized;

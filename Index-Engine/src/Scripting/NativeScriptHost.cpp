@@ -161,10 +161,7 @@ namespace Index {
 			return false;
 		}
 
-		// Reload sequences leak orphaned shadow copies if the previous run
-		// crashed (UnloadDLL never ran) or if RemoveShadowCopy raced a Windows
-		// file lock. Sweep stale copies sharing this DLL's stem before adding a
-		// fresh one so the temp directory doesn't accumulate forever.
+		// Sweep stale shadow copies from prior crashed/partial reloads before creating a new one.
 		{
 			std::error_code sweepErr;
 			std::filesystem::path shadowDirectory = std::filesystem::temp_directory_path(sweepErr);
@@ -306,13 +303,7 @@ namespace Index {
 	{
 		if (!script) return;
 
-		// Erase from the live-instance list BEFORE invoking OnDestroy. A user
-		// OnDestroy can re-enter the host (DestroyInstance(other), DestroyAllInstances,
-		// reload, etc.); if the entry is still in m_LiveInstances during the user
-		// callback, a re-entrant DestroyAllInstances iterating the snapshot would
-		// double-destroy this very pointer — and a Reload that walks the list and
-		// invokes DestroyFn would too. Erasing first makes the re-entrant path see
-		// an already-removed pointer and skip it.
+		// Erase BEFORE OnDestroy: re-entrant calls (DestroyAllInstances, Reload) from within OnDestroy would otherwise double-destroy this pointer.
 		auto it = std::find(m_LiveInstances.begin(), m_LiveInstances.end(), script);
 		if (it != m_LiveInstances.end())
 			m_LiveInstances.erase(it);
@@ -329,12 +320,7 @@ namespace Index {
 
 	void NativeScriptHost::DestroyAllInstances()
 	{
-		// Snapshot the live-instance pointers and clear the master vector BEFORE
-		// invoking any user OnDestroy. A user OnDestroy can re-enter and call
-		// DestroyInstance(other), which erases from m_LiveInstances mid-iteration
-		// — corrupting our walk. By moving out the vector first, the re-entrant
-		// erase becomes a no-op (the snapshot is independent), and we still
-		// guarantee that every live instance gets exactly one OnDestroy + DestroyFn.
+		// Move out BEFORE any OnDestroy: re-entrant DestroyInstance calls erase from m_LiveInstances and would corrupt iteration over it.
 		std::vector<NativeScript*> snapshot = std::move(m_LiveInstances);
 		m_LiveInstances.clear();
 

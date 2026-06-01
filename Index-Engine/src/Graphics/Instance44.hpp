@@ -13,26 +13,11 @@ namespace Index {
         TextureHandle TextureHandle{};
         short SortingOrder{ 0 };
         std::uint8_t SortingLayer{ 0 };
-        // Slice UV bounds in sampler space (0..1). Default = full texture;
-        // the renderer's per-instance pack site overwrites this with the
-        // result of ResolveSpriteUVRect when the SpriteRenderer / Image
-        // references a named slice in the texture's `.meta`. The shader
-        // remaps the unit-quad UV through this rect via mix() so the
-        // sprite samples only the slice's pixels.
         SpriteUVRect UvRect{};
-        // CPU-only hierarchy walk index used by GuiRenderer as the
-        // tiebreaker after (SortingLayer, SortingOrder). Lower = drawn
-        // earlier (further back). Not read by any shader — it just sits
-        // in the per-instance VBO and is ignored by GL via offsetof'd
-        // attribute bindings. Default 0 is fine for non-UI callers like
-        // SpriteRenderer that don't care about hierarchy ordering.
+        // CPU-only GuiRenderer tiebreaker; not read by any shader.
         std::uint32_t DrawIndex{ 0 };
 
-        // CPU-only clip rect in centered-screen-space pixels, used by
-        // GuiRenderer to drive glScissor when this instance sits under
-        // a UI Mask ancestor. HasClip=false means "no clip; render
-        // unrestricted". Same offsetof-bound-attribute story as
-        // DrawIndex — these fields are never read by any shader.
+        // CPU-only scissor rect for GuiRenderer UI masking; not read by any shader.
         bool HasClip{ false };
         Vec2 ClipMin{};
         Vec2 ClipMax{};

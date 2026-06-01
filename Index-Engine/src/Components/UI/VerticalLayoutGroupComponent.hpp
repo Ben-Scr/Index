@@ -5,12 +5,6 @@
 
 namespace Index {
 
-	// Lays out an entity's children top-to-bottom (or bottom-to-top) inside
-	// the parent rect. Vertical sibling of HorizontalLayoutGroupComponent —
-	// see that file for the field semantics. This component flips the
-	// dominant axis: children sit in a single column instead of a row, and
-	// ChildForceExpandHeight grows leftover vertical space rather than
-	// horizontal.
 	struct VerticalLayoutGroupComponent {
 		float PaddingLeft = 0.0f;
 		float PaddingRight = 0.0f;

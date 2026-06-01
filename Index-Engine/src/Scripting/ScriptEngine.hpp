@@ -11,17 +11,6 @@ namespace Index {
 
 	class Scene;
 
-	/// <summary>
-	/// ScriptEngine manages the CoreCLR (.NET) scripting runtime via hostfxr.
-	///
-	/// Lifecycle:
-	///   1. Init()            — boot CoreCLR runtime
-	///   2. LoadCoreAssembly  — load Index-ScriptCore.dll, initialize bridge
-	///   3. LoadUserAssembly  — load user script DLL (e.g. Index-Sandbox.dll)
-	///   4. CreateInstance     — per ScriptComponent entry, instantiate managed object
-	///   5. InvokeStart/Update/OnDestroy — forward lifecycle calls
-	///   6. Shutdown()        — tear down the runtime
-	/// </summary>
 	class INDEX_API ScriptEngine {
 	public:
 		static void Init();
@@ -34,13 +23,6 @@ namespace Index {
 		static void ReloadAssemblies();
 
 		static void SetScene(Scene* scene);
-		/// Returns the scene currently bound to the scripting layer.
-		/// @return Pointer to the active scene, or nullptr if SetScene has
-		///         not been called this run (e.g. before the first scene
-		///         load, or after SetScene(nullptr) during teardown).
-		///         Callers MUST null-check before dereferencing. The pointer
-		///         is non-owning and is invalidated whenever SetScene is
-		///         called again — do not cache it across frames.
 		static Scene* GetScene();
 
 		// ── Instance management ────────────────────────────────────────
@@ -77,13 +59,7 @@ namespace Index {
 		// framebuffer-size callback.
 		static void RaiseWindowResize();
 
-		// Editor-only signal — invoked by ImGuiEditorLayer when leaving
-		// play mode, before the pre-play scene snapshot is restored.
-		// Routes into ScriptInstanceManager.OnPlayModeExited, which
-		// strips every static-event subscriber whose backing method
-		// lives in the user assembly and logs a warning naming the
-		// count. Safe to call from native runtime builds too — when
-		// the script engine isn't initialized the call is a no-op.
+		// Strips static-event subscribers from the user assembly; safe to call from runtime (no-op when uninitialized).
 		static void OnPlayModeExited();
 
 		static uint32_t CreateGameSystemInstance(const std::string& className, const std::string& sceneName);
@@ -109,20 +85,10 @@ namespace Index {
 		static void InvokeGameSystemFixedUpdate(uint32_t handle);
 		static void InvokeGlobalSystemFixedUpdate(uint32_t handle);
 
-		// Returns a JSON array of [ShowInEditor]-visible fields on the live
-		// GameSystem instance (one entry per field). The pointer is valid
-		// until the next ScriptInstanceManager field call — caller must
-		// parse / copy before invoking another field accessor. Empty array
-		// when the handle is unknown.
+		// Returns JSON array of [ShowInEditor] fields; pointer valid until the next field accessor call.
 		static const char* GetGameSystemFields(uint32_t handle);
-		// Writes a single field on the live GameSystem instance. `value` is
-		// the editor's string-encoded value (same format ParseFieldValue
-		// expects). No-op when the handle is unknown or the field is missing.
 		static void SetGameSystemField(uint32_t handle, const char* fieldName, const char* value);
 
-		// Drains the EntityScript coroutine queues. Called from
-		// ScriptSystem::Update / FixedUpdate at the top of the frame so
-		// pending awaits resume before user OnUpdate runs.
 		static void PumpCoroutinesUpdate(float deltaTime);
 		static void PumpCoroutinesFixedUpdate();
 

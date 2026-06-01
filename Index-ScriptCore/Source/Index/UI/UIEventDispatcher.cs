@@ -5,37 +5,8 @@ using Index.Interop;
 
 namespace Index.UI;
 
-// Per-frame UI event dispatcher. Called from native code via
-// ScriptInstanceManager.RaiseUiEventDispatch at the tail of
-// UIEventSystem::Update — that's the moment the engine has finished
-// writing transient flags (IsClicked, IsHovered, ValueChangedThisFrame,
-// etc.) for the current frame, so we can read them and fan out to
-// per-instance subscribers of the UI events.
-//
-// Each component instance owns its events (Slider.OnValueChanged etc.
-// are no longer static), so the dispatcher resolves the entity ID it
-// gets from the engine into a Component via Entity.GetComponent and
-// invokes that instance's internal Raise* helper. The component class
-// hands a typed payload to subscribers — the new value for value-bearing
-// events (Slider→float, Toggle→bool, InputField→string, Dropdown→int)
-// or `this` for transition events (Interactable hover/click/focus).
-//
-// Edge semantics:
-//   - IsClicked / IsMouseDown / IsMouseUp are already one-frame edges
-//     in UIEventSystem (set true on the frame they happen, cleared
-//     next tick), so we fire those directly.
-//   - IsHovered is continuous; we track previous state per entity and
-//     fire OnHovered only on the rising edge so handlers don't run
-//     every frame the user is hovering.
-//   - IsPressed is continuous too, but OnPressed deliberately fires
-//     every frame the widget is held (charge meters, hold-to-scroll,
-//     drag-preview). Subscribers that only want the edge should use
-//     OnMouseDown instead.
-//   - InputField has no native "TextChangedThisFrame" flag, so we
-//     diff against the last observed text per entity instead. Scripts
-//     calling InputField.SetValue(..., notifyEvent: false) push the new
-//     text into the cache via MarkInputFieldText to suppress the diff.
-
+// Called from RaiseUiEventDispatch (tail of UIEventSystem::Update). IsHovered fires only on
+// rising edge; IsPressed fires every frame; InputField text change is diffed per entity.
 internal static class UIEventDispatcher
 {
     private static readonly HashSet<ulong> s_PrevHovered = new();
@@ -94,10 +65,6 @@ internal static class UIEventDispatcher
             return;
         }
 
-        // We rebuild "currently hovered / focused" sets from this frame
-        // and swap them in afterwards, so the next tick's edge detection
-        // sees the right baseline even when entities disappear or change
-        // Focusable. OnPressed fires every frame and needs no edge set.
         var nowHovered = new HashSet<ulong>();
         var nowFocused = new HashSet<ulong>();
 
@@ -105,13 +72,6 @@ internal static class UIEventDispatcher
         {
             ulong id = s_QueryBuffer[i];
 
-            // Resolve the managed wrapper once per frame per widget so
-            // the subsequent Raise* calls don't repeat the lookup. The
-            // Entity wrapper here is throwaway, but Entity.GetComponent
-            // routes through s_ManagedComponentStore (shared per
-            // entity-ID + type), so we hit the same Interactable
-            // instance the user's script subscribed to — its events
-            // carry the user's handlers.
             Entity entity = new Entity(id);
             Interactable? interactable = entity.GetComponent<Interactable>();
             if (interactable == null) continue;
@@ -147,10 +107,7 @@ internal static class UIEventDispatcher
             if (clicked)
             {
                 interactable.RaiseClicked();
-                // Button click fan-out moved to DispatchButtons so a
-                // Button whose TargetGraphic owns the Interactable (rather
-                // than the Button entity itself) still receives OnClick.
-                // Same-entity buttons are covered by the same iteration.
+                // Button.OnClick handled in DispatchButtons to cover TargetGraphic-owned Interactables.
             }
 
             if (mouseDown) interactable.RaiseMouseDown();
@@ -165,13 +122,6 @@ internal static class UIEventDispatcher
 
     private static void DispatchButtons()
     {
-        // Buttons fan out three edge events and one continuous event
-        // from whichever entity owns the Interactable: the button entity
-        // itself OR the configured TargetGraphic. The dispatcher reads
-        // the target's per-frame flags directly — IsMouseDown / IsClicked
-        // / IsMouseUp are already one-frame edges on the Interactable
-        // side, and IsPressed is the sticky held flag that OnPressed
-        // fans out every frame.
         int count = Query("Button");
         for (int i = 0; i < count; i++)
         {
@@ -323,10 +273,6 @@ internal static class UIEventDispatcher
                 s_LastInputFieldText[id] = current;
             }
 
-            // ── Focus / blur edges ─────────────────────────────────
-            // OnSelect on the rising edge of IsFocused, OnDeselect on
-            // the falling edge. The continuous flag itself isn't useful
-            // as an event; we only want the transitions.
             bool focused = InternalCalls.InputField_GetIsFocused(id);
             bool wasFocused = s_PrevFocusedInputFields.Contains(id);
             if (focused)

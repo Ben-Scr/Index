@@ -217,10 +217,7 @@ namespace Index::Process {
 		}
 		CloseHandle(readPipe);
 
-		// Final wait — bounded by whatever's left of the caller-supplied timeout
-		// instead of INFINITE: the read loop can break on PeekNamedPipe failing
-		// (broken pipe, e.g. the child closed stdout but is still running), so
-		// an unbounded wait here would hang the editor on a misbehaving child.
+		// Not INFINITE: PeekNamedPipe failure (broken pipe) can exit the read loop while the child still runs; cap to avoid hanging.
 		DWORD finalWaitMs = INFINITE;
 		if (result.TimedOut) {
 			finalWaitMs = 5000;
@@ -246,12 +243,7 @@ namespace Index::Process {
 		CloseHandle(processInfo.hThread);
 		return result;
 #else
-		// Build the argv array BEFORE fork(). Between fork() and execvp() we
-		// can only call async-signal-safe functions; std::vector::push_back
-		// allocates via the global allocator, which is not async-signal-safe
-		// in a multithreaded program (a thread holding malloc's lock at fork
-		// time leaves it locked in the child, deadlocking the next malloc).
-		// Pre-built argv keeps the post-fork path to chdir/dup2/close/execvp.
+		// Build argv before fork(): post-fork code must be async-signal-safe; malloc is not safe in a multithreaded process.
 		std::vector<char*> argv;
 		argv.reserve(command.size() + 1);
 		for (const std::string& arg : command) {

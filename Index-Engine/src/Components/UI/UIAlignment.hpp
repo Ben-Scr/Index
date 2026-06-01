@@ -3,16 +3,7 @@
 
 namespace Index {
 
-	// 9-cell alignment grid shared by HorizontalLayoutGroup,
-	// VerticalLayoutGroup, GridLayoutGroup and any future widget that
-	// needs to align children inside a parent rect. Encoded as a small
-	// integer so the layout-pass math (which historically did `% 3`
-	// for column / `/ 3` for row) keeps working without translation —
-	// the enum is purely a typing/inspector improvement.
-	//
-	// Layout convention (matches Unity): row index = value / 3,
-	// column index = value % 3, with rows ordered top → bottom and
-	// columns left → right.
+	// 9-cell grid: row = value / 3, column = value % 3, top-to-bottom / left-to-right.
 	enum class UIAlignment : std::uint8_t {
 		UpperLeft   = 0,
 		UpperCenter = 1,

@@ -17,10 +17,6 @@ namespace Index {
 
 		float UniformScaleFromTransform(const Transform2DComponent* tr) {
 			if (!tr) return 1.0f;
-			// A circle has a single radius — there's no honest way to
-			// represent non-uniform x/y scaling. Take the larger absolute
-			// axis so collisions don't silently shrink when the user
-			// stretches the entity along just one axis.
 			return std::max(std::abs(tr->Scale.x), std::abs(tr->Scale.y));
 		}
 	}

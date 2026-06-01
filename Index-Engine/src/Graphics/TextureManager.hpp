@@ -25,31 +25,14 @@ namespace Index {
             static void Shutdown();
 
             static TextureHandle LoadTexture(const std::string_view& path, Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
-            // Resolves UUID → path → LoadTexture. When the asset's companion
-            // `.meta` file carries an `import` block (authored via the Sprite
-            // Editor / texture asset inspector), its Filter/Wrap WIN over the
-            // caller-supplied defaults — same loaded-from-disk values
-            // therefore behave identically in editor previews, scene loads,
-            // and standalone builds.
+            // Meta import block Filter/Wrap wins over caller-supplied defaults when present.
             static TextureHandle LoadTextureByUUID(uint64_t assetId, Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
 
-            // Re-apply the sampler settings from a texture's `.meta` to every
-            // currently-loaded slot whose canonical path matches. Used by the
-            // asset inspector so changing Filter or Wrap takes effect
-            // immediately for live entities — without this the new sampler
-            // only kicks in on the next process restart (or on an explicit
-            // ReloadTexture, which costs a re-decode we don't actually need).
-            // Returns the number of slots updated. Safe to call before
-            // Initialize / after Shutdown (no-op).
+            // Re-applies .meta sampler settings to every loaded slot at the given path; avoids a full re-decode.
             static size_t ApplyMetaSamplerToLoaded(const std::string& path);
             static TextureHandle GetDefaultTexture(DefaultTexture type);
             static void UnloadTexture(TextureHandle handle);
-            // Look up an already-loaded texture by name. The filter/wrap
-            // parameters disambiguate same-named textures loaded with
-            // different sampler settings (the same path can legitimately
-            // appear multiple times in s_Textures with distinct keys). For
-            // legacy callers, the 1-arg overload returns the first match
-            // ignoring sampler settings — prefer the keyed form for correctness.
+            // filter/wrap disambiguate: the same path can be loaded multiple times with different samplers.
             static TextureHandle GetTextureHandle(const std::string& name, Filter filter, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
             [[deprecated("Sampler-agnostic lookup is ambiguous when the same path is loaded with multiple Filter/Wrap combinations. Pass filter+wrap explicitly.")]]
             static TextureHandle GetTextureHandle(const std::string& name);
@@ -61,44 +44,19 @@ namespace Index {
             static void UnloadAll(bool defaultTextures = false);
             static uint64_t GetTextureAssetUUID(TextureHandle handle);
 
-            // Walks every live Scene's registry collecting TextureHandle values from
-            // components that hold them (SpriteRendererComponent, ParticleSystem2DComponent,
-            // any others with a TextureHandle field). Frees every entry not in that set.
-            // Default/built-in textures (the entries reserved at Initialize() time) are
-            // never evicted. Safe to call between frames; may take O(textures × components)
-            // time. Returns the number of entries freed.
-            //
-            // Before scanning scenes, this also asks every registered external
-            // reference provider (see AddReferenceProvider) to report the
-            // handles it holds. Without this hook, the editor's
-            // ThumbnailCache, AssetBrowser previews, EditorIcons, and any
-            // package that holds TextureHandles outside the ECS would have
-            // their references silently invalidated on a Purge call.
+            // Frees every loaded slot not referenced by any scene component or registered provider; default textures are never evicted.
             static size_t PurgeUnreferenced();
 
-            // Register a callback that emits the TextureHandles its caller
-            // currently holds. Used by the editor and by packages to opt
-            // their non-ECS handles into PurgeUnreferenced. Returns a token
-            // that must be passed to RemoveReferenceProvider to unregister.
             using ReferenceEmitter = std::function<void(TextureHandle)>;
             using ReferenceProvider = std::function<void(const ReferenceEmitter&)>;
             static uint32_t AddReferenceProvider(ReferenceProvider provider);
             static void RemoveReferenceProvider(uint32_t token);
 
-            // Notification fired BEFORE a texture slot is destroyed or its
-            // GPU resource is replaced (UnloadTexture, UnloadAll, ReloadTexture
-            // move-in). Subscribers like Renderer2D's bind-group cache use
-            // this to evict entries keyed off the soon-to-be-invalid
-            // Texture2D::GetHandle() pool ID. The handle is still resolvable
-            // via GetTexture(handle) when the listener fires — callers should
-            // capture whatever they need from the live texture before
-            // returning, since the slot is invalidated immediately after.
+            // Fired BEFORE a slot is destroyed/replaced; handle is still valid inside the callback.
             using DestroyListener = std::function<void(TextureHandle)>;
             static uint32_t AddDestroyListener(DestroyListener listener);
             static void RemoveDestroyListener(uint32_t token);
 
-            /// Returns the texture path relative to a texture root directory.
-            /// This is the same format accepted by LoadTexture().
             static std::string GetTextureName(TextureHandle handle) {
                 if (handle.index >= s_Textures.size() || !s_Textures[handle.index].IsValid
                     || s_Textures[handle.index].Generation != handle.generation)
@@ -129,22 +87,13 @@ namespace Index {
             }
 
             static bool IsValid(TextureHandle handle) {
-                // Short-circuit before touching s_Textures: callers (notably
-                // shutdown / scene-teardown code paths) can hold handles past
-                // the manager's lifetime, and indexing into a cleared vector
-                // — even with bounds-checked compares — is fragile. Treating
-                // any handle as invalid before init / after shutdown matches
-                // every other API on this class.
+                // Guard against callers holding handles past manager lifetime (shutdown / scene teardown).
                 if (!s_IsInitialized) return false;
                 if (handle.index >= s_Textures.size()) return false;
                 return s_Textures[handle.index].IsValid &&
                     s_Textures[handle.index].Generation == handle.generation;
             }
 
-            // Sum of all currently-loaded textures' GPU memory footprint, in
-            // bytes. Estimate: 4 bytes per pixel (RGBA8). Used by the profiler's
-            // "Texture Memory" module. Default textures are excluded — they're
-            // tiny (1x1 / 32x32) and aren't user-controlled state.
             static std::size_t GetTotalTextureMemoryBytes();
 
 		private:

@@ -298,7 +298,11 @@ function GetIndexModuleDefines()
         "INDEX_WITH_AUDIO=" .. (IndexModules.Audio and "1" or "0"),
         "INDEX_WITH_PHYSICS=" .. (IndexModules.Physics and "1" or "0"),
         "INDEX_WITH_SCRIPTING=" .. (IndexModules.Scripting and "1" or "0"),
-        "INDEX_WITH_EDITOR=" .. (IndexModules.Editor and "1" or "0"),
+        -- INDEX_WITH_EDITOR is intentionally NOT emitted here: it varies per
+        -- build configuration (1 in Debug/Release so the workspace can host the
+        -- editor, 0 in Dist so shipped runtimes carry no editor systems). It is
+        -- applied by ApplyIndexEditorModuleDefine() below, which every engine
+        -- consumer calls right after defines(GetIndexModuleDefines()).
         "INDEX_WITH_APPLICATION=" .. (hasApplication and "1" or "0"),
         "INDEX_ENTITY_BITS=" .. tostring(GetIndexEntityBits()),
         -- Shrink magic_enum's default reflection window [-128, 127] -> [-1, 64].
@@ -321,6 +325,32 @@ function GetIndexModuleDefines()
     end
 
     return defines
+end
+
+-- Emits INDEX_WITH_EDITOR per build configuration. MUST be called inside a
+-- project block, right after defines(GetIndexModuleDefines()).
+--
+-- Editor-support code in the engine (the PrefabTemplateCache .prefab watcher,
+-- ProjectManager's cache hook, ...) is gated on `#if INDEX_WITH_EDITOR`. It
+-- compiles into Debug/Release so the dev workspace can host the editor, but is
+-- stripped from Dist so a shipped runtime carries no editor-only systems.
+-- When the workspace was generated without the editor module at all, it stays
+-- off in every configuration.
+--
+-- Splitting it out per-config (rather than baking one value at premake time)
+-- is safe for cross-DLL ODR: every binary in a single process is built in the
+-- same configuration, so engine.dll and its consumers always agree on the
+-- value (PrefabTemplateCache has an INDEX_WITH_EDITOR-conditional member).
+function ApplyIndexEditorModuleDefine()
+    if IndexModules.Editor then
+        filter "configurations:Dist"
+            defines { "INDEX_WITH_EDITOR=0" }
+        filter "configurations:not Dist"
+            defines { "INDEX_WITH_EDITOR=1" }
+        filter {}
+    else
+        defines { "INDEX_WITH_EDITOR=0" }
+    end
 end
 
 function UseIndexEngineModuleDependencies()
@@ -429,6 +459,30 @@ function ApplyDawnLibDirs(rootRelPrefix)
     filter "configurations:Dist"
         libdirs { p .. "External/dawn/build/src/dawn/native/Release" }
     filter {}
+    -- Single-config generators (Make / Ninja — i.e. the Linux + macOS builds,
+    -- and CI) emit the lib straight into .../native/ with no per-config
+    -- subfolder, so the per-config dirs above never match there. Add the bare
+    -- path for every config as a fallback. On Windows (multi-config VS) the
+    -- bare .../native/ holds no webgpu_dawn lib — the libs live in the Debug/
+    -- and Release/ subfolders above — so this is a harmless search-path miss
+    -- with no LNK2038 risk. On Linux a Debug engine linking the Release .a is
+    -- fine: libstdc++ has no _ITERATOR_DEBUG_LEVEL ABI split, unlike MSVC's
+    -- /MDd vs /MD. This is what lets CI build Release Dawn once and link it
+    -- into both the Release and Debug engine builds.
+    libdirs { p .. "External/dawn/build/src/dawn/native" }
+end
+
+-- True when an engine-shipped package with this name is installed on disk —
+-- its manifest is present at <repo>/packages/<Name>/index-package.lua. The
+-- package loader (premake/package-loader.lua) registers exactly those, so this
+-- is a faithful "will the Pkg.<Name> project exist in the workspace?" predicate.
+-- It checks the filesystem rather than loader state, so a consumer's premake5.lua
+-- can call it even though packages are loaded last. Lets a sample opt into a
+-- package link only when the package is actually present, so a checkout without
+-- it (CI, a fresh clone, a user who hasn't fetched it from the registry) builds
+-- clean instead of emitting MSB3245 for an unresolvable assembly reference.
+function IndexEnginePackageInstalled(name)
+    return os.isfile(path.join(ROOT_DIR, "packages", name, "index-package.lua"))
 end
 
 function UseDependencySet(dep)

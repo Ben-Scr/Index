@@ -52,14 +52,7 @@ namespace Index {
 		const bool enabled = IsEnabled();
 		const bool registerContacts = CanRegisterContacts();
 
-		// Snapshot collision callbacks BEFORE DestroyShape so the recreated b2Shape (with
-		// a fresh id) inherits the user's OnCollisionEnter/Exit/Hit handlers. Without
-		// this, every registered collision callback would silently disappear on an
-		// IsTrigger toggle — a footgun for any gameplay code that flips trigger state
-		// at runtime. DestroyShape internally calls dispatcher.UnregisterShape, which
-		// is why we must snapshot first; the snapshot moves the entries out, the
-		// UnregisterShape that follows is a no-op for the already-emptied buckets,
-		// and RestoreCallbacks re-binds them to the new shape id.
+		// Snapshot callbacks BEFORE DestroyShape: recreated b2Shape gets a fresh id, so callbacks must be re-bound or they silently disappear on IsTrigger toggle.
 		auto& dispatcher = PhysicsSystem2D::GetMainPhysicsWorld().GetDispatcher();
 		auto savedCallbacks = dispatcher.SnapshotCallbacks(m_ShapeId);
 		DestroyShape(false);

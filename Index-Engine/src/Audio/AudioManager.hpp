@@ -18,14 +18,7 @@ namespace Index {
 	class Audio;
 	class IAudioBackend;
 
-	/// AudioManager — global audio facade. THREAD CONTRACT: every public static on
-	/// this class is main-thread-only. The internal state (s_audioMap,
-	/// s_soundInstances, s_freeInstanceIndices, s_soundQueue, miniaudio engine) is
-	/// not synchronized; calling from a worker thread is undefined behavior. The
-	/// only state shared with miniaudio's internal audio thread is the per-sound
-	/// `ma_sound`/`ma_resource_manager_data_source` payloads, and even there the
-	/// init/uninit/start/stop entry points must be invoked from the main thread.
-	/// Public statics assert IsMainThread() in debug to catch violators early.
+	/// AudioManager — global audio facade. THREAD CONTRACT: all public statics are main-thread-only; calling from a worker thread is UB.
 	class INDEX_API AudioManager {
 	public:
 		static constexpr uint32_t MAX_CONCURRENT_SOUNDS = 64;
@@ -36,10 +29,6 @@ namespace Index {
 		static void Shutdown();
 		static void Update();
 
-		// Install a backend BEFORE Initialize() is called. Packages can replace
-		// the default MiniaudioBackend (e.g. a NullAudioBackend for headless
-		// builds, or a custom platform backend). If unset by the time Initialize
-		// runs, AudioManager installs the default MiniaudioBackend automatically.
 		static void SetBackend(std::unique_ptr<IAudioBackend> backend);
 		static IAudioBackend* GetBackend() { return s_Backend.get(); }
 
@@ -81,10 +70,6 @@ namespace Index {
 			ma_resource_manager_data_source DataSource{};
 			ma_sound Sound{};
 			AudioHandle AudioHandle;
-			// Bumped on every Recycle so a stale handle to this slot fails GetSoundInstance.
-			// Without this, a recycled index silently aliases a different sound (the bug that
-			// produced the audit's CR2). 32-bit so the runtime counter doesn't pinch as the
-			// encoded ID's generation field grew from 16 to 24 bits (see EncodeAudioInstanceId).
 			uint32_t Generation = 0;
 			bool HasDataSource = false;
 			bool IsValid = false;
@@ -138,18 +123,10 @@ namespace Index {
 
 		static std::unordered_map<AudioHandle::HandleType, std::unique_ptr<Audio>> s_audioMap;
 		static std::unordered_map<std::string, AudioHandle::HandleType> s_audioPathToHandle;
-		// Secondary cache keyed on the as-passed raw path string (whatever the
-		// caller handed to LoadAudio). Probed before NormalizeAudioPath so a
-		// repeated LoadAudio for the same string skips 3–4 filesystem syscalls.
-		// Stale entries are tolerated and self-heal on next probe — UnloadAudio
-		// does not proactively scrub this map.
 		static std::unordered_map<std::string, AudioHandle::HandleType> s_audioRawPathToHandle;
 		static AudioHandle::HandleType s_nextHandle;
 
-		// Held via unique_ptr so the slot's address is stable while miniaudio's
-		// audio thread reads from `&Sound` concurrently. A bare `vector<SoundInstance>`
-		// would relocate `ma_sound` on growth and crash mid-playback. Free slots
-		// hold null until reused.
+		// unique_ptr keeps slot addresses stable — a bare vector would relocate ma_sound on growth and crash mid-playback.
 		static std::vector<std::unique_ptr<SoundInstance>> s_soundInstances;
 		static std::vector<uint32_t> s_freeInstanceIndices;
 

@@ -63,13 +63,7 @@ namespace Index {
 			}
 		}
 
-		// Snapshot all registered begin/end/hit callbacks for a shape into a pod struct
-		// the caller can restore later. Used to bridge BoxCollider2DComponent::SetSensor:
-		// the underlying b2Shape gets recreated (changing its id), but the user-
-		// registered collision callbacks should survive. Caller pattern is
-		//   auto saved = dispatcher.SnapshotCallbacks(oldShape);
-		//   ... DestroyShape() / CreateShape() ...
-		//   dispatcher.RestoreCallbacks(newShape, std::move(saved));
+		// Used by SetSensor to survive shape recreation (id changes): snapshot old shape, destroy/create, restore on new shape.
 		struct CallbackSnapshot {
 			std::vector<ContactBeginCallback> Begin;
 			std::vector<ContactEndCallback> End;
@@ -120,15 +114,7 @@ namespace Index {
 			const ContactStayCallback& onStay = {}) {
 			b2ContactEvents ev = b2World_GetContactEvents(world);
 
-			// SNAPSHOT PHASE — resolve every event's entity / scene / contact-point
-			// data BEFORE running any user callback. A user callback in DispatchSafe
-			// may destroy entities, which invalidates the b2ShapeId / b2BodyId that
-			// later events would otherwise dereference via b2Shape_GetBody. Resolving
-			// up front means the dispatch loop only touches our pre-resolved Collision2D
-			// values; raw box2d ids are never read after the first user callback fires.
-			//
-			// The Pending* vectors are member-cached so the steady-state allocation
-			// cost is zero — clear() preserves capacity across frames.
+			// SNAPSHOT PHASE: resolve all events before dispatching — a callback may destroy entities, invalidating b2ShapeId/b2BodyId for later events.
 			m_pendingBegin.clear();
 			m_pendingEnd.clear();
 			m_pendingHit.clear();
@@ -174,9 +160,7 @@ namespace Index {
 				m_pendingHit.push_back({ e.shapeIdA, e.shapeIdB, collision2D });
 			}
 
-			// Snapshot stay events too — m_activeContacts can be mutated by Begin/End
-			// dispatch callbacks (which may destroy entities and re-enter
-			// UnregisterShape), so we materialize the values now.
+			// Snapshot stay events before dispatch — Begin/End callbacks may re-enter UnregisterShape and mutate m_activeContacts.
 			m_pendingStay.clear();
 			if (onStay) {
 				m_pendingStay.reserve(m_activeContacts.size());
@@ -185,8 +169,7 @@ namespace Index {
 				}
 			}
 
-			// DISPATCH PHASE — only touches pre-resolved data. Even if a user callback
-			// destroys entities, the resolved Collision2D values are already snapshotted.
+			// DISPATCH PHASE — only touches pre-resolved data.
 			for (const PendingDispatch& p : m_pendingBegin) {
 				if (onBegin) onBegin(p.Collision);
 				DispatchSafe(p.ShapeA, p.Collision, m_begin);
@@ -302,9 +285,6 @@ namespace Index {
 			for (auto& cb : snapshot) cb(e);
 		}
 
-		// Pre-resolved per-event payload used by the snapshot+dispatch flow in
-		// Process(). Stored in member-cached vectors so steady-state allocation
-		// stays at zero across frames (clear() preserves capacity).
 		struct PendingDispatch {
 			b2ShapeId ShapeA;
 			b2ShapeId ShapeB;

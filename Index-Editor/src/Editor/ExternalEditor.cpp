@@ -22,12 +22,7 @@ namespace Index {
 
 #ifdef IDX_PLATFORM_WINDOWS
 	namespace {
-		// M29: tracker for the editor-launcher worker threads spawned in
-		// OpenFile (one short-lived `CreateProcessW`, one Sleep(4000) +
-		// secondary CreateProcessW for the cold-start VS path). Tracked
-		// instead of detached so editor shutdown can join them.
-		// FULL JOIN is potentially blocking on the cold-start VS thread
-		// for up to ~4s — see PARTIAL note in the audit.
+		// Tracked (not detached) so editor shutdown can join them; join may block ~4s on the cold-start VS thread.
 		std::mutex s_LaunchMutex;
 		std::vector<std::thread> s_LaunchThreads;
 	}
@@ -58,11 +53,7 @@ namespace Index {
 	}
 
 #ifdef IDX_PLATFORM_WINDOWS
-	// Convert UTF-8 → UTF-16 for Windows wide-API calls. The previous byte-wise
-	// `std::wstring(narrow.begin(), narrow.end())` produced one wchar_t per byte,
-	// corrupting any path containing multi-byte UTF-8 (Unicode user folders,
-	// project names with accented characters, etc.). The wide path then failed
-	// to launch the external editor on any non-ASCII install.
+	// Proper UTF-8→UTF-16 via MultiByteToWideChar; naive wstring(begin,end) corrupted non-ASCII paths and silently failed to launch.
 	static std::wstring Utf8ToWide(const std::string& utf8) {
 		if (utf8.empty()) return {};
 		const int needed = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
@@ -290,10 +281,7 @@ namespace Index {
 		return found;
 	}
 
-	// Late-bound IDispatch helper. We deliberately do NOT #import the EnvDTE
-	// type library to avoid pulling a generated .tlh into the build; instead
-	// we resolve names with GetIDsOfNames + Invoke. DISPPARAMS::rgvarg expects
-	// arguments in REVERSE order — the caller fills `args` accordingly.
+	// Late-bound IDispatch: no #import of EnvDTE to avoid .tlh pull; DISPPARAMS::rgvarg is in REVERSE order.
 	static HRESULT InvokeByName(IDispatch* disp, const wchar_t* name, WORD flags,
 		VARIANT* args, UINT cArgs, VARIANT* result)
 	{
@@ -314,19 +302,8 @@ namespace Index {
 			&params, result, nullptr, nullptr);
 	}
 
-	// Walk the Running Object Table for !VisualStudio.DTE.<ver>:<pid> monikers
-	// and return the AddRef'd IDispatch* of the instance whose loaded solution
-	// matches `slnPath` (canonical, case-insensitive). Returns nullptr if no
-	// instance matches — caller then takes the cold-launch path.
-	//
-	// On match, also writes the devenv process ID to *outPid (0 if the moniker
-	// suffix couldn't be parsed). The caller uses this PID with
-	// AllowSetForegroundWindow so the matched VS instance can pull itself to
-	// the foreground — without that grant, Windows' foreground-lock policy
-	// silently demotes DTE.MainWindow.Activate to a taskbar flash.
-	//
-	// This replaces the window-title substring match in IsVisualStudioOpen,
-	// which could not distinguish between multiple running devenv instances.
+	// Walks the ROT for !VisualStudio.DTE monikers; returns AddRef'd IDispatch* of the instance whose Solution.FullName matches slnPath, or nullptr.
+	// Also writes the devenv PID to *outPid for AllowSetForegroundWindow (without the grant, DTE.MainWindow.Activate silently taskbar-flashes).
 	static IDispatch* FindVSDTEForSolution(const std::wstring& slnPath, DWORD* outPid) {
 		if (outPid) *outPid = 0;
 		if (slnPath.empty()) return nullptr;
@@ -410,10 +387,7 @@ namespace Index {
 		return matched;
 	}
 
-	// Open `file` in the specific running VS instance represented by `dte`,
-	// optionally jumping to `line`. Retries on RPC_E_CALL_REJECTED so the
-	// call survives a VS busy with solution load. Returns true on success;
-	// caller falls back to a cold launch if false.
+	// Open file in the given DTE instance; retries on RPC_E_CALL_REJECTED to survive VS-busy-with-solution-load; returns false → caller cold-launches.
 	static bool OpenFileViaDTE(IDispatch* dte, const std::wstring& file, int line) {
 		if (!dte) return false;
 		// vsViewKindPrimary — opens whichever editor is registered as primary
@@ -458,14 +432,6 @@ namespace Index {
 			}
 			if (FAILED(hr)) return false;
 
-			// Bring the matched VS window to the foreground so the user sees
-			// the file land. DTE.MainWindow.Activate calls SetForegroundWindow
-			// inside devenv, which Windows' foreground-lock policy blocks
-			// unless we (the current foreground process) already granted
-			// devenv that right via AllowSetForegroundWindow(pid) — see the
-			// VS launcher in OpenFile. Belt-and-suspenders: also pull the
-			// HWND from MainWindow.HWnd and call SetForegroundWindow /
-			// BringWindowToTop ourselves, restoring from minimised first.
 			VARIANT mainWinVar; VariantInit(&mainWinVar);
 			if (SUCCEEDED(InvokeByName(dte, L"MainWindow", DISPATCH_PROPERTYGET,
 				nullptr, 0, &mainWinVar)) && mainWinVar.vt == VT_DISPATCH && mainWinVar.pdispVal)
@@ -573,32 +539,11 @@ namespace Index {
 		}
 
 		case ExternalEditorType::VisualStudio: {
-			// VS2022 approach (instance-targeted via COM Running Object Table):
-			//
-			//   1. Enumerate running devenv instances via the ROT and find the
-			//      one whose loaded Solution.FullName matches our .sln path.
-			//      If found → call DTE.ItemOperations.OpenFile on THAT instance.
-			//      This handles both "this project already open" and the
-			//      "multiple VS instances running" cases without ambiguity.
-			//
-			//   2. If no running VS has our .sln loaded, cold-launch devenv
-			//      with the .sln AND the file as trailing arguments in a SINGLE
-			//      CreateProcessW call. The new instance loads the solution and
-			//      opens the file inside itself — no Sleep, no /edit follow-up
-			//      (which is the bug that routed files to the wrong VS instance
-			//      when an unrelated devenv was already running).
-			//
-			//   3. Last-resort fallback when there is no .sln context: plain
-			//      `devenv /edit "file"`. Behaviour unchanged from before.
 			std::string devenvPath = editor.ExecutablePath;
 			std::string sln = slnPath;
 			std::string file = absPath;
 			int lineNum = line;
 
-			// All COM work (ROT enumeration + DTE.OpenFile) runs inside the
-			// tracked launcher thread so the main editor thread never blocks
-			// on a busy/loading VS. JoinPendingLaunchThreads still drains us
-			// on shutdown.
 			std::thread vsLauncher([devenvPath, sln, file, lineNum]() {
 				HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 				const bool needUninit = SUCCEEDED(comHr);
@@ -615,11 +560,6 @@ namespace Index {
 					IDX_CORE_INFO_TAG("ExternalEditor",
 						"Matched running VS instance (pid={}) for sln '{}' — opening file via DTE",
 						matchedPid, sln);
-					// Grant devenv the right to take foreground once. Index-Editor
-					// is the foreground process (user just double-clicked here),
-					// so the grant is accepted. Without it, the file opens but
-					// VS stays behind our window. Best-effort: ignore the BOOL
-					// return — failure just means the user has to alt-tab.
 					if (matchedPid != 0) AllowSetForegroundWindow(matchedPid);
 					handled = OpenFileViaDTE(matchedDTE, wfile, lineNum);
 					if (!handled) {
@@ -632,9 +572,6 @@ namespace Index {
 				if (!handled) {
 					std::string cmd;
 					if (!sln.empty()) {
-						// Combined launch: one devenv invocation loads the
-						// solution AND opens the file inside the SAME new
-						// instance. This is what fixes the case-3 bug.
 						cmd = "\"" + devenvPath + "\" \"" + sln + "\" \"" + file + "\"";
 						if (lineNum > 0) {
 							cmd += " /command \"Edit.GoTo " + std::to_string(lineNum) + "\"";
@@ -673,10 +610,6 @@ namespace Index {
 		}
 
 		case ExternalEditorType::Rider: {
-			// rider "Project.sln" "file.cs"
-			// .sln is the PROJECT-LOAD argument (loads Solution Explorer + IntelliSense).
-			// Second argument is the file to navigate to.
-			// Rider auto-reuses if same .sln is already open.
 			fullCmd = "\"" + editor.ExecutablePath + "\"";
 			if (!slnPath.empty())
 				fullCmd += " \"" + slnPath + "\"";

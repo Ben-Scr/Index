@@ -15,48 +15,10 @@
 #include <unordered_map>
 #include <utility>
 
-// =============================================================================
-// Shader — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// `unsigned m_Program` is an opaque ID with 0 = invalid.
-//
-// Two ways a shader name comes in here:
-//   1. Built-in (sprite, gizmo, text, ...). Resolved via the static table
-//      below — WGSL source is embedded in this TU so a release build doesn't
-//      need .wgsl files on disk to bring up the engine's own pipelines.
-//   2. User / project (.wgsl on disk). Path is the vsPath argument's stem —
-//      e.g. `IndexAssets/Shaders/SpriteShader.vs` -> lookup
-//      `IndexAssets/Shaders/webgpu/sprite.wgsl` first under the executable
-//      dir, then under the source tree.
-//
-// Why one module per Shader (not vs+fs separately):
-// WGSL is multi-entry-point. The sprite module here has `vs_main` plus two
-// fragment entry points — `fs_main` (textured, instance-coloured) and
-// `fs_wire_main` (constant opaque black for the wireframe-debug pipeline);
-// we don't pre-split into separate modules because Dawn's pipeline creation
-// takes (module, entry_point) per stage and can re-use the same module
-// across stages. The renderer side knows the entry-point names; this class
-// only owns the module.
-//
-// The renderer ports (Renderer2D, GuiRenderer, TextRenderer, GizmoRenderer)
-// look up the wgpu::ShaderModule via WebGPUBackend::LookupShader(m_Program)
-// and feed it into a wgpu::RenderPipeline along with the bind-group layout
-// + target format.
-// =============================================================================
 
 namespace Index {
 
 	namespace {
-		// ── Built-in WGSL registry ──────────────────────────────────────────
-		// Sprite shader — used by Renderer2D (world-space sprites) and
-		// GuiRenderer (screen-space UI quads):
-		//   * Vertex inputs: unit-quad position (loc 0) + 3 instance vec4s
-		//     (loc 1..3) carrying (Pos.xy, Scale.xy), (Color RGBA), and
-		//     (cos, sin, _, _) — packed identically to
-		//     WebGPUSpriteResources's SpriteInstance layout.
-		//   * Bind group 0: { 0: u_ViewProj (mat4 uniform), 1: albedo
-		//     texture, 2: albedo sampler }. The matrix uses column-major
-		//     storage — matches how the engine's math layer pushes it.
 		constexpr const char* k_SpriteWGSL = R"WGSL(
 struct Uniforms {
 	viewProj: mat4x4<f32>,
@@ -131,11 +93,6 @@ fn fs_wire_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Text shader — used by TextRenderer (Stage 6). The atlas is an R8
-		// alpha texture baked by stbtt_pack; the fragment shader pulls the
-		// red channel as coverage and modulates it into the per-vertex
-		// color's alpha. Vertices are per-glyph (6 verts per glyph, not
-		// instanced) because each glyph has a unique (UV, position) pair.
 		constexpr const char* k_TextWGSL = R"WGSL(
 struct Uniforms {
 	viewProj: mat4x4<f32>,
@@ -173,13 +130,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Gizmo shader — used by GizmoRenderer2D for debug line drawing
-		// (squares, circles, raw lines). Vertex layout: 1 buffer with
-		// position vec3<f32> + color packed as Unorm8x4 (the engine's
-		// PosColorVertex stores 4 bytes RGBA as a uint32 — Dawn decodes
-		// it through Unorm8x4 at the vertex-fetch stage). No texture
-		// sampling, no per-vertex UV — just pass color through to the
-		// fragment shader. Pipeline uses LineList primitive topology.
 		constexpr const char* k_GizmoWGSL = R"WGSL(
 struct Uniforms {
 	viewProj: mat4x4<f32>,
@@ -211,16 +161,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Post-process blit shader — used by PostProcessor for the
-		// fullscreen passthrough that turns the HDR intermediate scene FBO
-		// back into the caller's target. No vertex buffer needed: we draw
-		// 3 verts via the "oversized fullscreen triangle" trick (covers
-		// the viewport with a single triangle, faster than a clipped quad).
-		//   * Bind group 0: { 0: src texture, 1: linear sampler }.
-		//   * Output: textureSample(src, sampler, uv) — straight passthrough.
-		// Future effect shaders (vignette, bloom, ...) follow the same
-		// vertex layout and bind-group-0 shape so they can share the
-		// PostProcessor's bind-group-layout, sampler, and vertex stage.
 		constexpr const char* k_PostBlitWGSL = R"WGSL(
 @group(0) @binding(0) var t_src: texture_2d<f32>;
 @group(0) @binding(1) var s_src: sampler;
@@ -261,22 +201,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Vignette post-effect — reads the intermediate scene, modulates the
-		// rgb toward `u.color.rgb` near the corners. The fullscreen-triangle
-		// vertex shader matches k_PostBlitWGSL so the same pipeline-layout
-		// pattern works (only the BindGroupLayout differs to add the
-		// uniform-buffer binding).
-		//
-		// Uniform layout (48 bytes, three vec4s — packed for std140-style
-		// 16-byte alignment so the C++ side can WriteBuffer a fixed-shape
-		// struct):
-		//   color:          rgb tint applied at full vignette strength; a = unused
-		//   centerSmooth:   xy = vignette centre (0..1 UV), z = intensity (0..1),
-		//                   w = smoothness (0..1, falloff width)
-		//   aspectRound:    x = aspect ratio (dstWidth / dstHeight),
-		//                   y = roundness (1 = pure UV-space circle, 0 = aspect-
-		//                       corrected screen-space circle),
-		//                   zw = pad
 		constexpr const char* k_PostVignetteWGSL = R"WGSL(
 struct VignetteParams {
 	color:        vec4<f32>,
@@ -344,21 +268,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			std::string_view Name;
 			const char*      WGSL;
 		};
-		// Each entry maps a "name" (the stem of vsPath after stripping
-		// the "Shader" suffix and lowercasing) to its embedded WGSL
-		// source. Future renderer ports register here as they land.
-		// Shared fullscreen-triangle vertex stage embedded in every post
-		// effect's WGSL. The vertex stage never changes per effect — only
-		// the fragment math + bind-group-2 uniform shape vary. Inlining
-		// the same vs_main in each effect string keeps each shader module
-		// self-contained (Dawn needs the module to expose both vs_main
-		// and fs_main when the same module backs both stages, which
-		// avoids cross-module pipeline links).
 
-		// Chromatic Aberration — sample R/G/B at three UVs along the
-		// radial direction (uv - 0.5). Uniform layout (16 bytes, single
-		// vec4):
-		//   params.x = Intensity (0..1, controls UV offset magnitude)
 		constexpr const char* k_PostChromaticWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -396,11 +306,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Grain — additive noise overlay. Uniform layout (16 bytes):
-		//   p.x = Intensity (0..1)
-		//   p.y = Size (0.3..3, smaller = finer grain)
-		//   p.z = Colored (0 = mono, 1 = per-channel coloured noise)
-		//   p.w = uTime (seconds, animates the noise pattern)
 		constexpr const char* k_PostGrainWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -449,13 +354,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Lens Distortion — radial UV remap. Positive intensity = barrel
-		// distortion (image bows outward at edges); negative = pincushion.
-		// Uniform layout (16 bytes):
-		//   p.x = Intensity (-1..1)
-		//   p.y = Scale (0.5..1.5, post-warp zoom; <1 reveals warp edges)
-		//   p.z = Center.x  (UV space, 0..1)
-		//   p.w = Center.y
 		constexpr const char* k_PostLensDistortionWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -503,13 +401,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Color Grading — exposure → contrast → saturation →
-		// temperature/tint → color filter. Uniform layout (48 bytes, three
-		// vec4s):
-		//   colorFilter   = vec4(rgb tint, 1)
-		//   exposureCS    = vec4(exposure stops, contrast, saturation, _)
-		//   tempTint      = vec4(temperature -1..1, tint -1..1, _, _)
-		// Order matches Unity's URP color-grading post.
+		// Uniform layout: colorFilter=vec4(rgb,1), exposureCS=vec4(exposure,contrast,saturation,_), tempTint=vec4(temp,tint,_,_).
 		constexpr const char* k_PostColorGradingWGSL = R"WGSL(
 struct Params {
 	colorFilter: vec4<f32>,
@@ -571,33 +463,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Bloom is a 4-pass pipeline (replaces the original single-pass
-		// wide-tap shader, which produced visible sample-grid artifacts on
-		// wide halos). The flow inside PostProcessor::RunBloomPass is:
-		//   1. Threshold extract: scene -> BloomTempA (half-res, RGBA16F)
-		//        Pulls out pixels brighter than the user's threshold via
-		//        a soft-knee falloff so the bloom doesn't pop on at the
-		//        exact luminance boundary.
-		//   2. Horizontal separable Gaussian: BloomTempA -> BloomTempB
-		//        N-tap blur in the x direction. The tap count comes from
-		//        BloomSettings::Quality (Low=7 / Med=13 / High=21 taps).
-		//   3. Vertical separable Gaussian: BloomTempB -> BloomTempA
-		//        Same kernel, applied along y. Combined H+V produces a
-		//        true 2D Gaussian at ~N+N cost instead of N*N — the
-		//        whole reason for going separable.
-		//   4. Composite: scene + bloom -> dst
-		//        Reads BOTH the source scene texture and the blurred
-		//        bloom (BloomTempA), adds bloom * intensity * tint on
-		//        top. Needs a 4-binding bgl (scene tex + bloom tex +
-		//        sampler + uniform) — see Impl::BloomCompositeBgl.
-		//
-		// Doing the blur at half resolution amplifies the effective
-		// radius (a 21-tap blur at half-res covers ~42 px at full-res)
-		// and cuts shader work to 1/4 per blur pass, which is what makes
-		// the separable approach affordable even at High quality.
-
-		// Threshold extract — uses the existing 3-binding effect bgl.
-		// Uniform: { threshold, _, _, _ }.
+		// 4-pass bloom: (1) threshold extract at half-res, (2) H blur, (3) V blur, (4) composite scene+bloom. Separable H+V at half-res makes High-quality (21-tap) affordable.
+		// Threshold extract — Uniform: { threshold, _, _, _ }.
 		constexpr const char* k_PostBloomThresholdWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -638,16 +505,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Separable Gaussian blur — one pass per axis. Same shader
-		// handles both H and V; the direction uniform picks which.
-		// Uses the existing 3-binding effect bgl.
-		// Uniform: { dirX, dirY, texelSize, halfKernel }
-		//   dirX/Y: (1,0) for horizontal, (0,1) for vertical.
-		//   texelSize: 1/sourceWidth or 1/sourceHeight in UV space.
-		//   halfKernel: per-direction sample half-count (3/6/10 from
-		//               BloomSettings::Quality).
-		// halfK is uniform across the dispatch so Dawn accepts the
-		// runtime-bounded loop.
+		// Separable Gaussian blur, shared by H and V passes. Uniform: { dirX, dirY, texelSize, halfKernel }; halfK is a uniform so Dawn accepts the runtime-bounded loop.
 		constexpr const char* k_PostBloomBlurWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -704,11 +562,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Composite — two source textures (scene + blurred bloom), output
-		// scene + bloom * intensity * tint. This is the one bloom pass
-		// that needs a new bgl shape: scene at binding 0, sampler at 1,
-		// bloom at 2, uniform at 3.
-		// Uniform: { tintR, tintG, tintB, intensity }
+		// Composite uses a 4-binding bgl: scene@0, sampler@1, bloom@2, uniform@3. Uniform: { tintR, tintG, tintB, intensity }.
 		constexpr const char* k_PostBloomCompositeWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_scene: texture_2d<f32>;
@@ -742,16 +596,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 )WGSL";
 
-		// Pixelated — UV-quantise to a coarse grid of `BlockSize` pixels,
-		// optionally palette-quantise the rgb channels to `PaletteSteps`
-		// levels each. Sampling the quantised UV (at the cell centre)
-		// produces uniform-coloured "fat pixels".
-		//
-		// Uniform layout (16 bytes, single vec4):
-		//   p.x = BlockSize (in caller-space pixels)
-		//   p.y = ViewportWidth  (in caller-space pixels)
-		//   p.z = ViewportHeight (in caller-space pixels)
-		//   p.w = PaletteSteps (0 = palette quantise off; >= 2 = levels/channel)
+		// Uniform: p = { BlockSize, ViewportWidth, ViewportHeight, PaletteSteps } (0=palette off, >=2=levels/channel).
 		constexpr const char* k_PostPixelatedWGSL = R"WGSL(
 struct Params { p: vec4<f32>, };
 @group(0) @binding(0) var t_src: texture_2d<f32>;
@@ -823,7 +668,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			{ "postpixelated",       k_PostPixelatedWGSL       },
 		};
 
-		// ── Pool ────────────────────────────────────────────────────────────
 		struct GpuShader {
 			wgpu::ShaderModule Module;
 			std::string        Name;
@@ -876,10 +720,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 			return {};
 		}
 
-		// Build a wgpu::ShaderModule from WGSL text. Returns null module on
-		// failure. The compilation-info callback fires asynchronously on
-		// Dawn — we surface errors via the device's uncaptured-error hook
-		// set up in WebGPUApi.cpp::RequestDeviceSync.
 		wgpu::ShaderModule CompileWGSL(const std::string& name, std::string_view wgsl) {
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			if (!device) {
@@ -920,9 +760,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	// ── Shader ──────────────────────────────────────────────────────────────
 
 	Shader::Shader(const std::string& vsPath, const std::string& /*fsPath*/) {
-		// vsPath / fsPath were the two-source-files convention from the
-		// OpenGL era. WebGPU collapses both stages into a single module,
-		// so fsPath is ignored and the stem is extracted from vsPath.
+		// fsPath ignored — WebGPU uses a single WGSL module; stem extracted from vsPath.
 		const std::string name = ExtractName(vsPath);
 
 		std::string wgslHolder;          // owns the on-disk source if loaded
@@ -988,10 +826,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	}
 
 	Shader Shader::FromBinary(const std::string& binaryPath) {
-		// WebGPU has no pre-compiled binary format — .wgsl is the
-		// canonical authoring format (SPIR-V via Tint is an option but
-		// the engine doesn't ship a SPIR-V build step). Treat the input
-		// as a stem and re-route through the regular constructor.
 		return Shader{ binaryPath, binaryPath };
 	}
 

@@ -191,12 +191,7 @@ namespace Index {
 			outFunctionPtr
 		);
 
-		// load_assembly_and_get_function_pointer_fn returns 0 ONLY on success — every
-		// other rc (positive or negative) is a failure. Note this is asymmetric with
-		// hostfxr_initialize_for_runtime_config_fn (used in Initialize above) which
-		// treats positive rc 1/2 as benign success codes ("AlreadyInitialized" /
-		// "Success_HostAlreadyInitialized"). Don't normalize the two — the runtime
-		// contract differs per delegate.
+		// load_assembly rc: 0=success only (unlike hostfxr_initialize which treats 1/2 as benign); do not normalize.
 		if (rc != 0 || !*outFunctionPtr)
 		{
 			IDX_CORE_ERROR_TAG("DotNetHost", "Failed to load assembly function: 0x{:x}", static_cast<unsigned>(rc));

@@ -2,18 +2,9 @@ using System;
 
 namespace Index;
 
-/// <summary>
-/// Provides static access to the engine's OS window: dimensions, title,
-/// position, fullscreen / maximised state, focus, and a resize event.
-/// Maps to the native <c>Index::Window</c>.
-/// </summary>
 public static class Window
 {
-    /// <summary>
-    /// Fired same-frame as the GLFW framebuffer-size callback when the
-    /// user resizes the window. Skipped while minimised (zero-area
-    /// frame) so subscribers don't see a transient 0×0.
-    /// </summary>
+    /// <summary>Fired same-frame as the GLFW resize callback; skipped while minimised so subscribers never see a transient 0×0.</summary>
     public static event Action? OnResize;
     public static event Action<bool>? FocusChanged;
     public static event Action? OnMaximize;
@@ -30,10 +21,7 @@ public static class Window
     public static int Width => InternalCalls.Window_GetWidth();
     public static int Height => InternalCalls.Window_GetHeight();
 
-    // Cached so the steady-state getter doesn't pay two native calls per
-    // read. Seeded on first access (one-time cost), then refreshed in
-    // InvokeResize before subscribers run so OnResize handlers see the
-    // new size.
+    // Refreshed in InvokeResize before subscribers fire so OnResize handlers always see the new size.
     private static Vector2 s_Size;
     private static bool s_SizeCached;
 
@@ -76,19 +64,9 @@ public static class Window
     }
 
 
-    /// <summary>
-    /// Half-extent of the window in pixels — useful for centring HUD
-    /// elements relative to the window itself.
-    /// </summary>
     public static Vector2Int WindowCenter => new Vector2Int(Width / 2, Height / 2);
 
-    /// <summary>
-    /// Half-extent of the primary monitor's video mode — useful for
-    /// centring the window on the user's desktop regardless of its own
-    /// size. Pulled from GLFW's video mode the same way the engine's
-    /// internal <c>Window::GetScreenCenter()</c> does, so values stay
-    /// in sync if the monitor changes.
-    /// </summary>
+    /// <summary>Half-extent of the primary monitor's video mode; stays in sync with GLFW's video mode (same source as <c>Window::GetScreenCenter()</c>).</summary>
     public static Vector2Int ScreenCenter
     {
         get

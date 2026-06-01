@@ -3,16 +3,7 @@ using System.Threading;
 
 namespace Index.Coroutines;
 
-/// <summary>
-/// SynchronizationContext that pumps continuations on the engine main
-/// thread. Installed once during ScriptHostBridge.Initialize so any async
-/// continuation captured inside a script resumes inside the engine's
-/// per-frame pump rather than on a thread-pool thread.
-///
-/// Threading: Post may be called from any thread (e.g. Task continuations
-/// on the thread pool). Pump always runs on the engine main thread, called
-/// from CoroutineScheduler.PumpUpdate.
-/// </summary>
+/// <summary>SynchronizationContext installed at ScriptHostBridge.Initialize; Post is thread-safe, Pump runs on the engine main thread (called from CoroutineScheduler.PumpUpdate).</summary>
 internal sealed class IndexSynchronizationContext : SynchronizationContext
 {
     public static readonly IndexSynchronizationContext Instance = new();
@@ -39,12 +30,7 @@ internal sealed class IndexSynchronizationContext : SynchronizationContext
         d(state);
     }
 
-    /// <summary>
-    /// Drain queued continuations on the calling thread (engine main).
-    /// Each callback is wrapped in a try/catch — OperationCanceledException
-    /// is the expected outcome when a cancelled `async void` reports its
-    /// exception via AsyncVoidMethodBuilder, so we silently swallow it.
-    /// </summary>
+    /// <summary>Drain queued continuations on the engine main thread; OperationCanceledException is swallowed (expected from cancelled async void).</summary>
     public void Pump()
     {
         Queue<Continuation> batch;

@@ -20,14 +20,7 @@ public class Entity : IEquatable<Entity>
 {
     public static readonly Entity Invalid = new(0);
 
-    // Shared identity cache for managed Component wrappers — keyed by (entity, type) so any
-    // Entity wrapper instance pointing at the same entity ID resolves the same Component
-    // object. Originally added to preserve managed-script field state across cached lookups;
-    // now also load-bearing for *native* UI components, which carry per-instance event
-    // subscriptions (Button.OnClicked, Slider.OnValueChanged, etc.). UIEventDispatcher
-    // creates fresh Entity wrappers each frame, so without this shared store the dispatcher
-    // would see a different Button instance than the user's script and the events would
-    // silently no-op.
+    // Shared store keyed by (entityID, type) — load-bearing for UI components (Button/Slider) which carry per-instance event subscriptions; UIEventDispatcher creates fresh Entity wrappers each frame and must resolve the same Component object the user's script subscribed to.
     private static readonly Dictionary<(ulong EntityID, Type ComponentType), Component> s_ManagedComponentStore = new();
 
     private readonly Dictionary<Type, Component> m_ComponentCache = new();
@@ -72,13 +65,7 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Authored "Enabled" — mirrors the inspector checkbox. True when
-    // the user hasn't disabled this specific entity, even if an
-    // ancestor is disabled (in which case the engine still treats this
-    // as inactive at runtime — see IsEnabledInHierarchy). Setting this
-    // toggles the user's intent: when the parent later re-enables, an
-    // authored-enabled child comes back; an authored-disabled child
-    // stays off.
+    // Authored "Enabled" — inspector checkbox; true even when an ancestor is disabled. Toggles user intent (authored-disabled children stay off even after parent re-enables).
     public bool IsEnabled
     {
         get => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabled(ID);
@@ -89,24 +76,11 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Effective active flag — true only when this entity AND every
-    // ancestor are enabled. Matches what engine systems see (they
-    // filter their views with the runtime DisabledTag). Use this for
-    // gameplay checks like "is this widget actually live this frame";
-    // use IsEnabled to read or write the inspector-visible authored
-    // state.
+    // Effective active flag — true only when this entity and all ancestors are enabled; matches DisabledTag filtering used by engine systems.
     public bool IsEnabledInHierarchy
         => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabledInHierarchy(ID);
 
-    // Returns null when the entity has no Transform2D component instead
-    // of throwing. Scripts on entities that may not have a Transform2D —
-    // UI-only roots, scene-singleton scripts that live on a tag entity,
-    // hot-reload races where the component pool is mid-rebuild — need a
-    // way to detect absence without wrapping every access in try / catch.
-    // For "I require a Transform2D and want to fail loudly" contracts,
-    // use `GetRefOrThrow<NativeTransform2D>` (hot-path, throws on miss)
-    // or an explicit `?? throw new InvalidOperationException(...)` in
-    // the calling script.
+    // Returns null when no Transform2D is present; use GetRefOrThrow<NativeTransform2D> when a hard requirement is acceptable.
     public Transform2D? Transform
     {
         get
@@ -161,12 +135,7 @@ public class Entity : IEquatable<Entity>
         { typeof(FastCircleCollider2D),  "Fast Circle Collider 2D" },
         { typeof(ParticleSystem2D),      "Particle System 2D" },
 
-        // ── UI (Index.UI namespace) ──────────────────────────────────
-        // Map each C# UI wrapper to the native ComponentInfo display
-        // name registered in BuiltInComponentRegistration.cpp so
-        // AddComponent / HasComponent / RemoveComponent reach the right
-        // C++ type. Class names alone don't carry the "2D" suffix that
-        // RectTransform2DComponent uses on the C++ side.
+        // Strings must match native display names in BuiltInComponentRegistration.cpp; class names alone lack the "2D" suffix that RectTransform2DComponent uses on the C++ side.
         { typeof(Index.UI.RectTransform),  "Rect Transform 2D" },
         { typeof(Index.UI.Image),          "Image" },
         { typeof(Index.UI.Interactable),   "Interactable" },
@@ -176,10 +145,6 @@ public class Entity : IEquatable<Entity>
         { typeof(Index.UI.InputField),     "Input Field" },
         { typeof(Index.UI.Dropdown),       "Dropdown" },
 
-        // ── UI (additional) ─────────────────────────────────────────
-        // Strings must match the native display name registered in
-        // BuiltInComponentRegistration.cpp — Entity_HasComponent /
-        // Scene_QueryEntities look up native components by this name.
         { typeof(Index.UI.ScrollRect),            "Scroll Rect" },
         { typeof(Index.UI.Scrollbar),             "Scrollbar" },
         { typeof(Index.UI.Mask),                  "Mask" },
@@ -310,11 +275,7 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Hot-reload support: the AssemblyLoadContext that owns user-defined Component
-    // subclasses can only unload once *every* instance is unreachable. Component
-    // entries in s_ManagedComponentStore reference user types and therefore root
-    // the context — clearing this dictionary on assembly unload is required for
-    // the ALC to actually collect and free its types.
+    // MUST clear on assembly unload: s_ManagedComponentStore roots user Component subclasses, preventing the AssemblyLoadContext from unloading until every entry is removed.
     internal static void ClearManagedComponentStore()
     {
         foreach (var component in s_ManagedComponentStore.Values)
@@ -327,13 +288,7 @@ public class Entity : IEquatable<Entity>
         if (IsPrefabAsset)
             return null;
 
-        // Script branch: T : EntityScript routes through the script
-        // backend (ScriptComponent.Scripts + ScriptInstanceManager).
-        // C# can't disambiguate by constraint (CS0111), so we dispatch
-        // at runtime on typeof(T). The script's OnAwake / OnStart fire
-        // immediately via the native BindAndAwakeNow path so the
-        // returned instance is fully live before this method returns.
-        if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
+            if (typeof(EntityScript).IsAssignableFrom(typeof(T)))
         {
             if (!InternalCalls.Entity_AddScript(ID, typeof(T).Name))
                 return null;
@@ -350,21 +305,7 @@ public class Entity : IEquatable<Entity>
         return GetComponent<T>();
     }
 
-    // Native (`IComponent`) variant — adds a blittable native-backed component
-    // to the entity's C++ ECS pool. Mirrors the managed-`Component`
-    // `AddComponent<T>()` above but uses `ComponentTypes<T>.NativeName`
-    // (resolved once per T via the static-generic cache) instead of the
-    // s_NativeComponentNames map. Returns true if the component was newly
-    // added or already present after the call; false if the entity is a
-    // prefab asset or the native pool refused the insertion. Pair with
-    // `GetRef<T>()` to read/write the data.
-    //
-    // Distinct method name (not an overload of `AddComponent<T>`) because
-    // C# overload resolution ignores generic constraints — two
-    // `AddComponent<T>()` methods that differ only by `where T : Component`
-    // vs. `where T : unmanaged, IComponent` produce CS0111. For bulk
-    // creation of many entities use `EntityCommandBuffer` instead, which
-    // skips the per-call P/Invoke entirely.
+    // IComponent variant — distinct name (not overload) because C# overload resolution ignores generic constraints (CS0111); use EntityCommandBuffer for bulk creation.
     public bool AddNativeComponent<T>() where T : unmanaged, IComponent
     {
         if (IsPrefabAsset)
@@ -415,12 +356,6 @@ public class Entity : IEquatable<Entity>
         return removed;
     }
 
-    // Native (`IComponent`) variant — removes a blittable native-backed
-    // component from the entity's C++ ECS pool. No managed cache invalidation
-    // is needed because IComponent structs aren't cached via
-    // s_ManagedComponentStore / m_ComponentCache (those store Component class
-    // wrappers, not unmanaged structs). Renamed away from `RemoveComponent`
-    // for the same CS0111 reason as the Add/Has pair above.
     public bool RemoveNativeComponent<T>() where T : unmanaged, IComponent
     {
         if (IsPrefabAsset)
@@ -434,27 +369,11 @@ public class Entity : IEquatable<Entity>
         return GetComponentByType(typeof(T)) as T;
     }
 
-    /// <summary>
-    /// Out-param variant of <see cref="GetComponent{T}"/>. Works for any
-    /// T : Component, new() — including EntityScript subclasses, which
-    /// resolve via the script storage (ScriptInstanceManager). Returns
-    /// true when the component / script is present on the entity.
-    /// </summary>
     public bool TryGetComponent<T>(out T? value) where T : Component, new()
     {
         value = GetComponent<T>();
         return value != null;
     }
-
-    // ── HasComponents<T1..T8> (variadic AND-semantics) ───────────────
-    //
-    // Per-T constraint is `Component, new()` so the same arities cover
-    // managed components AND scripts (EntityScript : Component). Mixing
-    // shapes in one call is fine — each HasComponent<Ti>() dispatches
-    // on typeof(Ti) at runtime. For native IComponent structs, use the
-    // separately-named HasNativeComponents counterpart (added below)
-    // since C# can't unify `Component`-constrained generics with
-    // `unmanaged, IComponent`-constrained generics (CS0111).
 
     public bool HasComponents<T1>()
         where T1 : Component, new()
@@ -540,15 +459,7 @@ public class Entity : IEquatable<Entity>
         return ScriptInstanceManager.GetScriptInstance(ID, scriptName);
     }
 
-    // Direct ref into the entity's component storage. Returns a ref-to-null
-    // (Unsafe.IsNullRef) when the component or entity is missing — callers in
-    // hot paths can branch on that without an exception. For the common case
-    // where the script's contract already guarantees the component (a script
-    // that requires Transform2D on its host entity), use GetRefOrThrow<T>
-    // instead to skip the IsNullRef check.
-    //
-    // The returned ref is valid only until the next structural change to the
-    // same component pool (Add/Remove/Destroy on any T). Refetch each frame.
+    // Returns a ref-to-null (Unsafe.IsNullRef) when absent. Ref is valid only until the next structural change to that component pool; refetch each frame.
     public unsafe ref T GetNativeComponent<T>() where T : unmanaged, IComponent
     {
         void* p = InternalCalls.Entity_GetComponentPtr(ID, ComponentTypes<T>.NativeName);
@@ -556,10 +467,6 @@ public class Entity : IEquatable<Entity>
         return ref Unsafe.AsRef<T>(p);
     }
 
-    // Convenience: throws if the component is absent. Most scripts have a
-    // hard requirement on their host entity's components and shouldn't pay
-    // the IsNullRef branch on every access. The throw collapses to a single
-    // null-check in the JIT'd code; the message names the type for debugging.
     public unsafe ref T GetRefOrThrow<T>() where T : unmanaged, IComponent
     {
         void* p = InternalCalls.Entity_GetComponentPtr(ID, ComponentTypes<T>.NativeName);
@@ -569,10 +476,6 @@ public class Entity : IEquatable<Entity>
         return ref Unsafe.AsRef<T>(p);
     }
 
-    // Shortcut for the most-common ref: `entity.TransformRef.LocalPosition += v`.
-    // Chains exactly like today's `entity.Transform.Position` — ref-returns are
-    // lvalues, so `+= v` writes through to EnTT storage. Skips the per-frame
-    // GetComponent<Transform2D>() class-wrapper alloc + dictionary lookup.
     public unsafe ref Native.NativeTransform2D TransformRef
     {
         get
@@ -585,28 +488,12 @@ public class Entity : IEquatable<Entity>
         }
     }
 
-    // Non-generic resolution path used by GetComponent<T> AND by script-field
-    // deserialization (ParseFieldValue) so an inspector-assigned `Button` /
-    // `Slider` / etc. field returns the SAME wrapper that subsequent
-    // entity.GetComponent<T>() calls return. Without this, a script field
-    // and the UIEventDispatcher would each see a different Component
-    // instance — the user's `+= handler` would attach to one and the
-    // dispatcher would invoke the other, silently dropping every event
-    // (the original "OnClicked never fires" bug). The cache is keyed on
-    // (entityID, type) so ANY Entity wrapper pointing at the same id
-    // collapses to one shared Component instance.
+    // Used by GetComponent<T> and script-field deserialization; both paths must return the same wrapper instance so UIEventDispatcher and user scripts share one subscription target.
     internal Component? GetComponentByType(Type type)
     {
         if (IsPrefabAsset)
             return null;
 
-        // Script branch: scripts live in ScriptInstanceManager keyed by
-        // (entityID, className). EntityScript : Component, so the same
-        // `T : Component, new()` constrained call site resolves into
-        // either backend based on runtime type. Returning the script
-        // instance directly bypasses m_ComponentCache (which is for
-        // Component class-wrappers around ECS data, not script
-        // instances that already cache their own state).
         if (typeof(EntityScript).IsAssignableFrom(type))
             return ScriptInstanceManager.GetScriptInstance(ID, type.Name);
 
@@ -667,12 +554,7 @@ public class Entity : IEquatable<Entity>
                     continue;
                 }
 
-                // Fall back to a property if no field with that name —
-                // lets a managed component expose validated setters via
-                // public properties and still round-trip through the
-                // scene file. Honour the same setter-must-be-public
-                // contract the inspector applies; properties without an
-                // accessible setter can't accept the deserialized value.
+                // Fall back to a public property setter — honours the same public-setter contract the inspector uses.
                 PropertyInfo? prop = type.GetProperty(property.Name, k_Flags);
                 if (prop == null) continue;
                 if (!prop.CanWrite || prop.SetMethod == null || !prop.SetMethod.IsPublic) continue;
@@ -686,11 +568,6 @@ public class Entity : IEquatable<Entity>
                 }
                 catch
                 {
-                    // Validation in the user's setter rejected the
-                    // stored value (e.g. saved scene predates a tighter
-                    // invariant). Outer try-catch already swallows, but
-                    // keep this local so one bad property doesn't abort
-                    // the rest of the field bag.
                 }
             }
         }
@@ -779,6 +656,30 @@ public class Entity : IEquatable<Entity>
         ulong id = InternalCalls.Entity_Create(name);
         return id != 0 ? new Entity(id) : Invalid;
     }
+    public static Entity Create(string? name, Vector3 position)
+    {
+        ulong id = InternalCalls.Entity_Create(name);
+
+        if (id != 0)
+        {
+            InternalCalls.Entity_AddComponent(id, GetNativeName<Transform2D>() ?? "");
+            InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+        }
+
+        return id != 0 ? new Entity(id) : Invalid;
+    }
+    public static Entity Create(Vector3 position)
+    {
+        ulong id = InternalCalls.Entity_Create(null);
+
+        if (id != 0)
+        {
+            InternalCalls.Entity_AddComponent(id, GetNativeName<Transform2D>() ?? "");
+            InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+        }
+
+        return id != 0 ? new Entity(id) : Invalid;
+    }
 
     public static Entity Instantiate(Entity source)
     {
@@ -792,29 +693,101 @@ public class Entity : IEquatable<Entity>
         return id != 0 ? new Entity(id) : Invalid;
     }
 
+    public static Entity Instantiate(Entity source, Vector3 position, float rotation, Transform2D? parent)
+    {
+        if (source is null || source == Invalid)
+            return Invalid;
+
+        ulong id = source.IsPrefabAsset
+            ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID)
+            : InternalCalls.Entity_Clone(source.ID);
+
+        if (id == 0)
+            return Invalid;
+
+        // Set parent before position/rotation — world-space setters re-derive local values from the parent transform.
+        if (parent != null)
+            InternalCalls.Transform2D_SetParent(id, ((Component)parent).Entity.ID);
+
+        InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+        InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
+
+        return new Entity(id);
+    }
+
+    public static Entity Instantiate(Entity source, Vector3 position, float rotation)
+    {
+        if (source is null || source == Invalid)
+            return Invalid;
+
+        ulong id = source.IsPrefabAsset
+            ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID)
+            : InternalCalls.Entity_Clone(source.ID);
+
+        if (id == 0)
+            return Invalid;
+
+        InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+        InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
+
+        return new Entity(id);
+    }
+
+    public static Entity Instantiate(Entity source, Vector3 position)
+    {
+        if (source is null || source == Invalid)
+            return Invalid;
+
+        ulong id = source.IsPrefabAsset
+            ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID)
+            : InternalCalls.Entity_Clone(source.ID);
+
+        if (id == 0)
+            return Invalid;
+
+        InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+
+        return new Entity(id);
+    }
+
+    public static Entity Instantiate(Entity source, float rotation)
+    {
+        if (source is null || source == Invalid)
+            return Invalid;
+
+        ulong id = source.IsPrefabAsset
+            ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID)
+            : InternalCalls.Entity_Clone(source.ID);
+
+        if (id == 0)
+            return Invalid;
+
+        InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
+
+        return new Entity(id);
+    }
+
+    public static Entity Instantiate(Entity source, Transform2D? parent)
+    {
+        if (source is null || source == Invalid)
+            return Invalid;
+
+        ulong id = source.IsPrefabAsset
+            ? InternalCalls.Entity_InstantiatePrefab(source.PrefabGUID)
+            : InternalCalls.Entity_Clone(source.ID);
+
+        if (id == 0)
+            return Invalid;
+
+        if (parent != null)
+            InternalCalls.Transform2D_SetParent(id, ((Component)parent).Entity.ID);
+
+        return new Entity(id);
+    }
+
     public static Entity Create(Entity source) => Instantiate(source);
 
-    // ── CreateWith / CreateWithNative ────────────────────────────────
-    //
-    // Convenience overloads for "create an entity, then attach K components
-    // in one expression". The body is a manual Create + AddComponent loop —
-    // each component is still a separate P/Invoke. For high-volume spawning
-    // with many components per entity, use EntityCommandBuffer instead; it
-    // amortizes the P/Invoke and component-resolution cost over the whole
-    // batch (~50–100× faster on the dominant cases).
-    //
-    // Two parallel families:
-    //   - `CreateWith<T...>`        — managed Component subclasses
-    //     (`where T : Component, new()`)
-    //   - `CreateWithNative<T...>`  — native IComponent structs
-    //     (`where T : unmanaged, IComponent`)
-    //
-    // Distinct method names (not overloads on the constraint) because C#
-    // overload resolution ignores generic constraints (CS0111) — same
-    // reason `AddComponent` vs. `AddNativeComponent` are distinct names.
-    // Returns `Invalid` if the entity could not be created; component
-    // attach failures (e.g. unregistered managed type) are silently
-    // ignored to match the per-component AddComponent behaviour.
+    // CreateWith/CreateWithNative: create + attach K components in one call. Use EntityCommandBuffer for high-volume spawning (~50-100x faster). Distinct names (not overloads) due to CS0111.
 
     public static Entity CreateWith<T1>(string? name = null)
         where T1 : Component, new()
@@ -1079,14 +1052,7 @@ public class Entity : IEquatable<Entity>
         entity.Destroy();
     }
 
-    /// <summary>
-    /// Schedule the destruction <paramref name="delay"/> seconds in the
-    /// future. The entity stays valid until the next Scene update on
-    /// which (accumulated dt) ≥ delay. Non-positive delay collapses to
-    /// immediate destruction. Cached components are invalidated up
-    /// front so any stored references stop dereferencing into stale
-    /// EnTT slots before the queue drains.
-    /// </summary>
+    /// <summary>Schedule destruction <paramref name="delay"/> seconds in the future; non-positive delay is immediate. Cached components are invalidated up front.</summary>
     public static void Destroy(Entity entity, float delay)
     {
         if (entity is null || entity == Invalid)
@@ -1114,12 +1080,7 @@ public class Entity : IEquatable<Entity>
             return;
         }
 
-        // Don't invalidate cached components here — the entity is still
-        // live until the timer fires, and a script that scheduled its
-        // own delayed destroy may want to keep accessing its components
-        // for the remainder of the delay window. The cache is dropped
-        // by the eventual immediate-destroy path on the native side
-        // when the queue drains.
+        // Don't invalidate cache here — entity stays live until the timer fires; cache is dropped by the eventual immediate-destroy on the native side.
         InternalCalls.Entity_DestroyDelayed(ID, delay);
     }
 

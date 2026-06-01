@@ -5,22 +5,7 @@
 
 namespace Index {
 
-	// Runtime-side ImGui layer that hosts the engine's StatsOverlay in built
-	// applications. Pushed by RuntimeApplication::Start() when the project's
-	// `showRuntimeStats` setting is true (default).
-	//
-	// Controls
-	//   F6 — toggle the overlay on/off (consistent with the existing
-	//        Ctrl+F6 binding for the runtime profiler panel).
-	//
-	// Rendering
-	//   The layer shares a single ImGui context with any other runtime layers
-	//   via RuntimeImGuiHost; whichever layer attaches first creates it.
-	//
-	// Cost when disabled
-	//   Layer not pushed = zero. Layer pushed but overlay hidden = a single
-	//   key-press check per frame and one ImGui frame open/close (the host's
-	//   refcounting still has to bracket since other layers might draw).
+	// Runtime stats overlay layer (showRuntimeStats=true). F6 toggles visibility; distinct from Ctrl+F6 (profiler) so both can be open simultaneously.
 	class RuntimeStatsLayer : public Layer {
 	public:
 		using Layer::Layer; // inherit "explicit Layer(const std::string& name)"

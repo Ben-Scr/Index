@@ -166,10 +166,7 @@ namespace Index {
 						continue;
 					}
 
-					// Copy the callback before invoking. Subscribe() pushes directly
-					// into m_Listeners, which can reallocate; if a listener subscribes
-					// during dispatch, holding a reference into the vector would dangle.
-					// The copy is the price of supporting subscribe-during-dispatch.
+					// Copy before invoke: a listener that calls Subscribe() can reallocate m_Listeners, dangling a reference.
 					Callback listener = m_Listeners[i].Listener;
 					listener(event);
 				}

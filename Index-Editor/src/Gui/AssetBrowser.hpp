@@ -3,6 +3,9 @@
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Directory.hpp"
+#include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -32,10 +35,6 @@ namespace Index {
 			return p;
 		}
 
-		// Drained once per frame by ImGuiEditorLayer to enter prefab-edit
-		// mode. Set by OpenAssetExternal when the user double-clicks a
-		// .prefab; deferred so the actual scene swap happens outside the
-		// asset-browser draw call (mirrors TakePendingSceneLoad).
 		std::string TakePendingPrefabEdit() {
 			std::string p = std::move(m_PendingPrefabEdit);
 			m_PendingPrefabEdit.clear();
@@ -71,26 +70,22 @@ namespace Index {
 		void HandleDragSource(const DirectoryEntry& entry);
 		void HandleDropTarget(const DirectoryEntry& entry);
 
-		// Render one slice tile for an expanded sprite sheet. The tile reuses
-		// the parent texture's thumbnail with UVs clipped to the slice's
-		// rect, so the visual reflects what the renderer will actually draw.
-		// Emits an ASSET_SPRITE_SLICE drag payload so drop targets distinguish
-		// it from a regular texture drag (which carries only the path).
+		// Emits ASSET_SPRITE_SLICE drag payload (not a plain texture drag) so drop targets can distinguish slice vs full-texture drops.
 		void RenderSliceTile(const DirectoryEntry& parentEntry,
 			const SpriteSlice& slice, int sliceIndex, int tileIndex);
 
-		// Refresh helper: re-read every sliced sprite sheet's `.meta` into
-		// m_SliceCache. Called by Refresh() once the entry list is rebuilt.
-		// The cache is keyed on absolute path; entries that no longer exist
-		// (file moved / deleted) age out naturally because Refresh() builds
-		// from m_Entries.
 		void RebuildSliceCache();
 
-		// Decode a HIERARCHY_ENTITY payload, save the entity as a `.prefab` in
-		// `targetDirectory`, and convert the source entity into a prefab
-		// instance linked to the new asset. Returns true on success. Single
-		// source of truth for both the empty-space drop and the per-folder
-		// drop, so the two paths stay in sync.
+		void CreateAssetWithCollisionCheck(
+			std::filesystem::path preferredPath,
+			std::function<void(const std::filesystem::path& finalPath)> doCreate);
+
+		void RenderCreationCollisionPrompt();
+
+		// .scene files embed their displayed name; a byte-copy via Duplicate /
+		// Paste leaves it stale and the hierarchy keeps showing the source name.
+		void SyncSceneEmbeddedNameIfNeeded(const std::filesystem::path& copiedPath);
+
 		bool TryCreatePrefabFromHierarchyDrop(const struct ImGuiPayload* payload, const std::string& targetDirectory);
 		void OpenAssetExternal(const DirectoryEntry& entry);
 		void OpenAssetPath(const std::string& path);
@@ -120,18 +115,8 @@ namespace Index {
 		void CreateGlobalSystem(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
-		// Copy a built-in default texture (Square / Circle / 9Sliced /
-		// Capsule / Hexagon / etc.) from the engine's
-		// IndexAssets/Textures/Default/ folder into `parentDir`. Used by
-		// the Create > Texture submenu. `sourceFile` is the file name
-		// inside Textures/Default/ (e.g. "Square.png"); `displayName`
-		// is what the file will be renamed to (sans extension).
 		void CreateDefaultTexture(const std::string& parentDir,
 			const std::string& sourceFile, const std::string& displayName);
-		// Generic file creator used by the Create > File submenu (Text, JSON,
-		// Binary, ...). Writes `defaultContent` (may be empty) to a file named
-		// `<baseName><extension>` in `parentDir`, suffixed " (N)" on collision,
-		// then drops the user into inline rename — same UX as CreateScene.
 		void CreateFile(const std::string& parentDir, const std::string& baseName,
 			const std::string& extension, const std::string& defaultContent);
 
@@ -173,14 +158,30 @@ namespace Index {
 
 		ThumbnailCache m_Thumbnails;
 
-		// Sprite-sheet expansion state. m_SliceCache is rebuilt on every
-		// Refresh() so a slice authored in the Sprite Editor surfaces in the
-		// browser the next time the file watcher kicks. m_ExpandedTextures
-		// remembers which sheets the user has clicked open; we leave entries
-		// for paths that no longer exist alone (cheap, and re-expanding the
-		// same path later "just works" again if the user puts a sheet back).
 		std::unordered_map<std::string, std::vector<SpriteSlice>> m_SliceCache;
 		std::unordered_set<std::string> m_ExpandedTextures;
+
+		struct PendingCreationPrompt {
+			std::filesystem::path PreferredPath;
+			std::string DisplayName;
+			std::function<void(const std::filesystem::path&)> DoCreate;
+		};
+		std::unique_ptr<PendingCreationPrompt> m_PendingCreationPrompt;
+		// Set by CreateAssetWithCollisionCheck when it stores a pending
+		// request; drained on the next RenderCreationCollisionPrompt frame
+		// to call ImGui::OpenPopup exactly once.
+		bool m_OpenCreationPromptThisFrame = false;
+
+		// Paths whose thumbnails need invalidating. Filled by DeleteEntry,
+		// drained at the top of the NEXT frame's Render(). Destroying a
+		// Texture2D synchronously inside Render() while ImGui has already
+		// recorded an Image draw command for that texture leaves the wgpu
+		// backend with a dangling WGPUTextureView pointer at the end-of-
+		// frame dispatch — the imgui_impl_wgpu draw walks pcmd->TexID, casts
+		// it back to WGPUTextureView, and calls wgpuDeviceCreateBindGroup;
+		// freed pointer = native crash. Deferring one frame lets the prior
+		// frame's draw dispatch complete first.
+		std::vector<std::string> m_PendingThumbnailInvalidates;
 	};
 
 }

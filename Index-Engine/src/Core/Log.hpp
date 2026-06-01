@@ -87,10 +87,7 @@ namespace Index {
 		static bool ShouldLog(Type type, Level level);
 		static void Emit(std::shared_ptr<spdlog::logger>& logger, Level level, std::string_view message);
 
-		// Defined out-of-line in Log.cpp so a single instance lives inside the
-		// engine DLL. With inline-static in the header, every TU including
-		// Log.hpp would see its own copy across the DLL boundary (the editor
-		// EXE and the engine DLL would each have their own logger pointers).
+		// Out-of-line in Log.cpp: inline-static would give the editor EXE and engine DLL separate logger instances across the DLL boundary.
 		static std::mutex s_StateMutex;
 		static bool s_Initialized;
 		static std::shared_ptr<spdlog::logger> s_CoreLogger;

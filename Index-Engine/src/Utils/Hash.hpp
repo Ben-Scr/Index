@@ -8,13 +8,7 @@
 
 namespace Index::Hash {
 
-	// Computes SHA-256 over `filePath` and writes the digest as a 64-char
-	// lowercase hex string to `outHexLower`. Returns true on success; on
-	// failure returns false with a human-readable reason in `outError`.
-	//
-	// Windows uses BCrypt. On other platforms this currently returns false
-	// with "not implemented" — the Linux launcher has no live downloader
-	// today, so adding OpenSSL/libsodium is deferred until that path exists.
+	// Windows uses BCrypt; non-Windows returns false/"not implemented" — OpenSSL/libsodium deferred until the Linux launcher has a live downloader.
 	INDEX_API bool Sha256OfFile(const std::filesystem::path& filePath,
 		std::string& outHexLower,
 		std::string& outError);

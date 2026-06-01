@@ -39,9 +39,6 @@
 // Single source of truth for built-in components — names, categories, properties.
 namespace Index {
 	namespace {
-		// File-scope helpers: can be called from non-capturing lambdas
-		// that decay into the raw function pointers ComponentInfo's
-		// serialize / deserialize slots require.
 		Json::Value UIColorToJson(const Color& c) {
 			Json::Value v = Json::Value::MakeObject();
 			v.AddMember("r", Json::Value(c.r));
@@ -60,10 +57,7 @@ namespace Index {
 			return c;
 		}
 
-		// UUIDs are 64 bits; encode as a string so JSON's double-backed
-		// number type doesn't quantise away the low bits. Same approach
-		// the SpriteRenderer / Image / Particle paths use in
-		// SceneSerializer.cpp.
+		// UUIDs encoded as strings to avoid JSON double precision loss.
 		Json::Value UIUuidToJson(UUID uuid) {
 			return Json::Value(std::to_string(static_cast<uint64_t>(uuid)));
 		}
@@ -74,10 +68,6 @@ namespace Index {
 			try { return UUID(std::stoull(s)); } catch (...) { return fallback; }
 		}
 
-		// Save/load an EntityHandle field as a persistent UUID — same
-		// approach the editor's reference picker uses, so refs survive
-		// scene reload (where runtime EntityHandle values are
-		// reallocated). UUID 0 means "not set" both on disk and in RAM.
 		Json::Value UIEntityHandleToJson(const Entity& owner, EntityHandle h) {
 			uint64_t id = 0;
 			if (h != entt::null) {
@@ -96,21 +86,13 @@ namespace Index {
 			Scene* s = owner.GetScene();
 			if (!s) return;
 
-			// Try to resolve right away. Back-refs (target appeared
-			// earlier in the scene file) succeed here because their
-			// UUIDComponent is already registered.
 			EntityHandle resolved = entt::null;
 			if (s->TryResolveEntityRef(static_cast<uint64_t>(id), resolved)) {
 				outRef = resolved;
 				return;
 			}
 
-			// Forward ref: the referenced entity hasn't been created
-			// yet. Defer to the end of the load batch — by then every
-			// entity has its UUIDComponent and the lookup succeeds.
-			// Pointer-to-component-field is stable for the duration of
-			// the load (entities aren't destroyed mid-deserialize), and
-			// SceneSerializer drains the queue before returning.
+			// Forward ref: defer to end of load batch; SceneSerializer drains the queue before returning, by which point all UUIDComponents are registered.
 			const uint64_t persistentId = static_cast<uint64_t>(id);
 			EntityHandle* refSlot = &outRef;
 			s->DeferEntityRefFixup([s, refSlot, persistentId]() {
@@ -121,17 +103,6 @@ namespace Index {
 			});
 		}
 
-		// RegisterComponent<T>, DeclareConflict<A,B>, DeclareDependency<TDependent,TDependency>
-		// moved to Scene/ComponentRegistrationHelpers.hpp so the generated
-		// Generated/CodegenComponents.cpp (user-defined C# components) can call
-		// them via the same templates as the hand-written engine registrations.
-
-		// Save/load an InspectorEventList alongside its host component.
-		// Used by every UI widget that owns one or more event lists
-		// (Button.OnClick, Slider.OnValueChanged, ...). Each row stores
-		// the typed argument as a (kind, value) pair; older scene files
-		// without those fields default to Void/empty so the binding
-		// behaves identically to the original parameterless flow.
 		Json::Value UIEventListToJson(const InspectorEventList& list) {
 			Json::Value array = Json::Value::MakeArray();
 			for (const InspectorEventBinding& b : list.Bindings) {
@@ -169,19 +140,7 @@ namespace Index {
 			}
 		}
 
-		// onAdd hook for UI widgets with a NormalColor field. When the user
-		// adds (e.g.) ButtonComponent through the inspector to an entity that
-		// already has an ImageComponent with an authored color, copy that
-		// color into the widget's NormalColor before the next UIEventSystem
-		// pass overwrites Image.Color from the widget's per-state palette.
-		// Without this, the widget's default white NormalColor stamps over
-		// whatever the user had carefully picked for the image, which is
-		// the opposite of the user's intent ("I styled the image, now make
-		// it interactive"). Skipped when there's no ImageComponent — those
-		// widgets get tinted via their Handle child or simply don't tint at
-		// all. Other state colors (Hovered/Pressed/Disabled/Focused) are
-		// left at their authored defaults so a user who does want a
-		// hover/press contrast doesn't have to re-author them.
+		// Copies existing ImageComponent.Color into NormalColor so adding a widget to an already-styled image doesn't silently stamp white over it.
 		template <typename TComponent>
 		void InheritImageColorIntoNormal(Entity e) {
 			if (!e.HasComponent<ImageComponent>() || !e.HasComponent<TComponent>()) {
@@ -191,13 +150,6 @@ namespace Index {
 			e.GetComponent<TComponent>().NormalColor = imageColor;
 		}
 
-		// Inspector picker for an EntityHandle field on a UI widget.
-		// The runtime stores a fast EntityHandle (regenerated each
-		// scene load); the inspector / serialization round-trip goes
-		// through the persistent UUID provided by Scene, so refs
-		// survive reload the same way the rest of the engine treats
-		// entity references. memberPtr points at the EntityHandle
-		// member to read/write.
 		template <typename T>
 		PropertyDescriptor MakeUiEntityRef(const std::string& name, const std::string& displayName,
 			EntityHandle T::* memberPtr)
@@ -225,12 +177,6 @@ namespace Index {
 				});
 		}
 
-		// Inspector picker for per-state sprite UUIDs on UI widgets.
-		// These slots only store the UUID (no resolved TextureHandle) —
-		// UIEventSystem's SpriteSwap path looks up the handle on demand
-		// via TextureManager when the resolved state actually changes.
-		// Setting a uuid here doesn't preload the asset; the registry
-		// is consulted again on the first frame the state activates.
 		template <typename T>
 		PropertyDescriptor MakeUiSpriteRef(const std::string& name, const std::string& displayName,
 			UUID T::* memberPtr)
@@ -244,15 +190,6 @@ namespace Index {
 				});
 		}
 
-		// ── Texture / audio ref helpers ─────────────────────────────
-		// `setHandle` arity dispatch matches the slice-aware overload in
-		// PropertyRegistration's MakeTextureRef: the inner assign can be
-		// either the legacy `(Component&, TextureHandle, UUID)` form or the
-		// slice-aware `(Component&, TextureHandle, UUID, const std::string&)`
-		// form. The wrapping lambda always receives the slice name from
-		// MakeTextureRef and forwards it only when the inner setter declares
-		// it accepts one — components that don't pair a texture with a
-		// sprite-name field stay on the 3-arg shape unchanged.
 		template <typename T, typename HandleAccessor, typename HandleAssign>
 		PropertyDescriptor MakeTextureRefDirect(const std::string& name, const std::string& displayName,
 			HandleAccessor getHandle, HandleAssign setHandle)
@@ -302,10 +239,6 @@ namespace Index {
 
 		// ── General ─────────────────────────────────────────────────
 
-		// The inspector edits the authored Local* values (Unity-style).
-		// For root entities Local matches World, so no visible behavior
-		// change; for children, the inspector now correctly shows the
-		// offset relative to the parent rather than the world snapshot.
 		RegisterComponent<Transform2DComponent>(sceneManager, "Transform 2D",
 			ComponentCategory::Component, "General", "Transform2D",
 			{
@@ -363,18 +296,7 @@ namespace Index {
 					}),
 				MakeTextureRefDirect<SpriteRendererComponent>("Texture", "Texture",
 					[](const SpriteRendererComponent& s) { return s.TextureHandle; },
-					// Slice-aware setter. `sliceName` is non-empty when the
-					// source was a sprite-sheet slice (Asset Browser expanded
-					// tile drag, or a ReferencePicker slice entry). In that
-					// case we set SpriteName atomically with the texture so
-					// the renderer clips to the slice on the very next frame —
-					// otherwise the user would have to drop the texture, then
-					// open the slice combo and pick the slice manually.
-					//
-					// For a regular full-texture drop / pick, `sliceName` is
-					// empty and SpriteName is cleared so the prior slice (if
-					// any) doesn't dangle onto an unrelated texture and
-					// silently render a wrong-coordinate rect.
+					// Slice-aware setter: set SpriteName atomically with the texture so the renderer clips to the correct rect on the first frame; clear it on plain texture drops to avoid dangling stale UV coords.
 					[](SpriteRendererComponent& s, TextureHandle h, UUID assetId, const std::string& sliceName) {
 						s.TextureHandle = h;
 						s.TextureAssetId = assetId;
@@ -456,13 +378,6 @@ namespace Index {
 					}),
 			});
 
-		// Particle System 2D — fully declarative now via the unified API.
-		// Shape is a variant (Circle vs Square vs Edge) driven by
-		// Properties::MakeVariantWith over the ShapeParams std::variant;
-		// "Gravity Value" uses Meta::EnabledIf so it greys out when
-		// UseGravity is false. The viewport Play / Pause / Restart / Stop
-		// buttons live in RenderEditorView, while the texture preview lives
-		// in the editor-only inspector extension.
 		using PSC = ParticleSystem2DComponent;
 		using ShapeType = PSC::ShapeType;
 		using CircleParams = PSC::CircleParams;
@@ -587,12 +502,7 @@ namespace Index {
 			ComponentCategory::Component, "Rendering", "ParticleSystem2D",
 			std::move(particleProperties));
 
-		// Custom copyTo: ParticleSystem2DComponent caches m_EmitterScene/m_EmitterEntity
-		// during on_construct. The default value-copy would carry the source entity's
-		// pointers across, leaving the duplicate's emitter pointing at a different
-		// (possibly destroyed) entity in (possibly) a different scene. After the
-		// member-wise copy, RebindEmitter re-points the destination at its own scene
-		// and entity so the next Update() targets the right transform.
+		// Custom copyTo: default value-copy would carry source entity's cached scene/entity pointers; RebindEmitter re-points the copy at its own entity.
 		sceneManager.GetComponentRegistry().ForEachComponentInfo(
 			[](const std::type_index& id, ComponentInfo& info) {
 				if (id == std::type_index(typeid(ParticleSystem2DComponent))) {
@@ -610,9 +520,6 @@ namespace Index {
 				}
 			});
 
-		// Post Processing 2D — settings only. The renderer doesn't read these
-		// yet; this slice locks in the data shape and inspector UX so scenes
-		// can be authored against it before the FBO + blit pipeline lands.
 		{
 			using PP = PostProcessing2DComponent;
 
@@ -903,16 +810,7 @@ namespace Index {
 			ppInfo.deserialize = [](Entity e, const Json::Value& v) {
 				auto& p = e.GetComponent<PP>();
 
-				// Reset signal: SceneSerializer::ResetComponent calls us with
-				// an empty JSON object to mean "revert to defaults". The
-				// hardcoded whitelist in SceneSerializerDeserialize.cpp's
-				// DeserializeComponent doesn't include this component, so
-				// without the check below the per-key FindMember calls would
-				// all return null and nothing would actually reset. Detect
-				// the empty-object case here and default-construct the whole
-				// component before falling through to the (now no-op) patch
-				// path. Non-empty inputs (real save files / prefab overrides)
-				// keep the existing partial-deserialize semantics.
+				// Empty JSON object = SceneSerializer::ResetComponent signal; DeserializeComponent's whitelist excludes this type so we must detect it manually.
 				const bool isEmptyReset = v.IsObject()
 					&& !v.FindMember("colorGrading")
 					&& !v.FindMember("vignette")
@@ -967,10 +865,7 @@ namespace Index {
 					if (const Json::Value* m = bl->FindMember("taps")) {
 						p.Bloom.Taps = std::max(7, std::min(500, m->AsIntOr(p.Bloom.Taps)));
 					}
-					// Legacy migration: pre-slider scenes wrote a "quality"
-					// enum int (0/1/2 = Low/Medium/High = 11/21/33 taps).
-					// Only consumed when "taps" is absent so newer saves
-					// always take precedence.
+					// Legacy: pre-slider scenes used quality enum (0/1/2 → 11/21/33 taps); only consumed when "taps" is absent.
 					else if (const Json::Value* m = bl->FindMember("quality")) {
 						const int q = m->AsIntOr(1);
 						p.Bloom.Taps = (q == 0) ? 11 : (q == 2) ? 33 : 21;
@@ -1051,14 +946,7 @@ namespace Index {
 					[](Entity& e, TextWrapMode v) {
 						e.GetComponent<TextRendererComponent>().WrapMode = v;
 					}),
-				// WrapWidth was removed — wrap area now comes entirely
-				// from the host rect's width minus Margin (.x + .z). The
-				// inspector field is no longer needed because Margin's
-				// inner-rect gizmo already shows / drags the same number.
-				// (Left, Top, Right, Bottom) inset in pixels. Drives the
-				// editor-view margin gizmo; reduces wrap width in
-				// GuiRenderer/TextRenderer so wrapped lines respect the
-				// authored insets.
+				// (Left, Top, Right, Bottom) margin in pixels; drives the editor gizmo and reduces effective wrap width.
 				Properties::MakeWith<Vec4>("Margin", "Margin",
 					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().Margin; },
 					[](Entity& e, const Vec4& v) {
@@ -1427,16 +1315,6 @@ namespace Index {
 			});
 
 		// ── UI widgets ──────────────────────────────────────────────
-		// All show up in the inspector's "UI" tab. The Interactable
-		// component is the input-state primitive; Button/Slider/etc.
-		// are visual presets that read it. Each carries a registry-driven
-		// serialize / deserialize callback so they round-trip via .scene
-		// without bloating SceneSerializerDeserialize.cpp.
-
-		// Color (de)serialize uses the free helpers UIColorToJson /
-		// UIColorFromJson at file scope — keeps the lambdas below
-		// non-capturing so they decay to the raw function pointers
-		// ComponentInfo::serialize / deserialize require.
 
 		ComponentInfo interactableInfo{ "Interactable", "UI", ComponentCategory::Component };
 		interactableInfo.serializedName = "Interactable";
@@ -2058,9 +1936,6 @@ namespace Index {
 		sceneManager.RegisterComponentType<ScrollRectComponent>(scrollRectInfo);
 
 		// ── Mask ─────────────────────────────────────────────────────
-		// Clip descendants' rendering to this entity's resolved rect.
-		// Used by ScrollView's Viewport so off-rect content doesn't
-		// bleed into surrounding UI.
 		ComponentInfo maskInfo{ "Mask", "UI", ComponentCategory::Component };
 		maskInfo.serializedName = "Mask";
 		maskInfo.properties = {
@@ -2079,12 +1954,6 @@ namespace Index {
 		sceneManager.RegisterComponentType<MaskComponent>(maskInfo);
 
 		// ── Circular Slider ──────────────────────────────────────────
-		// Ring-shaped value control. Render is procedural (GuiRenderer
-		// emits a fan of rotated quads forming the arc); hit-test is an
-		// annulus the system enforces in its hover loop. Mirrors the
-		// linear Slider's value contract (Value/Min/Max/WholeNumbers/
-		// IsReadOnly + ValueChangedThisFrame edge flag) so script code
-		// that polls the slider doesn't have to special-case the shape.
 		ComponentInfo csInfo{ "Circular Slider", "UI", ComponentCategory::Component };
 		csInfo.serializedName = "CircularSlider";
 		csInfo.properties = {
@@ -2179,10 +2048,6 @@ namespace Index {
 		sceneManager.RegisterComponentType<CircularSliderComponent>(csInfo);
 
 		// ── Content Size Fitter ──────────────────────────────────────
-		// Resizes the entity's RectTransform2D SizeDelta along enabled
-		// axes to fit the AABB of its direct children. UILayoutSystem
-		// applies this before parent layout-group passes consume the
-		// resized rect.
 		ComponentInfo csfInfo{ "Content Size Fitter", "UI", ComponentCategory::Component };
 		csfInfo.serializedName = "ContentSizeFitter";
 		csfInfo.properties = {
@@ -2216,11 +2081,7 @@ namespace Index {
 		};
 		sceneManager.RegisterComponentType<ContentSizeFitterComponent>(csfInfo);
 
-		// Width Constraint —
-		// Clamps RectTransform2D SizeDelta.x to [MinWidth, MaxWidth]
-		// each layout pass. Negative bound = side disabled. Runs after
-		// ContentSizeFitter so a fitter-driven width gets clamped before
-		// any parent layout-group reads the SizeDelta.
+		// ── Width Constraint ─────────────────────────────────────────
 		ComponentInfo wcInfo{ "Width Constraint", "UI", ComponentCategory::Component };
 		wcInfo.serializedName = "WidthConstraint";
 		wcInfo.properties = {
@@ -2242,13 +2103,6 @@ namespace Index {
 		sceneManager.RegisterComponentType<WidthConstraintComponent>(wcInfo);
 
 		// ── Layout groups ────────────────────────────────────────────
-		// Reposition (and optionally resize) child rects each frame.
-		// All three share the same padding / spacing / alignment shape.
-		// EnabledIf gates: ChildForceExpand* and UseChildScale* require
-		// ControlChild{Width,Height} to be on, mirroring Unity's
-		// HorizontalLayoutGroup inspector. Disabling Control* greys out
-		// the dependent rows so users don't toggle a flag that has no
-		// effect.
 		auto registerHorizontalLayout = [&]() {
 			ComponentInfo info{ "Horizontal Layout Group", "UI", ComponentCategory::Component };
 			info.serializedName = "HorizontalLayoutGroup";
@@ -2471,12 +2325,6 @@ namespace Index {
 		RegisterComponent<HierarchyComponent>(sceneManager, "Hierarchy", ComponentCategory::Tag);
 
 		// ── Scripting ───────────────────────────────────────────────
-		// Engine-side registration so non-editor builds (Runtime, Launcher) include
-		// ScriptComponent in the registry. Without this, generic registry-driven
-		// flows (CopyComponents, future serializer hooks) silently skip scripts
-		// outside the editor. The editor still calls AttachInspector to layer in
-		// the per-script field UI; ComponentRegistry::Register merges drawInspector
-		// from a prior entry so the inspector survives.
 		RegisterComponent<ScriptComponent>(sceneManager, "Scripts",
 			ComponentCategory::Component, "Scripting", "Scripts");
 
@@ -2517,13 +2365,6 @@ namespace Index {
 		DeclareConflict<VerticalLayoutGroupComponent, GridLayoutGroupComponent>(sceneManager);
 
 		// ── Dependencies ────────────────────────────────────────────
-		// UI widgets need an InteractableComponent (input flags) and a
-		// RectTransform2DComponent (rect for hit-testing) to work. The
-		// inspector / paste / scripting AddComponent paths auto-add
-		// these alongside the widget so the user gets a working button
-		// in one click. Removal stays unrestricted — if the user
-		// strips the Interactable later, UIEventSystem just sees the
-		// widget go inert.
 		DeclareDependency<ButtonComponent,     InteractableComponent>(sceneManager);
 		DeclareDependency<ButtonComponent,     RectTransform2DComponent>(sceneManager);
 		DeclareDependency<InputFieldComponent, InteractableComponent>(sceneManager);
@@ -2543,18 +2384,7 @@ namespace Index {
 		RegisterComponent<InheritedDisabledTag>(sceneManager, "Inherited Disabled", ComponentCategory::Tag);
 		RegisterComponent<DeadlyTag>(sceneManager, "Deadly", ComponentCategory::Tag);
 
-		// User-defined C# components are registered at runtime via
-		// DynamicComponentRegistrar (Index-ScriptCore) — see
-		// ComponentRegistry::RegisterDynamic. The engine no longer touches
-		// any per-project codegen output; each user .cs file annotated
-		// [NativeComponent(..., Generate = true)] is reflected and
-		// registered when the user assembly loads.
-
-		// Debug-only sanity check: every conflictsWith edge must be symmetric.
-		// DeclareConflict<A, B> already adds both directions, but a manual
-		// edit to one info's conflictsWith vector would silently slip through
-		// the bidirectional HasConflict() lookups. Catch the asymmetry now,
-		// not when a user reports a half-working "Add Component" filter.
+		// Debug check: conflict edges must be symmetric — asymmetry would silently break "Add Component" filtering.
 		sceneManager.GetComponentRegistry().ValidateConflictSymmetry();
 	}
 }

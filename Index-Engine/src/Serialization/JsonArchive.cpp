@@ -9,11 +9,7 @@
 namespace Index::Serialization {
 
 	namespace {
-		// UUID round-trip via a base-10 string: matches the existing
-		// UIUuidToJson / UIUuidFromJson convention so legacy scenes load
-		// without conversion (and so values > 2^53 don't get crushed into
-		// double precision the way a raw Json::Value(uint64_t) → Number
-		// path would when re-read on the JS-tooling side).
+		// Base-10 string encoding: values >2^53 would lose precision as a JSON Number on the JS-tooling side.
 		std::string UuidToString(std::uint64_t value) {
 			return std::to_string(value);
 		}
@@ -53,10 +49,6 @@ namespace Index::Serialization {
 	void JsonArchive::BeginComponent(std::uint64_t nameHash, std::uint16_t version) {
 		m_CurrentComponentVersion = version;
 
-		// Resolve the JSON key from the hash. SceneSerializer is the only
-		// caller and always pulls the hash straight from a live ComponentInfo,
-		// so an unresolved hash means a stale call — push an empty scope
-		// instead of crashing so the surrounding loop stays well-formed.
 		const ComponentInfo* info = (m_Registry != nullptr) ? m_Registry->FindByHash(nameHash) : nullptr;
 		if (info == nullptr || info->serializedName.empty()) {
 			Scope empty;
@@ -161,11 +153,7 @@ namespace Index::Serialization {
 						v = static_cast<float>(m->AsDoubleOr(static_cast<double>(v)));
 					}
 					else {
-						// Type mismatch — keep the default and warn so a
-						// hand-edited or stale-format scene doesn't load
-						// with silent data loss. Missing fields stay quiet
-						// (the FindMember above gates this branch).
-						IDX_CORE_WARN_TAG("JsonArchive",
+										IDX_CORE_WARN_TAG("JsonArchive",
 							"Field '{}': expected number for float, got non-number — keeping default",
 							name);
 					}
@@ -199,9 +187,6 @@ namespace Index::Serialization {
 	}
 
 	void JsonArchive::Field(std::string_view name, UUID& v) {
-		// String encoding matches UIUuidToJson — preserves 64-bit precision
-		// across JS/JSON tooling and avoids the NumberKind drift the legacy
-		// path was forced to introduce when raw uint64 values exceeded 2^53.
 		if (IsWriting()) {
 			if (Json::Value* scope = CurrentWrite()) {
 				scope->AddMember(std::string(name), Json::Value(UuidToString(static_cast<std::uint64_t>(v))));
@@ -242,10 +227,6 @@ namespace Index::Serialization {
 						if (const Json::Value* a = m->FindMember("a")) v.a = static_cast<float>(a->AsDoubleOr(v.a));
 					}
 					else if (m->IsNumber()) {
-						// Legacy fallback: a single number is treated as
-						// grayscale with alpha=1. Prevents an old scene
-						// from silently propagating wrong colors when its
-						// Color was authored before the {r,g,b,a} schema.
 						IDX_CORE_WARN_TAG("JsonArchive",
 							"Field '{}': legacy single-number color form; treating as grayscale",
 							name);

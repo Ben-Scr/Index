@@ -15,10 +15,6 @@
 namespace Index {
 
 	namespace {
-		// Combined Transform2D + RectTransform2D AABB for a single entity.
-		// Mirrors the merge logic in ImGuiEditorLayer::TryBuildEntityAABB but
-		// scoped to one entity (no child traversal) and skips the
-		// Propagate / ComputeUILayout calls — those are the caller's job.
 		bool BuildEntityAABB(Scene& scene, EntityHandle entity, float worldUIScale, AABB& out) {
 			bool has = false;
 
@@ -78,10 +74,6 @@ namespace Index {
 		const float worldUIScale = GuiRenderer::ComputeWorldUIPixelScale();
 		auto& reg = scene.GetRegistry();
 
-		// Pass 1: world-space entities (Transform2DComponent). Sort hits by
-		// (SortingLayer, SortingOrder) descending so the front-most sprite
-		// wins overlapping picks. Non-sprite entities sort at (0, 0); ties
-		// fall to entt iteration order (later iterated = on top).
 		EntityHandle picked = entt::null;
 		int bestLayer = std::numeric_limits<int>::min();
 		int bestOrder = std::numeric_limits<int>::min();
@@ -107,11 +99,7 @@ namespace Index {
 			}
 		}
 
-		// Pass 2: UI entities (RectTransform2DComponent, mutually exclusive
-		// with Transform2D — see DeclareConflict in BuiltInComponentRegistration).
-		// UI draws on top of world sprites in the editor's uiInWorldSpace
-		// render, so any UI hit overrides a world-space hit; among UI hits,
-		// later iterated wins.
+		// UI hits override world-space hits; among UI entities, later-iterated wins.
 		auto rectView = reg.view<RectTransform2DComponent>();
 		for (auto entity : rectView) {
 			AABB aabb;

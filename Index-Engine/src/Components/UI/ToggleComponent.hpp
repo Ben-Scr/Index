@@ -8,39 +8,16 @@
 
 namespace Index {
 
-	// Boolean toggle (checkbox) widget state. CheckmarkEntity is the
-	// child entity whose ImageComponent should be drawn only when
-	// IsOn is true — UIEventSystem flips its enabled-state every
-	// frame to match. Leave kNullEntity if the on/off look is handled
-	// some other way (e.g. by tinting the parent image directly).
-	//
-	// ValueChangedThisFrame is set on the frame the toggle flips,
-	// cleared at the start of the next tick.
-	//
-	// The four state colors (Normal/Hovered/Pressed/Disabled) tint the
-	// background ImageComponent on the toggle entity, mirroring the
-	// per-state preset on ButtonComponent. UIEventSystem retints every
-	// frame from InteractableComponent's flags.
 	struct ToggleComponent {
 		bool IsOn = false;
 
-		// When true the toggle ignores click input — IsOn never flips
-		// from user interaction (mouse or keyboard activate). Visual
-		// hover / press state still tracks so the widget remains
-		// responsive-feeling, only the value mutation is gated.
-		// Programmatic writes via script / inspector still work.
 		bool IsReadOnly = false;
 
 		EntityHandle CheckmarkEntity = kNullEntity;
 
 		bool ValueChangedThisFrame = false;
 
-		// Last IsOn UIEventSystem observed as "changed." Updated each
-		// frame after the diff fires so changes from any source —
-		// click, inspector edit, programmatic SetValue — feed
-		// OnValueChanged, not just user clicks. ValueObserved gates
-		// the first tick so scene load doesn't fire a spurious event.
-		// Transient — not serialized.
+		// ValueObserved gates the first tick so scene load doesn't fire a spurious event. Transient.
 		bool LastObservedIsOn = false;
 		bool ValueObserved = false;
 
@@ -61,10 +38,6 @@ namespace Index {
 		UUID DisabledSprite{ 0 };
 		UUID FocusedSprite { 0 };
 
-		// Inspector-bound event list — fires every binding on the rising
-		// edge of `ValueChangedThisFrame`. Methods that take a `bool`
-		// receive the new IsOn value as the static argument; void
-		// methods just notify "toggle changed".
 		InspectorEventList OnValueChanged;
 	};
 

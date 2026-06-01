@@ -4,10 +4,6 @@
 
 namespace Index {
 
-	// Shared aspect-ratio preset list used by both the editor's Game View
-	// panel and the shipped runtime's `BuildAspect` window lock. Aspect ==
-	// 0.0f means "Free" — the renderer should fill the full window with no
-	// letterboxing.
 	struct AspectRatioPreset {
 		const char* Label;
 		float Aspect;

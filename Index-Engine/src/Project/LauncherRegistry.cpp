@@ -84,10 +84,7 @@ namespace Index {
 	void LauncherRegistry::Save() {
 		std::string path = GetRegistryPath();
 
-		// Ensure parent directory exists. create_directories can throw on
-		// permission/IO problems — log and continue so the caller still has
-		// a chance to surface the WriteAllText failure below rather than
-		// crashing the launcher mid-save.
+		// Log create_directories failures instead of throwing so WriteAllText below can still report the real error.
 		try {
 			auto parent = std::filesystem::path(path).parent_path();
 			if (!std::filesystem::exists(parent))

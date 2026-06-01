@@ -59,12 +59,7 @@ namespace Index {
 		static constexpr int SCENE_FORMAT_VERSION = 1;
 		static constexpr float k_MinScaleAxis = 0.0001f;
 
-		// RAII guard for the in-progress entity in DeserializeFullEntity /
-		// DeserializePrefabInstance. If construction throws before Commit()
-		// runs, the entity is destroyed so the scene doesn't accumulate a
-		// half-baked orphan. Exceptions can bubble up from script bridges,
-		// asset lookups, and custom component deser hooks even though the
-		// Get*Member helpers themselves don't throw on malformed JSON.
+		// Destroys the in-progress entity if construction throws before Commit(); prevents half-baked orphans.
 		class EntityRollbackGuard {
 		public:
 			EntityRollbackGuard(Scene& scene, EntityHandle entity)
@@ -211,11 +206,7 @@ namespace Index {
 			return fieldsByClass;
 		}
 
-		// NOTE: A divergent copy of SerializeEntity used to live here; it omitted
-		// parentUuid (and emitted legacy keys the canonical writer dropped),
-		// causing prefab override-diff to flag spurious deletions on every save.
-		// All callers in this TU now use Detail::SerializeEntity (defined in
-		// SceneSerializer.cpp) so the diff sees the same JSON shape the writer wrote.
+		// All callers now use Detail::SerializeEntity; a local divergent copy here caused spurious prefab-diff deletions.
 
 		EntityOrigin EntityOriginFromString(const std::string& value) {
 			if (value == "Scene" || value == "scene") {
@@ -263,14 +254,9 @@ namespace Index {
 		}
 
 		bool JsonEquivalent(const Value& left, const Value& right) {
-			// Structural equality via Json::operator==, matching the canonical impl in
-			// SceneSerializer.cpp. Per-leaf Stringify+compare was a real hot-path cost
-			// (called O(N) per ComputeInstanceOverrides, which the inspector calls per
-			// frame on every prefab instance).
 			return left == right;
 		}
 
-		// Recursive diff; duplicated from SceneSerializer.cpp to keep ApplyOverrides internals private.
 		void BuildOverridePatch(const Value& prefabValue, const Value& instanceValue,
 			const std::string& prefix, Value& overrides) {
 			if (prefabValue.IsObject() && instanceValue.IsObject()) {
@@ -655,10 +641,6 @@ namespace Index {
 
 		bool LoadPrefabDefinitionRecursive(uint64_t prefabGuid, PrefabDefinition& outDefinition,
 			std::unordered_set<uint64_t>& inProgress) {
-			// Cycle guard: a prefab chain A→B→C→...→A would otherwise recurse
-			// until stack overflow. Inserting before recursing and erasing after
-			// gives us a per-call-stack visit set; concurrent loads on different
-			// stacks each get their own.
 			if (!inProgress.insert(prefabGuid).second) {
 				IDX_CORE_WARN_TAG("SceneSerializer", "Circular prefab reference detected at GUID {}", prefabGuid);
 				return false;
@@ -815,8 +797,7 @@ namespace Index {
 			scene.SetSceneId(UUID(sceneId));
 		}
 
-		scene.ClearEntities();
-		scene.ClearGameSystems();
+		const bool restartLifecycle = scene.BeginContentReplacement();
 
 		if (const Value* systemsValue = GetArrayMember(root, "systems")) {
 			for (const Value& systemValue : systemsValue->GetArray()) {
@@ -853,15 +834,7 @@ namespace Index {
 			}
 		}
 
-		// Two-pass entity load: first create every entity (so cross-references
-		// resolve), then wire parent-child links from each entity's
-		// `parentUuid` JSON field. Doing it inline doesn't work because a
-		// child can be serialized before its parent.
-		//
-		// `childIndex` (when present in the JSON) is captured per-handle
-		// so a third pass can re-sort each parent's Children vector by
-		// the authored order. Without that pass, child order would silently
-		// depend on the JSON traversal order — fragile.
+		// Two-pass load: pass 1 creates all entities, pass 2 wires parentUuid links; pass 3 re-sorts children by authored childIndex.
 		std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
 		std::unordered_map<uint32_t, int> childIndexByEntity;
 		if (const Value* entitiesValue = GetArrayMember(root, "entities")) {
@@ -915,12 +888,6 @@ namespace Index {
 				parentsTouched.insert(static_cast<uint32_t>(it->second));
 			}
 
-			// Third pass: re-sort each touched parent's Children vector by
-			// the authored childIndex. Children that lack an index (older
-			// scene files predating the field) sort to the end, preserving
-			// whatever order they fell into during pass 2 — so legacy
-			// files at least don't get worse, and a single re-save fixes
-			// them up by emitting the explicit indices.
 			auto& registry = scene.GetRegistry();
 			for (uint32_t parentRaw : parentsTouched) {
 				EntityHandle parentEntity = static_cast<EntityHandle>(parentRaw);
@@ -949,18 +916,10 @@ namespace Index {
 			}
 		}
 
-		if (scene.GetRegistry().view<Camera2DComponent>().size() == 0) {
-			EntityHelper::CreateCamera2DEntity(scene);
-			IDX_CORE_INFO_TAG("SceneSerializer", "Added default camera (none in scene data)");
-		}
-
-		// Resolve any cross-entity references whose target hadn't been
-		// created yet when their owning component deserialised. By
-		// this point every entity is in place with its UUIDComponent,
-		// so the second-pass lookup always succeeds.
 		scene.RunPendingEntityRefFixups();
 
 		scene.ClearDirty();
+		scene.EndContentReplacement(restartLifecycle);
 		IDX_CORE_INFO_TAG("SceneSerializer", "Loaded scene: {}", scene.GetName());
 		return true;
 	}
@@ -976,12 +935,6 @@ namespace Index {
 			return entt::null;
 		}
 
-		// DeserializeFullEntity owns an EntityRollbackGuard that handles the
-		// per-entity rollback (destroying the partial entity if construction
-		// throws). The outer try/catch here just converts the propagated
-		// exception into a logged null return so the surrounding scene-load
-		// loop can continue with the remaining entities. Without it, one
-		// bad entity would abort the whole DeserializeScene call.
 		try {
 			if (origin == EntityOrigin::Prefab) {
 				return DeserializePrefabInstance(scene, entityValue);
@@ -1009,23 +962,11 @@ namespace Index {
 			return entt::null;
 		}
 
-		// Empty default — missing/blank "name" must NOT manifest as a real
-		// NameComponent on load. Scene::CreateEntity(name) already skips
-		// AddComponent<NameComponent> when name.empty(), so this preserves
-		// "unnamed" through the round-trip.
 		const std::string name = GetStringMember(entityValue, "name", "");
 		const EntityHandle entity = scene.CreateEntity(name).GetHandle();
-		// If any component constructor or deser hook throws below, the guard
-		// destroys this entity so the scene isn't left with a half-baked one.
 		EntityRollbackGuard rollback(scene, entity);
 
-		// Scene::CreateEntity unconditionally seeds Transform2D for the
-		// usual world-space case, but UI entities (RectTransform2D-only)
-		// and other Transform-less authored entities must round-trip
-		// without sprouting a Transform2D on every play→edit cycle.
-		// If the snapshot omits a Transform2D block, drop the auto-seeded
-		// component so the persisted shape wins. We don't touch any other
-		// component CreateEntity may have added (none today).
+		// Drop the auto-seeded Transform2D if the snapshot omits it — UI entities must not sprout one on reload.
 		if (!entityValue.FindMember("Transform2D")) {
 			scene.GetRegistry().remove<Transform2DComponent>(entity);
 		}
@@ -1050,20 +991,11 @@ namespace Index {
 
 		if (const Value* transformValue = GetObjectMember(entityValue, "Transform2D")) {
 			auto& transform = scene.GetComponent<Transform2DComponent>(entity);
-			// Local* are the authored fields; "posX/posY/rotation/scaleX
-			// /scaleY" is the legacy on-disk schema. Old scenes only have the
-			// legacy keys, so we treat them as Local for unparented entities
-			// (the case before hierarchy existed) â€” TransformHierarchySystem
-			// composes the World snapshot from there on the next pass.
 			transform.LocalPosition.x = GetFloatMember(*transformValue, "posX", 0.0f);
 			transform.LocalPosition.y = GetFloatMember(*transformValue, "posY", 0.0f);
 			transform.LocalRotation = GetFloatMember(*transformValue, "rotation", 0.0f);
 			transform.LocalScale.x = GetFloatMember(*transformValue, "scaleX", 1.0f);
 			transform.LocalScale.y = GetFloatMember(*transformValue, "scaleY", 1.0f);
-			// Seed Position/Scale/Rotation with the same values so anything
-			// that reads them before TransformHierarchySystem runs (e.g. the
-			// physics body construct hooks fired during deserialization)
-			// observes the authored placement, not the default identity.
 			transform.Position = transform.LocalPosition;
 			transform.Scale = transform.LocalScale;
 			transform.Rotation = transform.LocalRotation;
@@ -1285,21 +1217,22 @@ namespace Index {
 
 		if (const Value* colliderValue = GetObjectMember(entityValue, "FastBoxCollider2D")) {
 			auto& collider = scene.AddComponent<FastBoxCollider2DComponent>(entity);
-			collider.HalfExtents = {
+			// SetHalfExtents (not a raw m_Collider->SetHalfExtents) so the
+			// scale composed by OnConstruct stays applied — writing the JSON
+			// extents straight onto the AxiomPhys collider strips the
+			// Transform2D.Scale and SyncWithTransform's short-circuit then
+			// leaves it stripped because m_LastAppliedScale already equals
+			// the current scale.
+			collider.SetHalfExtents({
 				GetFloatMember(*colliderValue, "halfX", 0.5f),
 				GetFloatMember(*colliderValue, "halfY", 0.5f)
-			};
-			if (collider.m_Collider) {
-				collider.m_Collider->SetHalfExtents({ collider.HalfExtents.x, collider.HalfExtents.y });
-			}
+			});
 		}
 
 		if (const Value* colliderValue = GetObjectMember(entityValue, "FastCircleCollider2D")) {
 			auto& collider = scene.AddComponent<FastCircleCollider2DComponent>(entity);
-			collider.Radius = GetFloatMember(*colliderValue, "radius", 0.5f);
-			if (collider.m_Collider) {
-				collider.m_Collider->SetRadius(collider.Radius);
-			}
+			// SetRadius (not raw m_Collider->SetRadius) so OnConstruct's scaled value isn't blown away.
+			collider.SetRadius(GetFloatMember(*colliderValue, "radius", 0.5f));
 		}
 
 		if (const Value* particleValue = GetObjectMember(entityValue, "ParticleSystem2D")) {
@@ -1580,13 +1513,6 @@ namespace Index {
 				RemoveEntityIdentityMembers(entityValue);
 			}
 
-			// Per-entity origin auto-detect for the clipboard / generic-entity
-			// path (caller passed Scene + prefabGuid==0). The persistent
-			// scene-load path reads Origin via DeserializeEntity (singular)
-			// before getting here, so only the entity-tree paths needed this.
-			// Without it, duplicating / pasting a prefab instance silently
-			// demoted the duplicate to a plain scene entity because Origin /
-			// PrefabGUID never reached DeserializeFullEntity.
 			EntityOrigin entityOrigin = origin;
 			uint64_t entityPrefabGuid = prefabGuid;
 			if (origin == EntityOrigin::Scene && prefabGuid == 0) {
@@ -1605,11 +1531,6 @@ namespace Index {
 				continue;
 			}
 
-			// Restore the prefab source-entity link from the clipboard JSON.
-			// DeserializeFullEntity seeds SourceEntityId from the entity's
-			// `uuid` field, but the clipboard's uuid is a sequential clone-id
-			// (1, 2, 3...), NOT the original source-tree id — using it would
-			// scramble override tracking on the duplicate.
 			if (entityOrigin == EntityOrigin::Prefab
 				&& scene.HasComponent<PrefabInstanceComponent>(handle)) {
 				const uint64_t sourceEntityId = GetUInt64Member(sourceEntityValue, "SourceEntityId", 0);
@@ -1643,15 +1564,7 @@ namespace Index {
 			scene.GetEntity(childHandle).SetParent(scene.GetEntity(parentIt->second));
 		}
 
-		// NOTE: deliberately NOT draining the entity-ref fixup queue
-		// here. DeserializeEntityTree runs both as the outermost
-		// caller (e.g. InstantiatePrefab) and nested inside the main
-		// scene-load loop (every prefab instance pulls in a tree).
-		// Draining mid-load would prematurely fire fixups whose
-		// targets are still later in the outer JSON; instead the
-		// outermost public entry points drain after the whole load
-		// completes. See LoadFromFile / InstantiatePrefab /
-		// DeserializeEntityFromValue.
+		// Fixup queue is NOT drained here — outermost callers drain after the full batch to avoid resolving refs too early.
 		return root;
 	}
 
@@ -1674,9 +1587,6 @@ namespace Index {
 			root = DeserializeFullEntity(scene, entityCopy, EntityOrigin::Scene);
 		}
 
-		// Outermost-caller drain: any cross-entity refs queued during
-		// deserialization (Button.TargetGraphic, Slider.HandleEntity,
-		// etc.) resolve now that every entity in this batch exists.
 		scene.RunPendingEntityRefFixups();
 		return root;
 	}
@@ -1692,9 +1602,6 @@ namespace Index {
 			auto& transform = scene.HasComponent<Transform2DComponent>(entity)
 				? scene.GetComponent<Transform2DComponent>(entity)
 				: scene.AddComponent<Transform2DComponent>(entity);
-			// Same dual-write as the full-entity deserialize: load into Local*
-			// (authored values) and seed World cache so anything reading
-			// transform before TransformHierarchySystem ticks gets a sane value.
 			transform.LocalPosition.x = GetFloatMember(componentValue, "posX", 0.0f);
 			transform.LocalPosition.y = GetFloatMember(componentValue, "posY", 0.0f);
 			transform.LocalRotation = GetFloatMember(componentValue, "rotation", 0.0f);
@@ -1836,9 +1743,6 @@ namespace Index {
 				: scene.AddComponent<PolygonCollider2DComponent>(entity);
 
 			if (const Value* pointsArr = componentValue.FindMember("points"); pointsArr && pointsArr->IsArray()) {
-				// Mirror the full-entity polygon path: cap at Box2D's max polygon
-				// vertices so a corrupt/hostile JSON points array can't force a
-				// multi-GB reserve before the first element is read.
 				constexpr std::size_t k_MaxPolygonVertices = 8;
 				const auto& arr = pointsArr->GetArray();
 				if (arr.size() > k_MaxPolygonVertices) {
@@ -1927,13 +1831,10 @@ namespace Index {
 			auto& collider = scene.HasComponent<FastBoxCollider2DComponent>(entity)
 				? scene.GetComponent<FastBoxCollider2DComponent>(entity)
 				: scene.AddComponent<FastBoxCollider2DComponent>(entity);
-			collider.HalfExtents = {
+			collider.SetHalfExtents({
 				GetFloatMember(componentValue, "halfX", 0.5f),
 				GetFloatMember(componentValue, "halfY", 0.5f)
-			};
-			if (collider.m_Collider) {
-				collider.m_Collider->SetHalfExtents({ collider.HalfExtents.x, collider.HalfExtents.y });
-			}
+			});
 			return true;
 		}
 
@@ -1941,10 +1842,7 @@ namespace Index {
 			auto& collider = scene.HasComponent<FastCircleCollider2DComponent>(entity)
 				? scene.GetComponent<FastCircleCollider2DComponent>(entity)
 				: scene.AddComponent<FastCircleCollider2DComponent>(entity);
-			collider.Radius = GetFloatMember(componentValue, "radius", 0.5f);
-			if (collider.m_Collider) {
-				collider.m_Collider->SetRadius(collider.Radius);
-			}
+			collider.SetRadius(GetFloatMember(componentValue, "radius", 0.5f));
 			return true;
 		}
 
@@ -2147,38 +2045,17 @@ namespace Index {
 			return entt::null;
 		}
 
-		// Fast path: replay from PrefabTemplateCache when the prefab has
-		// already been baked. Hydrate handles bulk-create + emplaceFromBytes
-		// + parent linkage internally; no disk read, no JSON parse, no
-		// per-property setter loop.
 		PrefabTemplateCache& cache = PrefabTemplateCache::Get();
 		if (const PrefabTemplate* baked = cache.Find(prefabGuid); baked != nullptr) {
 			if (baked->bakeable) {
 				EntityHandle root = cache.Hydrate(prefabGuid, scene);
 				if (root != entt::null) {
-					// Hydrate doesn't queue fixups (the cache only blesses
-					// fixup-free prefabs as bakeable), but draining is the
-					// public-API contract and a no-op when the queue is
-					// empty.
 					scene.RunPendingEntityRefFixups();
 					return root;
 				}
-				// Hydrate returned null after Find said the template
-				// existed — fall through to the slow path. Treat as
-				// "cache is missing/corrupt" rather than crashing.
-			}
-			// Unbakeable cache entry: skip the capture step below and run
-			// the slow path every time. The cache already remembers the
-			// reason; no point re-walking the tree to discover it again.
+				}
 		}
 
-		// Slow path: load + deserialize as before, and (if this is the
-		// first time we've seen this prefab) capture a template so every
-		// subsequent spawn takes the fast path. fixupCountBefore captures
-		// the entity-ref queue depth so we can detect whether
-		// DeserializeEntityTree queued any internal refs — those would
-		// scramble under a memcpy replay, so they downgrade the template
-		// to unbakeable.
 		PrefabDefinition definition;
 		if (!LoadPrefabDefinition(prefabGuid, definition)) {
 			return entt::null;
@@ -2188,13 +2065,8 @@ namespace Index {
 		const EntityHandle root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
 		const std::size_t fixupCountAfter = scene.GetPendingEntityRefFixupCount();
 
-		// Outermost-caller drain: this is a public API used outside
-		// of scene-load too, so the prefab tree is the full batch and
-		// its fixup queue should resolve before returning.
 		scene.RunPendingEntityRefFixups();
 
-		// Capture only on a cache MISS — repeat unbakeable spawns should
-		// not pay the bake-time cost more than once.
 		if (root != entt::null && cache.Find(prefabGuid) == nullptr) {
 			const std::size_t fixupsAdded =
 				(fixupCountAfter >= fixupCountBefore) ? (fixupCountAfter - fixupCountBefore) : 0u;
@@ -2219,11 +2091,7 @@ namespace Index {
 			if (!SaveEntityToFile(scene, entity, prefabPath)) {
 				return false;
 			}
-			// Drop the baked template so the next InstantiatePrefab rebakes
-			// from the freshly-written file. The editor's FileWatcher also
-			// invalidates on .prefab edits, but doing it inline here closes
-			// the disk-write-to-watcher-fire TOCTOU window and keeps the
-			// behavior consistent in non-editor builds (CI tooling, etc.).
+			// Invalidate inline to close the TOCTOU window before the FileWatcher fires.
 			PrefabTemplateCache::Get().Invalidate(prefabGuid);
 			AssetRegistry::MarkDirty();
 			AssetRegistry::Sync();
@@ -2249,14 +2117,7 @@ namespace Index {
 			return entt::null;
 		}
 
-		// Empty path: full revert. Rebuild the entire prefab subtree from
-		// the on-disk source so child entities come back too — the old
-		// single-DeserializeFullEntity path lost every child, leaving a
-		// childless husk where a hierarchy used to be. Mirrors the
-		// destroy + rebuild + identity-restore dance from
-		// RefreshPrefabInstance so saved scene refs and parent links don't
-		// dangle. Operates on the prefab ROOT regardless of which entity
-		// in the subtree the user clicked Revert All from.
+		// Empty path = full revert: destroy + rebuild the whole prefab subtree from the root, then restore UUID and parent.
 		if (overridePath.empty()) {
 			EntityHandle root = GetPrefabInstanceRoot(scene, entity);
 			if (root == entt::null) {
@@ -2296,9 +2157,6 @@ namespace Index {
 			return freshRoot;
 		}
 
-		// Non-empty path: single-field revert on `entity`. Restores just
-		// that one field to the source value, preserving every other
-		// override on the entity (and on the rest of the subtree).
 		Value prefabEntityValue;
 		if (!LoadPrefabEntityValue(prefabGuid, prefabEntityValue)) {
 			return entt::null;
@@ -2337,33 +2195,28 @@ namespace Index {
 			return entt::null;
 		}
 
-		// PrefabInstanceComponent is only attached to the root. If we have
-		// it, we're already there.
-		if (registry.all_of<PrefabInstanceComponent>(entity)) {
-			return entity;
+		if (!registry.all_of<PrefabInstanceComponent>(entity)) {
+			return entt::null;
 		}
 
-		// Otherwise climb the hierarchy until we find an ancestor with
-		// PrefabInstanceComponent + matching PrefabGUID. A depth cap protects
-		// against pathological / corrupted parent chains (cycles would
-		// otherwise hang the inspector this is called from every frame).
+		// Walk up to the topmost ancestor still inside this prefab (same Origin+GUID); every node in the tree has PrefabInstanceComponent, not just the root.
 		constexpr int k_MaxAncestorWalk = 1024;
-		EntityHandle current = entity;
+		EntityHandle root = entity;
 		for (int i = 0; i < k_MaxAncestorWalk; ++i) {
-			if (!registry.all_of<HierarchyComponent>(current)) {
-				return entt::null;
+			if (!registry.all_of<HierarchyComponent>(root)) {
+				break;
 			}
-			const EntityHandle parent = registry.get<HierarchyComponent>(current).Parent;
+			const EntityHandle parent = registry.get<HierarchyComponent>(root).Parent;
 			if (parent == entt::null || !registry.valid(parent)) {
-				return entt::null;
+				break;
 			}
-			if (registry.all_of<PrefabInstanceComponent>(parent)
-				&& static_cast<uint64_t>(scene.GetPrefabGUID(parent)) == prefabGuid) {
-				return parent;
+			if (scene.GetEntityOrigin(parent) != EntityOrigin::Prefab
+				|| static_cast<uint64_t>(scene.GetPrefabGUID(parent)) != prefabGuid) {
+				break;
 			}
-			current = parent;
+			root = parent;
 		}
-		return entt::null;
+		return root;
 	}
 
 	bool SceneSerializer::HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity) {
@@ -2395,8 +2248,15 @@ namespace Index {
 
 		// Orphaned prefab: leave instance untouched rather than corrupting it.
 		PrefabDefinition newSource;
-		if (!LoadPrefabDefinition(prefabGuid, newSource)) {
+		if (!LoadPrefabDefinition(prefabGuid, newSource) || newSource.Entities.empty()) {
 			return existing;
+		}
+
+		// Skip child entities (their SourceEntityId != prefab root's id); the root's refresh rebuilds them. Legacy instances (id==0) fall through.
+		const uint64_t rootSourceId = GetPrefabSourceId(newSource.Entities.front());
+		const uint64_t existingSourceId = GetPrefabInstanceSourceId(scene, existing);
+		if (rootSourceId != 0 && existingSourceId != 0 && existingSourceId != rootSourceId) {
+			return entt::null;
 		}
 
 		// Diff against OLD source to capture per-field overrides the user kept across the edit.
@@ -2417,16 +2277,6 @@ namespace Index {
 		}
 		ApplyEntityOverrides(newSource, overridesWrapper);
 
-		// Capture identity-and-hierarchy state from the existing instance
-		// BEFORE destroying it. Without this, the destroy + tree-rebuild
-		// would lose the user's parent link (the new instance always
-		// spawns at scene-root level) and the instance UUID (the new
-		// root would mint a fresh UUID, breaking any saved scene file
-		// or runtime ref that still points at the old one). Mirrors the
-		// "edit a prefab while a scene is open with instances of that
-		// prefab" flow: the instance must end up at the same place in
-		// the hierarchy with the same UUID, just rebuilt from the new
-		// prefab source + preserved overrides.
 		auto& registry = scene.GetRegistry();
 		uint64_t preservedInstanceUuid = 0;
 		if (registry.all_of<UUIDComponent>(existing)) {

@@ -85,10 +85,6 @@ namespace Index {
 		std::vector<spdlog::sink_ptr> sinks;
 		sinks.emplace_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
-		// On-disk log so shipped users have something to send when they
-		// hit a problem. 10 MB per file, 3 rotated files retained
-		// = ~30 MB ceiling per app. Path: {LocalAppData}/Index/Logs/{exe}.log.
-		// Silent fallback to stdout-only if the path can't be created.
 		if (const std::string logPath = ResolveLogFilePath(); !logPath.empty()) {
 			try {
 				constexpr std::size_t k_MaxFileSize = 10 * 1024 * 1024;

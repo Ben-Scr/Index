@@ -134,6 +134,7 @@ project "Index-Engine"
 
     UseIndexEngineModuleDependencies()
     defines(GetIndexModuleDefines())
+    ApplyIndexEditorModuleDefine()
     -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h
     -- to override INDEX_ENTITY_BITS without a premake regen. Every C++
     -- project that compiles entt-using code needs this folder on its

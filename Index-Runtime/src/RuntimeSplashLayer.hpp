@@ -7,17 +7,6 @@
 
 namespace Index {
 
-	// Runtime-only splash screen. Pushed by RuntimeApplication::Start() at the
-	// very front of the layer stack when the project's SplashScreen.Enabled is
-	// true (the default). Holds the screen for FadeIn + Duration + FadeOut
-	// seconds, fading the user-supplied (or default Index) logo + a subtitle
-	// line over a solid background, then pops itself off the stack.
-	//
-	// While the splash is up the layer eats input so the user can't click
-	// through into not-yet-loaded UI; the log/stats overlays still draw on
-	// top so dev builds keep their diagnostics. The runtime's scene update
-	// keeps running normally — by the time the splash fades out the first
-	// scene has already had a few frames to warm caches and run Awake/Start.
 	class RuntimeSplashLayer : public Layer {
 	public:
 		using Layer::Layer;
@@ -53,14 +42,7 @@ namespace Index {
 		// m_Logo so the texture survives PurgeUnreferenced.
 		TextureHandle m_Background;
 		bool m_LogoLoadAttempted = false;
-		// PurgeUnreferenced (called from SceneManager::LoadScene → UnloadAllScenes
-		// during InitializeStartupScenes) frees every TextureManager slot that
-		// no live Scene's component still references. The splash's m_Logo isn't
-		// in any ECS, so without an explicit reference provider it gets
-		// unloaded the moment the startup scene loads — and the very next
-		// frame's GetTexture(m_Logo) prints "Invalid texture generation" once
-		// the slot is recycled. We register a provider in OnAttach to opt the
-		// splash logo into the purge sweep as a kept reference.
+		// PurgeUnreferenced during startup-scene load would free m_Logo (not in any ECS); OnAttach registers a provider to keep it alive through the purge sweep.
 		std::uint32_t m_TextureRefToken = 0;
 
 		bool m_RequestPop = false;

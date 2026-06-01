@@ -12,17 +12,9 @@ namespace Index {
 		TextureHandle TextureHandle;
 		UUID TextureAssetId{ 0 };
 		Color Color;
-		// Same shape as SpriteRendererComponent so the inspector / serializer /
-		// script API can mirror that component verbatim. GuiRenderer sorts
-		// images first by SortingLayer, then by SortingOrder, with hierarchy
-		// walk order as the final tiebreaker (so siblings keep author order
-		// when explicit sort fields tie).
 		int16_t SortingOrder{ 0 };
 		uint8_t SortingLayer{ 0 };
-		// Legacy per-entity sampler filter. The Sprite Editor's `.meta`
-		// import block is now the authoritative source; this field still
-		// loads/saves for back-compat but is no longer the authoring
-		// surface.
+		// LEGACY: `.meta` import block wins; kept for back-compat.
 		Filter FilterMode{ Filter::Bilinear };
 
 		// Slice name in the bound texture's `.meta`. Empty = full texture.

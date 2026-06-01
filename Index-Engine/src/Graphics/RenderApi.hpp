@@ -7,19 +7,6 @@
 #include <string>
 #include <string_view>
 
-// =============================================================================
-// RenderApi — backend-neutral static API for the engine's renderer.
-// -----------------------------------------------------------------------------
-// Every immediate-mode GPU operation the engine needs (clear / viewport /
-// scissor / blend / cull / polygon mode / line width / generic state) is
-// dispatched through this interface so the renderer code itself doesn't
-// include any backend headers. The WebGPU implementation lives in
-// `Backend/WebGPUApi.cpp`.
-//
-// Scope of this file: immediate state + framebuffer binding + debugging
-// info. Resource creation (buffers, textures, shaders) keeps its own class
-// wrappers.
-// =============================================================================
 
 namespace Index {
 
@@ -30,23 +17,12 @@ namespace Index {
 	public:
 		RenderApi() = delete;
 
-		// Bring the backend up. Implementation reads the current GL context,
-		// loads function pointers (in the GL backend that means glad), caches
-		// vendor / renderer / version strings, and applies the initial
-		// blend / cull / clear-colour state from `spec`. Idempotent — second
-		// call is a no-op. Returns true on success.
 		static bool Init(const GLInitSpecifications& spec);
 
 		// Tear down any backend-owned global state. Resource wrappers handle
 		// their own cleanup; this handles backend-init mirror image.
 		static void Shutdown();
 
-		// End-of-frame hook: flush any pending GPU commands and present the
-		// swap chain. Called from Window::SwapBuffers so the call site stays
-		// backend-neutral. Submits the per-frame command buffer to the
-		// queue and calls surface.Present(). Safe to invoke when nothing
-		// was rendered this frame — issues a "touch" so the swap chain
-		// still advances.
 		static void Present();
 
 		static bool IsInitialized();
@@ -61,10 +37,6 @@ namespace Index {
 		static const std::string& GetVendorString();
 		static const std::string& GetRendererString();
 
-		// ── Per-frame / per-pass immediate state ─────────────────────
-		// Standard "set state then draw" model. Wireframe, color-mask, and
-		// the logic-op trick the editor uses for the wireframe overlay all
-		// live here so callers stop poking GL directly.
 
 		static void Clear(ClearFlags flags);
 		static void SetClearColor(const Color& color);
@@ -73,13 +45,7 @@ namespace Index {
 		static void SetViewport(int x, int y, int width, int height);
 		static void SetScissor(int x, int y, int width, int height);
 
-		// Window resize → swap-chain resize hook. Called from Window's
-		// resize callback so the swap-chain follows the GLFW window
-		// (otherwise the swap-chain stays at its initial resolution and
-		// rendering only fills the top-left of the resized window).
-		// Pulled out of SetViewport because SetViewport is ALSO called
-		// when an FBO of a different size is bound — only
-		// `OnWindowResize` should trigger a swap-chain reset.
+		// Triggers swap-chain reset; distinct from SetViewport which also fires for FBO binds.
 		static void OnWindowResize(int width, int height);
 		static void SetVsync(bool enabled);
 		static void EnableScissorTest();
@@ -90,10 +56,6 @@ namespace Index {
 
 		static void SetCullMode(CullMode mode);
 
-		// Predefined blend recipe + a generic RGBA toggle. SetBlendMode
-		// covers ~95% of call sites; SetBlendingEnabled is for the rare
-		// case (e.g. text renderer) that already configured a custom
-		// glBlendFuncSeparate before this abstraction landed.
 		static void SetBlendMode(BlendMode mode);
 		static void SetBlendingEnabled(bool enabled);
 

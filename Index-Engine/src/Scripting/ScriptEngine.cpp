@@ -29,29 +29,16 @@ namespace Index {
 		if (s_Initialized)
 			return;
 
-		// Deferred init — actual CoreCLR/host bring-up happens in LoadCoreAssembly.
-		// s_Initialized stays false until that runs successfully; resetting it here
-		// would only matter if Init were re-entered after a partial init, which the
-		// guard above already prevents.
 		IDX_CORE_INFO_TAG("ScriptEngine", "ScriptEngine ready (CoreCLR, deferred init)");
 	}
 
 	void ScriptEngine::Shutdown()
 	{
-		// Ordering matters — a managed `OnDestroy` hook on a global system can
-		// re-enter the engine via SetGlobalSystemEnabled / DestroyScriptInstance /
-		// other API, and at that point the runtime is half-torn-down. Setting
-		// s_Initialized=false FIRST makes every reentrant entry point bail at
-		// its `if (!s_Initialized) return;` guard rather than touch live but
-		// being-destroyed state.
+		// s_Initialized=false FIRST so reentrant calls from managed OnDestroy hooks bail instead of touching being-destroyed state.
 		s_Initialized = false;
 		s_HasUserAssembly = false;
 
-		// Move the live instance list out before iterating so a reentrant
-		// SetGlobalSystemEnabled mutating s_GlobalSystems mid-destroy can't
-		// invalidate the iterator. The local copy is what we tear down; the
-		// real container is cleared up front so any reentrant caller sees an
-		// already-empty world.
+		// Move out first: reentrant SetGlobalSystemEnabled calls during OnDestroy must see an empty container.
 		auto local = std::move(s_GlobalSystems);
 		s_GlobalSystems.clear();
 
@@ -82,11 +69,7 @@ namespace Index {
 
 	void ScriptEngine::LoadCoreAssembly(const std::string& path)
 	{
-		// Hard idempotency: re-running the host bridge Initialize would re-populate
-		// s_Callbacks while old GCHandles from the previous Initialize are still
-		// live, leaking those handles permanently. Re-init is unsupported — Shutdown
-		// can't undo CoreCLR initialization, so the only safe path is "init exactly
-		// once per process".
+		// Re-init is unsupported: Shutdown can't undo CoreCLR; re-populating s_Callbacks would leak prior GCHandles.
 		if (s_Initialized)
 		{
 			IDX_CORE_WARN_TAG("ScriptEngine", "LoadCoreAssembly called after engine already initialized; ignoring (re-init is unsupported).");
@@ -174,10 +157,6 @@ namespace Index {
 		if (s_Callbacks.LoadUserAssembly)
 		{
 			ShutdownGlobalSystems();
-			// Stale (class, method) entries in the missing-method log refer
-			// to the previous load's class universe. Drop them so a method
-			// that's now valid after the user fixed it doesn't keep getting
-			// suppressed.
 			InspectorEvents::ResetMissingMethodLog();
 			int ok = s_Callbacks.LoadUserAssembly(s_UserAssemblyPath.c_str());
 			IDX_CORE_INFO_TAG("ScriptEngine", "LoadUserAssembly callback returned: {}", ok);
@@ -186,17 +165,7 @@ namespace Index {
 			if (s_HasUserAssembly) {
 				IDX_CORE_INFO_TAG("ScriptEngine", "User assembly loaded: {}", path);
 
-				// Re-attach dynamic component storage rows that were dropped
-				// when UnregisterAllDynamic ran on the previous unload. The
-				// ScriptComponent.Scripts list survives hot-reload (it's just
-				// strings on entt-typed storage), so it's the source of truth
-				// for "which entities were carrying which dynamic component
-				// before the assembly was swapped". Without this pass an
-				// in-editor add of a `:IComponent` tag would survive a
-				// .cs save (which triggers UnloadUserAssembly → RegisterAll)
-				// only in the inspector — Entity.HasNativeComponent<T>() and
-				// GetRef<T>() would silently start returning false because
-				// the new DynamicComponentStorage instances are empty.
+				// Restore dynamic component rows from ScriptComponent.Scripts; new storage instances are empty after reload.
 				if (auto* app = Application::GetInstance()) {
 					if (auto* sceneManager = app->GetSceneManager()) {
 						ComponentRegistry& registry = sceneManager->GetComponentRegistry();
@@ -271,14 +240,7 @@ namespace Index {
 			return 0;
 		}
 
-		// Hand the script its persistent UUID, not the volatile RuntimeID:
-		// the same script may also receive component-ref fields that store
-		// the persistent UUID (the editor picker writes UUIDs so refs survive
-		// scene reload). If we passed the RuntimeID here, comparisons like
-		// `script.Entity == component.Entity` would diverge whenever
-		// UUIDComponent.Id != RuntimeID (Scene-origin entities). The native
-		// resolver TryResolveEntityRef accepts either form, so handing back
-		// the UUID does not break any binding.
+		// Pass persistent UUID, not volatile RuntimeID: picker-written entity refs store UUIDs, so script.Entity comparisons must match.
 		uint64_t entityID = static_cast<uint64_t>(static_cast<uint32_t>(entity));
 		if (s_CurrentScene && s_CurrentScene->IsValid(entity)) {
 			const uint64_t persistentId = s_CurrentScene->GetEntityPersistentID(entity);

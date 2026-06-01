@@ -13,48 +13,8 @@ using Index.Jobs.Internal;
 
 namespace Index.Jobs;
 
-// IJobQuery — declarative ECS iteration backed by the native ref-API query
-// view. The user writes a struct implementing IJobQuery with an `Execute`
-// method whose parameter list IS the query:
-//
-//     [WithAll(typeof(NativePlayerTag))]
-//     [WithoutAll(typeof(NativeFrozenTag))]
-//     public struct MoveJob : IJobQuery
-//     {
-//         public float Dt;
-//         public NativeArray<Vector2> Targets;   // side array indexed by rowIndex
-//
-//         public void Execute(int rowIndex,
-//                             ref NativeTransform2D tr,
-//                             in  NativeVelocity v)
-//         {
-//             tr.LocalPosition += v.Linear * Dt;
-//             tr.LocalPosition = Vector2.MoveTowards(tr.LocalPosition, Targets[rowIndex], Dt);
-//         }
-//     }
-//
-//     JobHandle h = scene.ScheduleParallel(new MoveJob { ... });
-//     h.Complete();
-//
-// Signature rules (validated on first Schedule per TJob):
-//   - exactly one method named Execute, returning void
-//   - optional leading `int rowIndex` parameter
-//   - 1..8 component parameters, each `ref T` (write) or `in T` (read-only)
-//     where T : unmanaged, IComponent
-//   - no duplicate component types in the parameter list
-//
-// Filter rules (struct-level attributes):
-//   - [WithAll(typeof(A), typeof(B))]    — entity must have these components
-//   - [WithoutAll(typeof(C), typeof(D))] — entity must NOT have these
-//   - [EnabledFilter(EnableMode.IncludeDisabled)] — override the default of
-//                                                  enabled-only
-//
-// Iteration-stability contract: NO structural changes (Add/Remove/Destroy/
-// Create on any of the query's component pools) inside Execute. The buffer
-// is captured before the parallel dispatch — a structural change on one
-// thread would invalidate pointers being read on another. Same rule as the
-// existing QueryRef foreach, just stricter because the buffer outlives the
-// calling thread for the duration of the parallel run.
+// IJobQuery: implement struct with an Execute(int rowIndex, ref/in T...) method; decorated
+// with [WithAll]/[WithoutAll]. NO structural ECS changes inside Execute (invalidates pointers).
 public interface IJobQuery { }
 
 public enum EnableMode
@@ -98,8 +58,6 @@ public sealed class EnabledFilterAttribute : Attribute
 }
 
 // ──────────────────────────────────────────────────────────────────────
-//  Internal: compiled per-type dispatch plan + IL-emitted invoker
-// ──────────────────────────────────────────────────────────────────────
 
 // One per concrete TJob. The IL-emitted body loads pointers from rowBase
 // at compile-time-known offsets and calls Execute by ref — no boxing,
@@ -118,9 +76,7 @@ internal sealed class JobQueryPlan
     internal readonly bool   HasRowIndexParam;
     internal readonly MethodInfo ExecuteMethod;
 
-    // Component params in DECLARATION order. Native rowBase is laid out
-    // as [writes-in-decl-order, reads-in-decl-order], so each entry here
-    // also stores its slot index in rowBase.
+    // Params in declaration order; slot indices match native rowBase layout [writes, reads].
     internal readonly ComponentParam[] Params;
 
     internal readonly struct ComponentParam
@@ -306,13 +262,6 @@ internal sealed class JobQueryPlan
         return string.Join('|', names);
     }
 
-    // Emit:
-    //   void Invoker(ref TJob job, IntPtr* rowBase, int rowIndex) {
-    //       job.Execute([rowIndex,]
-    //                   ref *(T0*)rowBase[slot0],
-    //                   ref *(T1*)rowBase[slot1],
-    //                   ...);
-    //   }
     internal Delegate BuildInvoker(Type delegateType, Type jobType)
     {
         var dm = new DynamicMethod(
@@ -365,17 +314,9 @@ internal static class JobQueryPlanFor<TJob> where TJob : struct, IJobQuery
 }
 
 // ──────────────────────────────────────────────────────────────────────
-//  Public scheduling surface
-// ──────────────────────────────────────────────────────────────────────
 
 public static class JobQueryExtensions
 {
-    // Parallel: rows are partitioned across JobSystem workers via
-    // Job.ScheduleParallelFor. Each worker receives its own copy of the
-    // job struct (matches Unity DOTS semantics — per-worker scratch fields
-    // are safe; assume writes do NOT survive across rows on other threads).
-    //
-    // batchSize = 0 uses JobSystem.ComputeAutoBatchSize.
     public static JobHandle ScheduleParallel<TJob>(
         this Scene scene,
         TJob job,
@@ -425,17 +366,6 @@ public static class JobQueryExtensions
 
         int poolCount = plan.PoolCount;
 
-        // Pin first, then have native fill the pinned buffer DIRECTLY — saves a
-        // full Array.Copy pass (~ 10K × poolCount × 8 bytes on the example shape)
-        // and removes the intermediate thread-static array entirely from this
-        // code path. The legacy thread-static buffer in QueryRefBuffers.Open is
-        // still used by the non-job foreach `QueryRef<T>()` builder, which
-        // consumes its result on the same thread and doesn't need pinning.
-        //
-        // Capacity heuristic: start at 64 rows. The pool buckets are power-of-2,
-        // so this rounds up to a stable bucket (Length = 128 for 64×1 request,
-        // 1024 for 64×8, etc.) — steady-state schedules of the same shape hit
-        // the same hot bucket every frame and recycle the same pinned array.
         const int kInitialRowGuess = 64;
         JobQueryPinPool.PinnedBuffer pinBuf =
             JobQueryPinPool.Rent(kInitialRowGuess * poolCount);
@@ -463,11 +393,6 @@ public static class JobQueryExtensions
 
         IntPtr pinnedBase = pinBuf.PinnedBase;
 
-        // From this point on, ANY exception before the AsTask().ContinueWith
-        // continuation is wired up must return the pin manually — otherwise
-        // the pinned array leaks for the rest of the process. Guard the whole
-        // schedule+attach with try/catch; the happy path returns inside the
-        // continuation as before.
         JobHandle handle;
         try
         {
@@ -503,11 +428,6 @@ public static class JobQueryExtensions
                 }, cancellationToken);
             }
 
-            // Return the pinned buffer to the pool once the job completes
-            // (success, fault, or cancellation — runs in all terminal
-            // states). Ride synchronously on the worker so we don't add
-            // ThreadPool latency. If AsTask() itself throws (custom
-            // JobHandle impl), the outer catch returns the buffer.
             JobQueryPinPool.PinnedBuffer capturedPinBuf = pinBuf;
             handle.AsTask().ContinueWith(_ =>
             {

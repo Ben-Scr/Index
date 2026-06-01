@@ -45,11 +45,6 @@ public static class SceneManager
         return new Scene { Name = name, AssetUUID = guid };
     }
 
-    /// <summary>
-    /// Loads a scene by name. In Single mode, all non-persistent scenes
-    /// are unloaded first. In Additive mode, the scene is loaded
-    /// alongside existing scenes.
-    /// </summary>
     public static Scene? LoadScene(string name, LoadSceneMode mode = LoadSceneMode.Single)
     {
         bool success;
@@ -61,14 +56,6 @@ public static class SceneManager
         return success ? new Scene { Name = name } : null;
     }
 
-    /// <summary>
-    /// Loads a scene by its tracked asset GUID — the same handle the
-    /// editor's asset picker hands back for `.scene` files. The GUID is
-    /// resolved against AssetRegistry on the native side, so a scene
-    /// renamed on disk still loads by the same UUID. Returns the loaded
-    /// Scene on success, or null when the GUID isn't a Scene asset or
-    /// loading failed.
-    /// </summary>
     public static Scene? LoadScene(ulong sceneGuid, LoadSceneMode mode = LoadSceneMode.Single)
     {
         if (sceneGuid == 0) return null;
@@ -104,10 +91,6 @@ public static class SceneManager
         InternalCalls.Scene_Unload(name);
     }
 
-    /// <summary>
-    /// Unloads a scene by its tracked asset GUID. No-op when the GUID
-    /// isn't a Scene asset or the scene isn't currently loaded.
-    /// </summary>
     public static void UnloadScene(ulong sceneGuid)
     {
         if (sceneGuid == 0) return;
@@ -140,12 +123,7 @@ public static class SceneManager
         return InternalCalls.Scene_SetActive(name);
     }
 
-    /// <summary>
-    /// Sets the active scene by its tracked asset GUID. The scene must
-    /// already be loaded — Single-mode LoadScene already activates the
-    /// scene it loads, but additive loads do not. Returns true on
-    /// success, false when the GUID is invalid or the scene isn't loaded.
-    /// </summary>
+    // Scene must already be loaded; additive loads do not auto-activate.
     public static bool SetActiveScene(ulong sceneGuid)
     {
         if (sceneGuid == 0) return false;
@@ -172,11 +150,6 @@ public static class SceneManager
         return !string.IsNullOrWhiteSpace(name) && GetLoadedSceneByName(name) != null;
     }
 
-    /// <summary>
-    /// True if a scene tracked by `sceneGuid` is currently loaded. The
-    /// GUID is resolved through AssetRegistry on the native side, then
-    /// matched against the loaded-scene list by name.
-    /// </summary>
     public static bool IsSceneLoaded(ulong sceneGuid)
     {
         if (sceneGuid == 0) return false;
@@ -189,11 +162,6 @@ public static class SceneManager
         return !string.IsNullOrWhiteSpace(name) && InternalCalls.Scene_DoesSceneExist(name);
     }
 
-    /// <summary>
-    /// True if a `.scene` asset with the given GUID exists in the
-    /// project's asset registry. Cheaper than a full LoadScene attempt
-    /// when scripts just want to gate behaviour on availability.
-    /// </summary>
     public static bool DoesSceneExist(ulong sceneGuid)
     {
         return sceneGuid != 0 && InternalCalls.Scene_DoesSceneExistByGuid(sceneGuid);
@@ -235,11 +203,6 @@ public static class SceneManager
         return InternalCalls.Scene_Reload(name);
     }
 
-    /// <summary>
-    /// Reloads a scene by its tracked asset GUID. Same semantics as the
-    /// name-based overload — entity state is captured, the scene is
-    /// torn down, reloaded from disk, and the captured state is restored.
-    /// </summary>
     public static bool ReloadScene(ulong sceneGuid)
     {
         if (sceneGuid == 0) return false;

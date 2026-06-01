@@ -49,20 +49,7 @@ namespace Index {
 			s_KnownMissingIds.clear();
 		}
 
-		// Engine-shipped assets that live under <exeDir>/IndexAssets/ rather
-		// than under the project's own Assets root. They are exposed to the
-		// picker / inspector / serializer through the same UUID surface as
-		// project assets, but with a fixed, hand-picked GUID instead of a
-		// random one — that keeps the GUID stable across installs so a
-		// scene saved with `BuiltIn::DefaultFont` still resolves on every
-		// machine without checking in the .ttf to every project.
-		//
-		// Top-byte convention:
-		//   0xAB - hand-picked GUIDs (e.g. FontManager's default font).
-		//          Stable forever; safe to hard-code in component defaults.
-		//   0xAA - path-hash GUIDs from RegisterBuiltInDirectory. Stable
-		//          while the relative path is stable; if a file is renamed
-		//          or moved within IndexAssets/, the GUID changes.
+		// Top-byte convention: 0xAB = hand-picked stable GUID (safe in defaults), 0xAA = path-hash GUID (changes on rename/move within IndexAssets/).
 		static void RegisterBuiltInAsset(const std::string& absolutePath, uint64_t guid, AssetKind kind) {
 			if (absolutePath.empty() || guid == 0) {
 				return;
@@ -75,17 +62,7 @@ namespace Index {
 			s_BuiltInPathToId[absolutePath] = guid;
 		}
 
-		// Walk `absoluteRoot` recursively and register every file as a
-		// built-in asset with a deterministic path-hash GUID. Used by
-		// engine startup to expose the contents of IndexAssets/ (icons,
-		// shaders, default audio, etc.) to the inspector's reference
-		// picker. The eye toggle in the picker hides these by default
-		// when the user wants to see only their project's own assets.
-		//
-		// Files whose path is already registered via RegisterBuiltInAsset
-		// are skipped — this lets hand-picked GUIDs (FontManager's default
-		// font) win without producing a duplicate entry. Call AFTER any
-		// hand-picked registrations.
+		// Call AFTER RegisterBuiltInAsset so hand-picked GUIDs win over path-hash auto-registration.
 		static void RegisterBuiltInDirectory(const std::string& absoluteRoot) {
 			if (absoluteRoot.empty()) {
 				return;
@@ -119,10 +96,7 @@ namespace Index {
 					continue;
 				}
 
-				// Stable GUID = FNV-1a 64 of the path RELATIVE to the
-				// IndexAssets root, lowercased and forward-slashed so the
-				// same file gets the same GUID across Windows / Linux and
-				// installs in different exe directories.
+				// FNV-1a 64 of the path relative to IndexAssets root, lowercased + forward-slashed for cross-platform stability.
 				std::error_code relEc;
 				std::filesystem::path relPath = std::filesystem::relative(
 					std::filesystem::path(absPath),
@@ -136,10 +110,6 @@ namespace Index {
 					hash ^= static_cast<uint8_t>(ch);
 					hash *= 0x100000001b3ULL;
 				}
-				// Top byte 0xAA tags this as an auto-registered built-in
-				// (vs 0xAB for hand-picked). Bottom 56 bits stay distinct
-				// from FontManager::k_DefaultFontAssetId regardless of
-				// hash output.
 				uint64_t guid = (hash & 0x00FFFFFFFFFFFFFFULL) | 0xAA00000000000000ULL;
 
 				if (s_BuiltInById.find(guid) != s_BuiltInById.end()) {
@@ -186,12 +156,6 @@ namespace Index {
 
 			uint64_t id = ReadMetaId(normalizedPath);
 			if (id == 0) {
-				// Freshly-minted GUID. The 64-bit space makes collision
-				// astronomically unlikely, but multiple assets created in
-				// the same frame can still race and birthday-collide if a
-				// PRNG is reseeded badly. Re-mint until the slot is free
-				// so the post-WriteMeta state holds the registry invariant
-				// "every Id maps to exactly one Path".
 				do {
 					id = static_cast<uint64_t>(UUID());
 				} while (id != 0 && s_IdToRecord.find(id) != s_IdToRecord.end());
@@ -250,12 +214,7 @@ namespace Index {
 				return it->second.Path;
 			}
 
-			// A file may have moved outside the editor after the registry
-			// was built. Re-scan once to find it by the stable meta GUID,
-			// but cache the miss so we don't trigger an O(N) directory
-			// scan every frame for a permanently-missing asset (M4).
-			// `MarkDirty()` (e.g. on FileWatcher events) clears this cache,
-			// allowing genuinely-recovered assets to be picked up again.
+			// Cache miss so a permanently-moved asset doesn't trigger an O(N) rescan every frame; cleared by MarkDirty().
 			if (s_KnownMissingIds.contains(assetId)) {
 				return {};
 			}
@@ -293,12 +252,6 @@ namespace Index {
 			return !ResolvePath(assetId).empty();
 		}
 
-		// Built-ins are engine-shipped assets registered via
-		// `RegisterBuiltInAsset` — they live under <exeDir>/IndexAssets/
-		// rather than the project's Assets root and have hand-picked stable
-		// GUIDs (top byte 0xAB by convention). Used by the inspector's
-		// reference picker so the user can hide them from search results
-		// when they're cluttering up a project's own asset list.
 		static bool IsBuiltIn(uint64_t assetId) {
 			return s_BuiltInById.find(assetId) != s_BuiltInById.end();
 		}
@@ -539,12 +492,6 @@ namespace Index {
 				id = static_cast<uint64_t>(UUID());
 				WriteMeta(assetPath, id, kind);
 			}
-			// Else: meta is valid and unique. Don't rewrite — Record::Kind
-			// in memory is always populated by Classify() below, so the
-			// meta's `kind` field is purely informational and stale-meta
-			// is harmless. Skipping the write avoids spamming the disk
-			// (and the FileWatcher) on every rebuild (M5).
-
 			Register(assetPath, id, kind);
 		}
 
@@ -648,12 +595,7 @@ namespace Index {
 		static uint64_t ReadMetaId(const std::string& assetPath) {
 			const std::string metaPath = GetMetaPath(assetPath);
 
-			// Fingerprint the meta file by (mtime, size). On Rebuild we
-			// otherwise re-read + re-JSON-parse every .meta on disk every
-			// time the dirty flag flips — for a 1000-asset project that's
-			// ~1000 file reads and 1000 parses per dirty cycle. Cache the
-			// extracted AssetGUID and skip the read/parse whenever the
-			// fingerprint matches the prior call.
+			// Skip the file read + JSON parse when (mtime, size) match a prior call — avoids ~1000 parses per dirty cycle on large projects.
 			std::error_code ec;
 			std::filesystem::file_time_type mtime{};
 			std::uintmax_t size = 0;
@@ -666,9 +608,6 @@ namespace Index {
 				}
 			}
 			if (!fingerprintOk) {
-				// Fall through to the slow path — either the meta doesn't
-				// exist (early return below) or stat failed, in which case
-				// re-parsing the contents (if any) is the safer choice.
 			}
 			else {
 				const auto cacheIt = s_MetaIdCache.find(metaPath);
@@ -720,11 +659,7 @@ namespace Index {
 			return parsed;
 		}
 
-		// Insert OR overwrite a top-level member. `Json::Value::AddMember`
-		// alone is append-only — calling it twice for the same key would
-		// silently produce two entries. Used by both WriteMeta and
-		// WriteTextureMeta so the on-disk meta is read-modify-write rather
-		// than blind overwrite.
+		// Insert OR overwrite; AddMember alone is append-only and would silently produce duplicate keys.
 		static void SetOrAddMember(Json::Value& object, const std::string& key, Json::Value value) {
 			if (Json::Value* existing = object.FindMember(key)) {
 				*existing = std::move(value);
@@ -733,12 +668,6 @@ namespace Index {
 			object.AddMember(key, std::move(value));
 		}
 
-		// Read the raw JSON of a `.meta` file into a `Value`. Returns an
-		// empty Object value when the file is absent or unparseable —
-		// callers should treat both cases identically (start from a fresh
-		// object and overwrite fields). The empty-object fallback is what
-		// makes the merge pattern below safe: a corrupted meta becomes a
-		// fresh write instead of a failure.
 		static Json::Value LoadMetaJson(const std::string& metaPath) {
 			Json::Value root = Json::Value::MakeObject();
 			if (!File::Exists(metaPath)) {
@@ -752,11 +681,7 @@ namespace Index {
 			return parsed;
 		}
 
-		// Rewritten as a merge: load any existing meta JSON, overwrite the
-		// three identity fields in place, leave any other keys (`import`,
-		// `sprites`, future schema additions) untouched. Without this, a
-		// registry rebuild or rename pass would silently nuke the user's
-		// Sprite Editor work the next time it called WriteMeta.
+		// Merge-write: load existing meta, overwrite identity fields only — leaves `import`, `sprites`, etc. intact.
 		static void WriteMeta(const std::string& assetPath, uint64_t id, AssetKind kind) {
 			const std::string metaPath = GetMetaPath(assetPath);
 			Json::Value meta = LoadMetaJson(metaPath);
@@ -770,13 +695,6 @@ namespace Index {
 		}
 
 	public:
-		// Read the texture-specific blocks (`import`, `sprites`) from a meta
-		// file. Tolerant of every absence/malformation: a missing import
-		// block leaves `HasImportBlock = false` so the loader keeps caller-
-		// supplied defaults, and a malformed slice entry is skipped rather
-		// than aborting the whole list. Enum strings accepted in any case
-		// (magic_enum::enum_cast); integers also accepted for legacy meta
-		// files that may have stored raw values.
 		static TextureMeta ReadTextureMeta(const std::string& assetPath) {
 			TextureMeta meta;
 			const std::string metaPath = GetMetaPath(assetPath);
@@ -845,11 +763,7 @@ namespace Index {
 			return meta;
 		}
 
-		// Write the texture-specific blocks back. Merges with whatever's
-		// already on disk so the AssetGUID / uuid / kind set by WriteMeta
-		// (and any future top-level meta fields) survive a Sprite Editor
-		// Apply. Returns false when the write fails; the Sprite Editor
-		// surfaces that to the user instead of silently dropping edits.
+		// Merge-write `import` and `sprites` blocks; preserves all other meta fields already on disk.
 		static bool WriteTextureMeta(const std::string& assetPath, const TextureMeta& meta) {
 			const std::string metaPath = GetMetaPath(assetPath);
 			Json::Value root = LoadMetaJson(metaPath);
@@ -885,9 +799,6 @@ namespace Index {
 
 			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));
 			if (wrote) {
-				// Invalidate the (mtime, size) fingerprint cache so the next
-				// ReadMetaId pass on this file sees the new bytes — we just
-				// rewrote it but the cache entry's stat values are stale.
 				s_MetaIdCache.erase(metaPath);
 			}
 			return wrote;
@@ -923,24 +834,14 @@ namespace Index {
 		inline static std::unordered_map<uint64_t, Record> s_IdToRecord;
 		inline static std::unordered_map<std::string, uint64_t> s_PathToId;
 
-		// Per-meta-file fingerprint cache. Lets ReadMetaId skip the
-		// File::ReadAllText + JSON parse pair when the meta file's
-		// (mtime, size) match the previously-observed pair. Sized
-		// alongside s_IdToRecord because there's one entry per indexed
-		// asset.
 		struct MetaIdCacheEntry {
 			std::filesystem::file_time_type Mtime{};
 			std::uintmax_t Size = 0;
 			uint64_t AssetGuid = 0;
 		};
 		inline static std::unordered_map<std::string, MetaIdCacheEntry> s_MetaIdCache;
-		// GUIDs where ResolvePath already failed and a Rebuild() didn't
-		// recover the path. Cleared on MarkDirty() and Rebuild() so that
-		// FileWatcher events let recovered files re-resolve.
+		// Cleared on MarkDirty()/Rebuild() so FileWatcher events let recovered assets re-resolve.
 		inline static std::unordered_set<uint64_t> s_KnownMissingIds;
-		// Engine-shipped assets registered via RegisterBuiltInAsset. Kept
-		// separate from s_IdToRecord so Rebuild() doesn't clobber them and
-		// .meta-file machinery never touches engine binaries.
 		inline static std::unordered_map<uint64_t, Record> s_BuiltInById;
 		inline static std::unordered_map<std::string, uint64_t> s_BuiltInPathToId;
 	};

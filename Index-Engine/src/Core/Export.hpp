@@ -1,10 +1,5 @@
 #pragma once
 
-// Public feature/export contract for Index core consumers:
-// - INDEX_API / INDEX_*_API describe symbol visibility
-// - INDEX_WITH_* describes which optional modules the current translation unit opted into
-// - INDEX_CORE_ONLY is true when no optional module flags are enabled
-
 #if defined(IDX_PLATFORM_WINDOWS)
 #if defined(IDX_BUILD_DLL)
 #define INDEX_API __declspec(dllexport)
@@ -22,14 +17,16 @@
 #undef INDEX_WITH_AUDIO
 #undef INDEX_WITH_PHYSICS
 #undef INDEX_WITH_SCRIPTING
-#undef INDEX_WITH_EDITOR
 #undef INDEX_WITH_APPLICATION
 #define INDEX_WITH_RENDER 1
 #define INDEX_WITH_AUDIO 1
 #define INDEX_WITH_PHYSICS 1
 #define INDEX_WITH_SCRIPTING 1
-#define INDEX_WITH_EDITOR 1
 #define INDEX_WITH_APPLICATION 1
+// INDEX_WITH_EDITOR is deliberately NOT forced on by INDEX_ALL_MODULES: it is
+// controlled per build configuration via premake's ApplyIndexEditorModuleDefine()
+// so a Dist (shipped runtime) build can strip editor-only engine systems while
+// keeping the full module surface. It falls through to the explicit -D below.
 #endif
 
 #ifndef INDEX_WITH_RENDER

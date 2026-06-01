@@ -10,11 +10,7 @@
 
 namespace Index::Serialization {
 
-	// File-format constants for the true-binary scene/prefab encoding. The
-	// magic and version live in the 16-byte header at the start of every
-	// IDXBIN2 file; bump kBinaryFileVersion only when the *framing* changes
-	// (e.g. a new flag bit or a new entity field). Per-component schema
-	// evolution rides on ComponentInfo::serializationVersion, not here.
+	// Bump kBinaryFileVersion only when the file framing changes; per-component schema evolution uses ComponentInfo::serializationVersion.
 	constexpr char     kBinaryMagic[8] = { 'I', 'D', 'X', 'B', 'I', 'N', '2', '\x1A' };
 	constexpr std::uint32_t kBinaryFileVersion = 1;
 	constexpr std::uint32_t kBinaryFlagCompressedBody = 0x1u; // reserved; zstd path not wired yet
@@ -24,19 +20,6 @@ namespace Index::Serialization {
 		Prefab = 1
 	};
 
-	// BinaryArchive is the true-binary IArchive backend. It owns a
-	// std::vector<std::uint8_t> on write, or holds a non-owning span on read.
-	//
-	// The IArchive contract handles the per-component framing (fieldHash +
-	// tag + value). Higher-level framing — file header, entity records,
-	// override blocks — is the responsibility of SceneSerializer's binary
-	// path, which calls the public raw helpers below to lay down bytes in
-	// between component frames.
-	//
-	// Read-mode field lookup is linear over a small per-component vector
-	// (typical component has <20 fields; a hashmap would be slower because
-	// of allocation and overhead). Fields are addressed by their 32-bit
-	// FieldHash, so component-author field reorderings are non-breaking.
 	class INDEX_API BinaryArchive final : public IArchive {
 	public:
 		// ── Constructors / factory ─────────────────────────────────────────
@@ -44,16 +27,11 @@ namespace Index::Serialization {
 		static BinaryArchive ForReading(const std::uint8_t* data, std::size_t size);
 
 		// ── Buffer access (write mode only) ────────────────────────────────
-		// Moves the accumulated buffer out of the archive. The archive is
-		// left empty; call only once at the end of a serialization pass.
 		std::vector<std::uint8_t> TakeBuffer() { return std::move(m_WriteBuffer); }
 		const std::vector<std::uint8_t>& Buffer() const { return m_WriteBuffer; }
 		std::size_t Size() const { return IsWriting() ? m_WriteBuffer.size() : m_ReadSize; }
 
 		// ── Raw byte-level helpers used by SceneSerializer for framing ─────
-		// These are NOT part of IArchive; they exist so the binary file
-		// header / entity records can be written without inventing a fake
-		// "component" frame just to call into IArchive::Field.
 		void RawWriteU8(std::uint8_t v);
 		void RawWriteU16(std::uint16_t v);
 		void RawWriteU32(std::uint32_t v);
@@ -64,9 +42,6 @@ namespace Index::Serialization {
 		void RawWriteBytes(const void* data, std::size_t size);
 		void RawWriteString(std::string_view s); // varint length + utf8 bytes
 
-		// Cursor-position fixup used by length-prefix backpatching (e.g.
-		// payloadLen). Reserve a placeholder, get its offset, write the body,
-		// then patch the placeholder once the body's size is known.
 		std::size_t ReserveU32() { std::size_t p = m_WriteBuffer.size(); RawWriteU32(0); return p; }
 		void PatchU32At(std::size_t offset, std::uint32_t value);
 
@@ -124,9 +99,6 @@ namespace Index::Serialization {
 			std::size_t payloadLen;
 		};
 
-		// Read-side context for an Object / Array sub-scope. Stack-allocated
-		// via std::vector<Scope>; the field index is rebuilt per scope so a
-		// nested Object's reads don't see the parent scope's fields by hash.
 		struct Scope {
 			// Write-mode: offset of the payloadLen u32 placeholder that
 			// frames this scope's payload. EndScope backpatches it.

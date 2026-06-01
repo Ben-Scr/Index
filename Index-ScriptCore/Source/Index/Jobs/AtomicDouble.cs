@@ -2,10 +2,7 @@ using System.Threading;
 
 namespace Index.Jobs;
 
-/// <summary>
-/// Reference-typed atomic 64-bit float. Arithmetic is a CAS loop on
-/// <see cref="Interlocked.CompareExchange(ref double, double, double)"/>.
-/// </summary>
+/// <summary>Reference-typed atomic 64-bit float backed by a CAS spin-loop.</summary>
 public sealed class AtomicDouble
 {
     private double m_Value;

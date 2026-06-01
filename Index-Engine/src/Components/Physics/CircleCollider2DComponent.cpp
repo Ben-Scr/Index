@@ -15,9 +15,6 @@ namespace Index {
 			return &scene.GetComponent<Transform2DComponent>(entity);
 		}
 
-		// A circle has a single radius, but the entity transform is anisotropic.
-		// Pick the larger axis so non-uniform scaling still grows the circle —
-		// Unity's CircleCollider2D uses the same heuristic.
 		float ComputeWorldRadius(const Transform2DComponent& tr, float localRadius) {
 			return localRadius * std::max(std::abs(tr.Scale.x), std::abs(tr.Scale.y));
 		}
@@ -59,11 +56,7 @@ namespace Index {
 		const bool enabled = IsEnabled();
 		const bool registerContacts = CanRegisterContacts();
 
-		// Snapshot collision callbacks BEFORE DestroyShape so the recreated b2Shape
-		// (with a fresh id) inherits the user's OnCollisionEnter/Exit/Hit handlers.
-		// See BoxCollider2DComponent::SetSensor for the rationale — every Box2D-backed
-		// collider on the same dispatcher needs this guard or callbacks silently
-		// disappear when IsTrigger is toggled.
+		// Snapshot callbacks BEFORE DestroyShape: recreated b2Shape gets a fresh id, so callbacks must be re-bound or they silently disappear.
 		auto& dispatcher = PhysicsSystem2D::GetMainPhysicsWorld().GetDispatcher();
 		auto savedCallbacks = dispatcher.SnapshotCallbacks(m_ShapeId);
 		DestroyShape(false);

@@ -29,13 +29,6 @@ public:
 		ApplicationConfig config;
 		IndexProject* project = ProjectManager::GetCurrentProject();
 
-		// Window title format: "<ProjectName> - <BuildConfiguration>".
-		// BuildConfiguration is Debug whenever the runtime binary was built
-		// against the engine's Debug config (engine devs / dogfooding), and
-		// otherwise mirrors the project's ActiveBuildProfile (Development
-		// or Release) so shipped builds advertise the gameplay-relevant
-		// profile rather than the MSBuild config name. Without a loaded
-		// project the version-suffixed fallback title still applies.
 		const char* buildConfig =
 #if defined(IDX_DEBUG)
 			"Debug";
@@ -86,12 +79,9 @@ public:
 			else if (!project->LastOpenedScene.empty()) startupScene = project->LastOpenedScene;
 		}
 
-		// Helper: registers a scene definition with standard systems + OnLoad deserializer
 		auto registerScene = [&](const std::string& sceneName) -> SceneDefinition& {
 			auto& def = GetSceneManager()->RegisterScene(sceneName);
 
-			// Load scene file in OnLoad callback — runs BEFORE Awake/Start,
-			// so entities exist when systems initialize (e.g. PlayOnAwake).
 			if (project) {
 				std::string scenePath = project->GetSceneFilePath(sceneName);
 				def.OnLoad([scenePath](Scene& scene) {
@@ -118,12 +108,7 @@ public:
 	~RuntimeApplication() override = default;
 
 	void ConfigureLayers() override {
-		// Splash screen pushed as an overlay BEFORE InitializeStartupScenes
-		// runs so the splash is on the layer stack — and visible to the
-		// preload-frame Application::Init renders right before the
-		// (potentially seconds-long) blocking scene load. Pushing it in
-		// Start() instead would have meant the entire scene-load + Awake/
-		// Start ran with a black window before the splash ever showed.
+		// MUST push before InitializeStartupScenes so the splash is visible during the blocking scene load; pushing in Start() would show a black window until load completes.
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (project && project->SplashScreen.Enabled) {
 			PushOverlay<RuntimeSplashLayer>("RuntimeSplash");
@@ -144,20 +129,11 @@ public:
 			PushLayer<RuntimeProfilerLayer>("RuntimeProfiler");
 		}
 
-		// Push the F6 stats overlay when the project opts in (default true).
-		// Layers share the runtime ImGui context via RuntimeImGuiHost, so
-		// pushing both this and the profiler layer above is fine — push order
-		// doesn't matter for ImGui hosting, but it DOES matter for stacking:
-		// stats is pushed first so it renders first this frame, and
-		// RuntimeLogLayer reads the stats layer's last-rendered height to
-		// position itself directly below.
 		const bool showStats = project ? project->ShowRuntimeStats : true;
 		if (showStats) {
 			PushLayer<RuntimeStatsLayer>("RuntimeStats");
 		}
 
-		// Push the F7 log overlay when the project opts in (default true).
-		// Stacks below the stats overlay when both visible.
 		const bool showLogs = project ? project->ShowRuntimeLogs : true;
 		if (showLogs) {
 			PushLayer<RuntimeLogLayer>("RuntimeLogs");

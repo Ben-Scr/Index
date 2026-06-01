@@ -67,6 +67,13 @@ namespace Index {
 		void UnloadScene(const std::string& name);
 		void UnloadAllScenes(bool includePersistent = false);
 
+		// Drops the SceneDefinition for `name`. The scene is unloaded first if
+		// currently loaded. After this returns, LoadScene(name) fails because
+		// the definition lookup misses — used by the editor when the user
+		// deletes a .scene file so a stale script-side LoadScene doesn't
+		// resurrect an empty Scene from the registered definition.
+		void UnregisterScene(const std::string& name);
+
 		std::vector<std::weak_ptr<Scene>> GetLoadedScenes();
 		std::weak_ptr<Scene> GetLoadedScene(const std::string& name);
 		Scene* GetActiveScene();
@@ -99,14 +106,7 @@ namespace Index {
 			return index < m_LoadedScenes.size() ? m_LoadedScenes[index].get() : nullptr;
 		}
 
-		// Reentrancy contract: callbacks MAY append to m_LoadedScenes (e.g. a
-		// callback triggers a scene load) but MUST NOT remove or shrink the
-		// vector mid-iteration. We re-read size() each step so newly appended
-		// scenes get visited; an underlying pointer reaching nullptr (scene
-		// torn down by a callback) is filtered by the IsLoaded check. This
-		// mirrors UpdateScenes' index-based loop in SceneManager.cpp and avoids
-		// per-call vector copies that the old `auto scenes = m_LoadedScenes`
-		// pattern incurred.
+		// Callbacks MAY append to m_LoadedScenes but MUST NOT remove or shrink it mid-iteration.
 		template<typename TFunc>
 		void ForeachLoadedScene(TFunc&& func) {
 			for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {

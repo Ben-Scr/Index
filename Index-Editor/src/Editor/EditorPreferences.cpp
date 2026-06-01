@@ -99,8 +99,6 @@ namespace Index {
 		}
 
 #ifdef _WIN32
-		// Reads HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme.
-		// 0 = dark theme, 1 = light theme. Defaults to dark if the key is missing.
 		bool IsSystemDarkMode_Win32() {
 			DWORD value = 0;
 			DWORD size = sizeof(value);
@@ -121,9 +119,6 @@ namespace Index {
 		bool IsSystemDarkMode_Win32() { return true; }
 #endif
 
-		// Resolve SystemDefault → Dark/Light. ApplyTheme calls this once
-		// per invocation; ApplySystemThemeIfNeeded polls this so the
-		// editor follows Windows app-theme changes while set to Auto.
 		EditorThemeMode ResolveTheme(EditorThemeMode mode) {
 			if (mode == EditorThemeMode::SystemDefault) {
 				return IsSystemDarkMode_Win32() ? EditorThemeMode::Dark : EditorThemeMode::Light;
@@ -148,10 +143,6 @@ namespace Index {
 			Window* window = Application::GetWindow();
 			if (!window) return;
 
-			// Pick dark/light DWM titlebar chrome from the theme; leave the
-			// caption + text colors at their default (alpha = 0 ->
-			// DWMWA_COLOR_DEFAULT) so Windows paints the standard system
-			// titlebar — same look as a no-customization app like Godot.
 			const ImGuiStyle& style = ImGui::GetStyle();
 			const bool dark = Luminance(style.Colors[ImGuiCol_WindowBg]) < 0.5f;
 			window->SetTitlebarDarkMode(dark);
@@ -195,10 +186,6 @@ namespace Index {
 		const std::filesystem::path path = PrefsPath();
 		std::error_code ec;
 		if (!std::filesystem::is_regular_file(path, ec)) {
-			// First launch — defaults already set, write the file so the
-			// user can see it exists. WasFreshlyCreated() flips true so
-			// the editor knows it can seed values from a legacy project
-			// without clobbering an existing pref set.
 			s.FreshlyCreated = true;
 			Save();
 			Application::SetRunInBackground(s.RunInBackground);
@@ -269,9 +256,6 @@ namespace Index {
 		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
-			// Seed from compiled-in dark defaults first so any color not
-			// present in the file falls back to a sensible value rather
-			// than zero-alpha black.
 			ImGuiStyle tempStyle;
 			ImGui::StyleColorsDark(&tempStyle);
 			std::memcpy(s.CustomColors, tempStyle.Colors, sizeof(ImVec4) * ImGuiCol_COUNT);
@@ -288,11 +272,6 @@ namespace Index {
 			s.CustomColorsSeeded = true;
 		}
 
-		// Push the just-loaded editor font zoom into ImGui's style. The
-		// ImGuiContext was created by ImGuiContextLayer's earlier
-		// OnAttach (it pushes ahead of ImGuiEditorLayer, which is what
-		// calls Load), so the style object is live and FontSizeBase
-		// takes effect on the very next frame.
 		ImGuiContextLayer::ApplyEditorFontSize();
 		Application::SetRunInBackground(s.RunInBackground);
 		ScriptSystem::SetAutoRecompileEnabled(s.AutoRecompileScripts);
@@ -345,18 +324,12 @@ namespace Index {
 
 		switch (resolved) {
 			case EditorThemeMode::Light:
-				// Plain ImGui Light. We don't carry an Index-branded light
-				// variant; the user opting in to Light is explicitly asking
-				// for the stock palette.
 				ImGui::StyleColorsLight();
 				MarkThemeApplied(resolved);
 				ApplyNativeTitlebarFromStyle();
 				return;
 			case EditorThemeMode::Dark:
 			case EditorThemeMode::SystemDefault: // already resolved above
-				// Index dark palette only — sizing/rounding from the
-				// startup ApplyIndexTheme (post ScaleAllSizes) is preserved.
-				// Light → Dark thus keeps the DPI-scaled metrics.
 				ImGuiContextLayer::ApplyIndexThemeColors();
 				MarkThemeApplied(resolved);
 				ApplyNativeTitlebarFromStyle();
@@ -403,9 +376,6 @@ namespace Index {
 	void EditorPreferences::SetThemeMode(EditorThemeMode mode) {
 		if (S().Theme == mode) return;
 
-		// Seed Custom from the *current* style at the moment of switch so
-		// the editable swatches start from "what the user was just
-		// looking at", not all-zeroes.
 		if (mode == EditorThemeMode::Custom && !S().CustomColorsSeeded) {
 			SeedCustomColorsFromCurrent();
 		}

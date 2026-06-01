@@ -66,36 +66,14 @@ namespace Index.Collections.Native
             return buffer;
         }
 
-        /// <summary>
-        /// Borrows the backing buffer as a read-only struct view. The view
-        /// captures the pointer + length once, so per-element reads skip the
-        /// parent's <c>Volatile.Read</c> disposal check that
-        /// <see cref="this[int]"/> performs. Intended for use inside job
-        /// structs marked <see cref="Jobs.ReadOnlyAttribute"/>.
-        ///
-        /// <para>
-        /// <b>Lifetime contract:</b> the view borrows the underlying buffer;
-        /// do not use after the parent <see cref="NativeArray{T}"/> is
-        /// disposed. Same contract as <see cref="GetUnsafePtr"/>.
-        /// </para>
-        /// </summary>
+        /// <summary>Borrow as a read-only struct view (skips disposal check per element). Do not use after the parent NativeArray is disposed.</summary>
         public ReadOnly AsReadOnly()
         {
             ThrowIfDisposed();
             return new ReadOnly(buffer, length);
         }
 
-        /// <summary>
-        /// Borrows the backing buffer as a write-only struct view. The view
-        /// captures the pointer + length once and exposes a set-only indexer
-        /// (<see cref="WriteOnly.this[int]"/>) so accidental reads do not
-        /// compile. Intended for use inside job structs marked
-        /// <see cref="Jobs.WriteOnlyAttribute"/>.
-        ///
-        /// <para>
-        /// <b>Lifetime contract:</b> see <see cref="AsReadOnly"/>.
-        /// </para>
-        /// </summary>
+        /// <summary>Borrow as a write-only struct view (set-only indexer prevents accidental reads). Do not use after the parent NativeArray is disposed.</summary>
         public WriteOnly AsWriteOnly()
         {
             ThrowIfDisposed();
@@ -209,12 +187,6 @@ namespace Index.Collections.Native
             }
         }
 
-        /// <summary>
-        /// Zero-overhead read-only view of a <see cref="NativeArray{T}"/>.
-        /// Holds a raw <c>T* + length</c>; per-element reads skip the
-        /// parent's disposal check. Obtain via
-        /// <see cref="NativeArray{T}.AsReadOnly"/>.
-        /// </summary>
         public readonly struct ReadOnly
         {
             private readonly T* m_Buffer;
@@ -241,12 +213,6 @@ namespace Index.Collections.Native
             public T* GetUnsafeReadOnlyPtr() => m_Buffer;
         }
 
-        /// <summary>
-        /// Write-only view of a <see cref="NativeArray{T}"/>. Exposes a
-        /// set-only indexer so accidental reads do not compile; per-element
-        /// writes skip the parent's disposal check. Obtain via
-        /// <see cref="NativeArray{T}.AsWriteOnly"/>.
-        /// </summary>
         public readonly struct WriteOnly
         {
             private readonly T* m_Buffer;

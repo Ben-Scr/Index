@@ -9,11 +9,7 @@
 
 namespace Index {
 
-	// Defined in RuntimeLogLayer.cpp. Publishes our last-rendered window
-	// height so the log layer can stack directly below us when both are
-	// visible. Resolves to a no-op stub when the log layer isn't pushed
-	// because the stub is the same TU; if we ever split it out, fall back
-	// to a weak-extern pattern.
+	// Defined in RuntimeLogLayer.cpp; stub lives in the same TU so it's a no-op when that layer isn't pushed.
 	void Internal_SetStatsRenderedHeight(float h);
 
 }

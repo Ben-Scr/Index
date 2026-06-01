@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -55,14 +56,7 @@ namespace Index {
 			};
 		}
 
-		// Generic state-color resolver used by every widget tint pass.
-		// Precedence (highest first): disabled > pressed > focused >
-		// hovered > normal. Focused only applies when the widget opted
-		// into navigation (Focusable + IsFocused) AND its FocusedColor
-		// has a non-zero alpha — the alpha == 0 sentinel means "no
-		// focus tint, fall through" and is the default for every
-		// widget preset, so existing scenes never gain a focus border
-		// they didn't ask for.
+		// FocusedColor.a == 0 is the sentinel "no focus tint"; all presets ship with a==0 so scenes opt-in explicitly.
 		Color ResolveStateTint(const Color& normal, const Color& hovered,
 			const Color& pressed, const Color& disabled,
 			const Color& focused,
@@ -84,11 +78,7 @@ namespace Index {
 				btn.PressedColor, btn.DisabledColor, btn.FocusedColor, interact);
 		}
 
-		// Pick the per-state sprite UUID for the current Interactable
-		// state, with the same precedence as ResolveStateTint. UUID{0}
-		// in any per-state slot means "unset, fall back to NormalSprite".
-		// If NormalSprite is also unset, the helper returns 0 — callers
-		// treat that as "leave the texture alone".
+		// UUID{0} in any per-state slot means "unset, fall back to NormalSprite"; returns 0 when NormalSprite is also unset.
 		UUID ResolveStateSprite(UUID normal, UUID hovered, UUID pressed,
 			UUID disabled, UUID focused,
 			const InteractableComponent& interact)
@@ -103,11 +93,6 @@ namespace Index {
 			return candidate;
 		}
 
-		// Swap the image's texture to `desired` if it isn't already
-		// pointing there. Skips the swap when desired == 0 so callers
-		// can use 0 as "no override; keep authored texture". Loads the
-		// runtime handle on demand via TextureManager so SpriteSwap
-		// works the same way Image_SetTexture does in scripts.
 		void ApplySpriteIfChanged(ImageComponent& image, UUID desired) {
 			if (static_cast<uint64_t>(desired) == 0) return;
 			if (image.TextureAssetId == desired) return;
@@ -116,15 +101,6 @@ namespace Index {
 				static_cast<uint64_t>(desired));
 		}
 
-		// Apply the per-state visual to a widget's resolved image based
-		// on TransitionMode:
-		//   ColorSwap  → write image.Color, leave the texture alone.
-		//   SpriteSwap → swap image.TextureAssetId / TextureHandle for
-		//                the resolved per-state sprite, leave Color alone.
-		//   None       → no-op; the user owns the visual.
-		// Centralising the dispatch here means every widget's tint pass
-		// stays a single line, and adding a new transition mode is one
-		// switch case rather than five.
 		void ApplyWidgetVisualState(ImageComponent& image,
 			const InteractableComponent& interact,
 			UITransitionMode mode,
@@ -149,14 +125,7 @@ namespace Index {
 			}
 		}
 
-		// Resolve a target entity's visual component (Image preferred,
-		// TextRenderer as fallback) and apply the per-state visual the
-		// same way ApplyWidgetVisualState does. Used by Button so a
-		// button can sit on any entity that has either an Image or a
-		// TextRenderer — the preset is one valid setup, not a
-		// requirement. SpriteSwap on a text-only target is a no-op
-		// (text glyphs aren't textures) so the colour path still runs
-		// when ColorSwap is the active mode.
+		// Prefers Image; falls back to TextRenderer. SpriteSwap is a no-op on text targets.
 		void ApplyWidgetVisualToEntity(entt::registry& registry, EntityHandle target,
 			const InteractableComponent& interact,
 			UITransitionMode mode,
@@ -185,11 +154,6 @@ namespace Index {
 			if (!scene.IsValid(entity)) return;
 			scene.GetEntity(entity).SetEnabled(enabled);
 		}
-
-		// ── UTF-8 helpers ───────────────────────────────────────────
-		// All input-field caret math is byte-indexed (matches std::string),
-		// but UTF-8 multi-byte codepoints must move as a unit so we don't
-		// land mid-sequence and corrupt the string.
 
 		// Byte length of the codepoint that starts at `s[idx]`. Treats a
 		// stray continuation byte (10xxxxxx) as length 1 so callers always
@@ -261,11 +225,6 @@ namespace Index {
 			return n;
 		}
 
-		// One '*' per codepoint in `src`. Used by both the visual sync
-		// (UIEventSystem writes the masked string into the child
-		// TextRenderer when InputField.IsSecret is true) and by
-		// hit-testing helpers that need to project byte offsets from
-		// the real Text into the rendered mask.
 		std::string MaskTextForSecret(std::string_view src) {
 			std::string out;
 			out.reserve(src.size());
@@ -281,12 +240,6 @@ namespace Index {
 		}
 
 		// ── ContentType filtering ───────────────────────────────────
-		// Decide whether a single codepoint is allowed under `type`,
-		// given the current `existing` text and the `caretByte` insertion
-		// point. `existing`/`caretByte` only matter for numeric types
-		// (where '-' is restricted to the start and decimal-numbers
-		// allow at most one '.').
-
 		bool ContentTypeAllowsCodepoint(InputContentType type, std::uint32_t cp,
 			std::string_view existing, int caretByte)
 		{
@@ -330,11 +283,7 @@ namespace Index {
 			return true;
 		}
 
-		// Walk `src` codepoint-by-codepoint and return only those that
-		// pass ContentTypeAllowsCodepoint when inserted at the caret of
-		// `existing`. Used both for typed text and clipboard paste —
-		// numeric fields need this to keep the insert order valid (e.g.
-		// pasting "1.2.3" into a DecimalNumber field becomes "1.23").
+		// Simulates each codepoint insertion in order so numeric field constraints (one '-', one '.') stay valid during paste.
 		std::string FilterByContentType(InputContentType type, std::string_view src,
 			std::string_view existing, int caretByte)
 		{
@@ -461,11 +410,7 @@ namespace Index {
 
 		// ── Glyph metrics for caret/selection geometry ──────────────
 
-		// Width in atlas units up to (but not including) `targetByte`. The
-		// caller multiplies by the font scale to land in screen pixels.
-		// Mirrors the per-glyph advance/kerning/letter-spacing accumulation
-		// that EmitText uses, so the caret X stays aligned with the actual
-		// rendered text down to the pixel.
+		// Mirrors EmitText's advance/kerning/letter-spacing so caret X aligns to the actual rendered glyph positions.
 		float MeasureUpToByte(const Font& font, std::string_view text, int targetByte,
 			float letterSpacing)
 		{
@@ -528,10 +473,7 @@ namespace Index {
 			return n;
 		}
 
-		// Resolve the text child's screen-space origin + font + scale so
-		// caret math stays consistent with what GuiRenderer paints. Returns
-		// nullptr-bearing layout when the text child or its font isn't
-		// available; callers fall back to caret = 0 in that case.
+		// Layout info for caret math — matches GuiRenderer's metrics; Valid=false when child/font unavailable.
 		struct InputTextLayout {
 			bool Valid = false;
 			float OriginX = 0.0f;
@@ -553,10 +495,7 @@ namespace Index {
 			Font* font = TextRenderer::ResolveFont(tc);
 			if (!font || !font->IsLoaded()) return out;
 
-			// Mirror GuiRenderer's text-scale rule: the rect's world scale
-			// grows the rendered glyph metrics, so click-to-caret has to
-			// measure against the same scaled glyphs or hit-testing lands
-			// on the wrong byte for any non-1.0 scale.
+			// MUST use rect.Scale.x to match GuiRenderer's glyph metrics — wrong scale shifts every click-to-caret byte.
 			const float uniformScale = rect.Scale.x;
 			const Vec2 bl = rect.GetBottomLeft();
 			const Vec2 tr = rect.GetTopRight();
@@ -583,12 +522,7 @@ namespace Index {
 			InputTextLayout layout = ResolveInputTextLayout(registry, field);
 			if (!layout.Valid) return 0;
 
-			// Secret fields render one '*' per codepoint; click-to-
-			// caret has to measure against that masked string so the
-			// glyph widths match what the user actually sees, then the
-			// resulting byte index (which is in the mask's coordinate
-			// space) is mapped back into field.Text by counting one
-			// codepoint per mask byte.
+			// Secret: measure the masked string (widths differ from real text), then map the mask byte back to a field.Text codepoint offset.
 			std::string maskBuffer;
 			std::string_view measureView{ field.Text };
 			if (field.IsSecret && !field.Text.empty()) {
@@ -628,25 +562,12 @@ namespace Index {
 			return idx;
 		}
 
-		// Tunables for hold-to-repeat. Values match common OS conventions:
-		// initial wait of ~400ms before auto-fire kicks in, then ~25 hz.
 		constexpr float k_KeyHoldDelay = 0.4f;
 		constexpr float k_KeyHoldRate = 0.04f;
 
-		// Cursor must travel this far (in UI-space pixels) after pressing
-		// a slider handle before drag tracking begins. Below this, a press
-		// holds the current value steady — keeps a tap from snapping the
-		// value to the cursor's exact position when the click landed
-		// slightly off-centre on the handle.
+		// Dead-zone prevents a tap from snapping the slider value when the click lands slightly off-centre on the handle.
 		constexpr float k_SliderDragThresholdPx = 4.0f;
 
-		// Find the first child of `parent` matching the predicate. Used
-		// to auto-resolve cross-entity refs (Slider's HandleEntity,
-		// Toggle's CheckmarkEntity, InputField's TextEntity, Dropdown's
-		// LabelEntity) so they survive scene reload without explicit
-		// UUID round-tripping. Skip a child whose UUID matches `skip`
-		// — that lets a slider with a Fill child also have a separate
-		// Handle child without resolving both to the same entity.
 		template <typename Pred>
 		EntityHandle FindFirstChildWith(entt::registry& registry,
 			EntityHandle parent, Pred&& predicate, EntityHandle skip = entt::null)
@@ -662,13 +583,7 @@ namespace Index {
 			return entt::null;
 		}
 
-		// First-by-name variant. Falls through to the predicate-only
-		// FindFirstChildWith when no child has the requested name. The
-		// presets in EntityHelper.cpp tag children with stable names
-		// ("Handle", "Fill", "Text", "Label", "Checkmark") so the
-		// post-reload auto-resolve picks the right child even when a
-		// component has multiple children of the same shape (the slider
-		// case: two Image children — one fill, one handle).
+		// Name-first variant: presets tag children with stable names so reload resolves the right entity among same-shape siblings.
 		template <typename Pred, typename... SkipEntities>
 		EntityHandle FindFirstChildByNameOrPredicate(entt::registry& registry,
 			EntityHandle parent, std::string_view preferredName,
@@ -678,15 +593,8 @@ namespace Index {
 			auto* hierarchy = registry.try_get<HierarchyComponent>(parent);
 			if (!hierarchy) return entt::null;
 
-			// Variadic skip list — caller can pass 0..N entities to
-			// avoid claiming the same child twice when resolving multiple
-			// reference fields on the same parent (e.g. Slider's Fill /
-			// Handle / Background all live among the same image
-			// children).
 			auto isSkipped = [&]([[maybe_unused]] EntityHandle child) {
-				// Fold over the parameter pack — empty pack collapses
-				// to `false`, so MSVC would otherwise flag `child` as
-				// unused when no skip args are passed.
+				// [[maybe_unused]]: empty skip pack collapses to false, MSVC warns child unused without it.
 				return ((child == skipEntities) || ...);
 			};
 
@@ -709,17 +617,6 @@ namespace Index {
 			return entt::null;
 		}
 
-		// Slider visual sync: write the slider's Fill child SizeDelta and
-		// Handle child position so they reflect (Value - MinValue) / range.
-		// Pulled out of UIEventSystem::Update so OnPreRender can call it
-		// in edit mode — that's the path that drives the editor preview
-		// when the inspector tweaks Slider.Value/MinValue/MaxValue without
-		// entering play mode. Pure visual-state writes; doesn't touch
-		// `slider.Value` aside from a defensive clamp into the authored
-		// range, so it's safe to call multiple times per frame.
-		//
-		// True when the slider's value axis runs along X. Vertical
-		// directions (BottomToTop / TopToBottom) walk along Y.
 		bool IsSliderHorizontal(SliderDirection dir) {
 			return dir == SliderDirection::LeftToRight
 				|| dir == SliderDirection::RightToLeft;
@@ -733,12 +630,6 @@ namespace Index {
 				|| dir == SliderDirection::TopToBottom;
 		}
 
-		// Rewrite the slider's Fill and Handle child rects so they
-		// reflect (Value - MinValue) / range along the active axis.
-		// The fill grows from the start edge of the chosen Direction
-		// regardless of the fill's authored pivot — the slider system
-		// owns the fill's geometry. The handle is centered at the
-		// track edge corresponding to the current Value.
 		void ApplySliderVisuals(entt::registry& registry,
 			SliderComponent& slider, const RectTransform2DComponent& rect)
 		{
@@ -781,12 +672,7 @@ namespace Index {
 				&& registry.all_of<RectTransform2DComponent>(slider.FillEntity))
 			{
 				auto& fillRect = registry.get<RectTransform2DComponent>(slider.FillEntity);
-				// Pin the fill to the start edge of the active direction.
-				// Anchor + Pivot are written each frame so the fill grows
-				// the right way regardless of how the user authored them.
-				// The other axis fills the track (Anchor=0..1) so authored
-				// height/width on that axis is preserved via Stretch + the
-				// SizeDelta-only-sizes layout rule (no padding added).
+				// Anchor + Pivot are set each frame — slider system owns fill geometry regardless of authored values.
 				switch (slider.Direction) {
 				case SliderDirection::LeftToRight:
 					fillRect.AnchorMin = Vec2{ 0.0f, 0.5f };
@@ -819,10 +705,7 @@ namespace Index {
 				}
 			}
 
-			// Optional percent label — drives the Progress Bar preset.
-			// Writes the integer-rounded normalised value as "{N}%". Only
-			// touches the text when it would actually change so we don't
-			// dirty the renderer on every frame for static sliders.
+			// Optional percent label (Progress Bar preset): writes "{N}%" only when changed.
 			if (slider.LabelEntity != entt::null
 				&& registry.valid(slider.LabelEntity)
 				&& registry.all_of<TextRendererComponent>(slider.LabelEntity))
@@ -836,10 +719,6 @@ namespace Index {
 			}
 		}
 
-		// Same auto-resolve pass UIEventSystem::Update runs at step 0.
-		// OnPreRender needs it independently because in edit mode Update
-		// never ran this frame, so HandleEntity / FillEntity may still be
-		// null (e.g. right after scene load before any tick).
 		void ResolveSliderChildrenForPreview(entt::registry& registry)
 		{
 			const auto childHasImage = [&registry](EntityHandle e) {
@@ -858,10 +737,6 @@ namespace Index {
 			}
 		}
 
-		// Sync a dropdown's optional LabelEntity to the currently-selected
-		// option text. Mirror of the inline pass at the end of
-		// UIEventSystem::Update so the OnPreRender preview stays in lock-
-		// step with the play-mode behaviour.
 		void ApplyDropdownVisuals(entt::registry& registry, const DropdownComponent& dd)
 		{
 			if (dd.LabelEntity == entt::null
@@ -881,9 +756,6 @@ namespace Index {
 			}
 		}
 
-		// Cursor must travel this far (in UI-space pixels) on the scrollbar's
-		// value axis before drag tracking begins. Same idea as the slider
-		// threshold but tracked per-scrollbar.
 		constexpr float k_ScrollbarDragThresholdPx = 4.0f;
 
 		// True when the scrollbar's value axis runs along X. Vertical
@@ -910,19 +782,7 @@ namespace Index {
 			return std::clamp(snapped, 0.0f, 1.0f);
 		}
 
-		// Rewrite the scrollbar's HandleEntity rect so it covers
-		// [t, t + Size] of the track on the active axis. Mirrors the
-		// slider's ApplySliderVisuals contract but covers four directions.
-		//
-		// Children no longer inherit parent width/height (see
-		// UILayoutSystem ResolveRect), so the handle is point-anchored at
-		// the appropriate edge of the track and sized via SizeDelta.
-		//
-		// Auto-orients the scrollbar's own SizeDelta to match Direction:
-		// a vertical Direction on a wide rect (or horizontal on a tall
-		// rect) swaps width/height so the track image renders along the
-		// scrollbar's value axis. Idempotent — once the rect's longer
-		// side matches the value axis the swap is a no-op.
+		// Auto-swaps the track's SizeDelta when Direction and rect orientation disagree; handle is point-anchored via SizeDelta.
 		void ApplyScrollbarVisuals(entt::registry& registry,
 			ScrollbarComponent& sb, RectTransform2DComponent& rect)
 		{
@@ -932,10 +792,6 @@ namespace Index {
 			const bool horizontal = IsScrollbarHorizontal(sb.Direction);
 			const bool reversed   = IsScrollbarReversed(sb.Direction);
 
-			// Auto-rotate the track's SizeDelta to match the active axis.
-			// A user who flipped Direction to BottomToTop on a horizontally
-			// authored scrollbar gets the rect rotated automatically so the
-			// track is tall instead of wide.
 			if (horizontal && rect.SizeDelta.y > rect.SizeDelta.x) {
 				std::swap(rect.SizeDelta.x, rect.SizeDelta.y);
 			}
@@ -961,10 +817,6 @@ namespace Index {
 			const float spanStart = visualValue * (1.0f - sb.Size);
 
 			if (horizontal) {
-				// Anchor handle at the track's left-centre, pivot the
-				// handle at its own left-centre. With both at the same
-				// edge, AnchoredPosition is a pure offset along the
-				// track from its left edge — no centering term.
 				handle.AnchorMin = Vec2{ 0.0f, 0.5f };
 				handle.AnchorMax = Vec2{ 0.0f, 0.5f };
 				handle.Pivot = Vec2{ 0.0f, 0.5f };
@@ -972,10 +824,6 @@ namespace Index {
 				handle.SizeDelta = Vec2{ trackWidth * sb.Size, trackHeight };
 			}
 			else {
-				// Vertical: anchor at track's bottom-centre, pivot at
-				// the handle's bottom-centre, AnchoredPosition.y moves
-				// the handle up. visualValue handles the BottomToTop /
-				// TopToBottom flip.
 				handle.AnchorMin = Vec2{ 0.5f, 0.0f };
 				handle.AnchorMax = Vec2{ 0.5f, 0.0f };
 				handle.Pivot = Vec2{ 0.5f, 0.0f };
@@ -984,12 +832,6 @@ namespace Index {
 			}
 		}
 
-		// Sync an input field's child TextEntity to its current Text /
-		// PlaceholderText. Edit-mode mirror of the per-frame block in
-		// UIEventSystem::Update — minus the focus / caret bits, which are
-		// per-frame state the editor preview doesn't try to fake.
-		// Honors IsSecret so masked fields preview correctly in the
-		// editor too.
 		void ApplyInputFieldVisuals(entt::registry& registry, const InputFieldComponent& field)
 		{
 			if (field.TextEntity == entt::null
@@ -1012,25 +854,29 @@ namespace Index {
 	} // namespace
 
 	void UIEventSystem::Update(Scene& scene) {
-		// Scope wraps the whole body so the panel can show whether the six
-		// per-widget view constructions below (Slider, Scrollbar, ScrollRect,
-		// Toggle, InputField, Dropdown, ...) add up to real cost at 100k
-		// entities even when none of those component pools have entries.
 		INDEX_PROFILE_SCOPE("UIEvent.Update");
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		Input& input = app->GetInput();
 
-		// Prefer the editor-published UI panel region when active so
-		// hit-tests resolve in the same coordinate space the panel was
-		// rendered in (panel-relative pixels). For standalone runtime
-		// builds the region stays unset and we fall back to the OS
-		// window viewport, which is also where mouse coords originate.
+		// Use editor UI panel region when active (panel-relative pixels); fall back to OS window viewport for standalone.
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		Vec2 mouseRaw = input.GetMousePosition();
 		int vpW = 0;
 		int vpH = 0;
+		// True when the cursor sits over the surface that owns UI input —
+		// the Game View panel in the editor or the OS window in standalone.
+		// Any other ImGui panel (Editor View, Hierarchy, Inspector, …)
+		// still pumps `Input::GetMousePosition`, so without this guard
+		// the mapped UI-space coords would happen to hover/click whatever
+		// element sits under the leaked coordinate.
+		bool cursorOverUiSurface = true;
 		if (uiRegion.IsActive()) {
+			cursorOverUiSurface =
+				mouseRaw.x >= static_cast<float>(uiRegion.OffsetX) &&
+				mouseRaw.y >= static_cast<float>(uiRegion.OffsetY) &&
+				mouseRaw.x <  static_cast<float>(uiRegion.OffsetX + uiRegion.Width) &&
+				mouseRaw.y <  static_cast<float>(uiRegion.OffsetY + uiRegion.Height);
 			mouseRaw.x -= static_cast<float>(uiRegion.OffsetX);
 			mouseRaw.y -= static_cast<float>(uiRegion.OffsetY);
 			vpW = uiRegion.Width;
@@ -1041,34 +887,41 @@ namespace Index {
 			if (!viewport || viewport->GetWidth() <= 0 || viewport->GetHeight() <= 0) return;
 			vpW = viewport->GetWidth();
 			vpH = viewport->GetHeight();
+			// Editor host with no Game View visible this frame: the OS
+			// viewport spans the whole editor window, so suppress UI
+			// input entirely instead of pretending the editor chrome IS
+			// the game surface. Standalone keeps the legacy behaviour.
+			if (Application::IsEditor()) {
+				cursorOverUiSurface = false;
+			}
 		}
 
-		const Vec2 mouseUi = ScreenPixelToUiSpace(mouseRaw, vpW, vpH);
-		const bool mouseDownThisFrame = input.GetMouseDown(MouseButton::Left);
+		// Far-off sentinel keeps every RectTransform::ContainsPoint check
+		// false without each hit-test site having to branch on the gate.
+		const Vec2 mouseUi = cursorOverUiSurface
+			? ScreenPixelToUiSpace(mouseRaw, vpW, vpH)
+			: Vec2{ std::numeric_limits<float>::lowest(),
+			        std::numeric_limits<float>::lowest() };
+
+		// Edges (down / up) come from polling; gating them keeps a click on
+		// the editor chrome from registering as a Press on whatever element
+		// the sentinel happens to overlap. Held is left untouched so a drag
+		// that starts inside and crosses out still releases cleanly when
+		// the user lets go anywhere.
+		const bool mouseDownThisFrame = cursorOverUiSurface && input.GetMouseDown(MouseButton::Left);
 		const bool mouseUpThisFrame   = input.GetMouseUp(MouseButton::Left);
 		const bool mouseHeld          = input.GetMouse(MouseButton::Left);
 
 		auto& registry = scene.GetRegistry();
 
-		// Lifted to function scope so the trailing dropdown sync in Group 4
-		// (section 9, "── 9. Dropdowns: open/close, sync label") can read
-		// them. Group 2 ("HitTest") originally owned these — bisecting
-		// Update into RefResolve / HitTest / Visuals / Widgets blocks split
-		// the producer (HitTest) from a consumer (Widgets section 9), so we
-		// hoist instead of moving section 9.
+		// Hoisted so section 9 (dropdown label sync) can reuse the view after the HitTest block ends.
 		auto dropdownView = registry.view<RectTransform2DComponent, DropdownComponent>(entt::exclude<DisabledTag>);
 		bool popupConsumes = false;
 
 		{
 		INDEX_PROFILE_SCOPE("UIEvent.RefResolve");
 		// ── 0. Auto-resolve cross-entity references each frame ──────
-		// Cross-entity refs aren't serialized — they're resolved by
-		// finding the first child of the right shape. This survives
-		// scene reload (refs default to entt::null after deserialize)
-		// and editor flows that copy entities (refs become invalid;
-		// re-resolve next frame). Explicit user-set refs survive too:
-		// we only re-resolve when the field is null or refers to an
-		// entity that no longer exists.
+		// Refs aren't serialized; re-resolved by child-shape each frame — survives scene reload and copy-entity editor flows.
 
 		const auto childHasImage = [&registry](EntityHandle e) {
 			return registry.all_of<RectTransform2DComponent, ImageComponent>(e);
@@ -1077,11 +930,6 @@ namespace Index {
 			return registry.all_of<RectTransform2DComponent, TextRendererComponent>(e);
 		};
 
-		// Sliders: prefer name-matched children ("Fill", "Handle") so
-		// the slider keeps working after scene reload even when both
-		// cross-entity refs have to be re-resolved from scratch. Resolve
-		// fill first, then handle excluding fill — guarantees the two
-		// refs end up on different entities even with two image children.
 		auto sliderResolveView = registry.view<SliderComponent>();
 		for (auto&& [entity, slider] : sliderResolveView.each()) {
 			if (slider.FillEntity == entt::null || !registry.valid(slider.FillEntity)) {
@@ -1169,11 +1017,7 @@ namespace Index {
 		{
 		INDEX_PROFILE_SCOPE("UIEvent.HitTest");
 		// ── 1. Resolve dropdown popup hits FIRST ─────────────────────
-		// Open dropdowns extend a popup below their button. When the
-		// cursor is inside any popup row, that hit consumes the click —
-		// rects underneath shouldn't react. We scan dropdowns up-front,
-		// remember which row (if any) is hovered and, on click, mutate
-		// the dropdown selection / IsOpen state directly.
+		// Popup row hit consumes the click — rects underneath must not react.
 		struct DropdownHit {
 			EntityHandle Entity = entt::null;
 			int RowIndex = -1; // -1 = no popup hit
@@ -1211,12 +1055,7 @@ namespace Index {
 		}
 
 		// ── 2. Hit-test interactable rects (skip when popup consumed) ─
-		// Front-most wins: an Interactable rect that paints ON TOP of
-		// another Interactable consumes the click and blocks anything
-		// behind it. Mirrors GuiRenderer's z-stack — same hierarchy walk,
-		// same (SortingLayer, SortingOrder, DrawIndex) tiebreak — so a
-		// panel layered over widgets actually shields them from input
-		// instead of the registry-iteration-order entity winning.
+		// Front-most wins using the same (SortingLayer, SortingOrder, DrawIndex) key as GuiRenderer.
 		EntityHandle hovered = entt::null;
 		popupConsumes = dropdownHit.Entity != entt::null;
 
@@ -1232,11 +1071,6 @@ namespace Index {
 				drawIndexByEntity.emplace(entity, di);
 			}
 
-			// Effective sort key — same fields GuiRenderer reads. Image
-			// wins over Text when both are present (image paints first
-			// in the renderer too); a bare RectTransform without either
-			// falls back to (0, 0, drawIndex) so hierarchy order alone
-			// still orders it.
 			struct SortKey {
 				int Layer = 0;
 				int Order = 0;
@@ -1266,18 +1100,12 @@ namespace Index {
 				if (!interact.Interactable) continue;
 				if (!rect.ContainsPoint(mouseUi)) continue;
 
-				// CircularSlider's clickable area is the ring annulus,
-				// not the bounding rect. Reject hits that fall in the
-				// donut hole or outside the ring so the hover doesn't
-				// land on an empty centre.
+				// CircularSlider: reject bounding-rect hits outside the ring annulus (donut hole and outer edge).
 				if (const auto* cs = registry.try_get<CircularSliderComponent>(entity)) {
 					const Vec2 size = rect.GetSize();
 					const float outerR = std::min(size.x, size.y) * 0.5f;
 					const float innerR = std::max(0.0f, outerR - cs->RingThickness);
-					// Hit-test against the rect's geometric centre — the
-					// renderer paints the disc there, so a slider authored
-					// with non-(0.5, 0.5) pivot would otherwise hit-test
-					// off-axis from the visible ring.
+					// Use geometric centre (not pivot): renderer paints the disc at centre regardless of pivot.
 					const Vec2 c = rect.GetCenter();
 					const float dx = mouseUi.x - c.x;
 					const float dy = mouseUi.y - c.y;
@@ -1320,21 +1148,8 @@ namespace Index {
 			}
 
 			if (mouseUpThisFrame) {
-				// OnMouseUp pairs with OnMouseDown: it fires on whichever
-				// entity received the press, regardless of where the cursor
-				// is now. This matters for drag-style widgets (joysticks,
-				// sliders, scrubbers) whose cursor may be clamped or dragged
-				// outside the rect before release; without pairing they
-				// never see "let go".
-				//
-				// OnClicked is the hover-gated completion event — same
-				// semantics as before: press AND release on the same hovered
-				// entity. The registry.valid + all_of guard protects against
-				// handle reuse / mid-press destruction (a mouse-down on
-				// entity X followed by X being destroyed before the matching
-				// mouse-up would otherwise leave a stale handle whose
-				// integer value can be reused by a freshly-created entity,
-				// firing a phantom event on something the user never pressed).
+				// IsMouseUp fires on the pressed entity regardless of cursor position (drag widgets must see "let go").
+				// registry.valid + all_of guard prevents phantom clicks from entity handle reuse after mid-press destruction.
 				const bool isPressEntity =
 					(m_PressedEntity == entity)
 					&& registry.valid(m_PressedEntity)
@@ -1344,12 +1159,6 @@ namespace Index {
 					interact.IsMouseUp = true;
 					if (interact.IsHovered) {
 						interact.IsClicked = true;
-						// Inspector-bound OnClick handlers fire on the
-						// rising edge — same frame the engine detects the
-						// click. Dispatch lives here (and in the synthetic
-						// keyboard / controller activate block below) so
-						// every IsClicked rising edge fans out to the
-						// component's bindings, not just mouse-driven ones.
 						if (auto* btn = registry.try_get<ButtonComponent>(entity)) {
 							if (!btn->OnClick.Bindings.empty()) {
 								InspectorEvents::FireAll(scene, entity, btn->OnClick.Bindings);
@@ -1365,13 +1174,6 @@ namespace Index {
 		}
 
 		// ── 3a. Cursor swap (UI hover variant) ──────────────────────
-		// Window hosts two cursor slots — default + UI — and switches
-		// between them per-frame based on whether the cursor sits over
-		// an INTERACTABLE Index UI element. We scope to "actually
-		// interactable" so a disabled button doesn't trigger the hover
-		// cursor; the same flag drives hover/press visual state above.
-		// Skipping the whole call when no UI cursor was loaded preserves
-		// the OS-default look for projects that didn't author one.
 		if (Window* win = Application::GetWindow()) {
 			bool overInteractable = false;
 			if (hovered != entt::null) {
@@ -1383,27 +1185,15 @@ namespace Index {
 		}
 
 		// ── 3b. Synthesise a click for keyboard / controller activate ──
-		// UIFocusSystem set ActivatedThisFrame on the focused entity if
-		// the user pressed Enter / Space / Gamepad-A this frame. Stamp
-		// the same edge flags a real mouse click would have produced so
-		// every widget reaction below (Toggle flip, Dropdown open,
-		// Button-via-dispatcher, InputField submit) just works without
-		// each having to opt into a focus pathway. The flag is one-frame
-		// transient — clear after consumption.
+		// Stamps the same edge flags as a mouse click so widget reactions require no separate focus pathway.
 		for (auto&& [entity, rect, interact] : hitView.each()) {
 			if (interact.ActivatedThisFrame) {
 				if (interact.Interactable) {
 					interact.IsClicked   = true;
 					interact.IsMouseDown = true;
-					// IsMouseUp pairs 1:1 with IsMouseDown for mouse input;
-					// keyboard / controller activate collapses press-and-
-					// release into one tick, so stamp the up-edge here too
-					// to keep the pair invariant for focus-driven activation.
+					// Keyboard activate collapses press-and-release to one tick; stamp both edges to keep the pair invariant.
 					interact.IsMouseUp   = true;
 					interact.IsPressed   = true;
-					// Mirror the mouse-driven dispatch above so a
-					// keyboard / controller activation also fires the
-					// inspector-bound OnClick handlers.
 					if (auto* btn = registry.try_get<ButtonComponent>(entity)) {
 						if (!btn->OnClick.Bindings.empty()) {
 							InspectorEvents::FireAll(scene, entity, btn->OnClick.Bindings);
@@ -1446,23 +1236,12 @@ namespace Index {
 			}
 		}
 
-		// Diff every dropdown's SelectedIndex against the last broadcast
-		// so inspector edits and programmatic writes also fan out to
-		// OnSelectedIndexChange. C# Dropdown setters / SetSelectedIndex
-		// update LastObservedSelectedIndex on their immediate-fire path
-		// (Dropdown_MarkSelectedIndexObserved) so we don't double-fire here.
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
 			if (dd.SelectedIndex != dd.LastObservedSelectedIndex) {
 				dd.SelectionChangedThisFrame = true;
 				dd.LastObservedSelectedIndex = dd.SelectedIndex;
 
 				if (!dd.OnValueChanged.Bindings.empty()) {
-					// Methods with `int` get the index; methods with
-					// `string` get the option's text. Picking int as
-					// the dynamic kind matches Unity's
-					// Dropdown.OnValueChanged convention; string-typed
-					// bindings still fire with their authored static
-					// argument (the FireAllWithDynamicArg fallback path).
 					InspectorEvents::DynamicArg dyn;
 					dyn.Kind = InspectorEventArgKind::Int;
 					dyn.Encoded = std::to_string(dd.SelectedIndex);
@@ -1476,26 +1255,7 @@ namespace Index {
 		{
 		INDEX_PROFILE_SCOPE("UIEvent.Visuals");
 		// ── 5. Widget visual state (color swap OR sprite swap) ──────
-		// Each widget's TransitionMode picks between the two paths:
-		// ColorSwap writes per-state Color, SpriteSwap rewrites the
-		// ImageComponent's TextureAssetId / TextureHandle for the
-		// resolved state. None opts out entirely so user code can
-		// drive the visual.
-		//
-		// Buttons specifically can target either an Image or a
-		// TextRenderer (or a referenced child via TargetGraphic). The
-		// view iterates Button + Interactable only — we resolve the
-		// graphic per-entity inside the loop so a button on a
-		// text-only entity ("Submit", "Cancel" labels) isn't silently
-		// skipped.
-		// The Target Graphic can own its own InteractableComponent — when
-		// the button itself has no Interactable, hover/press state must
-		// be read from the graphic for the visual swap to react. Iterate
-		// every Button (no Interactable requirement on the button entity)
-		// and resolve the interactable from (a) the Button entity, then
-		// (b) the TargetGraphic. Without the fall-through, a button
-		// authored as "Button on a wrapper, Image+Interactable on a
-		// child" stayed locked at NormalColor regardless of cursor state.
+		// Interactable is resolved from button entity first, then TargetGraphic — a button wrapping an Image+Interactable child would stay locked at NormalColor without the fallthrough.
 		auto buttonView = registry.view<ButtonComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, btn] : buttonView.each()) {
 			const EntityHandle target = (btn.TargetGraphic != entt::null && registry.valid(btn.TargetGraphic))
@@ -1529,12 +1289,6 @@ namespace Index {
 		}
 
 		// ── 5c. Slider handle tint ──────────────────────────────────
-		// The slider's draggable surface lives on HandleEntity by default
-		// (preset puts the InteractableComponent there too). Mirror the
-		// resolution rule used below for drag tracking: tint the handle
-		// when it has both an Image + Interactable, otherwise fall back
-		// to the slider parent's image tinted from the parent's own
-		// Interactable. This keeps older "track-only" sliders working.
 		auto sliderTintView = registry.view<SliderComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, slider] : sliderTintView.each()) {
 			ImageComponent* targetImage = nullptr;
@@ -1560,11 +1314,6 @@ namespace Index {
 		{
 		INDEX_PROFILE_SCOPE("UIEvent.Widgets");
 		// ── 6. Sliders ───────────────────────────────────────────────
-		// The default preset puts the InteractableComponent on the handle
-		// child, so the draggable surface is the thumb. We prefer the
-		// handle's interactable when present and fall back to one on the
-		// slider parent so older scenes (or hand-authored sliders without
-		// a handle child) keep working.
 		auto sliderView = registry.view<SliderComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, slider, rect] : sliderView.each()) {
 			slider.ValueChangedThisFrame = false;
@@ -1586,10 +1335,6 @@ namespace Index {
 				dragInteract = registry.try_get<InteractableComponent>(entity);
 			}
 
-			// Read-only sliders skip the entire drag block — Value
-			// stays put even while the user clicks-and-holds on the
-			// handle. Hover / press flags still update on the
-			// Interactable so visual state remains responsive.
 			if (slider.IsReadOnly) {
 				slider.IsDragging = false;
 			}
@@ -1598,10 +1343,6 @@ namespace Index {
 				const bool sliderReversed   = IsSliderReversed(slider.Direction);
 				const float mouseAxis = sliderHorizontal ? mouseUi.x : mouseUi.y;
 
-				// Down-edge of the press: snapshot the cursor and value so
-				// drag tracking can run relative to where the user grabbed
-				// the handle, not the absolute cursor coord. Reset
-				// IsDragging so the threshold has to be re-cleared each press.
 				if (dragInteract->IsMouseDown) {
 					slider.PressMouseAxis = mouseAxis;
 					slider.PressValue = slider.Value;
@@ -1642,20 +1383,10 @@ namespace Index {
 			// the slider's visual contract.
 			ApplySliderVisuals(registry, slider, rect);
 
-			// Diff against the last broadcast value so every source of
-			// change — drag (above), inspector edit, programmatic Value
-			// = X — fans out to OnValueChanged. C# SetValue updates
-			// LastObservedValue itself (Slider_MarkValueObserved) when
-			// it raises the event immediately, so this branch doesn't
-			// double-fire.
 			if (slider.Value != slider.LastObservedValue) {
 				slider.ValueChangedThisFrame = true;
 				slider.LastObservedValue = slider.Value;
 
-				// Fan the inspector-bound list out on the same edge.
-				// Methods with a `float` parameter receive the new
-				// value as the dynamic argument; bindings of any
-				// other type keep their authored static value.
 				if (!slider.OnValueChanged.Bindings.empty()) {
 					InspectorEvents::DynamicArg dyn;
 					dyn.Kind = InspectorEventArgKind::Float;
@@ -1669,20 +1400,7 @@ namespace Index {
 		}
 
 		// ── 6a. Circular sliders ─────────────────────────────────────
-		// Polar drag: cursor angle around the ring centre maps to a
-		// position in [0, SweepDegrees]. We snapshot (PressMouseAngle,
-		// PressValue) on mouse-down and apply the angular delta to
-		// PressValue rather than slamming Value to whatever the cursor's
-		// absolute angle is — that mirrors the linear slider's "drag
-		// follows the cursor's delta from the press point" feel and
-		// avoids the handle teleporting on initial click.
-		//
-		// Hit-test (the annulus check above) gates IsHovered to actual
-		// ring contacts, so the parent's InteractableComponent flags
-		// already reflect ring-only interaction. We don't auto-resolve
-		// HandleEntity / FillEntity by name like the linear slider does
-		// because the ring is procedural — the only optional child here
-		// is HandleEntity, which the user wires explicitly.
+		// Angular delta from press angle, not absolute angle — prevents handle teleport on initial click.
 		{
 			constexpr float k_CircularSliderDragThresholdRad = 0.005f; // ~0.3°
 			constexpr float k_Pi = 3.14159265358979323846f;
@@ -1695,12 +1413,7 @@ namespace Index {
 					cs.ValueObserved = true;
 				}
 
-				// Drag can be initiated by clicking the handle OR the ring
-				// — both produce a usable cursor angle. Without the handle
-				// branch, a click that landed squarely on the handle never
-				// reached the ring's annulus hit-test (the handle hovered
-				// first, suppressing the ring) and the slider sat inert
-				// while the user was clearly trying to drag the thumb.
+				// Handle press OR ring press both start drag: handle hovering suppresses ring's annulus hit, leaving thumb inert otherwise.
 				InteractableComponent* handleInteract = nullptr;
 				if (cs.HandleEntity != entt::null && registry.valid(cs.HandleEntity)) {
 					handleInteract = registry.try_get<InteractableComponent>(cs.HandleEntity);
@@ -1710,11 +1423,7 @@ namespace Index {
 				const bool isPressed     = handlePressed || ringPressed;
 				const bool isMouseDown   = (handleInteract && handleInteract->IsMouseDown) || interact.IsMouseDown;
 
-				// Centre the polar drag math on the rect's geometric centre
-				// (where GuiRenderer paints the disc) rather than on
-				// ResolvedPivot — sliders authored with non-(0.5, 0.5) pivot
-				// would otherwise read cursor angles from the pivot offset
-				// rather than from the visible ring centre.
+				// Use geometric centre (not pivot): non-(0.5,0.5) pivot would offset cursor angles from the visible disc.
 				const Vec2 centre = rect.GetCenter();
 				const float dx = mouseUi.x - centre.x;
 				const float dy = mouseUi.y - centre.y;
@@ -1760,12 +1469,6 @@ namespace Index {
 					cs.IsDragging = false;
 				}
 
-				// Visual handle position. Optional child whose RectTransform2D
-				// AnchoredPosition gets rewritten each frame to sit on the
-				// ring at the value angle. The handle's other RectTransform
-				// fields (Pivot, AnchorMin/Max, SizeDelta) are left to the
-				// user — typical setup is a 0.5/0.5 anchored point with a
-				// small Size so the dot rides the ring centre.
 				if (cs.HandleEntity != entt::null
 					&& registry.valid(cs.HandleEntity)
 					&& registry.all_of<RectTransform2DComponent>(cs.HandleEntity))
@@ -1794,15 +1497,7 @@ namespace Index {
 					cs.LastObservedValue = cs.Value;
 				}
 
-				// Handle visual feedback. Mirror the linear slider's
-				// tinting pattern: prefer the handle's own InteractableComponent
-				// (so hover/press is computed from cursor-on-handle, not
-				// cursor-on-ring), fall back to the parent's interactable
-				// when the handle has none. This is what gives a circular
-				// slider's thumb the same hover/press color swap as a
-				// linear slider's thumb — without it, the handle's
-				// ImageComponent.Color stayed locked to whatever the
-				// authored value was.
+				// Tint handle from its own Interactable (cursor-on-handle), not the ring's — without this the handle Color stayed static.
 				if (cs.HandleEntity != entt::null
 					&& registry.valid(cs.HandleEntity))
 				{
@@ -1819,11 +1514,6 @@ namespace Index {
 		}
 
 		// ── 6b. Scrollbars ───────────────────────────────────────────
-		// Drag the handle to set Value; click empty track to "page" the
-		// handle by one Size in the direction of the click. The drag
-		// surface is the handle's InteractableComponent (preset puts one
-		// there) — we fall back to the parent's Interactable so older
-		// scenes still work, mirroring the slider's resolution rule.
 		auto scrollbarView = registry.view<ScrollbarComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, sb, rect] : scrollbarView.each()) {
 			sb.ValueChangedThisFrame = false;
@@ -1918,11 +1608,6 @@ namespace Index {
 		}
 
 		// ── 6d. Scroll Rects ─────────────────────────────────────────
-		// Drag inside the viewport scrolls the content. Mouse wheel above
-		// the viewport scrolls vertically (and horizontally with Shift,
-		// matching the rest of the engine's wheel convention). Inertia
-		// keeps the content drifting after release; Elastic mode rubber-
-		// bands content past edges back into bounds.
 		auto scrollRectView = registry.view<ScrollRectComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, sr, viewportRect] : scrollRectView.each()) {
 			sr.ValueChangedThisFrame = false;
@@ -1986,13 +1671,7 @@ namespace Index {
 			if (hovered) {
 				const float wheel = input.ScrollValue();
 				if (wheel != 0.0f) {
-					// ScrollSensitivity is exposed in inspector-friendly
-					// whole numbers (default 5). Divide by 100 here so a
-					// user-typed "5" produces the engine's calibrated
-					// default speed; "10" doubles it, "1" gives a slow
-					// crawl. Without this scale, raw inspector values
-					// produced runaway-fast scrolling for any reasonable
-					// integer.
+					// ScrollSensitivity is in whole-number inspector units; * 0.01 converts to calibrated speed (5 = default).
 					const float pixels = wheel * 60.0f * (sr.ScrollSensitivity * 0.01f);
 					if (sr.Vertical && maxScrollY > 0.0f) {
 						contentRect.AnchoredPosition.y -= pixels;
@@ -2017,13 +1696,7 @@ namespace Index {
 			sr.PreviousContentPosition = contentRect.AnchoredPosition;
 
 			// ── Apply movement type clamping ────────────────────────
-			// Compute current "anchored" reference: Content's
-			// AnchoredPosition is in parent-local pixels; Unity's
-			// convention is content.x in [-(contentW-viewportW), 0]
-			// when scrolling horizontally with anchor pinned to top-
-			// left. We treat AnchoredPosition.x ∈ [-maxScrollX, 0] as
-			// the canonical "in bounds" range for horizontal, and
-			// AnchoredPosition.y ∈ [0, maxScrollY] for vertical.
+			// In-bounds: x ∈ [-maxScrollX, 0] (horizontal), y ∈ [0, maxScrollY] (vertical).
 			Vec2 pos = contentRect.AnchoredPosition;
 
 			// Inertia drift — apply when not dragging.
@@ -2094,12 +1767,7 @@ namespace Index {
 						contentRect.AnchoredPosition.x = -driven * maxScrollX;
 					}
 					else if (!isHorizontal && maxScrollY > 0.0f) {
-						// Drag-driven write must be the inverse of the sync
-						// direction (target = pos.y / maxScrollY, see above).
-						// An extra `1 - driven` was inverting twice — content
-						// went the wrong way and the next non-drag tick
-						// recomputed Value from the wrong position, snapping
-						// the handle back to the top.
+						// No `1 - driven`: a previous inversion caused double-flip and snapped the handle to the top on the next tick.
 						const float driven = std::clamp(sb->Value, 0.0f, 1.0f);
 						contentRect.AnchoredPosition.y = driven * maxScrollY;
 					}
@@ -2178,12 +1846,6 @@ namespace Index {
 		}
 
 		// ── 8. Input fields ──────────────────────────────────────────
-		// Focus follows mouse-down (so click-to-place-caret feels live),
-		// then keyboard shortcuts edit the focused field. Selection state
-		// is byte-indexed into Text — typing or pasting replaces the
-		// selection if any, otherwise inserts at the caret. Backspace and
-		// Delete repeat-fire while held so the editor behaves like every
-		// other text input on the OS.
 		auto inputView = registry.view<InteractableComponent, InputFieldComponent>(entt::exclude<DisabledTag>);
 		const float dt = app->GetTime().GetUnscaledDeltaTime();
 		const bool ctrlDown = input.GetKey(KeyCode::LeftControl) || input.GetKey(KeyCode::RightControl);
@@ -2292,13 +1954,7 @@ namespace Index {
 							for (char c : clip) {
 								if (c != '\r' && c != '\n') sanitized.push_back(c);
 							}
-							// Reject codepoints that don't pass the
-							// active ContentType filter. With selection
-							// active the existing-text reference is the
-							// post-deletion string so e.g. pasting "1.2"
-							// over a selection containing "." in a
-							// DecimalNumber field still accepts the new
-							// dot.
+							// Simulate post-selection deletion before filtering so e.g. pasting "1.2" over a "." still accepts the dot.
 							auto [lo, hi] = SelectionRange(field);
 							std::string existingAfterDelete = field.Text;
 							int caretAfterDelete = field.CaretBytePos;
@@ -2318,11 +1974,6 @@ namespace Index {
 			}
 
 			// ── Caret navigation ──────────────────────────────────
-			// Down-edge moves once and resets the hold timer; while the
-			// arrow stays held we wait k_KeyHoldDelay then auto-repeat at
-			// k_KeyHoldRate. Mirrors Backspace / Delete below — without
-			// it, holding Left/Right only nudged the caret a single
-			// codepoint per press regardless of duration.
 			auto moveLeftOnce = [&]() {
 				if (HasSelection(field) && !shiftDown) {
 					const int lo = std::min(field.CaretBytePos, field.SelectionAnchorBytePos);
@@ -2395,12 +2046,6 @@ namespace Index {
 			}
 
 			// ── Backspace (one-shot + hold-to-repeat) ─────────────
-			// Down-edge fires once and resets the hold timer; while the
-			// key stays held we wait k_KeyHoldDelay then auto-fire at
-			// k_KeyHoldRate. Releasing clears the timer so the next press
-			// starts fresh. Read-only fields swallow the keystroke
-			// entirely so the caret + selection state still feel live
-			// without mutating Text.
 			if (input.GetKeyDown(KeyCode::Backspace)) {
 				if (!field.IsReadOnly) BackspaceOnce(field);
 				field.BackspaceHoldTime = 0.0f;
@@ -2443,16 +2088,7 @@ namespace Index {
 			}
 
 			// ── Typed characters ──────────────────────────────────
-			// GLFW's char callback already fires for held keys at the
-			// OS repeat rate, so typed text just appends at the caret.
-			// Skip while Ctrl is held so chord shortcuts (Ctrl+C/V/X/A)
-			// don't double up by also inserting the bare character.
-			// Read-only fields drop the buffered text entirely.
 			if (!typedText.empty() && !ctrlDown && !field.IsReadOnly) {
-				// ContentType filtering walks the buffered codepoints
-				// against the post-selection-delete state so e.g. an
-				// IntegerNumber field still accepts a leading '-' when
-				// the user is overwriting an existing one.
 				auto [lo, hi] = SelectionRange(field);
 				std::string existingAfterDelete = field.Text;
 				int caretAfterDelete = field.CaretBytePos;
@@ -2476,12 +2112,6 @@ namespace Index {
 		}
 
 		// ── Input field event dispatch ────────────────────────────────
-		// OnValueChanged fires whenever Text mutates — covers user
-		// typing, paste, clipboard cut, programmatic writes, scene-load
-		// edits, anything. Diffed against LastObservedText so a freshly-
-		// deserialised field with non-empty Text doesn't fire on the
-		// first tick (ValueObserved gates the baseline). OnSubmitted
-		// fires once when the user pressed Enter while focused.
 		for (auto&& [entity, interact, field] : inputView.each()) {
 			if (!field.ValueObserved) {
 				field.LastObservedText = field.Text;
@@ -2508,13 +2138,7 @@ namespace Index {
 			}
 		}
 
-		// Sync the child TextRenderer for every input field so it shows
-		// either the entered text (or placeholder when empty + unfocused).
-		// The caret + selection highlight are NOT inserted into the text
-		// string here — GuiRenderer paints them as separate quads, so
-		// caret movement doesn't shift the underlying glyph layout.
-		// Secret mode masks Text into one '*' per codepoint for display
-		// only; field.Text itself stays untouched.
+		// Caret/selection are painted as separate quads by GuiRenderer — not injected into Text — so layout stays stable.
 		for (auto&& [entity, interact, field] : inputView.each()) {
 			if (field.TextEntity == entt::null || !registry.valid(field.TextEntity)) continue;
 			if (!registry.all_of<TextRendererComponent>(field.TextEntity)) continue;
@@ -2532,15 +2156,9 @@ namespace Index {
 		}
 
 		// ── 9. Dropdowns: open/close, sync label ─────────────────────
-		// Open/close on click is handled in the action block above (and
-		// outside-click closing happens before #5). Here we just sync
-		// the optional LabelEntity to display the selected option.
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
 			InteractableComponent* interact = registry.try_get<InteractableComponent>(entity);
-			// Read-only dropdowns refuse to open — header still tints
-			// on hover / press (visual feedback that this is "live")
-			// but the popup never appears via user input. Programmatic
-			// writes to IsOpen still work for editor-driven previews.
+			// IsReadOnly: popup refuses to open via user input; IsOpen still settable programmatically.
 			if (interact && interact->IsClicked && !popupConsumes && !dd.IsReadOnly) {
 				dd.IsOpen = !dd.IsOpen;
 			}
@@ -2561,40 +2179,22 @@ namespace Index {
 		}
 
 		// ── 10. Fan out UI events to managed subscribers ─────────────
-		// Every transient flag we set above is good for exactly this
-		// frame; the managed dispatcher reads them now and fires the
-		// matching static UI events (Button.OnClick, Slider.OnValueChanged,
-		// etc.). Doing this at the tail of Update means engine-detected
-		// transitions reach script handlers the same frame they happen.
 		ScriptEngine::RaiseUiEventDispatch();
 		} // end UIEvent.Widgets scope
 	}
 
 	void UIEventSystem::OnPreRender(Scene& scene) {
-		// Play mode runs Update every frame, which already refreshes
-		// every widget's derived visuals. Re-running here would just be
-		// wasted work, and worse — would overwrite per-frame input-state
-		// reactions (button hover tints, input-field caret) with their
-		// edit-mode steady-state values mid-frame.
+		// Skip in play mode: Update already ran; re-running would overwrite per-frame hover/caret state with edit-mode values.
 		if (Application* app = Application::GetInstance(); app && app->GetIsPlaying()) {
 			return;
 		}
 
-		// Event-driven rebuild: only do work when something actually
-		// changed since the last preview pass. Scene::MarkDirty (called
-		// on every inspector edit, hierarchy reparent, entity create /
-		// destroy, component add / remove) flags this; we clear it
-		// after the rebuild so subsequent idle frames cost nothing.
 		if (!scene.IsUIDirty()) {
 			return;
 		}
 
 		auto& registry = scene.GetRegistry();
 
-		// UI is opt-in. When a scene has no UI widgets at all, clear the
-		// dirty pulse and bail before iterating any of the per-widget
-		// views — otherwise a non-UI scene pays for six empty view scans
-		// every time anything else in the scene marks dirty.
 		if (registry.view<SliderComponent>().size() == 0
 			&& registry.view<ToggleComponent>().size() == 0
 			&& registry.view<DropdownComponent>().size() == 0
@@ -2606,13 +2206,7 @@ namespace Index {
 			return;
 		}
 
-		// Cross-entity refs (Fill / Handle / Checkmark / Text / Label)
-		// aren't serialized — Update normally re-resolves them every
-		// frame. In edit mode Update never ran, so the preview path has
-		// to do the same resolution itself. Without it, a slider /
-		// toggle / etc. created via the editor wouldn't have its
-		// children wired up until the user entered play mode at least
-		// once.
+		// Refs aren't serialized; Update normally re-resolves them, but in edit mode Update never ran.
 		const auto childHasImage = [&registry](EntityHandle e) {
 			return registry.all_of<RectTransform2DComponent, ImageComponent>(e);
 		};
@@ -2679,24 +2273,7 @@ namespace Index {
 		}
 
 		// ── Buttons: NormalColor preview tint ─────────────────────
-		// Edit mode has no hover/press/disabled state to react to, so
-		// the inspector should show what the button looks like at rest.
-		// ButtonComponent owns the colour palette; ImageComponent.Color
-		// is the rendered tint, derived in play mode every frame from
-		// (interactable, isHovered, isPressed) → palette.
-		//
-		// Mirrors the play-mode resolver: if the button has an explicit
-		// TargetGraphic, the preview tint goes there (image OR text);
-		// otherwise it tints the button entity's own image. Without the
-		// TargetGraphic respect here, edit-mode previews painted onto
-		// the wrong entity (the button itself) instead of its child
-		// label/background — visually broken for any button whose
-		// graphic lives on a child entity.
-		// Edit-mode preview mirrors the play-mode resolver above: walk
-		// every Button (Interactable not required on the button entity),
-		// and read the Interactable from the button OR its TargetGraphic.
-		// Required so a button authored without its own InteractableComponent
-		// previews the right palette in the inspector.
+		// TargetGraphic is respected so preview tints the correct child entity, not always the button wrapper itself.
 		auto buttonView = registry.view<ButtonComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, btn] : buttonView.each()) {
 			InteractableComponent* interact = registry.try_get<InteractableComponent>(entity);
@@ -2716,9 +2293,6 @@ namespace Index {
 		}
 
 		// ── Toggle / InputField / Dropdown: NormalColor preview ───
-		// Same contract as the button preview above — show Normal at
-		// rest, Disabled when Interactable is off, so authoring the
-		// palette in the inspector gives immediate feedback.
 		auto togglePrevView = registry.view<ToggleComponent, ImageComponent, InteractableComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, toggle, image, interact] : togglePrevView.each()) {
 			image.Color = interact.Interactable ? toggle.NormalColor : toggle.DisabledColor;
@@ -2733,9 +2307,6 @@ namespace Index {
 		}
 
 		// ── Slider handle: NormalColor preview ────────────────────
-		// Mirror the play-mode resolver: tint the handle's image when
-		// the handle owns the InteractableComponent, otherwise fall back
-		// to the parent. Same precedence as the play-mode pass.
 		auto sliderPrevView = registry.view<SliderComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, slider] : sliderPrevView.each()) {
 			ImageComponent* targetImage = nullptr;
@@ -2756,10 +2327,6 @@ namespace Index {
 		}
 
 		// ── Circular slider handle: NormalColor preview ──────────
-		// Same edit-time pattern as the linear slider above: tint the
-		// handle so the user sees the authored palette without entering
-		// play mode. Falls back to the slider's parent interactable when
-		// the handle has none (older scenes that didn't add one).
 		auto circularPrevView = registry.view<CircularSliderComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, cs] : circularPrevView.each()) {
 			if (cs.HandleEntity == entt::null

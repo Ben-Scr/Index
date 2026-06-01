@@ -199,10 +199,7 @@ namespace Index::ImGuiUtils {
 			);
 			const ImVec2 imageMax = ImVec2(imageMin.x + drawWidth, imageMin.y + drawHeight);
 
-			// Canonical UV pick: ImGui expects top-down sample coords. If
-			// the texture was uploaded with stb's flipVertical=true (bottom
-			// row first) we sample (0,1)→(1,0) to compensate; otherwise we
-			// use the natural (0,0)→(1,1). One rule, every preview path.
+			// stb uploads bottom-row-first when flipVertical=true; compensate with (0,1)→(1,0) UVs so the preview isn't upside-down.
 			const ImVec2 uv0 = flippedY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
 			const ImVec2 uv1 = flippedY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
 			drawList->AddImage((ImTextureID)(intptr_t)rendererId,

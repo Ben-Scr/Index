@@ -7,34 +7,6 @@
 #include <string>
 #include <vector>
 
-// =============================================================================
-// ReferencePicker
-// -----------------------------------------------------------------------------
-// One modal popup that handles every kind of reference field in the inspector
-// — textures, audio, scenes, prefabs, generic assets, entities, and component
-// references on entities. Replaces the per-type s_TexturePicker /
-// s_AudioPicker / s_ReferencePicker statics that used to live next to each
-// inspector.
-//
-// Caller flow (per frame, per field):
-//   1. Determine the field's current value as a PropertyValue.
-//   2. Render the field row with DrawReferenceField(...) — that function
-//      handles the button / mixed-state / drag-drop logic and calls into
-//      OpenForFieldKey() if the user clicks it.
-//   3. After all property rows have been drawn, call RenderPopup() once to
-//      render the modal if any field requested it this frame.
-//   4. Each property row checks ConsumeSelection(fieldKey) at the top of its
-//      next render to apply a selection that arrived from the popup.
-//
-// Field keys
-// ----------
-// A "field key" is an opaque string the caller invents to uniquely identify a
-// field across frames. The picker only uses it to route a selection back to
-// the right caller — keys never appear in the UI. Keys must be stable across
-// frames for as long as the popup is open. Suggested format:
-//   "<componentTypeName>.<fieldName>"  (native components)
-//   "<scriptClassName>#<scriptIndex>.<fieldName>"  (script fields)
-// =============================================================================
 
 namespace Index {
 
@@ -42,20 +14,7 @@ namespace Index {
 
 	namespace ReferencePicker {
 
-		// One row in the picker's list. Label + secondary appear in the popup;
-		// SearchKey is the lower-cased text matched against the search field;
-		// Value is the string that comes back via ConsumeSelection — the
-		// caller decodes it back into a PropertyValue using PropertyValue::FromString.
-		// IsBuiltIn marks engine-shipped assets (default font, built-in
-		// shaders) so the picker's eye toggle can hide them from search.
-		//
-		// IsSlice + SliceX/Y/W/H are only meaningful for texture sub-entries
-		// authored in a sprite-sheet's `.meta`. They tell the thumbnail
-		// layout to crop the parent texture's preview to the slice's rect
-		// instead of showing the whole sheet — so visually picking
-		// "undead.png > undead_4" previews undead_4, not the full sheet.
-		// Non-slice entries leave IsSlice=false; the rect fields are then
-		// ignored.
+		// IsSlice/SliceX/Y/W/H: for sprite-sheet sub-entries; crop the thumbnail preview to the slice rect instead of the full sheet.
 		struct Entry {
 			std::string Label;
 			std::string Secondary;
@@ -70,17 +29,10 @@ namespace Index {
 			int SliceH = 0;
 		};
 
-		// Build entry lists for the standard reference kinds. Each list is
-		// sorted alphabetically and prepended with a "(None)" entry.
 		std::vector<Entry> CollectAssetsByKind(AssetKind kind);
 		std::vector<Entry> CollectEntities();          // every loaded scene + Prefab assets
 		std::vector<Entry> CollectComponentTargets(const std::string& componentDisplayName);
 
-		// Visual style for the picker window. Plain = simple selectable list
-		// (entities, components, scenes). Thumbnails = 48px image grid that
-		// loads each entry's preview from `Entry.Secondary` (the asset's
-		// full path). Used for texture / audio asset pickers so they look
-		// the same as SpriteRenderer's existing texture browser.
 		enum class Style { Plain, Thumbnails };
 
 		// Request that the picker window open this frame for `fieldKey`.
@@ -88,30 +40,14 @@ namespace Index {
 		void OpenForFieldKey(const std::string& fieldKey, const std::string& title,
 			std::vector<Entry> entries, Style style = Style::Plain);
 
-		// Render the modal popup if any caller requested it this frame.
-		// Idempotent — safe to call exactly once per frame regardless of how
-		// many fields might have requested an open.
+		// Safe to call exactly once per frame; idempotent for multiple requestors.
 		void RenderPopup();
 
-		// Pick up a selection that was made on a previous frame for this
-		// field. Returns std::nullopt unless the user picked something for
-		// this exact key. The returned string is the picker entry's Value
-		// (an asset UUID, "prefab:<id>", "<entityId>:<typeName>", etc.).
 		std::optional<std::string> ConsumeSelection(const std::string& fieldKey);
 
-		// Draw a labelled reference button for the inspector field row.
-		// `displayValue` is the visible text on the button ("(None)", an
-		// asset name, "—" when mixed, etc.). Returns true if the user clicked
-		// the button, in which case the caller should call OpenForFieldKey.
-		// `outHovered` is set to true if the cursor is over the button so
-		// caller-supplied tooltips (e.g. clamp ranges) work.
 		bool DrawReferenceField(const char* label, const std::string& displayValue,
 			const std::string& secondary, bool missing, bool mixed, bool& outHovered);
 
-		// Display name to show on the reference button for the unified
-		// PropertyDrawer. Empty UUID renders as "(None)"; missing asset
-		// renders in red as "(Missing)". `secondary` is set to the asset path
-		// or scene name for the hover tooltip.
 		std::string ResolveAssetDisplay(uint64_t assetId, AssetKind expectedKind,
 			bool& outMissing, std::string* outSecondary);
 		std::string ResolvePrefabDisplay(uint64_t prefabId, bool& outMissing,
@@ -122,13 +58,7 @@ namespace Index {
 			const std::string& componentTypeName, bool& outMissing,
 			std::string* outSecondary);
 
-		// Reset all TU-static state. Called from ImGuiEditorLayer::OnDetach
-		// so that Application::Reload (project switch / hot reload) starts
-		// the picker from a clean slate — without this, the eye-toggle,
-		// search field, pending selection, thumbnail cache, AND the
-		// `s_BuiltInsDone` one-shot guard from EnsureBuiltInsRegisteredInEditor
-		// all survive across reloads with stale data pointing into the
-		// previous AssetRegistry.
+		// MUST call on reload/detach: clears picker state (cache, search, eye-toggle) that otherwise survives project switches with stale AssetRegistry pointers.
 		void Shutdown();
 
 	} // namespace ReferencePicker

@@ -4,12 +4,7 @@
 #include "Math/Common.hpp"
 
 namespace Index {
-	// Width/Height describe the *logical* render area cameras project
-	// against and UI scaling reads. When the Window's aspect lock is
-	// active they describe the centered letterboxed sub-rect; otherwise
-	// they match the full framebuffer. FramebufferWidth/Height always
-	// describe the underlying surface so the swap chain reset and the
-	// black-bar surround can still cover the entire OS window.
+	// Width/Height = logical sub-rect (letterboxed when aspect lock is on); FramebufferWidth/Height = full OS surface.
 	class INDEX_API Viewport {
 	public:
 		Viewport() = default;

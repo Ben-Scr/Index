@@ -30,13 +30,6 @@ namespace Index {
         static void BeginFrame(uint16_t viewId = 1);
         static void EndFrame();
 
-        // Render gizmos through the supplied view-projection. Mirrors
-        // GuiRenderer::ComputeWorldUIPixelScale's discipline: callers
-        // must thread the VP they want the gizmos projected against —
-        // the renderer never reaches into Camera2DComponent::Main()
-        // implicitly. The legacy `Render(GizmoLayerMask)` overload was
-        // removed in favour of this one to keep the engine render path
-        // free of camera lookups.
         static void RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask = GizmoLayerMask::All);
 
     private:
@@ -50,14 +43,8 @@ namespace Index {
 
         static bool m_IsInitialized;
         static std::unique_ptr<Shader> m_GizmoShader;
-        // 32-bit indices: Gizmo::s_MaxVertices is 100k, well above the uint16_t
-        // ceiling of 65535. The previous uint16_t buffer silently truncated
-        // indices 65536+ down to 0+, aliasing them onto early vertices and
-        // rendering garbage whenever a busy frame pushed past the limit.
+        // 32-bit indices: Gizmo::s_MaxVertices is 100k; uint16_t would silently alias indices 65536+ onto early vertices.
         static std::vector<uint32_t> m_GizmoIndices;
-        // Reused upload-format scratch buffer; preserves capacity across
-        // frames. Was a TU-scope global, now lives on the class so its
-        // lifetime is tied to GizmoRenderer2D's static state.
         static std::vector<GizmoUploadVertex> s_UploadBuffer;
 
         static uint16_t m_GizmoViewId;

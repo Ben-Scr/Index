@@ -23,10 +23,6 @@ namespace Index {
 		FileWatcher(const FileWatcher&) = delete;
 		FileWatcher& operator=(const FileWatcher&) = delete;
 
-		// `recursive` controls whether directory targets monitor their full
-		// subtree. Defaults to true to preserve historical behavior. Pass
-		// `false` to watch only the immediate children of each directory
-		// target (file targets ignore the flag).
 		void Watch(const std::string& path, const std::string& pattern, Callback callback, bool recursive = true);
 		void Watch(const std::vector<std::string>& paths, const std::vector<std::string>& patterns, Callback callback, bool recursive = true);
 		void Stop();
@@ -41,10 +37,7 @@ namespace Index {
 			bool Recursive = true;
 		};
 
-		// Per-file metadata used for change detection. We record (mtime, size) instead of just
-		// mtime so the save-via-rename pattern (write to temp + rename over original) — which
-		// can produce identical mtimes when timer resolution is coarser than the operation —
-		// still trips a snapshot diff once the size differs.
+		// (mtime, size) pair: mtime alone misses save-via-rename when timer resolution is coarser than the rename window.
 		struct FileFingerprint {
 			std::filesystem::file_time_type WriteTime{};
 			std::uintmax_t Size{ 0 };

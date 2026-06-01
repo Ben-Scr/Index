@@ -6,6 +6,7 @@
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
+#include "Gui/ImGuiImplWebGPU.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
@@ -37,17 +38,10 @@ namespace Index {
 
 #ifdef IDX_PLATFORM_WINDOWS
 	namespace {
-		// M29: tracker for in-flight ShellExecuteW worker threads. Each
-		// worker is short-lived (one ShellExecuteW call) but if the user
-		// closes the editor mid-launch, detaching would leave the thread
-		// running past `main()`. AssetBrowser::Shutdown calls JoinAll on
-		// teardown so every worker either finishes naturally or is waited
-		// for before global destructors run.
+		// Tracked (not detached) so AssetBrowser::Shutdown can join them before global destructors run.
 		std::mutex s_ShellLaunchMutex;
 		std::vector<std::thread> s_ShellLaunchThreads;
 
-		// Sweep already-finished threads. Called on every track to keep
-		// the vector bounded — the mutex is uncontended in normal use.
 		void ReapFinishedShellThreads_Locked() {
 			s_ShellLaunchThreads.erase(
 				std::remove_if(s_ShellLaunchThreads.begin(), s_ShellLaunchThreads.end(),
@@ -141,18 +135,7 @@ namespace Index {
 			}
 		}
 
-		// .scene files embed a "name" field which Scene::SetName reads at load
-		// time. If the file is renamed but the embedded "name" keeps the old
-		// stem, reopening "Bar.scene" still shows "Foo" in the hierarchy —
-		// the bug case from the editor session. Rewrite the field in place
-		// so the on-disk file matches its filename.
-		//
-		// Routed through SceneSerializerStorage so it works for BOTH the
-		// JSON and Binary scene formats — a binary-format scene used to
-		// silently fall through the Json::TryParse warning branch, so the
-		// embedded name stayed stale and the next reopen still loaded the
-		// pre-rename name. Re-writes in whatever format the file already
-		// uses (detected from the file's bytes) instead of forcing JSON.
+		// .scene files embed "name"; if not synced after rename, the hierarchy still shows the old stem. Handles both JSON and Binary formats.
 		void SyncSceneEmbeddedNameToFilename(const std::string& scenePath, const std::string& newStem) {
 			Json::Value root;
 			std::string readError;
@@ -188,13 +171,6 @@ namespace Index {
 			}
 		}
 
-		// If the renamed scene happens to be one of the currently loaded scenes,
-		// the hierarchy panel reads its name from Scene::GetName() — bring that
-		// in sync with the new filename so the user sees the change without
-		// reloading. Also nudge the project's LastOpenedScene pointer so
-		// the next launcher run loads the renamed file by its new stem.
-		// Walks every loaded scene (not just the active one) so renaming an
-		// additive / non-active scene also updates its hierarchy row.
 		void UpdateLoadedSceneNameAfterRename(const std::string& oldStem, const std::string& newStem) {
 			SceneManager::Get().ForeachLoadedScene([&](Scene& scene) {
 				if (scene.GetName() == oldStem) {
@@ -254,12 +230,7 @@ namespace Index {
 		m_PressedPath.clear();
 		m_RenameFrameCounter = 0;
 
-		// Pre-fill with the stem only when ShowFileExtensions is off:
-		// authoring "MyScene" instead of "MyScene.scene" matches the way
-		// the asset browser displays the entry, and the user doesn't
-		// have to delete a redundant ".scene" before typing. CommitRename
-		// re-appends the original extension on commit. Folders never
-		// have an extension to strip — fall back to currentName for them.
+		// Strip extension from display name when ShowFileExtensions is off; CommitRename re-appends it on commit.
 		const bool showExt = EditorPreferences::GetShowFileExtensions();
 		std::string display = currentName;
 		if (!showExt) {
@@ -504,13 +475,6 @@ namespace Index {
 			return;
 		}
 
-		// Re-append the original extension when the user renamed without
-		// typing one — necessary because BeginRename stripped it for the
-		// "ShowFileExtensions=false" UX. Skip when the entry IS a folder
-		// (no extension to preserve) or when the user typed an explicit
-		// extension already (don't double-stack ".scene.scene"). Done in
-		// the regular-rename branch only; the script/prefab pending
-		// branch above already builds its own filename from scratch.
 		if (!newName.empty() && newName.find('.') == std::string::npos) {
 			std::string oldExt = std::filesystem::path(m_RenamePath).extension().string();
 			if (!oldExt.empty()) {
@@ -560,8 +524,14 @@ namespace Index {
 	}
 
 	void AssetBrowser::DeleteEntry(const std::string& path) {
-		m_Thumbnails.Invalidate(path);
+		// Defer thumbnail invalidation: see m_PendingThumbnailInvalidates docs.
+		// The file itself is deleted now so on-disk state is consistent before
+		// Render() returns; only the GPU-bound Texture2D destruction waits.
+		m_PendingThumbnailInvalidates.push_back(path);
 		const std::filesystem::path nativeMirrorPath = ResolveNativeScriptMirrorPath(path);
+		const std::filesystem::path pathFs(path);
+		const bool wasSceneFile = pathFs.extension() == ".scene";
+		const std::string sceneStem = wasSceneFile ? pathFs.stem().string() : std::string{};
 
 		if (Directory::Delete(path)) {
 			if (!nativeMirrorPath.empty()) {
@@ -580,11 +550,21 @@ namespace Index {
 			}
 			CancelRename();
 			m_NeedsRefresh = true;
+
+			// Drop the SceneDefinition so a script-side LoadScene of the
+			// deleted name can't resurrect an empty Scene from the registered
+			// definition.
+			if (wasSceneFile && !sceneStem.empty()) {
+				SceneManager::Get().UnregisterScene(sceneStem);
+			}
 		}
 	}
 
 	void AssetBrowser::RenameEntry(const std::string& path, const std::string& newName) {
-		m_Thumbnails.Invalidate(path);
+		// Same dangling-WGPUTextureView risk as DeleteEntry: ImGui may have
+		// already recorded a draw command for the old-key thumbnail this
+		// frame. Queue the invalidate for next frame instead.
+		m_PendingThumbnailInvalidates.push_back(path);
 
 		std::string oldExt = std::filesystem::path(path).extension().string();
 		std::string oldStem = std::filesystem::path(path).stem().string();
@@ -683,8 +663,120 @@ namespace Index {
 		}
 	}
 
+	void AssetBrowser::SyncSceneEmbeddedNameIfNeeded(const std::filesystem::path& copiedPath) {
+		if (copiedPath.extension() != ".scene") return;
+		SyncSceneEmbeddedNameToFilename(copiedPath.string(), copiedPath.stem().string());
+	}
+
 	void AssetBrowser::CopyPathToClipboard(const std::string& path) {
 		ImGui::SetClipboardText(path.c_str());
+	}
+
+	void AssetBrowser::CreateAssetWithCollisionCheck(
+		std::filesystem::path preferredPath,
+		std::function<void(const std::filesystem::path&)> doCreate)
+	{
+		std::error_code ec;
+		const bool exists = std::filesystem::exists(preferredPath, ec);
+		if (!exists || ec) {
+			doCreate(preferredPath);
+			return;
+		}
+
+		auto prompt = std::make_unique<PendingCreationPrompt>();
+		prompt->PreferredPath = std::move(preferredPath);
+		prompt->DisplayName = prompt->PreferredPath.filename().string();
+		prompt->DoCreate = std::move(doCreate);
+		m_PendingCreationPrompt = std::move(prompt);
+		m_OpenCreationPromptThisFrame = true;
+	}
+
+	void AssetBrowser::RenderCreationCollisionPrompt() {
+		constexpr const char* k_PromptId = "Asset already exists###AssetBrowserCollision";
+
+		if (m_OpenCreationPromptThisFrame) {
+			ImGui::OpenPopup(k_PromptId);
+			m_OpenCreationPromptThisFrame = false;
+		}
+
+		if (!m_PendingCreationPrompt) return;
+
+		// Center on the main viewport (= editor window). Promoted to a real OS
+		// window via SetNextWindowAsNativeDialog so the prompt isn't trapped
+		// inside the editor and still works while the editor is unfocused.
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+
+		if (ImGui::BeginPopupModal(k_PromptId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			ImGui::TextWrapped("An asset named \"%s\" already exists in this folder.",
+				m_PendingCreationPrompt->DisplayName.c_str());
+			ImGui::Spacing();
+			ImGui::TextDisabled("What would you like to do?");
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			bool decided = false;
+			// Move the prompt out before invoking DoCreate so the callback can
+			// re-enter CreateAssetWithCollisionCheck without trampling state.
+			auto finishWith = [&](const std::filesystem::path& finalPath, bool deleteExisting) {
+				auto local = std::move(m_PendingCreationPrompt);
+				m_PendingCreationPrompt.reset();
+				if (deleteExisting) {
+					std::error_code rmEc;
+					std::filesystem::remove(local->PreferredPath, rmEc);
+					if (rmEc) {
+						IDX_WARN_TAG("AssetBrowser",
+							"Overwrite: failed to remove existing file '{}': {}",
+							local->PreferredPath.string(), rmEc.message());
+					}
+				}
+				local->DoCreate(finalPath);
+				decided = true;
+			};
+
+			if (ImGui::Button("Overwrite", ImVec2(120, 0))) {
+				finishWith(m_PendingCreationPrompt->PreferredPath, /*deleteExisting=*/true);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Replace the existing file. The previous one is permanently removed.");
+			}
+
+			ImGui::SameLine();
+			if (ImGui::Button("Make Copy", ImVec2(120, 0))) {
+				const std::filesystem::path parent = m_PendingCreationPrompt->PreferredPath.parent_path();
+				const std::string stem = m_PendingCreationPrompt->PreferredPath.stem().string();
+				const std::string ext = m_PendingCreationPrompt->PreferredPath.extension().string();
+				std::filesystem::path candidate = m_PendingCreationPrompt->PreferredPath;
+				std::error_code ec;
+				for (int n = 1; std::filesystem::exists(candidate, ec) && n < 10000; ++n) {
+					candidate = parent / (FormatDuplicateAssetName(stem, n) + ext);
+					ec.clear();
+				}
+				finishWith(candidate, /*deleteExisting=*/false);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Keep the existing file; create the new one with a numbered suffix.");
+			}
+
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+				m_PendingCreationPrompt.reset();
+				decided = true;
+			}
+
+			if (!decided && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+				m_PendingCreationPrompt.reset();
+				decided = true;
+			}
+
+			if (decided) {
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 
 	void AssetBrowser::CreateFolder(const std::string& parentDir) {
@@ -707,109 +799,68 @@ namespace Index {
 	}
 
 	void AssetBrowser::CreateScript(const std::string& parentDir) {
-		std::string baseName = "NewEntityScript";
-		std::string ext = ".cs";
-		std::string scriptPath = (std::filesystem::path(parentDir) / (baseName + ext)).string();
-		int counter = 1;
-		while (std::filesystem::exists(scriptPath)) {
-			scriptPath = (std::filesystem::path(parentDir) / (baseName + std::to_string(counter) + ext)).string();
-			counter++;
-		}
-
-		m_PendingScriptType = PendingScriptType::CSharp;
-		m_PendingScriptDir = parentDir;
-
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = scriptPath;
-		std::string name = std::filesystem::path(scriptPath).stem().string();
-		BeginRename(scriptPath, name);
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewEntityScript.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharp;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
 	}
-	
+
 	void AssetBrowser::CreateManagedCSharpComponent(const std::string& parentDir) {
-		std::string baseName = "NewComponent";
-		std::string ext = ".cs";
-		std::string componentPath = (std::filesystem::path(parentDir) / (baseName + ext)).string();
-		int counter = 1;
-		while (std::filesystem::exists(componentPath)) {
-			componentPath = (std::filesystem::path(parentDir) / (baseName + std::to_string(counter) + ext)).string();
-			counter++;
-		}
-
-		m_PendingScriptType = PendingScriptType::CSharpComponent;
-		m_PendingScriptDir = parentDir;
-
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = componentPath;
-		std::string name = std::filesystem::path(componentPath).stem().string();
-		BeginRename(componentPath, name);
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewComponent.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharpComponent;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
 	}
 
 	void AssetBrowser::CreateNativeCSharpComponent(const std::string& parentDir) {
-		std::string baseName = "NewNativeComponent";
-		std::string ext = ".cs";
-		std::string componentPath = (std::filesystem::path(parentDir) / (baseName + ext)).string();
-		int counter = 1;
-		while (std::filesystem::exists(componentPath)) {
-			componentPath = (std::filesystem::path(parentDir) / (baseName + std::to_string(counter) + ext)).string();
-			counter++;
-		}
-
-		m_PendingScriptType = PendingScriptType::CSharpNativeComponent;
-		m_PendingScriptDir = parentDir;
-
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = componentPath;
-		std::string name = std::filesystem::path(componentPath).stem().string();
-		BeginRename(componentPath, name);
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewNativeComponent.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharpNativeComponent;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
 	}
 
-
 	void AssetBrowser::CreateGameSystem(const std::string& parentDir) {
-		std::string baseName = "NewGameSystem";
-		std::string ext = ".cs";
-		std::string systemPath = (std::filesystem::path(parentDir) / (baseName + ext)).string();
-		int counter = 1;
-		while (std::filesystem::exists(systemPath)) {
-			systemPath = (std::filesystem::path(parentDir) / (baseName + std::to_string(counter) + ext)).string();
-			counter++;
-		}
-
-		m_PendingScriptType = PendingScriptType::CSharpGameSystem;
-		m_PendingScriptDir = parentDir;
-
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = systemPath;
-		std::string name = std::filesystem::path(systemPath).stem().string();
-		BeginRename(systemPath, name);
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGameSystem.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharpGameSystem;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
 	}
 
 	void AssetBrowser::CreateGlobalSystem(const std::string& parentDir) {
-		std::string baseName = "NewGlobalSystem";
-		std::string ext = ".cs";
-		std::string systemPath = (std::filesystem::path(parentDir) / (baseName + ext)).string();
-		int counter = 1;
-		while (std::filesystem::exists(systemPath)) {
-			systemPath = (std::filesystem::path(parentDir) / (baseName + std::to_string(counter) + ext)).string();
-			counter++;
-		}
-
-		m_PendingScriptType = PendingScriptType::CSharpGlobalSystem;
-		m_PendingScriptDir = parentDir;
-
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = systemPath;
-		std::string name = std::filesystem::path(systemPath).stem().string();
-		BeginRename(systemPath, name);
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGlobalSystem.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharpGlobalSystem;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
 	}
 
 	
@@ -834,84 +885,62 @@ namespace Index {
 		}
 
 		const std::string ext = source.extension().string();
-		std::filesystem::path destPath =
+		const std::filesystem::path preferred =
 			std::filesystem::path(parentDir) / (displayName + ext);
-		std::error_code existsEc;
-		for (int n = 1; std::filesystem::exists(destPath, existsEc) && n < 10000; ++n) {
-			destPath = std::filesystem::path(parentDir) /
-				(FormatDuplicateAssetName(displayName, n) + ext);
-			existsEc.clear();
-		}
 
-		try {
-			std::filesystem::copy_file(source, destPath,
-				std::filesystem::copy_options::overwrite_existing);
-		}
-		catch (const std::exception& e) {
-			IDX_ERROR_TAG("AssetBrowser",
-				"Failed to copy default texture '{}' to '{}': {}",
-				source.string(), destPath.string(), e.what());
-			return;
-		}
+		CreateAssetWithCollisionCheck(preferred,
+			[this, source](const std::filesystem::path& finalPath) {
+				try {
+					std::filesystem::copy_file(source, finalPath,
+						std::filesystem::copy_options::overwrite_existing);
+				}
+				catch (const std::exception& e) {
+					IDX_ERROR_TAG("AssetBrowser",
+						"Failed to copy default texture '{}' to '{}': {}",
+						source.string(), finalPath.string(), e.what());
+					return;
+				}
 
-		const std::string finalPath = destPath.string();
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = finalPath;
-		BeginRename(finalPath, std::filesystem::path(finalPath).stem().string());
+				const std::string finalPathStr = finalPath.string();
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr, finalPath.stem().string());
+			});
 	}
 
 	void AssetBrowser::CreateScene(const std::string& parentDir) {
-		std::string baseName = "NewScene";
-		std::string ext = ".scene";
+		const std::filesystem::path preferred =
+			std::filesystem::path(parentDir) / "NewScene.scene";
 
-		auto sceneNameTaken = [&](const std::string& name) -> bool {
-			try {
-				for (auto& entry : std::filesystem::recursive_directory_iterator(
-					m_RootDirectory, std::filesystem::directory_options::skip_permission_denied)) {
-					if (entry.is_regular_file() && entry.path().extension() == ext
-						&& entry.path().stem().string() == name)
-						return true;
+		CreateAssetWithCollisionCheck(preferred,
+			[this](const std::filesystem::path& finalPath) {
+				const std::string sceneName = finalPath.stem().string();
+				const std::string content =
+					"{\n"
+					"  \"name\": \"" + sceneName + "\",\n"
+					"  \"systems\": [],\n"
+					"  \"entities\": [\n"
+					"    {\n"
+					"      \"name\": \"Camera\",\n"
+					"      \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 },\n"
+					"      \"Camera2D\": { \"orthoSize\": 5, \"zoom\": 1 }\n"
+					"    }\n"
+					"  ]\n"
+					"}\n";
+
+				const std::string finalPathStr = finalPath.string();
+				std::ofstream file(finalPathStr);
+				if (file.is_open()) {
+					file << content;
+					file.close();
 				}
-			}
-			catch (...) {}
-			return false;
-		};
 
-		std::string sceneName = baseName;
-		std::string scenePath = (std::filesystem::path(parentDir) / (sceneName + ext)).string();
-		int counter = 1;
-		while (sceneNameTaken(sceneName)) {
-			sceneName = baseName + std::to_string(counter++);
-			scenePath = (std::filesystem::path(parentDir) / (sceneName + ext)).string();
-		}
-
-		std::string content =
-			"{\n"
-			"  \"name\": \"" + sceneName + "\",\n"
-			"  \"systems\": [],\n"
-			"  \"entities\": [\n"
-			"    {\n"
-			"      \"name\": \"Camera\",\n"
-			"      \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 },\n"
-			"      \"Camera2D\": { \"orthoSize\": 5, \"zoom\": 1 }\n"
-			"    }\n"
-			"  ]\n"
-			"}\n";
-
-		std::ofstream file(scenePath);
-		if (file.is_open()) {
-			file << content;
-			file.close();
-		}
-
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = scenePath;
-		std::string name = std::filesystem::path(scenePath).filename().string();
-		BeginRename(scenePath, name);
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr, finalPath.filename().string());
+			});
 	}
 
 	void AssetBrowser::CreateFile(const std::string& parentDir, const std::string& baseName,
@@ -919,75 +948,70 @@ namespace Index {
 		// Normalize: extension may or may not include the leading dot.
 		const std::string ext = (extension.empty() || extension[0] == '.') ? extension : ("." + extension);
 
-		std::filesystem::path filePath = std::filesystem::path(parentDir) / (baseName + ext);
-		std::error_code existsEc;
-		for (int n = 1; std::filesystem::exists(filePath, existsEc) && n < 10000; ++n) {
-			filePath = std::filesystem::path(parentDir) / (FormatDuplicateAssetName(baseName, n) + ext);
-			existsEc.clear();
-		}
+		const std::filesystem::path preferred =
+			std::filesystem::path(parentDir) / (baseName + ext);
 
-		const std::string finalPath = filePath.string();
-		std::ofstream file(finalPath, std::ios::binary);
-		if (file.is_open()) {
-			if (!defaultContent.empty()) {
-				file.write(defaultContent.data(), static_cast<std::streamsize>(defaultContent.size()));
-			}
-			file.close();
-		}
+		CreateAssetWithCollisionCheck(preferred,
+			[this, defaultContent](const std::filesystem::path& finalPath) {
+				const std::string finalPathStr = finalPath.string();
+				std::ofstream file(finalPathStr, std::ios::binary);
+				if (file.is_open()) {
+					if (!defaultContent.empty()) {
+						file.write(defaultContent.data(),
+							static_cast<std::streamsize>(defaultContent.size()));
+					}
+					file.close();
+				}
 
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = finalPath;
-		BeginRename(finalPath, std::filesystem::path(finalPath).filename().string());
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr,
+					std::filesystem::path(finalPathStr).stem().string());
+			});
 	}
 
 	void AssetBrowser::CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity) {
-		const std::string baseName = "NewPrefab";
-		std::filesystem::path prefabPath = std::filesystem::path(parentDir) / (baseName + ".prefab");
-		std::error_code existsEc;
-		for (int n = 1; std::filesystem::exists(prefabPath, existsEc) && n < 10000; ++n) {
-			prefabPath = std::filesystem::path(parentDir) / (FormatDuplicateAssetName(baseName, n) + ".prefab");
-			existsEc.clear();
-		}
+		const std::filesystem::path preferred =
+			std::filesystem::path(parentDir) / "NewPrefab.prefab";
 
-		const std::string finalPath = prefabPath.string();
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir, sourceEntity](const std::filesystem::path& finalPath) {
+				const std::string finalPathStr = finalPath.string();
 
-		if (sourceEntity != entt::null) {
-			Scene* activeScene = SceneManager::Get().GetActiveScene();
-			if (activeScene && activeScene->IsValid(sourceEntity)) {
-				SceneSerializer::SaveEntityToFile(*activeScene, sourceEntity, finalPath);
-			}
-		}
-		else {
-			// Minimal Transform2D-only prefab — matches what Scene::CreateEntity produces, so
-			// instantiating from this file gives a usable entity instead of a component-less one.
-			const std::string content =
-				"{\n"
-				"  \"version\": 1,\n"
-				"  \"type\": \"Prefab\",\n"
-				"  \"Entity\": {\n"
-				"    \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 }\n"
-				"  },\n"
-				"  \"prefab\": {\n"
-				"    \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 }\n"
-				"  }\n"
-				"}\n";
-			std::ofstream file(finalPath);
-			if (file.is_open()) {
-				file << content;
-				file.close();
-			}
-		}
+				if (sourceEntity != entt::null) {
+					Scene* activeScene = SceneManager::Get().GetActiveScene();
+					if (activeScene && activeScene->IsValid(sourceEntity)) {
+						SceneSerializer::SaveEntityToFile(*activeScene, sourceEntity, finalPathStr);
+					}
+				}
+				else {
+					const std::string content =
+						"{\n"
+						"  \"version\": 1,\n"
+						"  \"type\": \"Prefab\",\n"
+						"  \"Entity\": {\n"
+						"    \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 }\n"
+						"  },\n"
+						"  \"prefab\": {\n"
+						"    \"Transform2D\": { \"posX\": 0, \"posY\": 0, \"rotation\": 0, \"scaleX\": 1, \"scaleY\": 1 }\n"
+						"  }\n"
+						"}\n";
+					std::ofstream file(finalPathStr);
+					if (file.is_open()) {
+						file << content;
+						file.close();
+					}
+				}
 
-		m_PendingScriptType = PendingScriptType::EntityPrefab;
-		m_PendingScriptDir = parentDir;
-		m_PendingPrefabSourceEntity = sourceEntity;
-		m_NeedsRefresh = true;
-		Refresh();
-
-		m_SelectedPath = finalPath;
-		BeginRename(finalPath, std::filesystem::path(finalPath).filename().string());
+				m_PendingScriptType = PendingScriptType::EntityPrefab;
+				m_PendingScriptDir = parentDir;
+				m_PendingPrefabSourceEntity = sourceEntity;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr, finalPath.filename().string());
+			});
 	}
 
 	void AssetBrowser::OpenAssetExternal(const DirectoryEntry& entry) {
@@ -1004,10 +1028,7 @@ namespace Index {
 
 			if (ext == ".prefab")
 			{
-				// Defer: ImGuiEditorLayer drains this in OnPreRender and
-				// swaps into prefab-edit mode (detached scene + blue
-				// background). Routing through here keeps double-click
-				// behaviour for prefabs in the same place as scenes.
+				// Defer: ImGuiEditorLayer drains this in OnPreRender to enter prefab-edit mode; routing here keeps prefab and scene double-click behaviour in the same place.
 				m_PendingPrefabEdit = entry.Path;
 				return;
 			}
@@ -1024,16 +1045,7 @@ namespace Index {
 			}
 
 #ifdef IDX_PLATFORM_WINDOWS
-			// M29: shell-launch threads are tracked instead of detached so
-			// AssetBrowser::Shutdown can join them on editor close.
-			// Process::Run / LaunchDetached use CreateProcessW directly and
-			// don't resolve OS file-association handlers, so for arbitrary
-			// asset types (.png, .pdf, ...) we still need ShellExecuteW —
-			// the lifecycle just gets a tracker.
-			//
-			// The cap on concurrent in-flight opens stays in place so a
-			// stuck shell handler can't be amplified by a user
-			// double-clicking many assets in rapid succession.
+			// ShellExecuteW is needed for OS file-association handling; threads are tracked (not detached) so Shutdown can join them.
 			static constexpr int k_MaxConcurrentOpens = 8;
 			static std::atomic<int> s_ActiveOpens{ 0 };
 			if (s_ActiveOpens.load(std::memory_order_acquire) >= k_MaxConcurrentOpens) {
@@ -1061,14 +1073,7 @@ namespace Index {
 		if (m_CurrentDirectory.empty()) return;
 		if (paths.empty()) return;
 
-		// Share the same OS-level loading popup the editor uses for
-		// "Compiling Scripts..." / "Building Project..." so the user
-		// gets identical feedback during a drag-drop import. The import
-		// is synchronous and blocks the editor's frame loop; the chrome
-		// layer's per-frame Show/Update therefore never runs while we're
-		// in here, so we drive the popup directly. Win32BuildProgressWindow
-		// calls UpdateWindow() after each InvalidateRect so the bar stays
-		// crisp even though our render thread is parked in this loop.
+		// Import is synchronous; drive the progress popup directly since the frame loop is blocked.
 		Win32BuildProgressWindow::Show("Importing Assets...");
 		const size_t total = paths.size();
 
@@ -1076,9 +1081,6 @@ namespace Index {
 		for (size_t i = 0; i < paths.size(); ++i) {
 			const std::string& sourcePath = paths[i];
 
-			// Per-item stage shows the filename being copied; progress
-			// advances at item granularity (one tick per dropped path,
-			// not per file inside a recursed directory).
 			std::string itemName;
 			try { itemName = std::filesystem::path(sourcePath).filename().string(); }
 			catch (...) { itemName = sourcePath; }
@@ -1128,8 +1130,6 @@ namespace Index {
 			}
 		}
 
-		// Snap to 1.0 so the user sees a completed bar for a moment if
-		// the post-import refresh below takes any time, then hide.
 		Win32BuildProgressWindow::Update(1.0f, "Done");
 		Win32BuildProgressWindow::Hide();
 

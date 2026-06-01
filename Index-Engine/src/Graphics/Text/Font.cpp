@@ -17,19 +17,6 @@
 #include <unordered_map>
 #include <utility>
 
-// =============================================================================
-// Font — WebGPU implementation.
-// -----------------------------------------------------------------------------
-// CPU-side stbtt bake: codepoint ranges, two-tier oversample, atlas-side
-// growth ladder. GPU upload writes a wgpu::Texture (R8Unorm) + view
-// registered in a TU-local pool that WebGPUBackend::LookupFontAtlas
-// reads back.
-//
-// `m_AtlasTexture` stores an opaque pool ID (1-based; 0 = unset, same
-// `IsLoaded() => m_AtlasTexture != 0` contract from the header). Owners
-// (FontManager slot's unique_ptr<Font>) drop the entry via Cleanup at
-// destruction, releasing the wgpu::Texture immediately.
-// =============================================================================
 
 namespace Index {
 
@@ -76,11 +63,6 @@ namespace Index {
 			return (it == g_Atlases.end()) ? nullptr : &it->second;
 		}
 
-		// CPU-only output of a stbtt pack pass. Produced on a worker thread by
-		// BeginAsyncBake; consumed on the main thread by PollAsyncBake to
-		// finish the GPU upload + glyph-table publish. Self-contained so the
-		// worker never touches Font members directly — only this struct via a
-		// std::shared_ptr.
 		struct CpuBakeResult {
 			std::vector<uint8_t> Bitmap;
 			std::vector<stbtt_packedchar> Packed;
@@ -166,11 +148,6 @@ namespace Index {
 		}
 	}
 
-	// Worker handle owned by Font::m_AsyncBake. The worker writes its result
-	// into Result (a std::shared_ptr so the worker can be detached and still
-	// have a valid sink if the Font is destroyed mid-bake) and flips Ready.
-	// Joined either by PollAsyncBake (on completion) or by Cleanup (on early
-	// teardown).
 	struct FontAsyncBakeState {
 		std::thread                       Worker;
 		std::shared_ptr<CpuBakeResult>    Result;
@@ -269,11 +246,6 @@ namespace Index {
 	}
 
 	namespace {
-		// Main-thread step: take a finished CPU bake and create the wgpu::Texture,
-		// upload the bitmap, build a view, register into the atlas pool. On
-		// success, fills outAtlasTexture/outAtlasSide and leaves `result.Packed`
-		// for the caller to translate into glyph metrics. Returns false (and logs)
-		// on any GPU-side failure.
 		bool PublishAtlasGpu(const CpuBakeResult& result,
 			unsigned& outAtlasTexture, int& outAtlasSide)
 		{
@@ -494,10 +466,7 @@ namespace Index {
 	}
 
 	void Font::Cleanup() {
-		// Drain any in-flight async bake before tearing state down — the
-		// worker still holds a shared_ptr to its own result, but joining
-		// here keeps Font teardown deterministic and avoids leaving an
-		// unjoined thread when the Font is destroyed mid-bake.
+		// Join the worker before teardown to avoid an unjoined thread if Font is destroyed mid-bake (worker holds shared_ptr to its result, but join makes teardown deterministic).
 		if (m_AsyncBake) {
 			if (m_AsyncBake->Worker.joinable()) m_AsyncBake->Worker.join();
 			m_AsyncBake.reset();

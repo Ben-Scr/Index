@@ -32,11 +32,6 @@
 
 namespace Index {
 	namespace {
-		// Reach the live ApplicationConfig via Application::GetInstance().
-		// GetConfiguration() returns by value (the user-supplied virtual), so we
-		// also return by value here — taking a reference to the temporary would
-		// dangle past the function return. Pulling the config in here (rather
-		// than threading it through RegisterScene) keeps the public API stable.
 		ApplicationConfig GetActiveAppConfig() {
 			Application* app = Application::GetInstance();
 			return app ? app->GetConfiguration() : ApplicationConfig{};
@@ -45,52 +40,30 @@ namespace Index {
 		void AddStandardSceneSystems(SceneDefinition& definition) {
 			const ApplicationConfig config = GetActiveAppConfig();
 
-			// First so every other system in the frame (scripts, particles,
-			// UI, rendering) sees up-to-date world transforms composed from
-			// each entity's Local* offsets and its parent's world transform.
+			// TransformHierarchy runs first so all subsequent systems see up-to-date world transforms.
 			definition.AddSystem<TransformHierarchySystem>();
 
-			// UI layout pass — resolves every RectTransform2D against the
-			// window viewport + parent rects so UIEventSystem (hit-tests)
-			// and UIRenderer (draws) read up-to-date screen-space AABBs.
-			// Gated on the renderer being enabled because layout needs the
-			// window viewport to be live; without a window we'd skip the
-			// pass entirely anyway.
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<UILayoutSystem>();
 			}
 
-			// ParticleUpdateSystem only does useful work when there's a renderer
-			// to issue draws — skip it for headless / non-rendering apps.
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<ParticleUpdateSystem>();
 			}
 
-			// ScriptSystem.Awake bails when scripting is off, but adding the
-			// system at all still has bookkeeping cost in every scene; gate it.
 			if (config.EnableScripting) {
 				definition.AddSystem<ScriptSystem>();
 			}
 
-			// AudioUpdateSystem is a no-op without an AudioManager, but its
-			// per-frame Update still walks the entity registry — gate it.
 			if (config.EnableAudio) {
 				definition.AddSystem<AudioUpdateSystem>();
 			}
 
-			// UIFocusSystem updates the keyboard / controller focus
-			// target BEFORE UIEventSystem so its mouse-focus promotion
-			// uses fresh resolved rects and its Activate flag is in
-			// place when UIEventSystem's hit-test loop synthesises a
-			// click. The system is opt-in per-widget (via
-			// InteractableComponent::Focusable) so existing scenes are
-			// untouched even when it's registered.
+			// UIFocusSystem MUST run before UIEventSystem: it promotes mouse-focus and sets the Activate flag that UIEventSystem's hit-test reads.
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<UIFocusSystem>();
 			}
 
-			// UIEventSystem reads mouse position from the scene's main
-			// camera viewport — only useful when the renderer is up.
 			if (config.EnableRenderer2D) {
 				definition.AddSystem<UIEventSystem>();
 			}
@@ -115,9 +88,6 @@ namespace Index {
 
 		m_IsInitialized = true;
 		RegisterCoreComponents();
-		// Startup scenes are loaded by Application AFTER PackageHost::LoadAll
-		// so that package-registered component types (e.g. Tilemap2DComponent)
-		// are present in the registry before scene deserialization runs.
 	}
 
 	void SceneManager::RegisterCoreComponents() {
@@ -317,8 +287,31 @@ namespace Index {
 		}
 
 		scene->m_IsLoaded = false;
-		scene->DestroyScene(awakenedSystemCount);
-		scene->ClearEntities();
+		try {
+			scene->DestroyScene(awakenedSystemCount);
+			scene->ClearEntities();
+		}
+		catch (const std::exception& e) {
+			IDX_CORE_ERROR_TAG("SceneManager", "Rollback scene teardown failed for '{}': {}", sceneName, e.what());
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("SceneManager", "Rollback scene teardown failed for '{}'", sceneName);
+		}
+
+		if (PhysicsSystem2D::IsInitialized()) {
+			try {
+				PhysicsSystem2D::GetMainPhysicsWorld().DestroyAllBodiesForScene(scene.get());
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("SceneManager", "Rollback Box2D body cleanup for '{}' failed", sceneName);
+			}
+			try {
+				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(scene.get());
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("SceneManager", "Rollback AxiomPhys body cleanup for '{}' failed", sceneName);
+			}
+		}
 
 		if (m_ActiveScene == scene.get()) {
 			m_ActiveScene = nullptr;
@@ -338,6 +331,20 @@ namespace Index {
 		}
 	}
 
+	void SceneManager::UnregisterScene(const std::string& name) {
+		if (IsSceneLoaded(name)) {
+			UnloadScene(name);
+		}
+		auto it = m_SceneDefinitions.find(name);
+		if (it == m_SceneDefinitions.end()) {
+			return;
+		}
+		m_SceneDefinitions.erase(it);
+		m_SceneDefinitionOrder.erase(
+			std::remove(m_SceneDefinitionOrder.begin(), m_SceneDefinitionOrder.end(), name),
+			m_SceneDefinitionOrder.end());
+	}
+
 	void SceneManager::UnloadScene(const std::string& name) {
 		auto it = FindLoadedSceneIterator(name);
 		if (it == m_LoadedScenes.end()) {
@@ -352,9 +359,6 @@ namespace Index {
 
 		ReleaseScene(it);
 
-		// Mirror the post-scene-transition sweep in UnloadAllScenes: components on
-		// the released scene held the only refs to some textures and audio clips,
-		// so without this pass those assets stay resident until shutdown.
 		Application* app = Application::GetInstance();
 		if (app) {
 			const ApplicationConfig config = app->GetConfiguration();
@@ -431,11 +435,7 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("SceneManager", "Scene entity cleanup failed for '{}'", sceneName);
 		}
 
-		// Belt-and-suspenders: ClearEntities should fire every component destroy hook,
-		// which in turn destroys the matching Box2D bodies. But if an exception aborts
-		// that pass mid-way — or any future code path bypasses ClearEntities — the
-		// global Box2DWorld would still hold BodyBindings whose OwningScene pointer
-		// is about to dangle. Force-clear any bindings tied to this scene now.
+		// Force-purge physics bodies even if ClearEntities threw mid-way, to prevent dangling Scene* in the global physics worlds.
 		if (PhysicsSystem2D::IsInitialized()) {
 			try {
 				PhysicsSystem2D::GetMainPhysicsWorld().DestroyAllBodiesForScene(&scene);
@@ -443,10 +443,6 @@ namespace Index {
 			catch (...) {
 				IDX_CORE_ERROR_TAG("SceneManager", "Box2D body cleanup for unloaded scene '{}' failed", sceneName);
 			}
-			// Same belt-and-suspenders sweep for the AxiomPhys world (Fast* colliders):
-			// IndexPhysicsWorld2D keeps a Body*->Scene* map read every frame by
-			// DispatchScriptContacts, so a thrown-mid-clear ClearEntities pass must
-			// not leave a body whose owning Scene is about to be freed.
 			try {
 				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(&scene);
 			}
@@ -479,14 +475,6 @@ namespace Index {
 			it = m_LoadedScenes.begin();
 		}
 
-		// Partial-fix for the H2 asset-leak issue: between scene changes
-		// (the !includePersistent path — full unload happens via Shutdown
-		// instead), sweep the asset tables for entries no live Scene's
-		// component still references and free them. This is a defensive
-		// linear scan, not reference counting, but it stops the monotonic
-		// growth across reloads. We deliberately skip the includePersistent
-		// path because that's the Shutdown route and the manager-level
-		// Shutdowns already nuke their own state.
 		if (!includePersistent) {
 			Application* app = Application::GetInstance();
 			if (app) {
@@ -519,15 +507,6 @@ namespace Index {
 		return std::weak_ptr(*it);
 	}
 
-	// Returning nullptr is part of the contract — every caller is
-	// expected to handle the "no active scene" case (Renderer2D's
-	// ResolveClearCamera, the editor inspector, scripting bridges,
-	// etc. all `if (scene) ...`). Earlier revisions logged a warning
-	// here, but that fired once per frame during legitimate startup
-	// states (splash screen, between-scene unload/load) and flooded
-	// the log with thousands of identical lines, hiding real warnings.
-	// Misuse where a caller genuinely needs an active scene is caught
-	// at the call site (assertion / explicit check) — not here.
 	Scene* SceneManager::GetActiveScene() {
 		return m_ActiveScene;
 	}
@@ -557,21 +536,11 @@ namespace Index {
 		}
 
 		const size_t oldIndex = static_cast<size_t>(std::distance(m_LoadedScenes.begin(), it));
-		// `newIndex` is the position the user wants the scene to occupy in
-		// the final list, so the upper bound is size-1 (the last valid slot).
 		const size_t finalIndex = std::min(newIndex, m_LoadedScenes.size() - 1);
 		if (oldIndex == finalIndex) {
 			return false;
 		}
 
-		// Lift the shared_ptr out before erasing so the scene stays alive
-		// through the gap between erase + insert. After the erase the list
-		// has one fewer element, but inserting at `finalIndex` still lands
-		// the scene at that index in the resulting list regardless of
-		// direction (forward or backward move) — the erase pulls every
-		// element after the source up by one, which is exactly the
-		// adjustment needed when moving forward; moving backward leaves
-		// the target slot untouched.
 		std::shared_ptr<Scene> scene = std::move(*it);
 		m_LoadedScenes.erase(it);
 		const size_t insertIndex = std::min(finalIndex, m_LoadedScenes.size());
@@ -600,13 +569,6 @@ namespace Index {
 	}
 
 	void SceneManager::UpdateScenes() {
-		// Index-based walk with re-checked size each step. Systems can call into
-		// LoadScene/UnloadScene mid-iteration; the previous full vector copy guarded
-		// against that but allocated O(loaded-scenes) per frame, three times per
-		// frame across UpdateScenes/OnPreRenderScenes/FixedUpdateScenes — direct
-		// contradiction of "no hidden allocations in hot paths". The shared_ptr
-		// holds the scene alive past any concurrent erase, so a stale index just
-		// returns a no-longer-loaded scene we skip.
 		for (size_t i = 0; i < m_LoadedScenes.size(); ++i) {
 			auto scene = m_LoadedScenes[i];
 			if (scene && scene->IsLoaded()) scene->UpdateSystems();

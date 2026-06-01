@@ -19,10 +19,6 @@
 namespace Index {
 
 	namespace {
-		// Profile filenames double as identifiers (IndexProject::ActiveBuildProfileName).
-		// Restrict to characters that survive cleanly on Windows + Linux filesystems
-		// and never need escaping in JSON. Same conservative ruleset as
-		// IndexProject::IsValidProjectName, slightly relaxed (dot allowed).
 		bool IsAcceptableNameChar(char c) {
 			if (c >= 'a' && c <= 'z') return true;
 			if (c >= 'A' && c <= 'Z') return true;
@@ -52,13 +48,6 @@ namespace Index {
 			float height = 0.0f;
 		};
 
-		// Resolves the GPU handle for a platform's icon under
-		// IndexAssets/Textures/Editor/PlatformIcons/<name>.png. Goes through
-		// TextureManager so repeated lookups hit the existing texture cache
-		// (and the icons survive PurgeUnreferenced via TextureManager's own
-		// retention of explicitly-loaded handles). Returns a zero-handle
-		// PlatformIcon when the platform ships no icon or the file is missing,
-		// in which case the caller falls back to a text-only row.
 		PlatformIcon LoadPlatformIcon(BuildPlatform platform) {
 			const char* iconName = IndexBuildProfile::PlatformIconName(platform);
 			if (!iconName) return {};
@@ -431,11 +420,6 @@ namespace Index {
 		ImGui::Text("Name: %s", profile.Name.c_str());
 		ImGui::Spacing();
 
-		// Platform list — drives the available backend list. Rendered as a
-		// vertical icon-prefixed list (Unity Build Settings style) instead
-		// of a combo so the user can see every target at a glance and
-		// platforms ship a recognizable icon. Icon files live under
-		// IndexAssets/Textures/Editor/PlatformIcons/<name>.png.
 		ImGui::TextUnformatted("Target Platform:");
 		{
 			const std::vector<BuildPlatform> allPlatforms = IndexBuildProfile::AllPlatforms();
@@ -470,11 +454,6 @@ namespace Index {
 
 				ImDrawList* drawList = ImGui::GetWindowDrawList();
 				if (icon.handle != 0 && icon.width > 0.0f && icon.height > 0.0f) {
-					// Fit icon inside iconSize×iconSize while preserving source
-					// aspect, then center it in the bounding box. Label X stays
-					// based on the full iconSize so text doesn't jump per row.
-					// TextureManager loads with flipVertical=false (top-left
-					// origin), so the default 0,0→1,1 UV renders right-side up.
 					float drawW = iconSize;
 					float drawH = iconSize;
 					if (icon.width > icon.height) {

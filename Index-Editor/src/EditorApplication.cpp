@@ -22,11 +22,6 @@ static std::string s_ProjectPath;
 class EditorApplication : public Application {
 public:
 	EditorApplication() {
-		// Mark this Application instance as the editor host so engine
-		// code (and C# scripts via Application.IsEditor) can branch on
-		// runtime context. The flag is the runtime sibling of the
-		// compile-time INDEX_EDITOR define already passed to scripts
-		// loaded by the editor.
 		SetEditorHost(true);
 	}
 
@@ -42,12 +37,6 @@ public:
 		config.WindowSpecification.CustomTitlebar = false;
 		config.EnableAudio = true;
 		config.EnableGizmoRenderer = true;
-		// GuiRenderer is the screen-space UI pass for RectTransform2D
-		// entities (Image, TextRendererComponent in UI mode, dropdown
-		// popups). The editor needs it on so the loaded scene's UI
-		// shows up in Editor View / Game View — historical "false" here
-		// dates back to when this flag controlled engine-owned ImGui
-		// plumbing, which it no longer does.
 		config.EnableGuiRenderer = true;
 		config.EnablePhysics2D = true;
 		config.SetWindowIcon = true;
@@ -69,11 +58,6 @@ public:
 					return;
 				}
 				if (!sceneName.empty()) {
-					// LastOpenedScene was set to a scene that no longer
-					// resolves (renamed, deleted, moved out of the
-					// project's Assets/ tree). Surface that to the editor
-					// log so the user understands why they got a fresh
-					// scene instead of their last one.
 					IDX_WARN_TAG("Editor",
 						"Last opened scene '{}' could not be loaded — no scene file resolves under the project. Starting a fresh scene.",
 						sceneName);

@@ -20,11 +20,7 @@
 namespace Index {
 	using IndexContactCallback = std::function<void(const IndexContact2D&)>;
 
-	/// Engine-level wrapper around the Axiom-Physics PhysicsWorld.
-	/// Manages Body/Collider ownership and provides per-entity contact callbacks.
-	// Owns `unordered_map<uint32_t, unique_ptr<Body|Collider>>` members; not INDEX_API
-	// for the same reason as LayerStack — would trigger MSVC's dllexport copy-op
-	// instantiation error. Consumers access it via PhysicsSystem2D's API.
+	/// Engine-level wrapper around the Axiom-Physics PhysicsWorld. Not INDEX_API: owns unique_ptr map members (MSVC dllexport would instantiate copy-op).
 	class IndexPhysicsWorld2D {
 	public:
 		IndexPhysicsWorld2D();
@@ -33,11 +29,7 @@ namespace Index {
 		void Step(float dt);
 		void Destroy();
 
-		// Per-contact dispatch hook for script collision callbacks. Called by
-		// PhysicsSystem2D::FixedUpdate after Step so the OnCollisionEnter2D /
-		// OnCollisionStay2D / OnCollisionExit2D events fire on Fast* colliders
-		// the same way they do on Box2D colliders. The Step method itself only
-		// fires per-entity callbacks registered via RegisterContactCallback.
+		// Called by PhysicsSystem2D::FixedUpdate after Step so Fast* collision events match Box2D collider timing.
 		using ScriptDispatchCallback = std::function<void(const Collision2D&)>;
 		void DispatchScriptContacts(
 			const ScriptDispatchCallback& onEnter,
@@ -50,22 +42,12 @@ namespace Index {
 		void SetSettings(const AxiomPhys::WorldSettings& settings) { m_World.SetSettings(settings); }
 		const AxiomPhys::WorldSettings& GetSettings() const { return m_World.GetSettings(); }
 
-		// Body registration tied to an entity. The optional `scene` pointer
-		// records which Scene owns the body so DispatchScriptContacts can
-		// route collision events back to the right ScriptSystem dispatch
-		// targets. Pre-existing call sites that omit `scene` keep working
-		// (the dispatch routes via SceneManager::GetActiveScene fallback).
+		// `scene` routes collision events to the right ScriptSystem; omit for the SceneManager::GetActiveScene fallback.
 		AxiomPhys::Body* CreateBody(EntityHandle entity, AxiomPhys::BodyType type, Scene* scene = nullptr);
 		void DestroyBody(EntityHandle entity);
 		AxiomPhys::Body* GetBody(EntityHandle entity);
 
-		// Collider attachment. Two collider kinds can coexist on a single
-		// entity at the storage level: the inspector's component-conflict
-		// system blocks user-driven dual-collider setups, but programmatic
-		// adds (scripts, deserialised legacy scenes) used to overwrite the
-		// existing entry and leave the user-component's pointer dangling.
-		// Keying by (entity, kind) keeps both alive and removable
-		// independently.
+		// Colliders keyed by (entity, kind): programmatic dual-collider adds no longer dangle the existing pointer.
 		enum class FastColliderKind : uint8_t {
 			Box,
 			Circle,
@@ -73,24 +55,11 @@ namespace Index {
 
 		AxiomPhys::BoxCollider* CreateBoxCollider(EntityHandle entity, const Vec2& halfExtents);
 		AxiomPhys::CircleCollider* CreateCircleCollider(EntityHandle entity, float radius);
-		// Destroy a specific collider kind on the entity. Called from the
-		// matching FastBoxCollider2D / FastCircleCollider2D destroy hook so
-		// removing one component never invalidates the other.
 		void DestroyCollider(EntityHandle entity, FastColliderKind kind);
-		// Destroy every collider on this entity. Standalone API for callers
-		// that want to wipe all colliders without removing the body.
-		// Note: DestroyBody intentionally does NOT call this — collider
-		// components own their own lifetime and are torn down via their
-		// own on_destroy hook. Calling DestroyAllCollidersOnEntity from
-		// DestroyBody would dangle the raw m_Collider pointers stored
-		// inside FastBoxCollider2D / FastCircleCollider2D components.
+		// DestroyBody intentionally does NOT call this: collider components own their lifetime and DestroyAllCollidersOnEntity would dangle their raw m_Collider pointers.
 		void DestroyAllCollidersOnEntity(EntityHandle entity);
 
-		// Belt-and-suspenders scene teardown: destroy every body + collider whose
-		// owning Scene is `scene`. Mirrors Box2DWorld::DestroyAllBodiesForScene;
-		// SceneManager calls it after ClearEntities so a thrown-mid-clear pass
-		// can't leave a dangling Scene* in m_BodyToScene (read every frame by
-		// DispatchScriptContacts).
+		// Called after ClearEntities to prevent a dangling Scene* in m_BodyToScene (read every frame by DispatchScriptContacts).
 		void PurgeBodiesForScene(Scene* scene);
 
 		// Contact callbacks per entity
@@ -104,8 +73,6 @@ namespace Index {
 
 		AxiomPhys::PhysicsWorld m_World;
 
-		// Composite (entity, kind) key for the collider map. Packed into a
-		// uint64 for cheap hashing.
 		struct ColliderKey {
 			uint32_t entity;
 			FastColliderKind kind;
@@ -126,30 +93,16 @@ namespace Index {
 		std::unordered_map<uint32_t, std::unique_ptr<AxiomPhys::Body>> m_Bodies;
 		std::unordered_map<ColliderKey, std::unique_ptr<AxiomPhys::Collider>, ColliderKeyHash> m_Colliders;
 
-		// Per-entity: which collider kind is currently attached to its body
-		// (if any). AxiomPhys::Body supports only one attached collider at a
-		// time, so the storage allows two kinds to coexist but only one is
-		// "live" on the body. This map records which one. Without it,
-		// DestroyCollider could not tell whether to call DetachCollider on
-		// the body — a destroy on the *non-attached* kind would otherwise
-		// detach the wrong collider.
+		// Tracks which kind is currently attached to the body (only one can be live); without this DestroyCollider would detach the wrong collider.
 		std::unordered_map<uint32_t, FastColliderKind> m_AttachedColliderKind;
 
-		// Entity lookup from Body pointer (reverse map)
 		std::unordered_map<AxiomPhys::Body*, EntityHandle> m_BodyToEntity;
-		// Scene that owns each body. Looked up alongside m_BodyToEntity so
-		// DispatchScriptContacts can build the correct Collision2D{ sceneA/B }
-		// and ScriptSystem can route the event to the matching scene's
-		// ScriptComponent.
 		std::unordered_map<AxiomPhys::Body*, Scene*> m_BodyToScene;
 
 		// Contact callbacks per entity
 		std::unordered_map<uint32_t, IndexContactCallback> m_ContactCallbacks;
 
-		// Entity pairs that were in contact LAST frame — used by
-		// DispatchScriptContacts to derive Enter (in current but not last),
-		// Stay (in both), and Exit (in last but not current) events from the
-		// AxiomPhys world's raw contact list.
+		// Last-frame contact pairs for Enter/Stay/Exit derivation.
 		struct ContactPair {
 			uint32_t entityA = 0;
 			uint32_t entityB = 0;

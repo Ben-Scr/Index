@@ -14,9 +14,6 @@
 namespace Index {
 
 	namespace {
-		// XML-escape any character that has meaning in attribute or element
-		// content. Without this, GitHub-index strings (which we don't control)
-		// could inject MSBuild elements/attributes into the user's .csproj.
 		std::string XmlEscape(std::string_view value) {
 			std::string out;
 			out.reserve(value.size());
@@ -33,11 +30,6 @@ namespace Index {
 			return out;
 		}
 
-		// Reject names/versions that would cause path traversal or otherwise
-		// escape the project tree when concatenated into a filesystem path. We
-		// don't try to canonicalise — we just refuse anything containing path
-		// separators, parent-dir tokens, drive markers, control chars, or
-		// non-printable bytes. Whitelist: [A-Za-z0-9._-+~]. Empty rejected.
 		bool IsSafePathComponent(std::string_view value) {
 			if (value.empty()) return false;
 			if (value == "." || value == "..") return false;
@@ -53,7 +45,34 @@ namespace Index {
 			return true;
 		}
 
-		// Add a <Reference> to a .csproj file
+		bool IsSha256Hex(std::string_view value) {
+			return value.size() == 64
+				&& std::all_of(value.begin(), value.end(), [](unsigned char c) {
+					return std::isxdigit(c) != 0;
+				});
+		}
+
+		bool IsContainedPath(const std::filesystem::path& root,
+			const std::filesystem::path& candidate)
+		{
+			std::error_code ec;
+			const std::filesystem::path canonicalRoot =
+				std::filesystem::weakly_canonical(root, ec);
+			if (ec || canonicalRoot.empty()) return false;
+
+			const std::filesystem::path canonicalCandidate =
+				std::filesystem::weakly_canonical(candidate, ec);
+			if (ec || canonicalCandidate.empty()) return false;
+
+			const std::filesystem::path relative =
+				canonicalCandidate.lexically_relative(canonicalRoot);
+			if (relative.empty() || relative.is_absolute()) return false;
+			for (const auto& component : relative) {
+				if (component == "..") return false;
+			}
+			return true;
+		}
+
 		static bool AddReferenceToProject(const std::string& csprojPath, const std::string& dllPath,
 			const std::string& hintPath) {
 			std::ifstream in(csprojPath);
@@ -65,10 +84,6 @@ namespace Index {
 			if (content.find(hintPath) != std::string::npos)
 				return true;
 
-			// Escape every untrusted value before splicing it into XML. The
-			// stem is derived from dllPath which itself flows from packageId;
-			// hintPath includes packageId/version. Both come from a remote
-			// package index — must not be trusted as raw XML.
 			const std::string stem = std::filesystem::path(dllPath).stem().string();
 			std::string refBlock =
 				"  <ItemGroup>\n"
@@ -83,8 +98,6 @@ namespace Index {
 
 			content.insert(pos, refBlock);
 
-			// Atomic write through File::WriteAllText (temp + rename), so a crash
-			// mid-write doesn't leave the user's csproj truncated.
 			if (!File::WriteAllText(csprojPath, content)) {
 				IDX_CORE_ERROR_TAG("IndexPackages", "Failed to write csproj after adding reference: {}", csprojPath);
 				return false;
@@ -92,21 +105,13 @@ namespace Index {
 			return true;
 		}
 
-		// Remove a <Reference Include="..."> ELEMENT (and only that element) from a
-		// .csproj. The previous implementation erased the entire enclosing <ItemGroup>,
-		// which silently deleted any sibling <Reference>s the user had hand-consolidated
-		// — losing user data. This version walks from the matched <Reference> to its
-		// closing </Reference> (or self-closing /> if it has no body) and erases just
-		// that span; the surrounding ItemGroup (and any siblings inside it) are left
-		// intact.
+		// Removes only the matched <Reference> element, not the entire enclosing <ItemGroup> (avoids deleting sibling references).
 		static bool RemoveReferenceFromProject(const std::string& csprojPath, const std::string& assemblyName) {
 			std::ifstream in(csprojPath);
 			if (!in.is_open()) return false;
 			std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 			in.close();
 
-			// Find the <Reference Include="..."> opening tag. Tolerate either a body
-			// + closing tag, or a self-closing form (<Reference Include="X"/>).
 			const std::string includeFragment = "Include=\"" + XmlEscape(assemblyName) + "\"";
 			size_t scanFrom = 0;
 			size_t refStart = std::string::npos;
@@ -124,8 +129,6 @@ namespace Index {
 
 			if (refStart == std::string::npos) return true; // already removed
 
-			// Determine where the element ends: self-closing <Reference .../> ends at
-			// the first '/>' inside the opening tag; otherwise look for </Reference>.
 			const size_t openTagClose = content.find('>', refStart);
 			if (openTagClose == std::string::npos) return false;
 			size_t refEnd = std::string::npos;
@@ -139,15 +142,10 @@ namespace Index {
 				refEnd = closePos + kClose.size();
 			}
 
-			// Trim the trailing newline if there's one immediately after.
 			if (refEnd < content.size() && content[refEnd] == '\n') refEnd++;
 
 			content.erase(refStart, refEnd - refStart);
 
-			// If the <ItemGroup> that contained the reference is now empty (only
-			// whitespace between <ItemGroup> and </ItemGroup>), remove that empty
-			// container too. Use the earlier (now-relocated) refStart as a search
-			// hint into the modified string.
 			const size_t itemGroupOpen = content.rfind("<ItemGroup>", refStart);
 			if (itemGroupOpen != std::string::npos) {
 				const size_t itemGroupClose = content.find("</ItemGroup>", itemGroupOpen);
@@ -296,7 +294,7 @@ namespace Index {
 			return { false, "Failed to parse package index" };
 		}
 
-		std::string distType, dllUrl, nugetId;
+		std::string distType, dllUrl, dllSha256, nugetId;
 		if (const Json::Value* packagesValue = root.FindMember("packages")) {
 			for (const Json::Value& item : packagesValue->GetArray()) {
 				if (!item.IsObject()) {
@@ -308,13 +306,14 @@ namespace Index {
 				}
 				if (const Json::Value* distTypeValue = item.FindMember("distributionType")) distType = distTypeValue->AsStringOr();
 				if (const Json::Value* dllUrlValue = item.FindMember("dllUrl")) dllUrl = dllUrlValue->AsStringOr();
+				if (const Json::Value* sha256Value = item.FindMember("sha256")) dllSha256 = sha256Value->AsStringOr();
+				if (const Json::Value* dllSha256Value = item.FindMember("dllSha256")) dllSha256 = dllSha256Value->AsStringOr();
 				if (const Json::Value* nugetIdValue = item.FindMember("nugetPackageId")) nugetId = nugetIdValue->AsStringOr();
 				break;
 			}
 		}
 
 		if (distType == "nuget") {
-			// Delegate to dotnet add package
 			std::string id = nugetId.empty() ? packageId : nugetId;
 			std::vector<std::string> command = {
 				"dotnet",
@@ -328,11 +327,7 @@ namespace Index {
 				command.push_back(version);
 			}
 
-			// Run the dotnet command from the .csproj's directory. Without an
-			// explicit working dir, dotnet resolves the project relative to whatever
-			// directory the editor was launched from — which fails with cryptic
-			// "no project found" errors when the editor runs from `bin/`. Mirrors
-			// the working-directory pattern used by the NuGet remove path.
+			// MUST run from .csproj's dir: dotnet resolves the project relative to CWD, not the path arg, so running from bin/ produces "no project found".
 			std::filesystem::path projectDir = std::filesystem::path(csprojPath).parent_path();
 			Process::Result addResult = Process::Run(command, projectDir);
 			if (!addResult.Succeeded())
@@ -343,15 +338,13 @@ namespace Index {
 		else if (distType == "dll") {
 			if (dllUrl.empty())
 				return { false, "Package '" + packageId + "' has no download URL" };
+			if (!IsSha256Hex(dllSha256))
+				return { false, "Package '" + packageId + "' has no valid SHA-256 digest" };
 
-			// Determine local path
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			if (!project)
 				return { false, "No project loaded" };
 
-			// Reject untrusted strings that could escape the project tree
-			// (packageId/version come from the remote index — never trust them
-			// as raw filesystem components).
 			if (!IsSafePathComponent(packageId)) {
 				return { false, "Refusing to install package with unsafe id: '" + packageId + "'" };
 			}
@@ -363,36 +356,15 @@ namespace Index {
 			std::string dllName = packageId + ".dll";
 			std::string localDll = Path::Combine(packagesDir, dllName);
 
-			// Belt-and-suspenders: even with IsSafePathComponent rejecting the
-			// obvious traversal characters, canonicalize the proposed path and
-			// confirm it stays under <project>/Packages. A future tweak to the
-			// validator that misses a clever encoding would otherwise let a
-			// remote index entry write outside the package tree.
-			{
-				std::error_code canonEc;
-				const std::filesystem::path packagesRoot = std::filesystem::weakly_canonical(
-					std::filesystem::path(project->RootDirectory) / "Packages", canonEc);
-				const std::filesystem::path resolvedDll = std::filesystem::weakly_canonical(
-					std::filesystem::path(localDll), canonEc);
-				std::string rootStr = packagesRoot.string();
-				const std::string dllStr = resolvedDll.string();
-				// Without the trailing separator, "/proj/Packages" would
-				// falsely accept "/proj/PackagesEvil/...". Anchor the
-				// prefix match on a directory boundary by appending the
-				// platform separator before comparing.
-				if (!rootStr.empty() && rootStr.back() != std::filesystem::path::preferred_separator) {
-					rootStr.push_back(std::filesystem::path::preferred_separator);
-				}
-				if (canonEc || rootStr.empty() ||
-					dllStr.size() < rootStr.size() ||
-					dllStr.compare(0, rootStr.size(), rootStr) != 0) {
-					return { false, "Refusing to install package: path escapes Packages root" };
-				}
+			const std::filesystem::path packagesRoot =
+				std::filesystem::path(project->RootDirectory) / "Packages";
+			if (!IsContainedPath(packagesRoot, localDll)) {
+				return { false, "Refusing to install package: path escapes Packages root" };
 			}
 
 			// Download
 			IDX_CORE_INFO_TAG("GitHubSource", "Downloading {} to {}", packageId, localDll);
-			std::string dlOutput = RunTool({ "github-download", dllUrl, localDll });
+			std::string dlOutput = RunTool({ "github-download", dllUrl, localDll, dllSha256 });
 
 			Json::Value downloadResult;
 			std::string downloadParseError;
@@ -404,9 +376,6 @@ namespace Index {
 			if (!successValue || !successValue->AsBoolOr(false))
 				return { false, "Download failed for " + packageId };
 
-			// Add <Reference> to .csproj. MSBuild accepts both '/' and '\' as
-			// path separators on every platform; using '/' keeps the file
-			// portable across Windows/Linux without affecting Windows builds.
 			std::string hintPath = "Packages/" + packageId + "/" + version + "/" + dllName;
 			if (!AddReferenceToProject(csprojPath, localDll, hintPath))
 				return { false, "Failed to add reference to .csproj" };
@@ -420,6 +389,10 @@ namespace Index {
 	PackageOperationResult GitHubSource::Remove(const std::string& packageId,
 		const std::string& csprojPath) {
 
+		if (!IsSafePathComponent(packageId)) {
+			return { false, "Refusing to remove package with unsafe id: '" + packageId + "'" };
+		}
+
 		// Try removing as NuGet package first
 		Process::Result removeResult = Process::Run({
 			"dotnet",
@@ -432,17 +405,27 @@ namespace Index {
 		if (removeResult.Succeeded())
 			return { true, packageId + " removed" };
 
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project)
+			return { false, "No project loaded" };
+
+		const std::filesystem::path packagesRoot =
+			std::filesystem::path(project->RootDirectory) / "Packages";
+		const std::filesystem::path packagesDir = packagesRoot / packageId;
+		if (!IsContainedPath(packagesRoot, packagesDir)) {
+			return { false, "Refusing to remove package: path escapes Packages root" };
+		}
+
 		// If that fails, try removing as a DLL reference
 		if (!RemoveReferenceFromProject(csprojPath, packageId))
 			return { false, "Failed to remove " + packageId };
 
 		// Delete local DLL
-		IndexProject* project = ProjectManager::GetCurrentProject();
-		if (project) {
-			std::string packagesDir = Path::Combine(project->RootDirectory, "Packages", packageId);
-			if (std::filesystem::exists(packagesDir)) {
-				std::error_code ec;
-				std::filesystem::remove_all(packagesDir, ec);
+		if (std::filesystem::exists(packagesDir)) {
+			std::error_code ec;
+			std::filesystem::remove_all(packagesDir, ec);
+			if (ec) {
+				return { false, "Failed to remove package files: " + ec.message() };
 			}
 		}
 

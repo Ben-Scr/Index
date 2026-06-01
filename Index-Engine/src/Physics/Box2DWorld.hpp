@@ -20,12 +20,7 @@ namespace Index {
 		Box2DWorld(const Box2DWorld&) = delete;
 		Box2DWorld& operator=(const Box2DWorld&) = delete;
 
-		// Move is deleted by design. The dispatcher's CollisionDispatcher holds
-		// raw b2ShapeId / b2BodyId keys that point into b2WorldId — moving a
-		// Box2DWorld would leave the dispatcher associated with the wrong world
-		// id (the stored ones are now in the moved-from world). std::optional<>
-		// uses emplace at the call site (see PhysicsSystem2D), which doesn't
-		// require movability.
+		// Move deleted: CollisionDispatcher holds b2ShapeId/b2BodyId keys into b2WorldId; moving would orphan them.
 		Box2DWorld(Box2DWorld&&) = delete;
 		Box2DWorld& operator=(Box2DWorld&&) = delete;
 

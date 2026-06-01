@@ -22,9 +22,6 @@ namespace Index::InspectorEvents {
 			return g_LoggedMissing.insert(key).second;
 		}
 
-		// Look up a managed ScriptInstance on `entity`'s ScriptComponent
-		// matching `className`. Returns 0 (== invalid GC handle) if no
-		// match or the instance hasn't been bound yet.
 		uint32_t FindManagedHandle(Scene& scene, EntityHandle entity, const std::string& className) {
 			ScriptComponent* sc = nullptr;
 			if (!scene.TryGetComponent<ScriptComponent>(entity, sc) || sc == nullptr) {
@@ -73,10 +70,6 @@ namespace Index::InspectorEvents {
 			return false;
 		}
 
-		// Pass the binding's typed argument to the C# side. Void bindings
-		// send a null pointer for ArgValue — the C# parser ignores it.
-		// All other kinds use the encoded string in ArgumentValue
-		// (see InspectorEventBinding for the per-kind format).
 		const uint8_t argKind = static_cast<uint8_t>(binding.ArgumentKind);
 		const char* argValueCStr =
 			binding.ArgumentKind == InspectorEventArgKind::Void
@@ -117,14 +110,6 @@ namespace Index::InspectorEvents {
 		int fired = 0;
 		for (const InspectorEventBinding& b : bindings) {
 			if (!b.Enabled) continue;
-			// Override the binding's static argument when both kinds
-			// match (e.g. Slider.OnValueChanged dispatching to a
-			// `void Foo(float)` method — the user wants the live
-			// slider value, not whatever placeholder was typed in
-			// the inspector). Bindings of any other kind keep their
-			// authored static value, which lets the same event list
-			// host both "consume the dynamic value" and "kick a
-			// constant" handlers side-by-side.
 			if (dynamicArg.Kind != InspectorEventArgKind::Void
 				&& b.ArgumentKind == dynamicArg.Kind)
 			{
@@ -171,10 +156,7 @@ namespace Index::InspectorEvents {
 		}
 		if (payload.empty() || payload == "[]") return result;
 
-		// Tiny JSON-array-of-strings parser. The C# side emits exactly
-		// this shape (escaped strings, comma-separated, no whitespace),
-		// so we don't need a full JSON parser. Worst case a malformed
-		// payload yields an empty list, which the caller already handles.
+		// Minimal JSON-array-of-strings parser for the fixed shape the C# side emits; malformed input yields an empty list.
 		std::size_t i = 0;
 		const std::size_t n = payload.size();
 		auto skipWs = [&]() {

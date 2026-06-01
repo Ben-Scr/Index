@@ -61,12 +61,7 @@ namespace Index {
 
 		AxiomPhys::Body* ptr = it->second.get();
 
-		// Detach (but do NOT destroy) any attached collider. Collider
-		// components own their own lifetime and clean up via their own
-		// on_destroy hook; destroying their AxiomPhys::Collider here
-		// would dangle the raw m_Collider pointer stored in the still-
-		// alive component. After detach, the surviving collider is
-		// registered-but-orphaned in the world until its component goes.
+		// Detach but do NOT destroy: collider components own their lifetime; destroying here would dangle the raw m_Collider pointer in the still-alive component.
 		m_World.DetachCollider(*ptr);
 		m_AttachedColliderKind.erase(key);
 
@@ -104,12 +99,7 @@ namespace Index {
 		AxiomPhys::BoxCollider* ptr = collider.get();
 		m_World.RegisterCollider(*ptr);
 
-		// Only attach to the body if nothing else is currently attached.
-		// Inspector blocks user-driven dual colliders via DeclareConflict,
-		// but deserialization and scripting can still produce both kinds
-		// on the same entity. In that case the second creation just
-		// registers in the world without attaching, so the previously
-		// attached collider keeps its body-side state.
+		// Only attach if nothing else is currently attached: deserialization/scripting can produce dual colliders; the second just registers without attaching.
 		auto bodyIt = m_Bodies.find(key);
 		if (bodyIt != m_Bodies.end()
 			&& m_AttachedColliderKind.find(key) == m_AttachedColliderKind.end()) {
@@ -192,14 +182,10 @@ namespace Index {
 			}
 		}
 
-		// DestroyAllCollidersOnEntity wipes the (entity, kind) collider entries;
-		// DestroyBody erases the body plus its m_Bodies / m_BodyToEntity /
-		// m_BodyToScene / m_ContactCallbacks entries and drops cached contact
-		// pairs referencing the entity. After this loop nothing tied to the
-		// unloaded scene — least of all a dangling Scene* — remains.
+		// DestroyBody FIRST: it detaches the body's collider; DestroyAllCollidersOnEntity then finds no body entry and skips DetachCollider — preventing a double-detach.
 		for (EntityHandle e : entities) {
-			DestroyAllCollidersOnEntity(e);
 			DestroyBody(e);
+			DestroyAllCollidersOnEntity(e);
 		}
 	}
 
@@ -233,9 +219,6 @@ namespace Index {
 		const ScriptDispatchCallback& onStay,
 		const ScriptDispatchCallback& onExit)
 	{
-		// AxiomPhys reports the CURRENT overlap set per frame. Derive
-		// Enter / Stay / Exit by diffing against m_PreviousContacts (the
-		// same trick CollisionDispatcher uses on top of Box2D's events).
 		std::unordered_set<ContactPair, ContactPairHash> currentContacts;
 		struct ResolvedContact {
 			ContactPair Pair;
@@ -268,11 +251,7 @@ namespace Index {
 				continue;
 			}
 
-			// contact.normal points from A→B in the original (pre-swap) order;
-			// after the canonical-pair swap above, the "A" side may not match
-			// AxiomPhys's A. Use the midpoint between body positions as the
-			// contact point — same approximation Box2D's path falls back to
-			// when an explicit point isn't available.
+			// After canonical-pair swap the "A" side may not match AxiomPhys's A; use body-position midpoint as contact point (same fallback as Box2D path).
 			Vec2 midpoint{ 0.0f, 0.0f };
 			if (contact.bodyA && contact.bodyB) {
 				auto pa = contact.bodyA->GetPosition();
@@ -342,11 +321,7 @@ namespace Index {
 				contact.penetration
 			};
 
-			// Copy the std::function objects out of the map BEFORE invoking. A callback
-			// can call UnregisterContactCallback (or destroy its own entity, which routes
-			// here too); erasing the map entry mid-call would destroy the std::function
-			// while its operator() is still on the stack. CollisionDispatcher::DispatchSafe
-			// uses the same pattern.
+			// Copy callbacks out before invoking: a callback may call UnregisterContactCallback, erasing the map entry while operator() is still on the stack.
 			IndexContactCallback cbA;
 			IndexContactCallback cbB;
 			if (entityA != entt::null) {

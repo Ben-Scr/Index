@@ -577,25 +577,13 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, void> Cursor_SetTexture;
 
     // ── EntityCommandBuffer (appended for binary compat) ────────────
-    // Resolve a component's serializedName / displayName to its stable
-    // u32 type ID. Called once per component type at AppDomain load and
-    // cached in ComponentTypes<T>.NativeId; subsequent ECB recording
-    // references components purely by this u32 — no per-call string
-    // marshaling on the hot path. Returns 0 for unknown names.
+    // Component_GetTypeId: resolve name → stable u32; cached at AppDomain load, no per-call marshaling. Returns 0 for unknown names.
     public delegate* unmanaged<byte*, uint> Component_GetTypeId;
 
-    // Single-call playback of a recorded ECB byte stream against the
-    // active scene. Returns the number of created entities (positive)
-    // or a negative error code. `outRuntimeIds` is filled with the
-    // ulong ID of each created entity in record order; caller sizes it
-    // to its own recorded entity count.
+    // Ecb_Playback: single-call playback of a recorded ECB stream; returns created-entity count or negative error; fills outRuntimeIds in record order.
     public delegate* unmanaged<byte*, int, ulong*, int, int> Ecb_Playback;
 
     // ── JobSystem (appended for binary compat) ──────────────────────
-    // Cross-runtime job dispatch: managed Schedule paths route into the
-    // native work-stealing pool so CLR and engine work share cores
-    // instead of fighting over them. Handles are monotonically-numbered
-    // ulong IDs (0 = invalid). See ScriptGlue.hpp for the contract.
     public delegate* unmanaged<
         delegate* unmanaged<void*, void>,   // work(context)
         void*,                              // context
@@ -614,10 +602,6 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, void> JobSystem_Release;
     public delegate* unmanaged<int> JobSystem_GetWorkerCount;
     public delegate* unmanaged<int> JobSystem_GetCallerWorkerIndex;
-
-    // ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layout Groups /
-    //       ContentSizeFitter / WidthConstraint (appended for binary compat) ─
-    // Order must match ScriptGlue.hpp's NativeBindings struct exactly.
 
     // ── UI: Scrollbar ─────────────────────────────────────────────
     public delegate* unmanaged<ulong, float> Scrollbar_GetValue;
@@ -851,42 +835,24 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float> WidthConstraint_GetMaxWidth;
     public delegate* unmanaged<ulong, float, void> WidthConstraint_SetMaxWidth;
 
-    // ── CPU / JobSystem tuning (appended for binary compat) ──
-    // Mirror of ScriptGlue.hpp NativeBindings tail. Order must match the
-    // C++ struct exactly; do not reorder.
+    // ── CPU / JobSystem tuning (appended for binary compat; order must match ScriptGlue.hpp) ──
     public delegate* unmanaged<int> Application_GetProcessorCount;
     public delegate* unmanaged<int, int> JobSystem_Reconfigure;
 
     // ── SpriteRenderer filter (appended for binary compat) ──
-    // Mirror of ScriptGlue.hpp NativeBindings tail. Filter ints map to
-    // the TextureFilter enum {Point=0, Bilinear=1, Trilinear=2,
-    // Anisotropic=3}. Setting on the native side rebuilds the sampler
-    // for the bound texture so the change takes effect this frame.
     public delegate* unmanaged<ulong, int> SpriteRenderer_GetFilter;
     public delegate* unmanaged<ulong, int, void> SpriteRenderer_SetFilter;
 
-    // Sprite slice name binding. The getter writes into a caller-allocated
-    // buffer and returns the required length (truncating writes when the
-    // buffer is too small, matching the Entity_GetName / Scene_GetActiveName
-    // pattern). Empty string = full texture (default).
+    // Two-call buffer pattern; empty = full texture (default).
     public delegate* unmanaged<ulong, byte*, int, int>     SpriteRenderer_GetSpriteNameBuffer;
     public delegate* unmanaged<ulong, byte*, void>         SpriteRenderer_SetSpriteName;
 
     // ── Dynamic component registration (appended for binary compat) ──
-    // Called from DynamicComponentRegistrar at user-assembly load. The
-    // managed registrar reflects [NativeComponent(..., Generate = true)]
-    // structs and calls this for each — no codegen, no engine rebuild.
-    // Returns the assigned typeIdU32 (0 on failure). Category: 0=Component, 1=Tag.
+    // Called per [NativeComponent(..., Generate=true)] struct at assembly load; no codegen needed. Returns assigned typeId (0 on failure). Category: 0=Component, 1=Tag.
     public delegate* unmanaged<byte*, byte*, byte*, uint, uint, uint, uint> Component_RegisterDynamic;
     public delegate* unmanaged<void> Component_UnregisterAllDynamic;
 
     // ── Scene load-by-GUID (appended for binary compat) ──
-    // Mirror of the Scene_*ByGuid block in ScriptGlue.hpp. The native side
-    // resolves the GUID via AssetRegistry::ResolvePath, looks up the
-    // <Name>.scene stem, and forwards to the same SceneManager calls the
-    // name-based bindings use — so AsserRef<Scene> handles in scripts can
-    // drive LoadScene / UnloadScene / SetActiveScene without round-tripping
-    // through the name.
     public delegate* unmanaged<ulong, int>  Scene_LoadByGuid;
     public delegate* unmanaged<ulong, int>  Scene_LoadAdditiveByGuid;
     public delegate* unmanaged<ulong, void> Scene_UnloadByGuid;
@@ -896,17 +862,17 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong>       Scene_GetActiveSceneGuid;
 
     // ── Rigidbody2D motion locks (appended for binary compat) ──
-    // Unity-style FreezePosition/FreezeRotation constraints. The C++ side
-    // routes these through Box2D's b2MotionLocks; setting any of them
-    // re-derives the body's effective mass / inertia so changes are picked
-    // up on the next physics step. Bools travel as int (0/1) to avoid
-    // platform-ABI ambiguity on bool width across the FFI.
+    // Bools travel as int (0/1) to avoid platform-ABI ambiguity on bool width across the FFI.
     public delegate* unmanaged<ulong, int>          Rigidbody2D_GetFreezePositionX;
     public delegate* unmanaged<ulong, int, void>    Rigidbody2D_SetFreezePositionX;
     public delegate* unmanaged<ulong, int>          Rigidbody2D_GetFreezePositionY;
     public delegate* unmanaged<ulong, int, void>    Rigidbody2D_SetFreezePositionY;
     public delegate* unmanaged<ulong, int>          Rigidbody2D_GetFreezeRotation;
     public delegate* unmanaged<ulong, int, void>    Rigidbody2D_SetFreezeRotation;
+
+    // ── ParticleSystem2D texture (appended for binary compat) ──
+    public delegate* unmanaged<ulong, ulong>        ParticleSystem2D_GetTexture;
+    public delegate* unmanaged<ulong, ulong, void>  ParticleSystem2D_SetTexture;
 }
 
 internal static unsafe class NativeCallbacks

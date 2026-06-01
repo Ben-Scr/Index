@@ -7,10 +7,6 @@
 using namespace Index;
 
 namespace {
-	// Re-initialize FrameArenas around each test so capacity is controlled
-	// and the Persistent arena is reset between cases. Shutdown on scope
-	// exit so a test that asserts state-after-Shutdown still gets a clean
-	// teardown.
 	struct ScopedFrameArenas {
 		explicit ScopedFrameArenas(const FrameArenasSpec& spec) {
 			FrameArenas::Initialize(spec);

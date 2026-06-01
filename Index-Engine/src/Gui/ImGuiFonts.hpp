@@ -17,15 +17,7 @@ namespace Index {
 									  float baseSize = k_IndexImGuiFontSize) {
 		const float fontSize = baseSize * dpiScale;
 
-		// Explicit glyph ranges are required: each binary statically links
-		// its own ImGui (the launcher in particular — see comments in
-		// Index-Launcher/src/Gui/ImGuiContextLayer.cpp). The WebGPU backend's
-		// ImGuiBackendFlags_RendererHasTextures only ends up on the engine
-		// DLL's ImGui context, so the launcher's ImGui still bakes a static
-		// atlas — meaning a nullptr range here would result in nothing being
-		// baked for the merged font. Passing ranges keeps the static path
-		// correct and is a no-op on the dynamic-atlas path.
-
+		// Explicit glyph ranges required: each binary links its own ImGui; the launcher bakes a static atlas so nullptr range would produce nothing.
 		ImFontConfig primaryCfg;
 		primaryCfg.SizePixels = fontSize;
 		primaryCfg.PixelSnapH = true;

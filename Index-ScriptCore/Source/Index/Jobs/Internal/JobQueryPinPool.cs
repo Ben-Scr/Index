@@ -5,26 +5,7 @@ using System.Runtime.InteropServices;
 
 namespace Index.Jobs.Internal;
 
-// Pool of pre-pinned IntPtr[] buffers used by IJobQuery to snapshot the
-// native ref-API row pointers before dispatching to workers. Without
-// pooling each Schedule allocates a fresh array, pins it for the
-// duration of the job (blocks GC compaction), and frees it from the
-// completion continuation. For high-frequency IJobQuery scenes that
-// churns through the LOH and prevents Gen2 compaction.
-//
-// Pool design:
-//   - Bucketed by power-of-2 size — a Rent(needs N entries) request
-//     returns a buffer with at least N capacity, rounded up to the
-//     next power of two.
-//   - Per-bucket bounded stack (Cap entries) so a single huge schedule
-//     doesn't permanently inflate pool memory.
-//   - Process-wide singleton with a single lock — rent/return happen
-//     at job-schedule cadence (not in the inner loop), so the lock
-//     isn't on a hot path.
-//   - Buffers above MaxBuckets size are allocated fresh and freed
-//     immediately on Return — pooling 100 MB pinned arrays just to
-//     avoid one alloc isn't worth it.
-
+// Pools pre-pinned IntPtr[] buffers for IJobQuery row-pointer snapshots. Without pooling, high-frequency jobs churn the LOH and block Gen2 compaction. Bucketed by power-of-2 size; oversized buffers bypass the pool entirely.
 internal sealed class JobQueryPinPool
 {
     private const int Cap = 8;

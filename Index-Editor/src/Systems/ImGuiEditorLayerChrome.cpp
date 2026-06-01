@@ -46,13 +46,6 @@
 #include <unordered_set>
 
 namespace Index {
-	// Per-panel render target lifecycle. The actual GPU-handle juggling
-	// (texture + depth attachment, completeness check) lives behind
-	// `Framebuffer::Recreate` in `Graphics/Framebuffer.cpp` so this file
-	// doesn't touch the render backend directly. The two helpers below
-	// are kept so existing call sites (RenderSceneIntoFBO, layer
-	// teardown) read the same as before; they're one-line wrappers over
-	// the RAII Framebuffer API.
 	void ImGuiEditorLayer::EnsureViewportFramebuffer(int width, int height) {
 		m_EditorViewFBO.Recreate(width, height);
 	}
@@ -67,13 +60,7 @@ namespace Index {
 
 		EditorPreferences::ApplySystemThemeIfNeeded();
 
-		// Drain prefab-edit-mode entry BEFORE the active-scene early-return.
-		// The previous order gated prefab opening on an active scene being
-		// present, which is the wrong dependency: a prefab can be opened
-		// even when no scene is currently active (the detached prefab scene
-		// is self-contained). Without this hoist, the asset browser's
-		// "double-click .prefab" and right-click → Open paths would silently
-		// do nothing in the no-active-scene case.
+		// MUST drain before the active-scene early-return: prefab-edit is valid with no active scene; gating it on the scene check silently no-ops double-click/right-click→Open in that case.
 		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0) {
 			std::string earlyPendingPrefabEdit = m_AssetBrowser.TakePendingPrefabEdit();
 			if (!earlyPendingPrefabEdit.empty()) {
@@ -88,11 +75,7 @@ namespace Index {
 		}
 		Scene& scene = *activeScene;
 
-		// Build state machine. The 1 → 2 → 3 transition gives the
-		// overlay one frame to render before we kick off the worker
-		// (state 2 launches m_BuildFuture, state 3 polls it). Without
-		// the 1-frame delay the user wouldn't see the overlay before
-		// dotnet build's first stage hands the UI back to render.
+		// 1-frame delay (1→2→3): lets the progress overlay paint before the worker launches; without it the overlay wouldn't appear before dotnet build's first stage.
 		if (m_BuildState == 1) {
 			m_BuildState = 2;
 		} else if (m_BuildState == 2) {
@@ -115,11 +98,7 @@ namespace Index {
 			}
 			m_BuildState = 0;
 
-			// Open Explorer at the finished build directory on the UI
-			// thread. ShellExecuteA can pop modal dialogs / interact
-			// with the shell on its calling thread, so doing it here
-			// instead of inside the worker avoids any UI surprises and
-			// matches the pre-async behaviour.
+			// ShellExecuteA must run on the UI thread: it can pop modal dialogs on its calling thread.
 #ifdef IDX_PLATFORM_WINDOWS
 			if (m_BuildSucceeded.load(std::memory_order_relaxed) && !m_BuildOutputDir.empty()) {
 				ShellExecuteA(nullptr, "open", m_BuildOutputDir.c_str(),
@@ -136,21 +115,13 @@ namespace Index {
 					if (outputDir.empty())
 						outputDir = Path::Combine(project->RootDirectory, "Builds");
 #ifdef IDX_PLATFORM_WINDOWS
-					// Honour the project's ExecutableName override so a
-					// project shipped under a marketing name ("Acme Quest"
-					// instead of project ID "515") still launches via
-					// Build+Play. ExecuteBuild names the produced .exe by
-					// the same rule, so reading both off the project keeps
-					// the two paths in lockstep.
+					// ExecutableName overrides the exe stem; ExecuteBuild uses the same rule, so read both off the project to stay in lockstep.
 					const std::string exeStem = project->ExecutableName.empty()
 						? project->Name : project->ExecutableName;
 					auto exePath = std::filesystem::path(outputDir) / (exeStem + ".exe");
 					if (std::filesystem::exists(exePath)) {
 						std::string cmd = "\"" + std::filesystem::canonical(exePath).string() + "\"";
-						// Proper UTF-8 → wide conversion. The previous byte-wise iterator
-						// construction corrupted any path containing non-ASCII bytes
-						// (Unicode user folders, accented project names), causing
-						// CreateProcessW to fail silently on those systems.
+						// Proper UTF-8 → wide conversion; byte-wise iterator construction corrupts non-ASCII paths (Unicode folders, accented names).
 						std::wstring wcmd;
 						{
 							const int needed = MultiByteToWideChar(CP_UTF8, 0,
@@ -226,12 +197,7 @@ namespace Index {
 			auto& sm = SceneManager::Get();
 			Scene* active = sm.GetActiveScene();
 			if (active) {
-				// Opening a scene from the asset browser is an exclusive
-				// switch — close every other loaded scene so the new one
-				// is the only entry in the hierarchy afterwards. Keep the
-				// active scene (its contents get overwritten below); we
-				// iterate a snapshot of names so UnloadScene calls don't
-				// invalidate the loop.
+				// Exclusive switch: unload every scene except the active one (iterated by snapshot so UnloadScene doesn't invalidate the loop).
 				const std::string activeName = active->GetName();
 				for (const std::string& name : sm.GetLoadedSceneNames()) {
 					if (name != activeName) sm.UnloadScene(name);
@@ -247,16 +213,26 @@ namespace Index {
 			}
 		}
 
-		// Intercept Asset Browser scene load (blocked during Play Mode and active build)
-		if (!Application::GetIsPlaying() && m_BuildState == 0) {
+		// Intercept Asset Browser scene load. Active build still blocks; play
+		// mode no longer does — double-clicking a scene during play exits play
+		// mode and switches to the chosen scene (the open gesture IS the
+		// intent to leave). Save prompt is skipped in that case because
+		// play-mode mutations are intentionally discarded by the restore.
+		if (m_BuildState == 0) {
 			std::string pendingLoad = m_AssetBrowser.TakePendingSceneLoad();
 			if (!pendingLoad.empty()) {
-				Scene* active = SceneManager::Get().GetActiveScene();
-				if (active && active->IsDirty()) {
-					m_ConfirmDialogPendingPath = pendingLoad;
-					m_ShowSaveConfirmDialog = true;
-				} else {
+				if (Application::GetIsPlaying()) {
+					RestoreEditorSceneAfterPlaymode();
 					m_PendingSceneSwitch = pendingLoad;
+				}
+				else {
+					Scene* active = SceneManager::Get().GetActiveScene();
+					if (active && active->IsDirty()) {
+						m_ConfirmDialogPendingPath = pendingLoad;
+						m_ShowSaveConfirmDialog = true;
+					} else {
+						m_PendingSceneSwitch = pendingLoad;
+					}
 				}
 			}
 		}
@@ -264,14 +240,8 @@ namespace Index {
 		// (Prefab-edit drain is hoisted above the active-scene early return
 		// at the top of OnPreRender — see comment there.)
 
-		// Ctrl+S: routes to whatever the editor is currently editing.
-		// Priority: full prefab-edit mode > asset-side prefab inspector > all dirty scenes.
-		// Scene save is blocked during play mode so a stray Ctrl+S doesn't
-		// persist transient play-mode state; prefab saves stay enabled in
-		// play mode because the detached prefab scene is independent of the
-		// running play scene and is real authoring work. Pass `repeat=false`
-		// so holding the key down doesn't re-fire Save every frame (which
-		// would hammer disk + scene serialization at the OS key-repeat rate).
+		// Ctrl+S priority: prefab-edit mode > prefab inspector > all dirty scenes.
+		// Prefab saves allowed during play (detached scene is independent); scene save blocked to avoid persisting play-mode state.
 		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && m_BuildState == 0) {
 			if (IsInPrefabEditMode()) {
 				// Full prefab-edit mode: save the detached scene back to its
@@ -284,14 +254,6 @@ namespace Index {
 				m_PrefabInspector.Save();
 			}
 			else if (!Application::GetIsPlaying()) {
-				// Save every dirty loaded scene — the Entities panel shows
-				// the "*" dirty marker on each, so the user reads Ctrl+S as
-				// "persist what's visibly dirty" regardless of which scene
-				// SceneManager considers active. Without the loop, a Ctrl+S
-				// while editing an additive scene would silently no-op (or,
-				// worse, save the unrelated top scene) and the user's edits
-				// would sit in memory until they happened to make that
-				// scene active.
 				IndexProject* project = ProjectManager::GetCurrentProject();
 				if (project) {
 					bool savedAny = false;
@@ -316,11 +278,7 @@ namespace Index {
 
 		// Intercept quit request: exit playmode first, then check for unsaved changes
 		if (Application::IsQuitRequested()) {
-			// Refuse to quit mid-build — closing now would kill the worker
-			// thread (m_BuildFuture) and leave partially-written build
-			// artifacts on disk. CancelQuit swallows the signal so it
-			// doesn't re-fire every frame; the user can retry once the
-			// build finishes.
+			// Refuse to quit mid-build — would kill the worker thread and leave partial artifacts on disk.
 			if (m_BuildState != 0) {
 				Application::CancelQuit();
 			}
@@ -330,18 +288,11 @@ namespace Index {
 					RestoreEditorSceneAfterPlaymode();
 				}
 
-				// If the user is mid-prefab-edit with unsaved changes, auto-save
-				// before exiting. Losing prefab edits to a stray Cmd-W is the same
-				// data-loss class as losing scene edits, but layering another
-				// modal on top of the scene quit dialog gets noisy fast — auto-
-				// save is the safer default here, and matches the
-				// switch-prefab-while-editing path above.
+				// Auto-save dirty prefab edits on quit — adding another modal on top of the scene quit dialog is too noisy.
 				if (m_PrefabEditScene && m_PrefabEditScene->IsDirty()) {
 					SavePrefabEditChanges();
 				}
-				// Always tear down prefab edit mode on quit so its detached
-				// scene's destructors run before SceneManager / static state
-				// cleanup, regardless of dirty status.
+				// Always close prefab edit so destructors run before SceneManager cleanup.
 				if (m_PrefabEditScene) {
 					ClosePrefabEditing(false);
 				}
@@ -354,11 +305,7 @@ namespace Index {
 			}
 		}
 
-		// Drawn before the dockspace so the dockspace can offset itself
-		// by the titlebar row height. The titlebar publishes its drag
-		// region + button non-client rects to the Win32 hit-test layer
-		// here. No-op when CustomTitlebar is disabled in the window
-		// spec — the editor still works with the native OS chrome.
+		// MUST precede RenderDockspaceRoot: titlebar publishes its height so the dockspace offsets correctly.
 		{
 			std::string titlebarText = "Index Editor " + std::string(IDX_VERSION);
 			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
@@ -368,11 +315,7 @@ namespace Index {
 		}
 		RenderDockspaceRoot();
 
-		// Block menu-bar interaction while a project build is in flight —
-		// File→New/Open, Edit→Undo, etc. all mutate state the build worker
-		// is reading. The four save/discard/quit modals below stay outside
-		// this gate so the user can still dismiss any modal that was already
-		// open when the build started.
+		// Block menu bar during build (worker is reading shared state); modals stay outside this gate so they remain dismissable.
 		ImGui::BeginDisabled(m_BuildState > 0);
 		RenderMainMenu(scene);
 		ImGui::EndDisabled();
@@ -417,11 +360,7 @@ namespace Index {
 			ImGui::EndPopup();
 		}
 
-		// Prefab-EDIT discard modal — fired when the user clicks the "<"
-		// back button in the hierarchy toolbar while the prefab edit
-		// scene has unsaved changes. Distinct from the asset-inspector
-		// save prompt below: that one fires on .prefab→.prefab selection
-		// change in the asset browser; this one fires on full-edit-mode exit.
+		// Prefab-edit discard modal (back button with unsaved changes) — distinct from the prefab-inspector save prompt below (fired on asset selection change).
 		if (m_ShowPrefabEditDiscardPrompt) {
 			ImGui::OpenPopup("Unsaved Prefab Changes");
 			m_ShowPrefabEditDiscardPrompt = false;
@@ -563,44 +502,24 @@ namespace Index {
 
 		PollPendingPlayModeRequest(scene);
 
-		// Reset every frame; the Game View panel republishes its rect
-		// while it's visible. If the user collapsed the Game View tab
-		// or closed the dock, we want UI systems to fall back to the
-		// OS window viewport instead of using a stale region.
+		// Reset every frame so a hidden/closed Game View falls back to the OS viewport.
 		Window::ClearUIRegion();
 
-		// Block all panel interaction while a project build is in flight.
-		// The Build button already self-disables via its own BeginDisabled
-		// inside RenderBuildPanel; BeginDisabled nests, so it stays disabled
-		// here as expected. The build progress overlay below is rendered
-		// outside this gate so its text stays readable.
 		ImGui::BeginDisabled(m_BuildState > 0);
 
 		RenderToolbar();
 		RenderEntitiesPanel();
-		// Inspector + editor view follow the prefab-edit override when
-		// active so component edits and viewport rendering both target
-		// the detached prefab scene. Game View intentionally stays on
-		// the real active scene so the user can still preview play.
+		// Inspector/editor view target the prefab-edit scene when active; Game View always uses the real active scene.
 		Scene* contextScene = GetContextScene();
 		RenderInspectorPanel(contextScene ? *contextScene : scene);
-		// Propagate transforms for every scene the editor is rendering this
-		// frame. Loaded scenes always need it (Game View, optional viewport
-		// previews, play-mode physics/script reads); the detached prefab
-		// scene additionally needs it whenever prefab edit mode is active —
-		// it's separate from SceneManager, so the ForeachLoadedScene walk
-		// would otherwise skip it.
+		// Also propagate the detached prefab scene — ForeachLoadedScene skips it since it isn't in SceneManager.
 		SceneManager::Get().ForeachLoadedScene([](Scene& s) {
 			TransformHierarchySystem::Propagate(s);
 			});
 		if (IsInPrefabEditMode() && m_PrefabEditScene) {
 			TransformHierarchySystem::Propagate(*m_PrefabEditScene);
 		}
-		// Tick the editor-only particle preview before both viewports
-		// render. Decoupling the tick from RenderEditorView lets the
-		// simulation keep advancing when the user switches to the Game
-		// View tab — the in-viewport Play / Pause / Restart / Stop overlay (and
-		// entering play mode) are the only things that gate it.
+		// Tick before both viewports so the simulation advances even when the user is on the Game View tab.
 		TickParticlePreview(contextScene ? *contextScene : scene);
 		RenderEditorView(contextScene ? *contextScene : scene);
 		RenderGameView(scene);
@@ -614,11 +533,6 @@ namespace Index {
 
 		ImGui::EndDisabled();
 
-		// Splash preview — replays the runtime's splash timeline as
-		// a foreground overlay over the editor when the user clicks
-		// "Show Preview" in the Splash Screen settings. Self-completes
-		// after FadeIn + Duration + FadeOut seconds; no-op when
-		// inactive.
 		TickSplashPreview();
 
 		// Profiler panel — Ctrl+F6 toggle. Panel manages its own visibility-gating internally.
@@ -629,11 +543,7 @@ namespace Index {
 			m_ProfilerPanel.Render(&m_ShowProfiler);
 		}
 
-		// Sprite Editor panel. The texture asset inspector queues an asset
-		// path/UUID via m_PendingSpriteEditorPath; drain it here so the
-		// actual OpenTexture call happens at ImGui-render time (mid-frame
-		// is the only safe window — opening the panel during inspector
-		// build would trip ImGui's "Begin without paired End" guard).
+		// Drain sprite editor path at render time — opening during inspector build trips ImGui's Begin/End guard.
 		if (!m_PendingSpriteEditorPath.empty()) {
 			m_SpriteEditorPanel.OpenTexture(m_PendingSpriteEditorPath, m_PendingSpriteEditorAssetId);
 			m_PendingSpriteEditorPath.clear();
@@ -643,15 +553,7 @@ namespace Index {
 			m_SpriteEditorPanel.Render(&m_ShowSpriteEditor);
 		}
 
-		// Unified loading popup — real OS window (not an ImGui overlay) so
-		// it stays crisp even when the editor's render thread is briefly
-		// busy. Win32BuildProgressWindow is a no-op on non-Windows
-		// platforms. Project build takes priority over script recompile
-		// because the build pipeline already runs a script compile as a
-		// sub-stage and the build popup reports the real progress for it.
-		// Package install runs last because it's user-initiated from the
-		// Package Manager panel and never overlaps with a build (the
-		// installer is gated on m_IsOperating elsewhere).
+		// Loading popup priority: build > script recompile > package install (build already includes a script compile sub-stage).
 		bool showPopup = false;
 		std::string popupTitle;
 		std::string popupStage;
@@ -677,9 +579,6 @@ namespace Index {
 			const float elapsed = scriptSys->GetActiveRebuildElapsedSeconds();
 			popupProgress = fmodf(elapsed * 0.4f, 1.0f);
 		} else if (m_PackageManagerPanel.GetActiveLoadingPopup(popupTitle, popupStage, popupProgress)) {
-			// Cloud-install or post-install automation in flight — popup
-			// title is "Downloading <Name>..." / "Installing <Name>..."
-			// and matches the Launcher's "Downloading <Project>..." UX.
 			showPopup = true;
 		}
 

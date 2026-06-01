@@ -71,15 +71,7 @@ namespace Index {
 			return value;
 		}
 
-		// Shared renderer for every "open the script" inspector button — managed
-		// components, EntityScripts, :IComponent structs, GameSystems. Looks up
-		// the matching project script entry, displays its filename (e.g.
-		// `Test.cs`) instead of the synthesized class label so the user reads
-		// exactly what's on disk, and wires the double-click → external editor
-		// jump. Falls back to `fallbackLabel` (typically the class name) when
-		// discovery can't find a file — script was renamed / deleted / never
-		// written — so the button still shows something identifiable instead
-		// of going blank.
+		// Renders the "open script" button for all inspector types; shows the on-disk filename, falls back to fallbackLabel when discovery can't locate the file.
 		template <typename Predicate>
 		void DrawOpenScriptButton(const std::string& className, Predicate predicate,
 			const std::string& fallbackLabel) {
@@ -206,18 +198,10 @@ namespace Index {
 			sc.PendingFieldValues[className + "." + fieldName] = newValueStr;
 		}
 
-		// Per-entity, per-field value cache. Built once per render call and
-		// shared via shared_ptr by every descriptor's Get lambda so multi-
-		// selection mixed-value detection sees real per-entity values
-		// instead of the primary entity's value broadcast to everyone.
-		// Key: uint32_t cast of EntityHandle (matches the codebase pattern
-		// in IndexPhysicsWorld2D for keying maps on entt::entity).
+		// Per-entity, per-field value cache shared by every descriptor's Get lambda so multi-select sees real per-entity values.
 		using ScriptFieldValueMap = std::unordered_map<uint32_t, std::unordered_map<std::string, std::string>>;
 
-		// Look up a field's value on a specific entity, falling back to the
-		// class-default string if the entity didn't contribute its own
-		// snapshot (e.g. the entity's ScriptComponent doesn't carry the
-		// expected script in this slot).
+		// Returns the per-entity value for fieldName, falling back to defaultValue when the entity's slot doesn't match.
 		PropertyValue LookupPerEntityValue(const std::shared_ptr<ScriptFieldValueMap>& perEntity,
 			const Entity& entity, const std::string& fieldName,
 			const std::string& defaultValue, PropertyType type)
@@ -262,11 +246,7 @@ namespace Index {
 			}
 		}
 
-		// Look up the named field's recorded type from the field-record
-		// list — needed to decide how to compare values for EnabledIf.
-		// Returns None if the field wasn't found (the gate then defaults
-		// to "always enabled" so a typo in the attribute doesn't lock the
-		// row permanently).
+		// Returns None (= always enabled) when the field isn't found, so a typo in [EnabledIf] doesn't permanently lock the row.
 		PropertyType FindFieldType(const std::vector<EditorFieldRecord>& records, const std::string& name) {
 			for (const auto& r : records) {
 				if (r.Name == name) {
@@ -278,11 +258,7 @@ namespace Index {
 			return PropertyType::None;
 		}
 
-		// Build the EnabledIfFn predicate for a script/managed-component
-		// field. Reads the gate field's value from the shared per-entity
-		// snapshot the inspector already maintains, so the gate sees true
-		// per-entity values during multi-edit (mixed gate fields render
-		// disabled if any entity disagrees).
+		// Build EnabledIfFn: reads gate-field values from the per-entity snapshot so multi-edit sees true mixed state.
 		std::function<bool(const Entity&)> BuildScriptEnabledIfPredicate(
 			const EditorFieldRecord& rec, const std::vector<EditorFieldRecord>& siblingRecords,
 			std::shared_ptr<ScriptFieldValueMap> perEntityValues)
@@ -303,22 +279,13 @@ namespace Index {
 				auto fIt = eIt->second.find(targetField);
 				if (fIt == eIt->second.end()) return true;
 				if (any) return IsValueTruthy(fIt->second, gateType);
-				// Compare via parsed PropertyValue equality so e.g. "1.0"
-				// and "1" match for a float gate, and enum strings match
-				// the integer wire format we serialise the expected value
-				// to from C# (FormatFieldValue uses the int underlying).
 				const PropertyValue current  = PropertyValue::FromString(gateType, fIt->second);
 				const PropertyValue expected = PropertyValue::FromString(gateType, expectedValue);
 				return current == expected;
 			};
 		}
 
-		// Build a PropertyDescriptor that bridges one [ShowInEditor] field to
-		// the unified PropertyDrawer. The Get lambda reads the per-entity
-		// value from the shared snapshot map (so multi-select sees mixed
-		// values correctly). The Set lambda propagates the new value through
-		// SetScriptField + PendingFieldValues for whichever entity the
-		// drawer is iterating.
+		// Build a PropertyDescriptor for a [ShowInEditor] field; Get reads the per-entity snapshot, Set propagates through SetScriptField + PendingFieldValues.
 		PropertyDescriptor BuildScriptFieldDescriptor(EditorFieldRecord rec,
 			const std::string& className, std::size_t scriptIndex,
 			bool multiEditEnabled, bool isPlaying,
@@ -408,11 +375,6 @@ namespace Index {
 			const bool hasLiveInstance = instance.HasManagedInstance();
 			const std::string& className = instance.GetClassName();
 
-			// Reference records: provide field metadata (display name, type,
-			// clamp, enum options, ...) and the class-default values used as
-			// fallback when an entity hasn't contributed its own snapshot.
-			// Sourced from the primary instance's live JSON if possible,
-			// otherwise from the class's field defs.
 			const char* json = nullptr;
 			if (hasLiveInstance && callbacks.GetScriptFields) {
 				json = callbacks.GetScriptFields(static_cast<int32_t>(instance.GetGCHandle()));
@@ -436,12 +398,7 @@ namespace Index {
 				}
 			}
 
-			// Per-entity snapshot. Walk every selected entity and capture
-			// THIS entity's value for every field, so PropertyDrawer's
-			// SampleUniform sees true per-entity values across the
-			// selection. GetScriptFields returns a static buffer that may
-			// be reused on the next call, so each entity is fully parsed
-			// before moving on.
+			// Per-entity snapshot — GetScriptFields returns a static buffer, so parse each entity fully before moving on.
 			auto perEntityValues = std::make_shared<ScriptFieldValueMap>();
 			for (const Entity& e : entities) {
 				if (!e.HasComponent<ScriptComponent>()) continue;
@@ -461,10 +418,6 @@ namespace Index {
 					}
 				}
 				else {
-					// Pre-play: pull this entity's per-field overrides from
-					// its own PendingFieldValues, with the class default as
-					// fallback (rec.Value here is already class-default
-					// because hasLiveInstance was false above).
 					for (const auto& r : records) {
 						const std::string key = className + "." + r.Name;
 						auto it = eSc.PendingFieldValues.find(key);
@@ -483,13 +436,7 @@ namespace Index {
 			ImGui::Unindent(8.0f);
 		}
 
-		// Build a descriptor for a GameSystem field. GameSystems are scene-
-		// scoped (no entity), so the Set lambda ignores its Entity argument
-		// and instead writes through Scene::SetGameSystemFieldValue (for
-		// disk persistence) and ScriptEngine::SetGameSystemField (when a
-		// live managed instance exists). The dummy entity span the drawer
-		// receives carries the active Scene pointer so PropertyDrawer's
-		// MarkSceneDirty hook still fires after edits.
+		// GameSystem fields are scene-scoped: Set writes through SetGameSystemFieldValue + SetGameSystemField, ignoring the entity argument.
 		PropertyDescriptor BuildGameSystemFieldDescriptor(EditorFieldRecord rec,
 			Scene* scene, const std::string& className)
 		{
@@ -547,10 +494,7 @@ namespace Index {
 				if (it != sc.PendingFieldValues.end()) rec.Value = it->second;
 			}
 
-			// Managed components have no per-entity managed instance the
-			// editor can read from in edit mode — values live in each
-			// entity's own PendingFieldValues. Build the per-entity
-			// snapshot from there so multi-select sees true mixed state.
+			// No live managed instance in edit mode — build the per-entity snapshot from PendingFieldValues.
 			auto perEntityValues = std::make_shared<ScriptFieldValueMap>();
 			for (const Entity& e : entities) {
 				if (!e.HasComponent<ScriptComponent>()) continue;
@@ -579,10 +523,7 @@ namespace Index {
 	namespace {
 		using ScriptPickerEntry = EditorScriptDiscovery::ScriptEntry;
 
-		// M28: was four loose TU-statics (s_ScriptPickerOpen, s_ScriptPickerSearch,
-		// s_ScriptPickerEntries, s_ScriptPickerTargetEntity). Wrapped into a single
-		// struct so ScriptComponentInspector::Shutdown can reset them all in one
-		// place when the editor detaches (project switch / hot reload).
+		// Grouped so Shutdown() can reset all picker state in one assignment.
 		struct ScriptPickerState {
 			bool Open = false;
 			char Search[128] = {};
@@ -660,11 +601,7 @@ namespace Index {
 			ImGui::End();
 		}
 
-		// Two ScriptComponents have the same "shape" if they list the same
-		// managed components and the same script class names in the same order.
-		// Multi-edit script-field propagation is only safe when the shape
-		// matches across the entire selection — otherwise the script index
-		// `i` doesn't refer to the same script on every entity.
+		// Shape must match across the selection: mismatched script index `i` refers to different scripts on different entities.
 		bool ScriptComponentShapeMatches(const ScriptComponent& a, const ScriptComponent& b) {
 			if (a.ManagedComponents.size() != b.ManagedComponents.size()) return false;
 			if (a.Scripts.size() != b.Scripts.size()) return false;
@@ -683,10 +620,7 @@ namespace Index {
 	{
 		if (entities.empty()) return;
 
-		// The inspector dispatcher can hand us a selection that doesn't
-		// uniformly carry ScriptComponent (e.g. mid-edit add/remove,
-		// stale selection after undo). Bail / skip rather than blowing
-		// up inside EnTT's view assertion.
+		// Selection may not uniformly carry ScriptComponent (mid-edit add/remove, stale undo); bail rather than trip EnTT's assertion.
 		const Entity& primary = entities[0];
 		if (!primary.HasComponent<ScriptComponent>()) {
 			return;
@@ -726,10 +660,6 @@ namespace Index {
 			if (removeRequested) removeManagedComponentIndex = i;
 
 			if (open) {
-				// Mirror the EntityScript / :IComponent open-on-double-click
-				// affordance so every user-authored component has the same
-				// one-click jump to source. Always managed here — this branch
-				// only renders `:Component`-derived classes.
 				DrawOpenScriptButton(className,
 					[](const EditorScriptDiscovery::ScriptEntry& e) {
 						return e.Type == ScriptType::Managed;
@@ -749,15 +679,7 @@ namespace Index {
 
 		for (size_t i = 0; i < scriptComp.Scripts.size(); i++) {
 			auto& instance = scriptComp.Scripts[i];
-			// The Scripts vector currently holds two kinds of managed entries
-			// that need visually distinct labels:
-			//   1. C# `EntityScript`             → "(C# Script)"
-			//   2. C# `:IComponent` struct       → "(C# Native Component)"
-			// Disambiguated by asking the ComponentRegistry whether a *dynamic*
-			// ComponentInfo claims the same serialized name —
-			// DynamicComponentRegistrar registers every `:IComponent` at
-			// user-assembly load with `isDynamic=true`, and EntityScripts are
-			// never registered there.
+			// Distinguish EntityScript ("C# Script") from :IComponent struct ("C# Native Component") by checking ComponentRegistry::isDynamic.
 			std::string label;
 			if (instance.GetClassName().empty()) {
 				label = "Script";
@@ -820,22 +742,12 @@ namespace Index {
 		}
 
 		RenderScriptPicker();
-		// NOTE: ReferencePicker::RenderPopup() is intentionally NOT called
-		// here. The script inspector always runs inside one of the outer
-		// inspector loops (ImGuiEditorLayer / PrefabInspector), and those
-		// loops render the popup once after iterating every component.
-		// Calling RenderPopup here too would render the same popup twice
-		// per frame — duplicating Selectable IDs and triggering ImGui's
-		// "conflicting ID" assertion.
+		// NOTE: ReferencePicker::RenderPopup() intentionally NOT called here — the outer loop already renders it once; calling it again duplicates IDs and triggers ImGui's conflicting-ID assertion.
 	}
 
 	void DrawGameSystemFields(Scene& scene, const std::string& className)
 	{
-		// Script-open button — mirrors the EntityScript inspector pattern
-		// above so users get the same double-click-to-open affordance on
-		// game systems. Rendered first and unconditionally so it stays
-		// visible even when the system has no public fields (or the
-		// script engine isn't initialised yet).
+		// Render unconditionally so it's visible even when the system has no fields or the engine isn't initialised.
 		DrawOpenScriptButton(className,
 			[](const EditorScriptDiscovery::ScriptEntry& e) {
 				return e.IsGameSystem;
@@ -851,10 +763,7 @@ namespace Index {
 		const uint32_t handle = scene.GetGameSystemHandle(className);
 		const bool hasLiveInstance = (handle != 0);
 
-		// Live instance reads see the actual managed state every frame
-		// (matches play-mode behaviour for ScriptComponent fields). Edit
-		// mode falls back to the class's declared defaults — patched
-		// below with whatever the user authored.
+		// Live instance: read actual managed state. Edit mode: class defaults patched with authored values below.
 		const char* json = nullptr;
 		if (hasLiveInstance) {
 			json = ScriptEngine::GetGameSystemFields(handle);
@@ -867,11 +776,7 @@ namespace Index {
 		auto records = ParseEditorFields(json);
 		if (records.empty()) return;
 
-		// In edit mode the JSON only carries class defaults, so overlay
-		// the scene's authored values so the inspector reflects the
-		// state that will be flushed onto the live instance at Awake.
-		// Live instance already returns the up-to-date value so the
-		// patch is unnecessary in that case.
+		// In edit mode: overlay scene's authored values over class defaults so the inspector reflects what will be flushed at Awake.
 		if (!hasLiveInstance) {
 			if (const auto* overrides = scene.GetGameSystemFieldValues(className)) {
 				for (auto& rec : records) {
@@ -881,16 +786,7 @@ namespace Index {
 			}
 		}
 
-		// Single-element span carrying the active scene so PropertyDrawer's
-		// MarkSceneDirty hook can dirty the scene on edit. The entity handle
-		// is otherwise unused — our Get/Set lambdas ignore it, and
-		// MarkSceneDirty only reads Scene* via Entity::GetScene().
-		//
-		// MakeScenePlaceholder builds a Scene-bound Entity with an
-		// entt::null handle so we don't go through Scene::GetEntity (which
-		// asserts on invalid handles). The private Entity(EntityHandle,
-		// Scene&) ctor is friends-only — this editor TU isn't a friend, so
-		// the factory is the only legal path in.
+		// Placeholder entity carries the Scene* so MarkSceneDirty fires; MakeScenePlaceholder avoids Scene::GetEntity which asserts on null handles.
 		const Entity placeholder = Entity::MakeScenePlaceholder(scene);
 		const std::span<const Entity> entitySpan(&placeholder, 1);
 
@@ -902,11 +798,7 @@ namespace Index {
 	}
 
 	namespace ScriptComponentInspector {
-		// M28: reset every TU-static the script picker owns, mirroring
-		// ReferencePicker::Shutdown. Called from ImGuiEditorLayer::OnDetach
-		// so a project-switch / hot-reload begins from a clean slate
-		// (no stale entries pointing at the previous project's scripts,
-		// no leftover open flag, no stale entity target).
+		// Reset all picker state on detach so project-switch / hot-reload starts clean.
 		void Shutdown() {
 			s_PickerState = ScriptPickerState{};
 		}

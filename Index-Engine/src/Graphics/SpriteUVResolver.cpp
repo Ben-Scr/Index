@@ -14,10 +14,6 @@
 namespace Index {
 
 	namespace {
-		// Bumped by NotifySpriteSliceEpochBumped. Per-texture cache entries
-		// carry the epoch they were built against; a mismatch forces a
-		// refill from disk. Single counter for the whole registry keeps the
-		// invalidation O(1) regardless of how many textures the project has.
 		std::atomic<uint64_t> g_SliceEpoch{ 1 };
 
 		struct CachedEntry {
@@ -25,15 +21,8 @@ namespace Index {
 			std::vector<SpriteSlice> Slices;
 		};
 
-		// Main-thread only — the editor's slice authoring and the renderer
-		// both run on the main thread. If a future job-graph rewrite makes
-		// this multi-thread, swap to std::shared_mutex around the map.
 		std::unordered_map<uint64_t, CachedEntry> g_Cache;
 
-		// One-shot warning suppression for "you referenced a slice that
-		// doesn't exist". Keyed by `(assetId, sliceName)` so editing a
-		// SpriteRenderer to fix the name doesn't permanently hide future
-		// stale-ref warnings on the original combo.
 		std::unordered_set<std::string> g_WarnedRefs;
 
 		const std::vector<SpriteSlice>& GetCachedSlices(UUID textureAssetId) {
@@ -92,10 +81,7 @@ namespace Index {
 			return SpriteUVRect{};
 		}
 
-		// Half-texel inset so neighbour slices don't bleed in under
-		// Bilinear filtering on tight atlases. Pixel-art (Point filter)
-		// users won't notice the half-texel offset — and the inset stops
-		// the dreaded "edge of frame 0 includes a column of frame 1".
+		// Half-texel inset prevents adjacent-slice bleed under Bilinear filtering.
 		const float fW = static_cast<float>(texPxW);
 		const float fH = static_cast<float>(texPxH);
 		SpriteUVRect uv;
@@ -109,9 +95,6 @@ namespace Index {
 
 	void NotifySpriteSliceEpochBumped() {
 		g_SliceEpoch.fetch_add(1, std::memory_order_acq_rel);
-		// Old "you referenced a missing slice" warnings are stale after a
-		// re-author — clear so the user gets fresh feedback if they didn't
-		// fix the bad reference.
 		g_WarnedRefs.clear();
 	}
 

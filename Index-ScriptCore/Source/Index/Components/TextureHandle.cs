@@ -2,11 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace Index.Components;
 
-// Layout MUST match Index-Engine/src/Graphics/TextureHandle.hpp.
-// Two 16-bit fields; total 4 bytes, 2-byte aligned. Used inside the
-// SpriteRenderer struct mirror so reads round-trip with the native side.
-// The runtime treats Index == uint16.MaxValue as the invalid sentinel —
-// matches `TextureHandle::Invalid()` on the C++ side.
+// Layout MUST match Index-Engine/src/Graphics/TextureHandle.hpp; Index == ushort.MaxValue is the invalid sentinel matching C++ TextureHandle::Invalid().
 [StructLayout(LayoutKind.Sequential)]
 public struct TextureHandle
 {

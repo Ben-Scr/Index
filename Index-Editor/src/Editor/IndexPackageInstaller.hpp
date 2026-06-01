@@ -15,27 +15,14 @@ namespace Index {
 		std::string PackageDir;    // Absolute path to the package directory
 		bool        IsEngine = false; // true if under <engine-root>/packages/, else project-local
 
-		// Which layers does this package declare? Detected by scanning the manifest
-		// for `<layer> = {` patterns. At least one of these is true for any valid
-		// manifest the loader will register. Both canonical names and the legacy
-		// aliases (engine_core / standalone_cpp) are accepted by the parser.
 		bool HasNativeLayer = false;            // canonical "native" (legacy alias: "engine_core")
 		bool HasNativeStandaloneLayer = false;  // canonical "native_standalone" (legacy alias: "standalone_cpp")
 		bool HasCSharpLayer = false;
 
-		// True when the csharp layer declares `allow_unsafe = true`. Propagated
-		// into the generated .csproj as <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		// so the package can use unsafe blocks / fixed-pointer marshalling
-		// (commonly needed for P/Invoke into a native sibling).
 		bool CSharpAllowUnsafe = false;
 	};
 
-	// Install/validate helpers for index-package.lua-based packages.
-	//
-	// Distinct from `PackageManager` (which handles NuGet/GitHub *third-party* deps via the
-	// Index-PackageTool CLI). This class operates on the engine's first-class package system:
-	//   * "Engine packages" live under   <engine-root>/packages/<Name>/index-package.lua
-	//   * "Project packages" live under  <project>/Packages/<Name>/index-package.lua
+	// Install/validate helpers for index-package.lua packages (engine packages under <engine>/packages/, project packages under <project>/Packages/).
 	class IndexPackageInstaller {
 	public:
 		struct InstallResult {
@@ -86,12 +73,6 @@ namespace Index {
 		// IndexPackages.props. Does NOT delete the package's files on disk.
 		static InstallResult UninstallFromProject(class IndexProject& project, const std::string& packageName);
 
-		// Generate <project>/Packages/IndexPackages.props with one <Reference>
-		// per installed C# package. The HintPath points at the prebuilt DLL the
-		// package ships at Packages/<Name>/Bin/Windows-x64/Pkg.<Name>.dll, so
-		// the user's .csproj resolves the reference without any build step at
-		// install time. Idempotent; safe to call repeatedly.
-		// Also patches the project's .csproj to <Import> this props file if it doesn't already.
 		static void RegeneratePackageReferences(const class IndexProject& project);
 	};
 

@@ -6,10 +6,7 @@ namespace Index {
 	bool BuildPlatformSupport::IsAvailable(BuildPlatform platform) {
 		switch (platform) {
 			case BuildPlatform::Windows: return true;
-			// Every non-Windows platform is gated behind a future editor
-			// platform-package install. Until that package system exists,
-			// these profiles are surfaced in the UI for planning but the
-			// Build button stays disabled.
+			// All non-Windows platforms disabled until editor platform-packages exist.
 			case BuildPlatform::Linux:
 			case BuildPlatform::MacOS:
 			case BuildPlatform::Android:

@@ -11,23 +11,6 @@
 #include <filesystem>
 #include <utility>
 
-// =============================================================================
-// FontManager — slot table + lookup-by-(uuid, quantized px).
-// -----------------------------------------------------------------------------
-// Constructs Font objects that bake their atlas through the active render
-// backend. Quantization ladder is identical to the legacy OpenGL impl so a
-// font dragged through size-N sliders allocates the same handful of
-// atlases.
-//
-// What's intentionally lighter:
-//   * No TTF-byte cache — re-reads each .ttf on every Load. The legacy
-//     `s_TtfBufferCache` saves disk I/O across pixel-size bakes; if we
-//     measure it as a real hot path we can lift it into a shared helper.
-//     Today UI rebuilds are infrequent so the simpler path stays.
-//   * No PurgeUnreferenced equivalent — the UnloadAll path frees
-//     everything on shutdown / project switch, which matches the runtime
-//     case.
-// =============================================================================
 
 namespace Index {
 
@@ -129,15 +112,7 @@ namespace Index {
 			return FontHandle::Invalid();
 		}
 
-		// Returns the slot regardless of whether the bake has published — that
-		// is the whole point of the async API. The render path then sees
-		// GetFont() == nullptr until PollAsync() flips IsLoaded() on a later
-		// frame, and meanwhile renders with the default fallback. We use the
-		// raw slot lookup (not FindExisting, which now skips in-flight bakes
-		// to keep the sync LoadFontByUUID path away from baking slots) so a
-		// second async request for the same (uuid, quantized px) bucket
-		// latches onto the in-flight bake instead of fanning out a duplicate
-		// worker.
+		// Uses raw slot lookup (not FindExisting) so a second async request for the same key latches onto the in-flight bake.
 		const LookupKey key{ assetId, QuantizePixelSize(pixelSize) };
 		auto it = s_Lookup.find(key);
 		if (it != s_Lookup.end()) {
@@ -155,11 +130,6 @@ namespace Index {
 		}
 		if (path.empty()) return FontHandle::Invalid();
 
-		// Synchronous disk read — typical TTFs are <5MB so this is sub-ms on
-		// SSDs. The expensive stbtt_PackFontRanges work is what BeginAsyncBake
-		// pushes to the worker. If profiling later shows the read itself is
-		// the bottleneck (huge CJK fonts, slow disks), this can move into
-		// the worker too.
 		std::vector<uint8_t> ttf = File::ReadAllBytes(path);
 		if (ttf.empty()) {
 			IDX_CORE_ERROR_TAG("FontManager", "TTF read failed for async bake: {}", path);
@@ -269,19 +239,7 @@ namespace Index {
 		if (idx >= s_Slots.size() || !s_Slots[idx].InUse) {
 			return FontHandle::Invalid();
 		}
-		// Skip in-flight async bakes — callers of FindExisting (LoadFontByUUID,
-		// GetDefaultFont via that path) expect a font that is ready to render,
-		// not one whose atlas is still being packed on a worker. Returning
-		// Invalid here sends the sync caller down the fresh-load branch so the
-		// fallback path (e.g. GetDefaultFont's bundled-atlas request) hands
-		// back a loaded slot even when an async bake is already in flight for
-		// the same (uuid, quantized px) bucket. The async slot keeps living
-		// and either publishes via PollAsync later (reachable through the
-		// FontHandle stored on the requesting component) or gets cleaned up
-		// on UnloadAll. The async lookup in LoadFontByUUIDAsync intentionally
-		// uses its own s_Lookup probe (not FindExisting) so a second async
-		// request for the same key still latches onto the in-flight bake
-		// instead of fanning out a duplicate worker.
+		// Return Invalid for in-flight bakes so sync callers get a ready font; async callers use their own probe.
 		if (s_Slots[idx].Font && !s_Slots[idx].Font->IsLoaded()) {
 			return FontHandle::Invalid();
 		}

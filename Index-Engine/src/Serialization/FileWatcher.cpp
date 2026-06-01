@@ -134,17 +134,7 @@ namespace Index {
 			return;
 		}
 
-		// Snapshot the callback AND the description under the state lock
-		// before invoking. Reading m_WatchDescription outside the lock would
-		// race Stop()/dtor clearing it (line 125). We do NOT hold the lock
-		// across the invocation itself: callbacks frequently re-enter the
-		// file system / scene system and a held lock would invite deadlocks.
-		//
-		// We also re-check m_Watching under the lock: if Stop() flipped it
-		// after this Poll() started but before we got here, the callback no
-		// longer represents live state and may close over freed resources
-		// (e.g. a hot-reload pipeline owning this watcher). Bail in that
-		// case rather than firing a stale notification.
+		// Copy callback+description under lock (races Stop()), but do NOT hold the lock during invocation (callbacks re-enter FS/scene).
 		Callback callbackCopy;
 		std::string descriptionCopy;
 		{
@@ -339,10 +329,7 @@ namespace Index {
 			}
 			const std::string resolvedStr = resolved.string();
 			std::string rootStr = resolvedRoot.string();
-			// Prefix-compare needs a separator between the root and the
-			// child segment, otherwise "/proj/Assets" would falsely match
-			// "/proj/Assets-Backup/foo.png". Append the platform separator
-			// before the compare to anchor the match on a directory boundary.
+			// Ensure trailing separator so "/proj/Assets" doesn't falsely match "/proj/Assets-Backup/foo.png".
 			if (!rootStr.empty() && rootStr.back() != std::filesystem::path::preferred_separator) {
 				rootStr.push_back(std::filesystem::path::preferred_separator);
 			}

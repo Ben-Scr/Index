@@ -8,19 +8,7 @@ namespace Index {
 	class Scene;
 	namespace Json { class Value; }
 
-	// Inspector body for a `.prefab` asset. Owns a detached preview
-	// `Scene` (see `Scene::CreateDetachedScene`) into which the prefab's
-	// root entity is deserialized for editing. Saving re-serializes the
-	// detached entity back to disk via `SceneSerializer::SaveEntityToFile`.
-	//
-	// Lifetime: the detached scene is held by `m_PrefabScene` and torn down
-	// when `Close()` is called or when a different prefab is `Open`'d. The
-	// scene's destructor fires component-destroy hooks; those that touch
-	// global subsystems are gated by `Scene::IsDetached()`.
-	//
-	// Dirty tracking: any component-drawer interaction on the prefab window
-	// marks the detached scene dirty via `Scene::MarkDirty`. `HasUnsavedChanges`
-	// reads back through `m_PrefabScene->IsDirty()`.
+	// Inspector for a .prefab asset backed by a detached Scene. Component-destroy hooks that touch global subsystems are gated by Scene::IsDetached().
 	class PrefabInspector {
 	public:
 		PrefabInspector();
@@ -45,10 +33,6 @@ namespace Index {
 		// if the user edited anything this frame (caller can use as a UX hint).
 		bool Render();
 
-		// Re-serialize the detached entity back to the .prefab file via
-		// `SceneSerializer::SaveEntityToFile`. Returns true on success and
-		// triggers propagation to live instances of this prefab in any open
-		// scene (see `PropagateToLiveInstances`).
 		bool Save();
 
 	private:
@@ -57,9 +41,6 @@ namespace Index {
 		std::unique_ptr<Scene> m_PrefabScene;
 		EntityHandle m_RootEntity = entt::null;
 		std::string m_PrefabPath;
-		// Search filter buffer for the AddComponent popup. Persists across
-		// frames so the user's filter survives the popup body re-running on
-		// every render. Cleared when the popup is opened.
 		char m_AddComponentSearchBuffer[128]{};
 	};
 

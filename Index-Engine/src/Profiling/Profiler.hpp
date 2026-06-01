@@ -1,48 +1,9 @@
 #pragma once
 
-// ─── Index Profiler ─────────────────────────────────────────────────────────
-//
-// A two-layer profiler:
-//
-//   1. Tracy backend  — every INDEX_PROFILE_* macro emits a Tracy zone /
-//      frame mark / plot, so the standalone Tracy viewer can be attached
-//      over TCP for deep sessions, hitch hunting, and call-stack capture.
-//
-//   2. In-engine ring-buffer collector — the SAME macros, when matched
-//      against a registered named module, push their value into a fixed-
-//      size ring buffer the in-engine ImGui ProfilerPanel reads from.
-//      This is what populates the at-a-glance dashboard inside the editor.
-//
-// The two layers run in parallel from one instrumentation site. Tracy is
-// the source of truth for *tracing* (what zones, in what order, on which
-// thread). The Profiler ring buffers are the source of truth for the
-// in-engine *summary* dashboard (rolling avg, min, max, history graph).
-//
-// Compile-time gating: when INDEX_PROFILER_ENABLED is undefined, every
-// macro expands to (void)0, every API call is a no-op stub, and the .cpp
-// files are excluded from the build by premake. There is zero binary or
-// runtime cost in stripped builds.
-//
-// Pass --no-profiler at premake time to strip.
-// ────────────────────────────────────────────────────────────────────────────
-
 #include "Core/Export.hpp"
 
 #ifdef INDEX_PROFILER_ENABLED
-// MSVC quirk: both `__FUNCTION__` and `__func__` are `static const char[]`,
-// not string literals. Their address is not a compile-time constant, so
-// Tracy's `static constexpr SourceLocationData { ..., function, ... }`
-// fails with C2131. We override TracyFunction to the empty string literal
-// "":
-//   - It's a real string literal, so it stays constexpr-valid for the
-//     ZoneScopedN code path (had we used it).
-//   - We use ZoneTransientN (transient zones) which internally calls
-//     strlen(TracyFunction) — and `strlen(nullptr)` is UB that Release-
-//     mode MSVC crashes on, while `strlen("")` is a clean 0. Using ""
-//     avoids both pitfalls.
-//   - The displayed Tracy zone keeps the *name* we pass ("Frame", etc.);
-//     the function field just shows up empty in the viewer, which is fine.
-// Must be defined BEFORE <tracy/Tracy.hpp>.
+// MSVC: __FUNCTION__ is not a string literal, so Tracy's constexpr SourceLocationData fails; override to "" to satisfy constexpr and avoid strlen(nullptr) UB. Must be before <tracy/Tracy.hpp>.
 #  ifndef TracyFunction
 #    define TracyFunction ""
 #  endif
@@ -56,20 +17,11 @@
 
 namespace Index {
 
-	// ── Module bookkeeping ────────────────────────────────────────────────
-	//
-	// One module per topic the panel cares about (FPS, Frame, Physics, GPU,
-	// DrawCalls, GpuMemory, RAM, Entities). The macro instrumentation looks
-	// up modules by name; if no module matches, Tracy still gets the call
-	// but the in-process collector skips. This keeps Tracy's overhead pinned
-	// to its own (very low) cost regardless of which modules are enabled.
 	struct INDEX_API ProfilerModule {
 		std::string Name;
 		bool Enabled = true;     // panel checkbox
 		bool Available = true;   // GPU memory may flip this off when no driver ext
 
-		// Ring buffer: head index + valid count. Capacity is the panel's
-		// "Tracking Span" setting; resized via Profiler::SetTrackingSpan().
 		std::vector<float> Samples;
 		size_t Head = 0;
 		size_t Count = 0;
@@ -79,16 +31,8 @@ namespace Index {
 		float MinValue = 0.0f;
 		float MaxValue = 0.0f;
 
-		// Cached running sum so Avg is O(1). Min/Max are recomputed only
-		// when Samples mutate (in PushSample) so the panel render is also O(1).
-		double RunningSum = 0.0;
-
-		// Per-module sampling-rate gate. Was previously a single global
-		// timestamp shared across all modules — that meant the first push
-		// per ~16ms (typically PushFrameDelta) consumed the gate and every
-		// other module's push got dropped, leaving them perpetually at 0.0.
-		// Per-module timestamps mean each module observes its own 1/Hz
-		// cadence independently.
+		double RunningSum = 0.0; // cached so Avg is O(1)
+		// Per-module gate; previously a single shared timestamp that starved every module except PushFrameDelta each tick.
 		std::chrono::steady_clock::time_point LastPushTime{};
 	};
 
@@ -115,10 +59,7 @@ namespace Index {
 		// by-value overload incurs.
 		static void AllModules(std::vector<ProfilerModule>& outBuffer);
 
-		// Read the most recent CurrentValue of a module by name. 0.0 if no
-		// such module or no samples have been recorded yet. Used by the
-		// "Others" residual computation in Application::Run to derive the
-		// unattributed CPU time per frame.
+		// Returns 0.0 if no such module; used by the "Others" residual in Application::Run for unattributed CPU time.
 		static float GetCurrentValue(const std::string& name);
 
 		// Push an already-computed numeric sample into a named module.
@@ -126,24 +67,13 @@ namespace Index {
 		// Honors the visibility / enabled / sampling-rate gates.
 		static void PushValue(const std::string& name, float value);
 
-		// Push a duration-in-milliseconds sample. Same gates as PushValue.
-		// Used by INDEX_PROFILE_SCOPE's RAII helper and by the GPU timer.
 		static void PushSample(const std::string& name, float milliseconds);
 
-		// Frame-loop hooks.
-		// OnFrameMark advances the sampling-rate cadence (so a 60→10 Hz
-		// change actually drops samples instead of pushing every call). It
-		// is called from INDEX_PROFILE_FRAME at the bottom of the frame.
-		// PushFrameDelta records the FPS + Frame Time modules from one
-		// shared dt measurement so they can't drift apart.
+		// OnFrameMark advances the sampling cadence; PushFrameDelta records FPS + FrameTime from one shared dt so they can't drift.
 		static void OnFrameMark(const std::string& name);
 		static void PushFrameDelta(float deltaSeconds);
 
-		// Gates.
-		// Both are required for samples to land. SetPanelVisible is driven
-		// by the panel's Render() — when the panel isn't drawn, it sets
-		// visible=false. The background-tracking toggle keeps collection
-		// alive when the panel is closed; defaults to false.
+		// Both gates required for samples to land; background tracking keeps collection alive when the panel is closed.
 		static void SetPanelVisible(bool visible);
 		static void SetBackgroundTracking(bool enabled);
 		static bool IsCollecting();
@@ -161,10 +91,7 @@ namespace Index {
 		Profiler() = delete;
 	};
 #else
-	// Stripped-build stubs. Inline so call sites compile without #ifdef
-	// guards; the compiler emits no code for any of these. Returning safe
-	// defaults so any callers that branch on a value (e.g. IsCollecting)
-	// still produce sane behavior.
+	// Stripped-build stubs — all no-ops; safe defaults so callers branching on return values still work.
 	class Profiler {
 	public:
 		static inline void Initialize() {}
@@ -195,12 +122,6 @@ namespace Index {
 
 #ifdef INDEX_PROFILER_ENABLED
 
-	// RAII helper for INDEX_PROFILE_SCOPE. Captures a steady-clock start
-	// timestamp at construction; on destruction computes the elapsed
-	// milliseconds and pushes them through Profiler::PushSample. The
-	// in-flight cost is one chrono::now() pair — comparable to Tracy's
-	// own zone overhead. When the named module isn't registered the push
-	// is dropped at the lookup, which is cheap.
 	class INDEX_API ProfilerScopedSample {
 	public:
 		explicit ProfilerScopedSample(const char* name)
@@ -225,13 +146,7 @@ namespace Index {
 	#define IDX_PROF_CAT_INNER(a, b) a##b
 	#define IDX_PROF_CAT(a, b) IDX_PROF_CAT_INNER(a, b)
 
-	// Mark a scope. Uses Tracy's transient zone API (string passed at
-	// runtime) rather than ZoneScopedN, because the constexpr-requiring
-	// SourceLocationData chokes on MSVC's non-literal __FUNCTION__/__func__
-	// even with TracyFunction overrides. Transient zones cost a strlen()
-	// per push — negligible vs. the rest of frame work, and Tracy's docs
-	// explicitly endorse this for cases like this. The named zone still
-	// shows up correctly in Tracy's timeline.
+	// Uses ZoneTransientN (runtime string) because MSVC's __FUNCTION__ is not a string literal and breaks constexpr SourceLocationData.
 	#define INDEX_PROFILE_SCOPE(name)                                       \
 		ZoneTransientN(IDX_PROF_CAT(_idx_zone_, __LINE__), name, true);     \
 		::Index::ProfilerScopedSample IDX_PROF_CAT(_idx_prof_, __LINE__)(name)
@@ -249,10 +164,6 @@ namespace Index {
 			::Index::Profiler::PushValue(name, float(val));                 \
 		} while (0)
 
-	// Label the current thread for Tracy's per-thread lane view. Call once
-	// at thread entry. Tracy internally uses SetThreadDescription on Windows
-	// and pthread_setname_np on POSIX, so the OS debugger picks up the
-	// same name when the profiler is enabled.
 	#define INDEX_PROFILE_THREAD_NAME(name) ::tracy::SetThreadName(name)
 
 #else // !INDEX_PROFILER_ENABLED — strip everything

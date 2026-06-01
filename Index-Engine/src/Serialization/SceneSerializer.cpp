@@ -424,12 +424,7 @@ namespace Index {
 		}
 
 		bool JsonEquivalent(const Value& left, const Value& right) {
-			// Structural equality via Json::operator==, NOT stringify-and-compare. The
-			// previous Stringify approach allocated two strings per leaf comparison;
-			// BuildOverridePatch invokes JsonEquivalent O(N) times per save, and the
-			// editor's prefab inspector calls ComputeInstanceOverrides every frame on
-			// each prefab instance — so the per-leaf allocations were a real hot-path
-			// hazard.
+			// Use Json::operator== not stringify-compare: BuildOverridePatch calls this O(N) per save and the prefab inspector calls it every frame.
 			return left == right;
 		}
 
@@ -735,14 +730,7 @@ namespace Index {
 				const uint64_t clipboardId = clipboardIds[static_cast<uint32_t>(entity)];
 				entityValue.AddMember("uuid", Value(std::to_string(clipboardId)));
 
-				// Preserve prefab-instance status across duplicate / copy-paste.
-				// Origin and PrefabGUID describe an entity's *kind*, not its
-				// runtime identity, so they survive the identity strip. Without
-				// this, RemoveEntityIdentityMembers silently demoted a duplicated
-				// prefab instance to a plain scene entity. SourceEntityId pins
-				// the override-tracking link to the right node in the source
-				// prefab tree — DeserializeFullEntity otherwise re-seeds it from
-				// the new clipboard uuid, scrambling future override diffs.
+				// Origin/PrefabGUID survive the identity strip (they describe kind, not runtime id); SourceEntityId must be re-emitted or DeserializeFullEntity re-seeds it from the clipboard uuid, scrambling override diffs.
 				if (scene.GetEntityOrigin(entity) == EntityOrigin::Prefab) {
 					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
 					if (prefabGuid != 0) {
@@ -940,11 +928,7 @@ namespace Index {
 			auto& registry = scene.GetRegistry();
 			Value entityValue = Value::MakeObject();
 
-			// Only emit "name" when the entity actually has a NameComponent.
-			// Writing a placeholder string here was sticky: a round-trip
-			// (reload, duplicate, prefab) would deserialize the placeholder
-			// back into a real NameComponent, so an unnamed entity gained
-			// a name as a side effect of every save.
+			// Omit "name" entirely when absent — writing a placeholder would round-trip back into a real NameComponent.
 			if (registry.all_of<NameComponent>(entity)) {
 				entityValue.AddMember("name", Value(registry.get<NameComponent>(entity).Name));
 			}
@@ -955,17 +939,7 @@ namespace Index {
 					Value(std::to_string(static_cast<uint64_t>(registry.get<UUIDComponent>(entity).Id))));
 			}
 
-			// Parent reference is serialized as the parent's UUID — load
-			// resolves it back into an EntityHandle in a second pass after
-			// all entities exist (entity handles are runtime-local and
-			// can't be persisted directly). Roots have no field at all.
-			//
-			// `childIndex` is the entity's position in its parent's
-			// Children vector. Deserialize uses it as the canonical
-			// source-of-truth for child order so the on-disk array
-			// position never silently changes a parent's child layout
-			// (e.g. a Slider's [Fill, Handle] order surviving regardless
-			// of how the file was written).
+			// parentUuid resolved in a second pass; childIndex is the canonical child-order source-of-truth so on-disk array order can't silently reorder children.
 			if (registry.all_of<HierarchyComponent>(entity)) {
 				const auto& hc = registry.get<HierarchyComponent>(entity);
 				if (hc.Parent != entt::null
@@ -1000,10 +974,7 @@ namespace Index {
 			if (registry.all_of<Transform2DComponent>(entity)) {
 				const auto& transform = registry.get<Transform2DComponent>(entity);
 				Value transformValue = Value::MakeObject();
-				// Local* are the authored fields. The legacy "posX/posY/rotation
-				// /scaleX/scaleY" keys are still written so older builds and
-				// external tools that read the JSON keep working — for root
-				// entities they hold the same value as the Local* keys.
+				// Legacy posX/posY/rotation/scaleX/scaleY keys kept for backwards compat with older builds and external tools.
 				transformValue.AddMember("posX", Value(transform.LocalPosition.x));
 				transformValue.AddMember("posY", Value(transform.LocalPosition.y));
 				transformValue.AddMember("rotation", Value(transform.LocalRotation));
@@ -1397,17 +1368,9 @@ namespace Index {
 		}
 	} // namespace
 
-	// External-linkage adapters so SceneSerializerDeserialize.cpp (and any other TU)
-	// can use the canonical helpers without re-implementing them. The helper bodies
-	// live in the anonymous namespace above (so they keep their internal-linkage
-	// optimization opportunities); the Detail:: wrappers below are the only thing
-	// other TUs see. Declarations live in SceneSerializerShared.hpp.
+	// External-linkage adapters forwarding to the anonymous-namespace helpers; declarations in SceneSerializerShared.hpp.
 	namespace Detail {
 		Json::Value SerializeEntity(Scene& scene, EntityHandle entity) {
-			// Unqualified lookup walks back into the surrounding Index namespace and
-			// finds the anonymous-namespace SerializeEntity above through that namespace's
-			// implicit using-directive on the enclosing namespace (this works in this TU
-			// because the anonymous namespace is defined right above us).
 			return ::Index::SerializeEntity(scene, entity);
 		}
 
@@ -1473,14 +1436,7 @@ namespace Index {
 		auto view = registry.view<entt::entity>();
 		std::vector<entt::entity> entities(view.begin(), view.end());
 
-		// entt iterates the dense storage in reverse-insertion order
-		// (newest first). Writing the JSON in that order means deserialize
-		// re-creates entities newest-first, so the new registry's iteration
-		// is *also* reversed — and the editor's hierarchy panel, which
-		// rebuilds its order by walking the new view backwards, ends up
-		// flipping the on-screen order on every save+reload roundtrip.
-		// Reversing here pins the JSON to original creation order so a
-		// roundtrip is a true identity.
+		// entt iterates newest-first; reverse to creation order so a save+reload roundtrip is a true identity.
 		std::reverse(entities.begin(), entities.end());
 
 		for (const entt::entity entity : entities) {
@@ -1598,11 +1554,7 @@ namespace Index {
 			Value prefabEntities;
 			SerializePrefabSourceTree(scene, entity, prefabEntity, prefabEntities);
 
-			// AssetRegistry::GetOrCreateAssetUUID derives the GUID from the path,
-			// not the file content, so we can ask for the GUID before writing the
-			// file at all. Single Stringify+write pass — the previous code wrote
-			// the file twice (once to register the asset, once with the GUID baked
-			// in) which doubled disk I/O on every prefab save.
+			// GUID derived from path (not content), so we can register before writing — avoids the previous double-write per prefab save.
 			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(path);
 
 			Value root = Value::MakeObject();
@@ -1633,6 +1585,36 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("SceneSerializer", "SaveEntityToFile failed: {}", exception.what());
 			return false;
 		}
+	}
+
+	uint64_t SceneSerializer::SaveEntityAsPrefabInstance(Scene& scene, EntityHandle entity, const std::string& path) {
+		// Write first: GetPrefabSourceEntityId stamps stable UUIDs we reuse as SourceEntityId below so disk and live state never drift.
+		if (!SaveEntityToFile(scene, entity, path)) {
+			return 0;
+		}
+
+		const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(path);
+		if (prefabGuid == 0) {
+			return 0;
+		}
+
+		// Capture source ids BEFORE the loop: SetEntityMetaData overwrites UUIDComponent, severing the link to the on-disk "uuid".
+		const std::vector<EntityHandle> subtree = CollectEntitySubtree(scene, entity);
+		std::vector<uint64_t> sourceIds;
+		sourceIds.reserve(subtree.size());
+		for (EntityHandle subtreeEntity : subtree) {
+			sourceIds.push_back(GetPrefabSourceEntityId(scene, subtreeEntity));
+		}
+
+		for (std::size_t i = 0; i < subtree.size(); ++i) {
+			scene.SetEntityMetaData(subtree[i], EntityOrigin::Prefab, AssetGUID(prefabGuid));
+			if (scene.HasComponent<PrefabInstanceComponent>(subtree[i])) {
+				scene.GetComponent<PrefabInstanceComponent>(subtree[i]).SourceEntityId = sourceIds[i];
+			}
+		}
+
+		scene.MarkDirty();
+		return prefabGuid;
 	}
 
 	bool SceneSerializer::ConvertFileFormat(const std::string& path, SceneSerializationFormat format) {

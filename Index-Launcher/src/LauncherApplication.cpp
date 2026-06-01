@@ -22,17 +22,8 @@ public:
 		config.EnableGuiRenderer = false;
 		config.EnableGizmoRenderer = false;
 		config.EnablePhysics2D = false;
-		// Launcher is purely a project picker — it never runs user game code,
-		// so spinning up CoreCLR and loading Index-ScriptCore.dll just to do
-		// nothing with them is wasted work. Worse, holding the DLL would
-		// block the editor (separate process) from rebuilding ScriptCore
-		// while we're alive — exactly the lock-contention bug seen on
-		// project-close.
+		// Scripting off: launcher never runs game code, and holding ScriptCore.dll would block the editor from rebuilding it.
 		config.EnableScripting = false;
-		// Launcher draws only ImGui (via ImGuiContextLayer); no sprites, no
-		// scenes, no native packages. Skipping these avoids unnecessary GL
-		// state setup and, for PackageHost, prevents loading and executing
-		// every Pkg.*.Native.dll's OnLoad on a UI that never uses them.
 		config.EnableRenderer2D = false;
 		config.EnableTextureManager = false;
 		config.EnablePackageHost = false;

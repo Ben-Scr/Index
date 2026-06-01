@@ -90,10 +90,6 @@ namespace Index {
 	}
 
 	void Window::IconifyCallback(GLFWwindow* /*window*/, int iconified) {
-		// Authoritative source for the engine's "minimized" state. The framebuffer-resize-
-		// to-(0,0) path that used to set this flag doesn't fire on every platform; iconify
-		// is the explicit signal. Window is friend-declared in Application so this member
-		// callback can reach Application::SetWindowMinimized (private accessor).
 		Application::SetWindowMinimized(static_cast<bool>(iconified));
 	}
 
@@ -121,13 +117,6 @@ namespace Index {
 	}
 
 	void Window::CloseCallback(GLFWwindow* window) {
-		// Fires for the title-bar X click AND Alt+F4 (Windows posts
-		// the same WM_CLOSE for both). Forward to the engine's event
-		// system; the WindowCloseEvent handler in
-		// Application::DispatchEvent calls RequestQuit and resets
-		// glfwSetWindowShouldClose so the main loop continues for at
-		// least one more frame, giving layers a chance to intercept
-		// (the editor's save-before-quit dialog).
 		Window* win = reinterpret_cast<Window*>(glfwGetWindowUserPointer(window));
 		if (win && win->m_EventCallback) {
 			WindowCloseEvent e;
@@ -138,20 +127,11 @@ namespace Index {
 	void Window::Create(const WindowSpecification& props) {
 		IDX_ASSERT(s_IsInitialized, IndexErrorCode::NotInitialized, "The Window isn't initialized");
 
-		// Seeded before any viewport math runs so the first
-		// SyncViewportFromFramebuffer / UpdateViewport at create-time
-		// already applies the lock.
 		m_AspectLock = props.AspectLock > 0.0f ? props.AspectLock : 0.0f;
 
-		// WebGPU (Dawn) owns the GPU context. Telling GLFW to skip OpenGL
-		// context creation is mandatory — otherwise GLFW would pick a GL
-		// context the render backend can't talk to.
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 		glfwWindowHint(GLFW_SAMPLES, 8);
 
-		// Custom titlebar: create the window hidden so the OS chrome
-		// doesn't flash for one frame before our WndProc subclass strips
-		// it. ShowWindow happens after Win32Titlebar::Install below.
 		if (props.CustomTitlebar) {
 			glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 		}
@@ -182,8 +162,6 @@ namespace Index {
 		SetDecorated(props.Decorated);
 		SetResizeable(props.Resizeable);
 
-		// CustomTitlebar overrides decoration: the OS chrome must be
-		// off before Win32Titlebar::Install subclasses the WndProc.
 		m_TitlebarColor         = props.TitlebarColor;
 		m_TitlebarTextColor     = props.TitlebarTextColor;
 		m_TitlebarActiveColor   = props.TitlebarActiveColor;
@@ -207,13 +185,7 @@ namespace Index {
 #endif
 
 		if (props.Fullscreen) {
-			// FullscreenMode is the source of truth; the legacy Windowed
-			// bool is honoured only when the enum is left at its default
-			// (Exclusive) AND Windowed=true — that's the historical
-			// "Fullscreen + Windowed = Maximized" combo. Without this
-			// special case, projects that haven't migrated to the enum
-			// would silently flip from Maximized to Exclusive on first
-			// launch under the new engine.
+			// Legacy compat: Fullscreen+Windowed=true maps to Maximized so old projects don't silently switch to Exclusive.
 			FullscreenMode mode = props.FullscreenMode;
 			if (mode == FullscreenMode::Exclusive && props.Windowed) {
 				mode = FullscreenMode::Maximized;
@@ -223,10 +195,6 @@ namespace Index {
 					SetFullScreen(true);
 					break;
 				case FullscreenMode::BorderlessWindowed:
-					// Borderless windowed: strip decoration, size to the
-					// primary monitor's video mode, position at (0,0).
-					// Visually identical to exclusive fullscreen but the
-					// OS compositor stays in charge — Alt-Tab is instant.
 					glfwSetWindowAttrib(m_GLFWwindow, GLFW_DECORATED, GLFW_FALSE);
 					if (k_Videomode) {
 						glfwSetWindowSize(m_GLFWwindow,
@@ -243,13 +211,6 @@ namespace Index {
 			CenterWindow();
 		}
 
-		// Log the post-fullscreen / post-center size so a divergence
-		// between viewport (the size we *want*) and GLFW's reported
-		// framebuffer (the size we *got*) is visible immediately. This
-		// surfaces the failure mode where SetFullScreen silently bails
-		// out (e.g. monitor query returns nullptr) and leaves the window
-		// at GLFW's default 480x270 — which is what showed up as the
-		// "editor only renders into the top-left corner" bug.
 		{
 			int fbW = 0, fbH = 0;
 			glfwGetFramebufferSize(m_GLFWwindow, &fbW, &fbH);
@@ -272,14 +233,6 @@ namespace Index {
 
 		glfwSetDropCallback(m_GLFWwindow, SetDropCallback);
 		glfwSetWindowRefreshCallback(m_GLFWwindow, RefreshCallback);
-		// Required so layers can intercept the window-close attempt
-		// (Alt+F4 + title-bar X button both go through here on
-		// Windows). The handler in Application::DispatchEvent already
-		// calls RequestQuit + resets shouldClose so the main loop
-		// stays alive long enough for the editor's OnPreRender
-		// intercept to pop the save-before-quit dialog. Without the
-		// registration, GLFW's default WM_CLOSE handler just sets
-		// shouldClose=true and the loop exits with no warning.
 		glfwSetWindowCloseCallback(m_GLFWwindow, &Window::CloseCallback);
 
 		// Vsync is handled by the render backend.
@@ -292,10 +245,6 @@ namespace Index {
 			return;
 		}
 
-		// m_Cursor aliases either m_DefaultCursor or m_UICursor (or is
-		// null when the OS default is in use). Free the underlying
-		// owners; clearing m_Cursor avoids a double-destroy of the
-		// alias.
 		m_Cursor = nullptr;
 		m_CursorTextureAssetId = 0;
 		if (m_DefaultCursor) {
@@ -309,10 +258,7 @@ namespace Index {
 		glfwSetWindowUserPointer(m_GLFWwindow, nullptr);
 		m_EventCallback = {};
 #ifdef IDX_PLATFORM_WINDOWS
-		// Restore the original WndProc BEFORE GLFW destroys the HWND.
-		// Otherwise the OS can dispatch a teardown message into our
-		// subclass after the per-HWND state map entry is gone — and
-		// also leaks the entry across editor Reload cycles.
+		// MUST uninstall before glfwDestroyWindow: teardown messages can arrive after HWND destruction, dangling the subclass state map entry.
 		if (m_CustomTitlebar) {
 			Win32Titlebar::Uninstall(m_GLFWwindow);
 			m_CustomTitlebar = false;
@@ -326,9 +272,6 @@ namespace Index {
 	}
 
 	void Window::SwapBuffers() const {
-		// Submits the per-frame command buffer and calls surface.Present().
-		// GLFW's glfwSwapBuffers isn't usable — GLFW was created with
-		// GLFW_NO_API so there's no GL context to swap.
 		RenderApi::Present();
 	}
 
@@ -404,9 +347,6 @@ namespace Index {
 	}
 
 	void Window::SetCharCallback(GLFWwindow* /*window*/, unsigned int codepoint) {
-		// Drives UI input fields. GLFW only fires char-callback for printable
-		// codepoints (after IME composition) — control keys (Backspace, Enter,
-		// arrow keys) come through the regular key callback, not here.
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		app->m_Input.OnChar(static_cast<uint32_t>(codepoint));
@@ -560,20 +500,9 @@ namespace Index {
 		m_CursorMode = normalized;
 	}
 	namespace {
-		// Normalized pixel size for project-supplied cursors. GLFW hands
-		// the image straight to the OS, which renders the cursor at its
-		// raw pixel size — so without resampling, a 128x128 source would
-		// show up four times the on-screen size of a 32x32 one. We force
-		// every cursor through a single logical size so authored art
-		// reads the same regardless of source resolution. 32x32 matches
-		// the classic Windows cursor and what users expect from "default
-		// cursor size".
+		// 32×32 matches the classic Windows cursor; all project cursors are resampled to this size so source resolution doesn't affect on-screen size.
 		constexpr int k_CursorTargetSize = 32;
 
-		// Bilinear RGBA8 resample into a freshly-allocated buffer. Caller
-		// owns the returned memory and must `delete[]` it. Returns nullptr
-		// on bad input. Kept inline here to avoid pulling stb_image_resize2's
-		// ~10k LOC into Window.cpp's TU just for a 32x32 cursor.
 		unsigned char* ResizeRGBA8Bilinear(const unsigned char* src,
 			int srcW, int srcH, int dstW, int dstH)
 		{
@@ -606,9 +535,6 @@ namespace Index {
 			return dst;
 		}
 
-		// Build a GLFWcursor from a Texture2D. Returns nullptr on any
-		// failure with a warning logged. The caller owns the returned
-		// cursor and must free it via glfwDestroyCursor.
 		GLFWcursor* MakeCursorFromTexture(const Texture2D* tex2D) {
 			if (!tex2D) return nullptr;
 			std::unique_ptr<ImageData> imgData = tex2D->GetImageData();
@@ -645,10 +571,6 @@ namespace Index {
 	}
 
 	void Window::SetCursorImage(const Texture2D* tex2D) {
-		// Stage as the new "default" cursor. If the cursor isn't currently
-		// over UI we apply it immediately; otherwise the swap waits for
-		// SetCursorOverUI(false). Passing nullptr clears the slot back
-		// to the OS default.
 		GLFWcursor* fresh = tex2D ? MakeCursorFromTexture(tex2D) : nullptr;
 		if (tex2D && !fresh) return;
 
@@ -685,10 +607,6 @@ namespace Index {
 		if (overUI == m_CursorOverUI) return;
 		m_CursorOverUI = overUI;
 
-		// Resolve which slot to apply. UI hovering only switches when the
-		// project supplied a UI cursor — otherwise we keep the default
-		// active so an unset UI cursor doesn't fall back to the OS arrow
-		// every time the user mouses over a button.
 		GLFWcursor* desired = overUI && m_UICursor ? m_UICursor : m_DefaultCursor;
 		if (desired == m_Cursor) return;
 		m_Cursor = desired;
@@ -844,26 +762,13 @@ namespace Index {
 		if (!RenderApi::IsInitialized() || !s_MainViewport) {
 			return;
 		}
-		// Swap-chain reset always uses the *full* framebuffer dimensions so
-		// the surface covers the whole OS window — without that, an aspect-
-		// locked sub-rect would leave the surround undefined instead of
-		// black-able. The render viewport, in contrast, points at the
-		// logical sub-rect so the camera renders within the locked aspect.
 		const int fbW = s_MainViewport->GetFramebufferWidth();
 		const int fbH = s_MainViewport->GetFramebufferHeight();
 		const int x   = s_MainViewport->GetOffsetX();
 		const int y   = s_MainViewport->GetOffsetY();
 		const int w   = s_MainViewport->GetWidth();
 		const int h   = s_MainViewport->GetHeight();
-		// Drives BOTH the swap-chain reset on the GLFW framebuffer's new
-		// size AND the default view's rect. Without the explicit
-		// OnWindowResize call, SetViewport-only would miss the reset
-		// whenever it was called with an FBO currently bound — the
-		// editor's FBO render keeps view 1+ bound between scene passes,
-		// so a window resize landing mid-frame would set the per-FBO
-		// viewport but leave the swap chain at its initial resolution
-		// (visible as "editor renders only into the top-left corner of
-		// the OS window").
+		// OnWindowResize resets the swap chain; SetViewport-only would leave it stale when an FBO is bound mid-frame.
 		RenderApi::OnWindowResize(fbW, fbH);
 		RenderApi::SetViewport(x, y, w, h);
 	}
@@ -877,10 +782,6 @@ namespace Index {
 		int fbH = 0;
 		glfwGetFramebufferSize(m_GLFWwindow, &fbW, &fbH);
 
-		// Compute the logical sub-rect within the framebuffer. The same math
-		// the editor's Game View panel uses (ImGuiEditorLayerViewport letter-
-		// box block); the only difference is the target rect — full frame-
-		// buffer here, ImGui content region there.
 		int subW = fbW > 0 ? fbW : 1;
 		int subH = fbH > 0 ? fbH : 1;
 		int offsetX = 0;
@@ -907,18 +808,7 @@ namespace Index {
 		}
 		s_MainViewport->SetLetterboxedSubRect(fbW, fbH, offsetX, offsetY, subW, subH);
 
-		// Publish the sub-rect to UIRegion when the aspect lock is active
-		// so script input (Index_Input_GetMousePosition), Camera2DComponent
-		// ::ScreenToWorld, and the UI event/layout systems all see cursor
-		// coordinates rebased to the visible viewport instead of the raw
-		// OS-window position. The Game View panel in the editor already
-		// owns this mechanism — it publishes its panel rect every frame
-		// — and the runtime path only kicks in when m_AspectLock > 0, so
-		// the two paths can't race.
-		//
-		// Skipped when the lock is off: in the editor process that lets
-		// the Game View panel keep ownership of UIRegion; in a non-locked
-		// runtime the raw OS-window pos already IS viewport-relative.
+		// Publish UIRegion only when locked: the editor's Game View panel owns it otherwise; unlocked runtime already uses raw OS-window coords.
 		if (m_AspectLock > 0.0f) {
 			SetUIRegion(offsetX, offsetY, subW, subH);
 		}
@@ -926,22 +816,11 @@ namespace Index {
 
 	void Window::SetAspectLock(float aspect) {
 		m_AspectLock = aspect > 0.0f ? aspect : 0.0f;
-		// Re-derive the sub-rect from the current framebuffer size and
-		// re-arm the render viewport so the change is visible without
-		// waiting for the next OS resize event.
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
 	}
 
 	void Window::ResyncViewportAfterRenderApiInit() {
-		// Same body as the resize-callback path: query the framebuffer,
-		// compute the sub-rect under the active aspect lock (or full
-		// framebuffer when locked is 0), push to the main viewport, then
-		// re-arm the swap chain + render-target viewport so the cached
-		// state in WebGPUApi reflects the lock from frame 0. Safe to call
-		// when the lock is disabled — the no-letterbox branch just sets
-		// the sub-rect = full framebuffer, identical to ConfigureSurface's
-		// own default.
 		SyncViewportFromFramebuffer();
 		UpdateViewport();
 	}

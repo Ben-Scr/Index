@@ -25,10 +25,7 @@ namespace Index {
 		: m_EntityHandle(e), m_Registry(scene ? &scene->GetRegistry() : nullptr), m_Scene(scene) {}
 
 	Entity Entity::MakeScenePlaceholder(Scene& scene) {
-		// entt::null + a real scene pointer — IsValid() returns false so
-		// any accidental component access fails fast, while GetScene()
-		// hands back the live scene so dispatchers like PropertyDrawer's
-		// MarkSceneDirty hook can do their work.
+		// entt::null + real scene pointer: IsValid()=false for safety, but GetScene() still works for dirty-mark callbacks.
 		return Entity(EntityHandle{ entt::null }, scene);
 	}
 
@@ -68,11 +65,6 @@ namespace Index {
 			return Entity::Null;
 		}
 
-		// Prefab-instance entities track their source asset via PrefabGUID
-		// — route through the serializer so the full prefab tree is rebuilt
-		// (children, overrides) rather than copying just the root's
-		// components. Runtime/scene entities go through the component
-		// copy path on the same scene.
 		if (source.IsPrefabInstance()) {
 			const AssetGUID prefabGuid = source.GetPrefabGUID();
 			if (static_cast<uint64_t>(prefabGuid) != 0) {
@@ -164,11 +156,7 @@ namespace Index {
 		const bool parentDisabled = HasParent() && GetParent().HasComponent<DisabledTag>();
 		if (enabled) {
 			if (parentDisabled) {
-				// User wants this entity enabled, but the parent is disabled. Keep it
-				// disabled by inheritance — but preserve any authored-disabled state.
-				// If the child already has DisabledTag without InheritedDisabledTag,
-				// the user authored it disabled; converting that to inherited would
-				// erase the authored intent on the next parent re-enable cascade.
+				// Preserve authored-disabled intent: only add inherited tags if the child isn't already explicitly disabled.
 				if (!HasComponent<DisabledTag>()) {
 					AddComponent<InheritedDisabledTag>();
 					AddComponent<DisabledTag>();

@@ -71,12 +71,7 @@ namespace Index {
 	PackageOperationResult NuGetSource::Install(const std::string& packageId,
 		const std::string& version, const std::string& csprojPath) {
 
-		// .NET 10's `dotnet remove` ignores its positional <PROJECT> argument and
-		// always searches the current working directory for a .csproj. Run from the
-		// project's parent dir and omit the explicit path so the directory search
-		// finds it. We use the same pattern for `dotnet add` for symmetry — it
-		// doesn't have the bug, but running both commands the same way keeps the
-		// install/remove flows consistent.
+		// dotnet remove ignores its positional <PROJECT> arg and searches CWD; run from project's parent dir so both add and remove use the same pattern.
 		const std::filesystem::path projectDir = std::filesystem::path(csprojPath).parent_path();
 
 		IDX_CORE_INFO_TAG("NuGetSource", "Installing {} {} into {}", packageId, version, csprojPath);

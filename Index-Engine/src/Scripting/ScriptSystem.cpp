@@ -41,10 +41,6 @@ namespace Index {
 		std::atomic<bool> Abandoned{ false };
 		std::chrono::steady_clock::time_point StartedAt{ std::chrono::steady_clock::now() };
 
-		// Worker thread is owned by the state. The lambda capture only holds
-		// a weak_ptr to this state so destruction is not blocked on the
-		// worker finishing — the destructor below handles the std::thread
-		// in either direction.
 		std::thread Worker;
 
 		~ScriptSystemProcessTaskState() {
@@ -55,12 +51,6 @@ namespace Index {
 				// Worker function has already returned; just reap the thread.
 				Worker.join();
 			} else {
-				// Worker is still running (typically inside Process::Run).
-				// Mark abandoned so the worker's post-run path becomes a
-				// no-op when it tries to publish results, then detach so
-				// ~std::thread doesn't std::terminate(). The worker holds
-				// only a weak_ptr to this state, so the lock() in its tail
-				// will return empty and the thread exits cleanly.
 				Abandoned.store(true, std::memory_order_release);
 				Worker.detach();
 			}
@@ -618,11 +608,7 @@ namespace Index {
 
 		uint64_t ToManagedEntityID(Scene& scene, EntityHandle entity)
 		{
-			// Mirrors ScriptEngine::CreateScriptInstance: prefer the persistent
-			// UUID so collision callbacks hand C# the same entity ID the
-			// script's own Entity carries. Without this, a comparison like
-			// `collision.OtherEntity == myCachedEntity` would silently fail
-			// any time the two were created via different paths.
+			// Prefer persistent UUID so C# `collision.OtherEntity == myCachedEntity` matches across creation paths.
 			uint64_t entityID = static_cast<uint64_t>(static_cast<uint32_t>(entity));
 			if (scene.IsValid(entity)) {
 				const uint64_t persistentID = scene.GetEntityPersistentID(entity);
@@ -687,12 +673,7 @@ namespace Index {
 				return;
 			}
 
-			// Always Unbind() so a managed handle never outlives its assembly: if
-			// ScriptEngine::IsInitialized() flips to false during teardown (hot
-			// reload, host shutdown), we still drop the GCHandle to keep the
-			// engine-side ScriptInstance from referencing a now-stale managed
-			// object on the next frame. Only the actual managed callbacks are
-			// gated on IsInitialized — the bookkeeping must not be.
+			// Unbind() before callbacks so the GCHandle is dropped even if IsInitialized() flips during teardown.
 			const ManagedScriptTeardownState state = CaptureManagedTeardownState(instance);
 			instance.Unbind();
 			InvokeManagedScriptTeardown(scene, state);
@@ -738,11 +719,7 @@ namespace Index {
 			auto task = std::make_shared<ProcessTaskState>();
 			task->StartedAt = std::chrono::steady_clock::now();
 
-			// Capture by weak_ptr so the worker doesn't keep the state
-			// alive — otherwise abandoning the task during shutdown would
-			// stall on the still-running worker. The state's destructor
-			// joins or detaches the std::thread depending on whether the
-			// worker has signalled completion.
+			// Capture by weak_ptr so abandoning during shutdown doesn't stall on the worker.
 			std::weak_ptr<ProcessTaskState> weakTask = task;
 			task->Worker = std::thread([weakTask, work = std::move(work)]() mutable {
 				INDEX_PROFILE_THREAD_NAME("ScriptProcess");
@@ -759,9 +736,6 @@ namespace Index {
 					result.Output = "Unknown exception while running background rebuild task.";
 				}
 
-				// Promote weak_ptr only for the brief publish window. If the
-				// state has already been destroyed (abandoned shutdown path),
-				// lock() returns empty and the worker exits silently.
 				if (auto state = weakTask.lock()) {
 					if (!state->Abandoned.load(std::memory_order_acquire)) {
 						std::scoped_lock lock(state->Mutex);
@@ -838,16 +812,10 @@ namespace Index {
 				IDX_CORE_WARN_TAG("ScriptSystem", "{} is still running during teardown; detaching so shutdown stays non-blocking", description);
 			}
 
-			// State destructor joins (if Completed) or detaches (if not).
-			// The thread, on completion, will see the empty weak_ptr and exit
-			// without touching destroyed state.
 			task.reset();
 		}
 
-		// Snapshot entity list before any user callback runs so that
-		// callbacks adding/removing ScriptComponents (which would
-		// invalidate the EnTT view) or destroying entities can't leave
-		// us iterating freed storage.
+		// Snapshot before user callbacks run — callbacks can invalidate the EnTT view.
 		std::vector<EntityHandle> CollectScriptEntities(Scene& scene)
 		{
 			std::vector<EntityHandle> result;
@@ -859,14 +827,7 @@ namespace Index {
 			return result;
 		}
 
-		// Walks ScriptComponent::Scripts on `entity` index-based, refetching
-		// the component every step. Required because user code in the
-		// callback may:
-		//   - add another script (vector reallocation → reference dangle)
-		//   - remove the ScriptComponent (component reference invalid)
-		//   - destroy the entity itself
-		// `fn(scriptComp, instance, index)` returns true to continue, false
-		// to stop walking this entity.
+		// Index-based walk with re-fetch each step; user callbacks can add/remove scripts or destroy the entity.
 		template <typename Fn>
 		void ForEachScriptOnEntitySafe(Scene& scene, EntityHandle entity, Fn&& fn)
 		{
@@ -896,11 +857,6 @@ namespace Index {
 			return it != scripts.end() ? &(*it) : nullptr;
 		}
 
-		// Re-resolve a native ScriptInstance after a user callback that may
-		// have reallocated ScriptComponent::Scripts. Keyed on the native
-		// pointer the caller already held — the pointer is the canonical
-		// identity for native instances (the C++ object is stable as long
-		// as nothing destroyed it, which we check separately via Unbind).
 		ScriptInstance* FindNativeScriptInstance(Scene& scene, EntityHandle entity, NativeScript* nativePtr)
 		{
 			if (nativePtr == nullptr || !scene.IsValid(entity) || !scene.HasComponent<ScriptComponent>(entity)) {
@@ -913,18 +869,7 @@ namespace Index {
 			return it != scripts.end() ? &(*it) : nullptr;
 		}
 
-		// Drain ScriptComponent::PendingFieldValues entries that match this
-		// instance's class prefix and feed each through ScriptEngine's
-		// SetScriptField callback. Must run AFTER the managed instance has a
-		// GCHandle but BEFORE InvokeAwake / InvokeStart so user code in
-		// OnAwake / OnStart sees the inspector-assigned values. Centralised
-		// here because the eager Awake-path and the lazy Update-path both
-		// create instances and both need to apply pending fields the same way
-		// — earlier the eager path skipped this entirely, so a build that
-		// went through Awake would land in OnStart with every reference
-		// field still null. Always logs (even applied=0) so a build symptom
-		// like "Login button not assigned" is traceable to the exact step
-		// that dropped the value.
+		// MUST run after GCHandle is set but before InvokeAwake/InvokeStart so OnAwake/OnStart see inspector-assigned values.
 		void ApplyPendingFieldValues(ScriptComponent& scriptComp, ScriptInstance& instance) {
 			if (!instance.HasManagedInstance()) return;
 			auto& callbacks = ScriptEngine::GetCallbacks();
@@ -992,14 +937,8 @@ namespace Index {
 								}
 							}
 							if (instance.HasManagedInstance()) {
-								// Capture the handle BEFORE the apply/invoke pair so a
-								// re-entrant SetScriptField (managed property setter)
-								// or InvokeAwake that reallocates Scripts doesn't leave
-								// us dereferencing a dangling `instance` reference for
-								// the GetGCHandle read. InvokeAwake is the last touch
-								// in this lambda; no further reads of `instance` follow.
+								// Capture handle before apply/invoke — re-entrant AddScript reallocates Scripts and dangles `instance`.
 								const uint32_t awakeHandle = instance.GetGCHandle();
-								// Apply BEFORE InvokeAwake so OnAwake sees fields.
 								ApplyPendingFieldValues(scriptComp, instance);
 								ScriptEngine::InvokeAwake(awakeHandle);
 							}
@@ -1013,11 +952,6 @@ namespace Index {
 		auto exeDir = std::filesystem::path(Path::ExecutableDir());
 		IndexProject* project = ProjectManager::GetCurrentProject();
 
-		// Track whether THIS Awake actually initialized the script engine
-		// (vs. just doing per-scene wiring on top of an already-initialized
-		// engine after a scene reload). The "Script system initialized"
-		// log below is gated on this so reloading a scene in playmode
-		// doesn't keep claiming the engine is being re-initialized.
 		const bool engineWasFreshlyInitialized = !ScriptEngine::IsInitialized();
 		if (engineWasFreshlyInitialized) {
 			ScriptEngine::Init();
@@ -1050,16 +984,7 @@ namespace Index {
 					m_UserAssemblyPath = std::filesystem::canonical(userDll).string();
 				}
 				else {
-					// Standalone build path: the editor copies the user DLL into
-					// `<exeDir>/bin/<editorConfig>/<Name>.dll`, but the runtime
-					// computes its expected path with its OWN compile-time
-					// IDX_BUILD_CONFIG_NAME — and that's often a different
-					// configuration than the one the editor was compiled with
-					// (Editor=Debug, Runtime=Release/Dist). When the configured
-					// path misses, scan every bin/<config>/ subdirectory for a
-					// matching `<Name>.dll` so the shipped runtime can find the
-					// user's scripts regardless of which config the editor used
-					// to build them.
+					// Scan bin/<config>/ subdirs: editor and runtime may be built with different configs, so the configured path may miss.
 					std::filesystem::path binRoot = std::filesystem::path(project->RootDirectory) / "bin";
 					std::error_code binEc;
 					if (std::filesystem::exists(binRoot, binEc) && !binEc) {
@@ -1094,15 +1019,24 @@ namespace Index {
 		}
 		InitializeRegisteredGlobalSystems();
 
+		// Script/native hot-reload (filesystem watch + auto-rebuild on edit) is an
+		// editor-only convenience that needs the dotnet/cmake toolchain. It runs only
+		// in the editor host (Application::IsEditor(), checked in each branch below);
+		// every standalone runtime loads the prebuilt assemblies/DLLs as-is and never
+		// watches or rebuilds. Development builds skip it at runtime; shipped Dist
+		// builds (INDEX_WITH_EDITOR=0) compile the watch/rebuild paths out entirely.
+		// Assembly and native-DLL loading below are unaffected either way.
+#if INDEX_WITH_EDITOR
+		constexpr bool kEnableHotReload = true;
+#else
+		constexpr bool kEnableHotReload = false;
+#endif
+
 		if (project)
 		{
-			// Watch the entire Assets/ tree so .cs files outside the historical
-			// Assets/Scripts/ folder also trigger a rebuild and count toward
-			// the assembly's stale check. Matches the csproj's `Assets\**\*.cs`
-			// compile glob — discovery, watch, and compile share one root.
 			auto scriptsDir = std::filesystem::path(project->AssetsDirectory);
 			auto csproj = std::filesystem::path(project->CsprojPath);
-			if (std::filesystem::exists(csproj))
+			if (kEnableHotReload && Application::IsEditor() && std::filesystem::exists(csproj))
 			{
 				std::vector<std::string> managedWatchTargets =
 					BuildManagedWatchTargets(scriptsDir, csproj, std::filesystem::path(project->SlnPath));
@@ -1122,7 +1056,7 @@ namespace Index {
 			auto sandboxProjectDir = exeDir / ".." / ".." / ".." / "Index-Sandbox";
 			auto sandboxSourceDir = sandboxProjectDir / "Source";
 			auto sandboxCsproj = sandboxProjectDir / "Index-Sandbox.csproj";
-			if (std::filesystem::exists(sandboxCsproj))
+			if (kEnableHotReload && Application::IsEditor() && std::filesystem::exists(sandboxCsproj))
 			{
 				std::vector<std::string> managedWatchTargets =
 					BuildManagedWatchTargets(sandboxSourceDir, sandboxCsproj);
@@ -1154,7 +1088,7 @@ namespace Index {
 			{
 				m_NativeHost.LoadDLL(m_NativeDLLPath);
 			}
-			if (!m_NativeProjectDirectory.empty())
+			if (kEnableHotReload && Application::IsEditor() && !m_NativeProjectDirectory.empty())
 			{
 				std::vector<std::string> nativeWatchTargets =
 					BuildNativeWatchTargets(std::filesystem::path(m_NativeProjectDirectory), std::filesystem::path(m_NativeSourceDirectory));
@@ -1183,7 +1117,7 @@ namespace Index {
 			{
 				m_NativeHost.LoadDLL(m_NativeDLLPath);
 			}
-			if (!m_NativeProjectDirectory.empty())
+			if (kEnableHotReload && Application::IsEditor() && !m_NativeProjectDirectory.empty())
 			{
 				std::vector<std::string> nativeWatchTargets =
 					BuildNativeWatchTargets(std::filesystem::path(m_NativeProjectDirectory), std::filesystem::path(m_NativeSourceDirectory));
@@ -1225,17 +1159,7 @@ namespace Index {
 							}
 						}
 						if (instance.HasManagedInstance()) {
-							// Apply BEFORE InvokeAwake — without this the build's
-							// OnStart was seeing every reference field as null
-							// because Update's lazy SetScriptField loop only ran
-							// when it was the path that CREATED the instance.
-							// Awake-path created instance + dispatched OnAwake
-							// without ever touching PendingFieldValues, so by the
-							// time Update ran the entry condition was false and
-							// the loop was skipped.
-							// Capture handle before the apply/invoke pair: a re-
-							// entrant SetScriptField or InvokeAwake that calls
-							// AddScript would realloc Scripts and dangle `instance`.
+							// Apply BEFORE InvokeAwake so OnAwake sees fields; capture handle first — AddScript in OnAwake reallocates Scripts and dangles `instance`.
 							const uint32_t awakeHandle = instance.GetGCHandle();
 							ApplyPendingFieldValues(scriptComp, instance);
 							ScriptEngine::InvokeAwake(awakeHandle);
@@ -1272,14 +1196,7 @@ namespace Index {
 		const std::string defineConstantsArg =
 			"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants(primarySymbol);
 		m_RebuildTask = LaunchTask([sandboxProjectPath, buildConfig, defineConstantsArg]() {
-			// IndexCodegenEnabled=false suppresses the GenerateNativeComponents
-			// MSBuild target in Index-Sandbox.csproj. Hot-reload on a saved .cs
-			// file must NEVER rewrite Index-Engine/src/Generated/CodegenComponents.cpp
-			// — the running engine has the old C++ layout, while a regenerated
-			// file would silently encode the new C# layout, and the next
-			// ComponentTypes<T> static ctor would throw on the sizeof mismatch.
-			// Component-shape changes go through the editor's "Rebuild Engine"
-			// flow instead, which passes IndexCodegenEnabled=true explicitly.
+			// IndexCodegenEnabled=false: hot-reload must not regenerate CodegenComponents.cpp — the running engine has the old C++ layout and a size mismatch would crash on next ComponentTypes<T> init.
 			return Process::Run({
 				"dotnet",
 				"build",
@@ -1413,27 +1330,15 @@ namespace Index {
 			return;
 		}
 
-		// RAII gate so a queued rebuild firing during this call sees the flag and
-		// defers itself until the teardown loop finishes. Without this, a watcher
-		// poll mid-teardown can re-enter RebuildAndReloadScripts, which calls
-		// LoadUserAssembly while live ScriptInstances still hold GCHandles into
-		// the assembly we're about to unload.
+		// RAII guard defers any watcher-triggered rebuild until teardown completes, preventing LoadUserAssembly while live GCHandles exist.
 		struct TeardownGuard {
 			TeardownGuard()  { ScriptSystem::m_TeardownInProgress.store(true,  std::memory_order_release); }
 			~TeardownGuard() { ScriptSystem::m_TeardownInProgress.store(false, std::memory_order_release); }
 		} guard;
 
-		// Snapshot the entity list BEFORE invoking any user OnDisable/OnDestroy. The
-		// rest of this engine carefully uses CollectScriptEntities + index-based
-		// re-fetch precisely because user callbacks can add/remove ScriptComponent,
-		// destroy entities, or even add scripts to OTHER entities — any of which
-		// would invalidate a live entt::view iterator. Hot reload routes through
-		// here, so the iteration safety is load-bearing.
 		std::vector<EntityHandle> entities;
 		auto view = scene.GetRegistry().view<ScriptComponent>();
-		// Single-component views expose size(); multi-component / excluded views
-		// expose size_hint(). Stick to size() here so reserve is exact, not a hint.
-		entities.reserve(view.size());
+		entities.reserve(view.size()); // single-component view: size() is exact, not a hint
 		for (auto entity : view) entities.push_back(entity);
 
 		for (EntityHandle entity : entities) {
@@ -1474,14 +1379,9 @@ namespace Index {
 			~TeardownGuard() { ScriptSystem::m_TeardownInProgress.store(false, std::memory_order_release); }
 		} guard;
 
-		// Same snapshot pattern as TeardownManagedScripts above. Native OnDestroy
-		// can re-enter and destroy sibling entities; iterating an entt::view live
-		// would corrupt iteration mid-call.
 		std::vector<EntityHandle> entities;
 		auto view = scene.GetRegistry().view<ScriptComponent>();
-		// Single-component views expose size(); multi-component / excluded views
-		// expose size_hint(). Stick to size() here so reserve is exact, not a hint.
-		entities.reserve(view.size());
+		entities.reserve(view.size()); // single-component view: size() is exact, not a hint
 		for (auto entity : view) entities.push_back(entity);
 
 		for (EntityHandle entity : entities) {
@@ -1538,12 +1438,7 @@ namespace Index {
 		scriptComp.Scripts.erase(scriptComp.Scripts.begin() + static_cast<ptrdiff_t>(index));
 		RemovePendingFieldValuesForClass(scriptComp, removedClassName);
 
-		// Symmetric cleanup for `:IComponent` C# structs: every dynamic
-		// ComponentInfo is paired with a Managed-type ScriptComponent.Scripts
-		// entry (see Index_Entity_AddComponent and AttachScriptToEntity).
-		// Dropping just the Scripts entry would leave the DynamicComponentStorage
-		// row in place, so Entity.HasNativeComponent<T>() / GetRef<T>() would
-		// still see the component after the inspector "removed" it.
+		// Also remove the paired DynamicComponentStorage row for IComponent C# structs; Scripts-only removal would leave it dangling.
 		auto& componentRegistry = SceneManager::Get().GetComponentRegistry();
 		if (const ComponentInfo* info = componentRegistry.FindBySerializedName(removedClassName)) {
 			if (info->isDynamic && info->remove) {
@@ -1554,12 +1449,6 @@ namespace Index {
 		InvokeManagedScriptTeardown(*scene, managedState);
 		InvokeNativeScriptTeardown(*scene, nativeState, m_NativeHost);
 
-		// The Scripts vector and the paired DynamicComponentStorage row both
-		// changed — the scene now serialises differently than it did before
-		// this call. Mark dirty so the editor's "unsaved changes" indicator
-		// (and the auto-save timer) react to script removals the same way
-		// they already react to native-component removals via
-		// pendingRemoval / scene.MarkDirty in the inspector loop.
 		scene->MarkDirty();
 		return true;
 	}
@@ -1707,10 +1596,7 @@ namespace Index {
 					ScriptEngine::ReloadAssemblies();
 				}
 				InitializeRegisteredGlobalSystems();
-				// Drop every baked prefab template: a managed reload can
-				// shift component layouts (sizeof changes, new fields)
-				// that would silently corrupt cached emplaceFromBytes
-				// payloads. The next spawn rebakes via the slow path.
+				// Invalidate baked prefab templates: managed reload can shift component layouts (sizeof changes) that would corrupt cached emplaceFromBytes payloads.
 				PrefabTemplateCache::Get().InvalidateAll();
 				IDX_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded");
 			}
@@ -1752,11 +1638,6 @@ namespace Index {
 			}
 
 			if (m_RebuildQueued) {
-				// Don't replay the queued rebuild while a teardown is still on the
-				// stack. The queued rebuild kicks off LoadUserAssembly; if teardown
-				// is in flight, live ScriptInstances may still hold GCHandles into
-				// the assembly we'd be unloading. Leave m_RebuildQueued set so the
-				// next OnPreRender tick re-checks once teardown has unwound.
 				if (!m_TeardownInProgress.load(std::memory_order_acquire)) {
 					m_RebuildQueued = false;
 					RebuildAndReloadScripts();
@@ -1790,11 +1671,6 @@ namespace Index {
 						IDX_WARN_TAG("ScriptSystem", "Keeping the previous native script DLL loaded; instances will be recreated on the next update.");
 					}
 					else {
-						// Same rationale as the managed reload branch: a
-						// native script DLL swap can change component
-						// layouts in the same address space, so the baked
-						// templates must be dropped before any subsequent
-						// spawn replays from stale bytes.
 						PrefabTemplateCache::Get().InvalidateAll();
 						IDX_INFO_TAG("ScriptSystem", "Native scripts rebuilt and reloaded");
 					}
@@ -1867,15 +1743,7 @@ namespace Index {
 		{
 			ForEachScriptOnEntitySafe(scene, entity,
 				[&, entity](ScriptComponent& scriptCompRef, ScriptInstance& instanceRef, size_t) -> bool {
-					// Use pointers so we can rebind after every user-code invoke
-					// that might reallocate ScriptComponent::Scripts. The old code
-					// held a `ScriptInstance&` straight from the helper, which
-					// dangles the moment a managed Awake/OnEnable/Start (or a
-					// native Start/Update) calls back into the engine and
-					// AddScript()s on the same entity. The existing
-					// FindManagedScriptInstance checks documented this hazard but
-					// only verified existence — they didn't re-bind the reference,
-					// so subsequent reads still touched freed memory.
+					// Use pointers so we can rebind after any user callback that reallocates ScriptComponent::Scripts.
 					ScriptInstance* instance = &instanceRef;
 					ScriptComponent* scriptComp = &scriptCompRef;
 					(void)scriptComp;
@@ -1993,6 +1861,8 @@ namespace Index {
 	void ScriptSystem::FixedUpdate(Scene& scene)
 	{
 		INDEX_PROFILE_SCOPE("Scripts.FixedUpdate");
+		// ScriptSceneScope required: GetScene() is read by every NativeBindings call; wrong scene with additive scenes would silently no-op or null-deref.
+		ScriptSceneScope sceneScope(scene);
 		const bool managedRuntimeReady = ScriptEngine::IsInitialized();
 		const float fixedDt = Application::GetInstance() ? Application::GetInstance()->GetTime().GetFixedDeltaTime() : 0.0f;
 

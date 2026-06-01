@@ -13,22 +13,8 @@
 
 namespace Index {
 
-	// Describes ONE inspectable field on a component (or script).
-	//
-	// `Get(entity)` reads the field's current value into a PropertyValue.
-	// `Set(entity, value)` writes a new value back. Both run per entity in a
-	// multi-selection. Component-aware code lives entirely inside the
-	// captured lambdas, so the drawer never has to know which native type
-	// owns the field.
-	//
-	// Variant support: when `VariantBranches` is non-empty, this descriptor
-	// acts as a discriminator. After drawing the primary widget (typically
-	// an Enum combo), the drawer iterates the branches; for whichever
-	// branch's TagValue matches the current discriminator value, the
-	// branch's nested descriptors are drawn indented under the row. Mixed
-	// discriminators across the selection render a "mixed variant" hint
-	// instead of any branch — there's no sane way to share branch fields
-	// across different shapes.
+	// One inspectable field; Get/Set are per-entity lambdas — drawer never sees the native type.
+	// When VariantBranches is non-empty this acts as a discriminator; mixed-selection variants render a "mixed variant" hint instead of any branch.
 	struct PropertyDescriptor {
 		struct Branch {
 			int64_t TagValue = 0;

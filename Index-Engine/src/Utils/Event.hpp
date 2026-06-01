@@ -20,10 +20,6 @@ namespace Index {
         using Callback = std::function<void(Args...)>;
 
         EventId Add(Callback cb) {
-            // assert() is removed in release builds, which would let the
-            // documented self-deadlock pattern silently hang the process.
-            // Use an unconditional check + throw so the bug surfaces on the
-            // calling stack instead of stalling.
             ThrowIfDispatchingThisEvent("Event::Add");
             std::unique_lock lock(m_Mutex);
             const EventId id = EventId(++m_NextId.value);
@@ -31,13 +27,7 @@ namespace Index {
             return id;
         }
 
-        // Remove blocks until any in-flight Invoke on another thread has completed, so a
-        // subscriber's destructor can safely call Remove and trust that no further
-        // callbacks will fire against `this`. Without this, the previous snapshot-based
-        // dispatch could call into a destroyed subscriber (the std::function copy in
-        // the snapshot kept the captured `this` past Remove). Use a shared_mutex:
-        // Invoke takes a shared lock so multiple dispatchers can run concurrently;
-        // Remove takes an exclusive lock so it waits for all dispatchers to release.
+        // Remove takes an exclusive lock (Invoke holds shared), so a destructor calling Remove is guaranteed no callback fires against `this` after it returns.
         bool Remove(EventId id) {
             ThrowIfDispatchingThisEvent("Event::Remove");
             std::unique_lock lock(m_Mutex);
@@ -59,12 +49,6 @@ namespace Index {
         }
 
         void Invoke(Args... args) {
-            // Hold the shared lock across dispatch so a concurrent Remove (which takes
-            // the unique lock) blocks until we're done. Callers therefore must NOT
-            // Add/Remove/Clear from inside their own callback — that would deadlock.
-            // Add/Remove/Clear call ThrowIfDispatchingThisEvent first, so the misuse
-            // throws std::logic_error from the offending call site in every build
-            // configuration instead of stalling a release process.
             std::shared_lock lock(m_Mutex);
             auto& depths = DispatchDepth();
             ++depths[this];
@@ -87,12 +71,6 @@ namespace Index {
             Callback cb;
         };
 
-        // Per-thread, per-instance dispatch depth. A single shared
-        // atomic<thread::id> couldn't track multiple threads dispatching the
-        // same Event concurrently (Invoke's shared_lock permits that) —
-        // saving/restoring one id left a stale id under interleaving and caused
-        // spurious throws from Add/Remove/Clear. A thread_local depth map is
-        // correct under concurrency, recursion, and throwing listeners.
         static std::unordered_map<const void*, int>& DispatchDepth() {
             thread_local std::unordered_map<const void*, int> depths;
             return depths;

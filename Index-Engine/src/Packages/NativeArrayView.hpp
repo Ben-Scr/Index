@@ -1,40 +1,7 @@
 #pragma once
 
-// Lightweight C++ view over data passed from a C# `Index.Collections.Native`
-// container. Use this in package P/Invoke functions to consume buffers the
-// managed side allocated, without copying.
-//
-// Calling convention (matches Index-ScriptCore's NativeArray<T>, NativeList<T>,
-// NativeBuffer, etc.):
-//
-//   The C# caller passes `pointer, length` — TWO arguments — into the native
-//   function. On the C# side that comes from `array.GetUnsafePtr()` and
-//   `array.Length`. On the C++ side you build a `NativeArrayView<T>` from the
-//   pair so the function body reads like a regular range.
-//
-//   NativeArray<T>  → pass GetUnsafePtr() + Length     → NativeArrayView<T>
-//   NativeList<T>   → pass GetUnsafePtr() + Length     → NativeArrayView<T> (current count)
-//   NativeBuffer    → pass GetUnsafePtr() + Length     → NativeArrayView<std::byte>
-//
-// Lifetime is the C# side's responsibility — DO NOT free the pointer here.
-// The view is non-owning. If the C# code calls Dispose() while a C++ function
-// is still using the view, you have a use-after-free; design your APIs so
-// the C# side keeps the container alive across the call.
-//
-// Example: noise generation called from C#.
-//
-//   // C#:
-//   using var noise = new NativeArray<float>(width * height);
-//   unsafe { Bindings.GenerateNoise(noise.GetUnsafePtr(), noise.Length, seed); }
-//
-//   // C++ (in a package):
-//   extern "C" INDEX_PACKAGE_API
-//   void GenerateNoise(float* data, int length, int seed) {
-//       Index::NativeArrayView<float> out{data, length};
-//       for (int i = 0; i < out.Length; ++i) {
-//           out[i] = noise_at(i, seed);
-//       }
-//   }
+// Non-owning view over a C# NativeArray/NativeList/NativeBuffer passed via P/Invoke (pointer + length).
+// Lifetime is the C# caller's responsibility — DO NOT free Data; use-after-Dispose is a use-after-free.
 
 #include <cstddef>
 

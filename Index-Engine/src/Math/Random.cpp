@@ -5,10 +5,7 @@
 
 namespace Index {
 	namespace {
-		// One mt19937 per thread, lazy-seeded from std::random_device. Avoids
-		// the global mutex that previously serialized every random draw on
-		// every worker thread. Defined in the .cpp so a single thread_local
-		// instance lives in the engine TU rather than one per including TU.
+		// In .cpp (not header) so thread_local has a single definition rather than one per including TU.
 		std::mt19937& Generator() {
 			thread_local std::mt19937 generator{ std::random_device{}() };
 			return generator;

@@ -155,6 +155,17 @@ local function ValidateManifest(manifest, manifestPath)
             PackageError("Package '" .. manifest.name ..
                 "' declares 'pinvoke_dll' on csharp layer but has no native (native / native_standalone) layer to bridge to.")
         end
+        -- The native sibling always builds as Pkg.<Name>.Native, and the C#
+        -- DllImport + PackageNativeResolver resolve the bridge by exactly that
+        -- name. A mismatched pinvoke_dll compiles fine but fails at RUNTIME
+        -- (DllNotFound / EntryPointNotFound), so reject it here at premake time.
+        local expectedPinvoke = "Pkg." .. manifest.name .. ".Native"
+        if manifest.layers.csharp.pinvoke_dll ~= expectedPinvoke then
+            PackageError("Package '" .. manifest.name ..
+                "' has pinvoke_dll = '" .. tostring(manifest.layers.csharp.pinvoke_dll) ..
+                "' but its native sibling builds as '" .. expectedPinvoke ..
+                "'. Set pinvoke_dll to exactly that, or the C# DllImport won't resolve at runtime.")
+        end
     end
 
     if manifest.layers.csharp and manifest.layers.csharp.nuget ~= nil then
@@ -431,6 +442,15 @@ local function RegisterCSharpProject(manifest)
         -- package authors don't have to plumb the dependency themselves.
         links { "Index-ScriptCore" }
         dependson { "Index-ScriptCore" }
+
+        -- If this package bridges to its own native sibling via P/Invoke, make
+        -- the C# project build-depend on Pkg.<Name>.Native so the native DLL the
+        -- resolver loads exists before/with this assembly. Without it a fresh
+        -- parallel build can finish the C# DLL first and a run-immediately flow
+        -- hits DllNotFound. No `links` — C# P/Invokes at runtime, never links C++.
+        if layer.pinvoke_dll then
+            dependson { "Pkg." .. manifest.name .. ".Native" }
+        end
 
         if manifest.dependencies then
             for _, depName in ipairs(manifest.dependencies) do

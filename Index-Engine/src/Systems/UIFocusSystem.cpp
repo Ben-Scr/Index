@@ -31,14 +31,8 @@ namespace Index {
 			};
 		}
 
-		// Stick deflection threshold for a "this counts as a press" edge.
-		// Matches the typical XInput "menu" deadzone — looser than gameplay
-		// deadzones so menus feel responsive.
 		constexpr float k_StickNavThreshold = 0.5f;
 
-		// Read every nav-axis-as-button across all connected gamepads.
-		// Returns true if any pad's stick or D-pad pushed past threshold
-		// in that direction this frame.
 		bool AnyPadPushed(const Input& input, GamepadAxis axis, float sign,
 			GamepadButton dpad)
 		{
@@ -70,10 +64,6 @@ namespace Index {
 		auto& registry = scene.GetRegistry();
 
 		// ── 1. Validate the persisted focus target ──────────────────
-		// The entity may have been destroyed, disabled, or had its
-		// Focusable flag turned off via the inspector / script since
-		// last frame; in any of those cases the navigation system has
-		// to abandon it.
 		auto IsValidFocusTarget = [&](EntityHandle e) {
 			if (e == entt::null) return false;
 			if (!registry.valid(e)) return false;
@@ -87,13 +77,7 @@ namespace Index {
 		}
 
 		// ── 1b. Honour programmatic focus writes ────────────────────
-		// Script / inspector can set Interactable.IsFocused directly
-		// to "give this widget focus" or clear focus. Detect those
-		// before we overwrite IsFocused below — a Focusable entity
-		// with IsFocused=true that isn't our tracked target adopts
-		// focus; the tracked target with IsFocused=false relinquishes
-		// it. Both gestures are one-frame: on subsequent ticks the
-		// system reconciles to its tracker again.
+		// Detect IsFocused writes from scripts/inspector before we overwrite it below: a new IsFocused=true adopts focus; tracked-target IsFocused=false relinquishes it.
 		{
 			EntityHandle externallyFocused = entt::null;
 			auto preScanView = registry.view<InteractableComponent>(entt::exclude<DisabledTag>);
@@ -117,10 +101,6 @@ namespace Index {
 		}
 
 		// ── 2. Collect focusables in registration order ─────────────
-		// EnTT's view iteration is registration order, which matches
-		// the scene-author's expectation of "tab through these in the
-		// order I made them" without an explicit TabIndex field. Add a
-		// TabIndex sort here if/when the engine grows one.
 		std::vector<EntityHandle> focusables;
 		auto focusView = registry.view<InteractableComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		focusables.reserve(64);
@@ -131,10 +111,6 @@ namespace Index {
 		}
 
 		// ── 3. Mouse-focus promotion ────────────────────────────────
-		// A click on a focusable widget transfers focus there so mouse
-		// and keyboard mix naturally. Hit-test mirrors UIEventSystem's
-		// approach (panel-relative coords when the editor publishes a
-		// UIRegion, else the OS window viewport).
 		const bool mouseDownThisFrame = input.GetMouseDown(MouseButton::Left);
 		if (mouseDownThisFrame) {
 			const Window::UIRegion uiRegion = Window::GetUIRegion();
@@ -169,15 +145,8 @@ namespace Index {
 		}
 
 		// ── 4. Read input actions ───────────────────────────────────
-		// "Action" semantics gate on rising-edge so holding a key fires
-		// once. Stick edges are tracked across frames so the user can
-		// hold the stick, release, and push again to step one widget
-		// at a time.
 		const bool shiftDown = input.GetKey(KeyCode::LeftShift) || input.GetKey(KeyCode::RightShift);
 
-		// Whether arrow keys are reserved for the focused InputField's
-		// caret handler. Tab is never reserved — the user can always
-		// tab out of a field.
 		bool inputFieldOwnsArrows = false;
 		if (m_FocusedEntity != entt::null && registry.valid(m_FocusedEntity)) {
 			if (auto* field = registry.try_get<InputFieldComponent>(m_FocusedEntity)) {
@@ -223,9 +192,6 @@ namespace Index {
 
 		// ── 5. Apply navigation actions ─────────────────────────────
 		if (!focusables.empty() && (wantNext || wantPrev)) {
-			// Find current index. If nothing is focused, "next" lands on
-			// the first entry and "prev" lands on the last — same
-			// behaviour as every other Tab-cycle UI.
 			int currentIdx = -1;
 			if (m_FocusedEntity != entt::null) {
 				for (size_t i = 0; i < focusables.size(); ++i) {
@@ -251,12 +217,7 @@ namespace Index {
 		}
 
 		// ── 6. Apply Activate ───────────────────────────────────────
-		// Stamp ActivatedThisFrame so UIEventSystem's hit-test loop
-		// (which runs immediately after this system) synthesises a
-		// click on the focused entity. We don't write IsClicked /
-		// IsMouseDown directly because UIEventSystem's hit-test would
-		// overwrite them — ActivatedThisFrame is the survives-hit-test
-		// signal it reads after.
+		// Write ActivatedThisFrame (not IsClicked/IsMouseDown) so UIEventSystem's subsequent hit-test doesn't overwrite it.
 		if (wantActivate && m_FocusedEntity != entt::null) {
 			if (auto* interact = registry.try_get<InteractableComponent>(m_FocusedEntity)) {
 				interact->ActivatedThisFrame = true;
@@ -264,11 +225,6 @@ namespace Index {
 		}
 
 		// ── 7. Sync InputField.IsFocused with the navigation focus ──
-		// When the user tabs INTO an input field, set its IsFocused so
-		// the caret appears and typed input flows. When the user tabs
-		// AWAY from an input field that was focused, blur it. We don't
-		// touch input fields whose owning entity isn't Focusable —
-		// those are mouse-driven and live entirely under UIEventSystem.
 		auto fieldView = registry.view<InteractableComponent, InputFieldComponent>();
 		for (auto&& [entity, interact, field] : fieldView.each()) {
 			if (!interact.Focusable) continue;
@@ -282,19 +238,13 @@ namespace Index {
 				field.SelectionAnchorBytePos = field.CaretBytePos;
 			}
 			else if (!shouldBeFocused && field.IsFocused) {
-				// UIEventSystem's per-frame defocus loop only fires on
-				// click-outside, so we have to clear here when the user
-				// tabs away. MouseSelecting / hold timers are reset by
-				// UIEventSystem itself once IsFocused is false.
+				// UIEventSystem's defocus loop only fires on click-outside; clear here on tab-away.
 				field.IsFocused = false;
 			}
 		}
 
 		// ── 8. Write the IsFocused flag every frame ─────────────────
-		// Always reconcile, even when the user did nothing this frame.
-		// This is the cheap way to guarantee no stale "IsFocused = true"
-		// can survive on a non-focusable widget if a script (or the
-		// inspector) flipped Focusable off mid-session.
+		// Reconcile unconditionally to clear stale IsFocused=true if Focusable was flipped off mid-session.
 		for (auto&& [entity, interact, rect] : focusView.each()) {
 			const bool nowFocused = interact.Focusable
 				&& interact.Interactable

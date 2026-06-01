@@ -24,12 +24,6 @@ public sealed class ParallelReducer<T> : IDisposable
     private readonly T m_Identity;
     private readonly ThreadLocal<StrongBox> m_Local;
 
-    // Intrusive lock-free stack of every StrongBox ever produced. Each
-    // box is linked in exactly once (in the ThreadLocal factory, which
-    // runs at most once per worker thread). Result()/Reset() walk this
-    // chain without allocating an enumerator — the previous
-    // implementation hit ThreadLocal.Values which snapshots into a
-    // fresh IList<T> on every call.
     private StrongBox? m_Head;
 
     public ParallelReducer(T identity, Func<T, T, T> combine)
@@ -43,8 +37,6 @@ public sealed class ParallelReducer<T> : IDisposable
     private StrongBox CreateBox()
     {
         var box = new StrongBox(m_Identity);
-        // Push onto the head with CAS retry. Per-worker first-use cost
-        // only — never on the hot Add() path.
         StrongBox? current;
         do
         {

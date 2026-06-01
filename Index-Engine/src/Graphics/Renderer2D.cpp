@@ -45,45 +45,8 @@
 #include <utility>
 #include <vector>
 
-// =============================================================================
-// Renderer2D — WebGPU (Dawn) implementation.
-// -----------------------------------------------------------------------------
-// Flow:
-//   1. Initialize / Shutdown reference-count WebGPUSpriteResources (shared
-//      with GuiRenderer).
-//   2. RenderSceneWithVP collects Transform2D + SpriteRenderer pairs, sorts
-//      by (SortingLayer, SortingOrder, DrawIndex) so the z-stack contract
-//      holds, then issues one wgpu::RenderPipeline + one render pass + N
-//      DrawIndexed calls (one per texture run).
-//
-// Architecture notes:
-//   * One persistent instance VBO grown geometrically on demand
-//     (queue.WriteBuffer each frame, never frees once grown).
-//   * One persistent uniform VBO (64 bytes for the viewProj mat4), updated
-//     once per RenderSceneWithVP via queue.WriteBuffer.
-//   * Bind groups cached PERSISTENTLY, keyed by texture pool ID. Entries
-//     are evicted by a TextureManager::DestroyListener registered in
-//     Renderer2D::Initialize, fired BEFORE the underlying GPU resource
-//     is torn down by UnloadTexture / UnloadAll / ReloadTexture's
-//     move-assign. This avoids the per-frame device.CreateBindGroup
-//     storm that the earlier per-frame clear caused on texture-heavy
-//     scenes.
-//   * One render pass per RenderSceneWithVP call with LoadOp::Load — so a
-//     prior RenderApi::Clear's clear-only pass result is preserved. The
-//     swap-chain-rendered flag is poked so Present()'s touch-fallback
-//     skips its own redundant clear.
-//   * Render pipeline is fetched from WebGPUSpriteResources keyed on the
-//     current target's color format — covers swap chain (typically
-//     BGRA8Unorm on Windows / Linux) and FBO targets (RGBA8Unorm) with
-//     two cached pipelines per session.
-//
-// Still pending:
-//   * Particle / external instance contributors — RegisterInstanceContributor
-//     stays a stub until that hook is rebuilt.
-//   * Premultiplied-alpha and alpha-cutoff per-instance toggles — the WGSL
-//     sprite shader's fragment body is the simplest possible texel * color.
-//   * GpuTimer integration — pending wgpu::QuerySet plumbing.
-// =============================================================================
+// Renderer2D: persistent instance VBO (geometric growth), persistent UBO (64B viewProj), bind groups cached by texture pool ID
+// and evicted via TextureManager::DestroyListener BEFORE GPU teardown; render pass uses LoadOp::Load to preserve prior Clear results.
 
 namespace Index {
 
@@ -124,21 +87,7 @@ namespace Index {
 
 		wgpu::Buffer g_UniformBuffer;
 
-		// Persistent bind-group cache. Keyed by Texture2D::GetHandle() (the
-		// raw WGPUTextureView pointer cast to uint64_t under WebGPU). Lives
-		// across frames — entries are evicted by a TextureManager
-		// DestroyListener (registered in Renderer2D::Initialize) when the
-		// underlying texture is unloaded, hot-reloaded, or wiped via
-		// UnloadAll. This eliminates the per-frame device.CreateBindGroup
-		// storm that the previous per-frame clear caused for scenes with
-		// many unique textures.
-		//
-		// We also remember the wgpu::Sampler each bind group was built
-		// against, because bind groups in WebGPU are immutable — when
-		// Texture2D::SetFilter rebuilds the sampler we must rebuild the
-		// bind group too, or the draw keeps using the stale sampler the
-		// old bind group baked in. Same applies if the view changes
-		// (hot reload swaps the slot).
+		// Bind groups are immutable in WebGPU — cache sampler+view alongside the group so SetFilter/hot-reload can detect staleness and rebuild.
 		struct CachedBindGroup {
 			wgpu::BindGroup     Group;
 			wgpu::Sampler       Sampler;
@@ -150,65 +99,25 @@ namespace Index {
 		// Shutdown can unregister cleanly. 0 = no listener installed.
 		uint32_t g_TextureDestroyListenerToken = 0;
 
-		// Connected to entt::registry::on_destroy<SpriteRendererComponent>
-		// for every scene that's been touched by the renderer. Drops the
-		// per-entity DynamicRenderData (rotated-AABB cache) so a reused
-		// entity slot starts with a fresh cache rather than inheriting the
-		// previous occupant's bounds. Static entities use a separate
-		// StaticRenderData component cleaned up by Scene's on_destroy
-		// observer alongside the static-data version bump.
 		void OnSpriteRendererDestroyed(entt::registry& registry, EntityHandle entity) {
 			if (registry.all_of<DynamicRenderData>(entity)) {
 				registry.remove<DynamicRenderData>(entity);
 			}
 		}
 
-		// One observer connection per scene. The token isn't kept — when the
-		// registry is destroyed (scene unload), EnTT cleans the observer up;
-		// we just need to avoid connecting twice per scene. The set lives
-		// for the engine's lifetime and is cleared in Renderer2D::Shutdown.
 		std::unordered_set<entt::registry*> g_DynamicRenderDataObservedRegistries;
 
-		// Per-worker scratch for the parallel collect path. Each ParallelFor
-		// chunk writes into the slot matching JobSystem::GetWorkerIndex(),
-		// so adjacent workers never share a cache line — the alignas(64) +
-		// trailing pad keeps the structures on their own lines and avoids
-		// false sharing during the parallel append. The buffers persist
-		// across frames; the per-frame Clear() keeps capacity but resets
-		// size, so steady-state allocations are zero.
-		//
-		// JobSystem clamps worker count to [1, 32] (JobSystem.hpp:36). We
-		// size for 64 to give a safety margin and to keep the index math
-		// power-of-two-friendly.
-		// outTextures is rebuilt from outInstances at the end of
-		// CollectSpriteInstances (one pass over the merged vector), so
-		// the parallel path only has to track Instance44 — TextureHandle
-		// rides along inside each instance and gets pulled out after the
-		// concat. Keeps the per-worker scratch single-vector to halve the
-		// concat-time touched-memory.
+		// alignas(64)+pad keeps each slot on its own cache line, preventing false sharing across workers.
 		struct alignas(64) WorkerCollectScratch {
 			std::vector<Instance44> Instances;
 			char Padding[64];
 		};
 		constexpr size_t k_MaxWorkers = 64;
-		// One extra trailing slot reserved for the *calling* thread. Job::Wait()
-		// work-steals (Job.cpp), so the thread that invoked ParallelFor (the
-		// render thread, whose GetWorkerIndex() is -1) runs chunks INLINE,
-		// concurrently with the real workers. Folding that caller onto slot 0
-		// (the previous behaviour) raced it against worker index 0 — two threads
-		// doing emplace_back on the same std::vector, i.e. heap corruption that
-		// surfaces as a __fastfail / access violation on a non-main thread. The
-		// caller now owns its own slot past the worker range.
+		// k_CallerSlot: Job::Wait() work-steals so the render thread (GetWorkerIndex()==-1) runs chunks inline
+		// concurrently with real workers — it MUST use its own slot or it races worker 0's vector (heap corruption).
 		constexpr size_t k_CallerSlot = k_MaxWorkers;
 		std::array<WorkerCollectScratch, k_MaxWorkers + 1> g_WorkerScratch;
 
-		// Below this candidate count the parallel path's overhead (job
-		// dispatch + per-worker buffer concat) dominates the wins from
-		// distributing the AABB check across workers. The empirically-
-		// chosen threshold matches ParallelFor's auto grain size for a
-		// 1024-thread-count scene — small enough that 8-worker / 16-core
-		// builds still see parallelism on real workloads, large enough
-		// that 100-entity test scenes don't pay job overhead for nothing.
 		constexpr size_t k_ParallelCollectMinCandidates = 4096;
 
 		// Persistent candidate list filled by the serial pre-pass below.
@@ -258,13 +167,6 @@ namespace Index {
 			return cache->CachedAABB;
 		}
 
-		// Lazy AABB cache for the dynamic (non-Static) sprite path. Same
-		// shape as GetStaticSpriteAABB but using a separate DynamicRenderData
-		// component — keeps the static path untouched while skipping the
-		// per-frame sin/cos for rotated dynamic sprites that hold still or
-		// change rotation infrequently. The component is emplaced on first
-		// read; an on_destroy<SpriteRendererComponent> observer in Renderer2D
-		// keeps stale data from surviving entity reuse.
 		const AABB& GetDynamicSpriteAABB(entt::registry& registry,
 			EntityHandle entity,
 			const Transform2DComponent& transform)
@@ -395,13 +297,6 @@ namespace Index {
 			return grid;
 		}
 
-		// Sprite-slice UV pack helper. Short-circuits when SpriteName is
-		// empty — that's the common path (every legacy SpriteRenderer that
-		// hasn't been pointed at a slice), so the per-frame cost is one
-		// branch for the slice-free case. The UV rect is written into the
-		// just-emplaced Instance44; the shader's mix() against the unit
-		// quad collapses to identity when UvRect = (0,0,1,1) so the
-		// default constructor's full-texture rect remains a no-op.
 		inline void ApplySpriteSliceTo(Instance44& dst,
 			const SpriteRendererComponent& sprite)
 		{
@@ -503,12 +398,6 @@ namespace Index {
 			}
 		}
 
-		// Lazy on_destroy<SpriteRendererComponent> connection so the
-		// DynamicRenderData cache is evicted when the sprite renderer is
-		// removed (entity destroyed, component removed, scene unloaded).
-		// Connecting per-scene here avoids touching the scene-creation path
-		// from outside the renderer; the set membership keeps the connect
-		// idempotent across calls.
 		void EnsureDynamicCacheObserver(entt::registry& registry) {
 			if (g_DynamicRenderDataObservedRegistries.insert(&registry).second) {
 				registry.on_destroy<SpriteRendererComponent>().connect<&OnSpriteRendererDestroyed>();
@@ -531,33 +420,13 @@ namespace Index {
 				staticGrid = &ResolveStaticSpriteGrid(scene);
 			}
 
-			// Owning group on (Transform2DComponent, SpriteRendererComponent).
-			// The first call compacts the matching storage so iteration is
-			// pure SoA — `group.get<T>(entity)` becomes a direct array index
-			// rather than the sparse-set chase a view performs. EnTT keeps
-			// the group up-to-date as components are added/removed; subsequent
-			// calls return the same group object (the storage compaction is
-			// not re-done). No other site in the engine groups these two,
-			// so this take is safe (owning groups assert at startup on
-			// overlapping ownership — verified by a codebase grep at the
-			// time of this change).
+			// Owning group: no other site groups these two components — overlapping ownership would assert at startup.
 			auto group = registry.group<Transform2DComponent, SpriteRendererComponent>(
 				entt::get<>, entt::exclude<DisabledTag, StaticTag>);
-			// Reserve up-front so the per-frame collect loop doesn't trigger a
-			// std::vector grow-and-copy mid-iteration. The capacity stabilises at
-			// the high-water mark across frames because outInstances/outTextures
-			// are caller-owned scratch buffers.
 			const size_t dynamicHint = group.size();
 			const size_t staticHint = staticGrid ? staticGrid->Entries.size() : 0;
 			outInstances.reserve(dynamicHint + staticHint);
 
-			// ── Serial pre-pass ─────────────────────────────────────────
-			// Walk the group once to assign drawIndex and ensure
-			// DynamicRenderData exists on every candidate. The pre-pass
-			// is O(N) but each step is cheap (a try_get + maybe an
-			// emplace). The actual AABB compute + frustum test runs in
-			// the parallel pass below, which is the expensive part for
-			// rotated-sprite-heavy scenes.
 			g_DynamicCandidates.clear();
 			g_DynamicCandidates.reserve(dynamicHint);
 			uint32_t dynamicDrawIndex = 0;
@@ -569,25 +438,13 @@ namespace Index {
 						currentDrawIndex = drawIndexIt->second;
 					}
 				}
-				// Pre-emplace DynamicRenderData so the parallel pass can
-				// safely write to it without racing on the sparse-set
-				// resize that an emplace would trigger. Cheap when the
-				// component already exists (just a try_get).
+				// Pre-emplace to avoid sparse-set resize races in the parallel pass.
 				if (!registry.all_of<DynamicRenderData>(entity)) {
 					registry.emplace<DynamicRenderData>(entity);
 				}
 				g_DynamicCandidates.push_back({ entity, currentDrawIndex });
 			}
 
-			// ── Parallel AABB-test + Instance44 build ───────────────────
-			// Each chunk writes into the worker's per-slot scratch via
-			// GetWorkerIndex(); chunks scheduled on the same worker append
-			// to the same slot sequentially (job system guarantees one
-			// chunk at a time per worker thread). After ParallelFor
-			// returns we concatenate every non-empty slot in worker-index
-			// order into outInstances — drawIndex (assigned serially
-			// above) preserves stable sort ordering, so the
-			// concatenation order doesn't affect rendering.
 			const size_t candidateCount = g_DynamicCandidates.size();
 			const bool useParallel = candidateCount >= k_ParallelCollectMinCandidates
 				&& JobSystem::IsInitialized()
@@ -601,11 +458,7 @@ namespace Index {
 				ParallelFor(0, candidateCount, [&](size_t lo, size_t hi) {
 					int wi = JobSystem::GetWorkerIndex();
 					if (wi < 0 || wi >= static_cast<int>(k_MaxWorkers)) {
-						// Caller thread (not a worker): Job::Wait() work-steals, so this
-						// chunk runs inline on the calling thread, concurrently
-						// with the real workers, so it MUST use its own slot —
-						// sharing worker 0's slot raced two threads on one vector.
-						wi = static_cast<int>(k_CallerSlot);
+						wi = static_cast<int>(k_CallerSlot); // render thread work-steals inline — must use its own slot
 					}
 					auto& localInst = g_WorkerScratch[wi].Instances;
 
@@ -614,12 +467,6 @@ namespace Index {
 						const auto& t = group.get<Transform2DComponent>(cand.Entity);
 						const auto& spr = group.get<SpriteRendererComponent>(cand.Entity);
 
-						// Direct get<>(), not the GetDynamicSpriteAABB
-						// helper — emplace was already done in the
-						// serial pre-pass, so the component is
-						// guaranteed present. Worker partitions don't
-						// overlap entities, so the per-entity cache
-						// mutation below is race-free.
 						DynamicRenderData& cache = registry.get<DynamicRenderData>(cand.Entity);
 						if (!cache.Valid
 							|| !Vec2ExactEqual(cache.CachedPosition, t.Position)
@@ -649,10 +496,6 @@ namespace Index {
 					}
 				}, /*grainSize*/ 2048);
 
-				// Concatenate worker slots into the caller's output. Done
-				// serially because outInstances grows by total visible
-				// count, and a parallel reserve+memcpy doesn't help
-				// against the unknown per-worker visible counts.
 				for (auto& ws : g_WorkerScratch) {
 					if (ws.Instances.empty()) continue;
 					outInstances.insert(outInstances.end(),
@@ -730,35 +573,16 @@ namespace Index {
 			return outInstances.size();
 		}
 
-		// Pack the three sort-key fields into a single u64 so radix-sort
-		// works on a contiguous key array (vastly cheaper than per-element
-		// 3-tier comparisons). Layer occupies the top byte (bits 56-63),
-		// signed Order is bias-shifted to unsigned (bits 32-47), and the
-		// 32-bit DrawIndex sits in the low half. Bits 48-55 stay zero —
-		// the radix passes there are no-ops on those bits but pay only the
-		// cache cost (the keys are visited regardless).
 		inline uint64_t PackSortKey(const Instance44& inst) {
-			// XOR flips the high bit of the int16_t reinterpret, which is
-			// the canonical "bias signed to unsigned for sort" trick. The
-			// addition form would invoke signed overflow UB for positive
-			// values near INT16_MAX.
+			// XOR 0x8000 biases signed→unsigned for sorting; addition would be signed-overflow UB near INT16_MAX.
 			const uint16_t orderBiased = static_cast<uint16_t>(inst.SortingOrder) ^ uint16_t(0x8000);
 			return (static_cast<uint64_t>(inst.SortingLayer) << 56)
 				 | (static_cast<uint64_t>(orderBiased)       << 32)
 				 | static_cast<uint64_t>(inst.DrawIndex);
 		}
 
-		// Persistent scratch buffers for the radix sort. Each pass reads
-		// from src and writes to dst, then std::swap; values stay valid
-		// across frames so steady-state allocations are zero.
 		std::vector<uint64_t> g_RadixKeys;
 		std::vector<size_t>   g_RadixIndicesB;  // g_SortIndexScratch is the A buffer
-
-		// Crossover where radix becomes faster than std::sort for the
-		// 3-tier comparison key. std::sort dominates for small N because
-		// its constant factor (insertion-sort fallback for small ranges)
-		// undercuts radix's fixed 8-pass cost. The threshold is well below
-		// the 100k+ case where radix's linear factor dominates anyway.
 		constexpr size_t k_RadixSortMinElements = 4096;
 
 		void SortInstancesInPlace(size_t n) {
@@ -779,13 +603,6 @@ namespace Index {
 			}
 			if (alreadySorted) return;
 
-			// Indirect sort then in-place permutation following the cycle
-			// chains of the resulting index array. The previous implementation
-			// allocated two sorted scratch vectors and copied every element
-			// once into them, then swapped — that's 3× the memory traffic of
-			// what's actually required. This version uses one temporary per
-			// cycle (two registers, effectively) and visits each element of
-			// each parallel array exactly once during the rearrangement.
 			g_SortIndexScratch.resize(n);
 			for (size_t k = 0; k < n; ++k) g_SortIndexScratch[k] = k;
 
@@ -800,13 +617,6 @@ namespace Index {
 						return ia.DrawIndex < ib.DrawIndex;
 					});
 			} else {
-				// Large N: LSB byte-wise radix on the packed u64 key. 8
-				// passes of 256-bin counting sort, alternating between
-				// g_SortIndexScratch (initial identity) and g_RadixIndicesB.
-				// std::sort would be O(n log n) compares each touching two
-				// Instance44s (a sparse-set chase on cache-cold data); radix
-				// is O(8n) on a contiguous key array — strictly fewer
-				// touched bytes at n >= ~4096 and dominant at 100k+.
 				g_RadixKeys.resize(n);
 				g_RadixIndicesB.resize(n);
 				for (size_t k = 0; k < n; ++k) {
@@ -842,25 +652,12 @@ namespace Index {
 					std::swap(src, dst);
 				}
 
-				// After 8 swaps, src points back to g_SortIndexScratch — the
-				// final sorted order lives there. The branch below only fires
-				// if the pass count ever becomes odd, which it doesn't today.
 				if (src != &g_SortIndexScratch) {
 					g_SortIndexScratch = *src;
 				}
 			}
 
-			// Apply the permutation g_SortIndexScratch to both parallel
-			// arrays in-place. std::sort produces READ-direction indices
-			// (sorted[k] = src[idx[k]]), so we walk each cycle once,
-			// pulling values backwards into position. The swap-as-you-go
-			// form is shorter but is the WRITE-direction permutation and
-			// would silently mis-sort here.
-			//
-			// Two moves per element across the whole array (one stash, one
-			// final write) plus one assignment per intra-cycle hop —
-			// strictly fewer copies than the previous double-scratch
-			// implementation, and no auxiliary vector allocation.
+			// READ-direction permutation (sorted[k]=src[idx[k]]): walk cycles — do NOT use swap-as-you-go (WRITE direction) which would mis-sort.
 			for (size_t i = 0; i < n; ++i) {
 				if (g_SortIndexScratch[i] == i) continue;
 				Instance44    holdInst = g_InstancesScratch[i];
@@ -898,9 +695,6 @@ namespace Index {
 		bool EnsureInstanceBuffer(wgpu::Device device, uint32_t neededInstances) {
 			if (g_InstanceBufferCapacity >= neededInstances && g_InstanceBuffer) return true;
 
-			// Grow with 2x headroom so a slowly growing scene doesn't recreate
-			// the buffer every frame. 256 is a reasonable starting capacity
-			// for typical 2D scenes; tune if profiling shows churn.
 			uint32_t newCapacity = g_InstanceBufferCapacity > 0 ? g_InstanceBufferCapacity : 256;
 			while (newCapacity < neededInstances) newCapacity *= 2;
 
@@ -972,10 +766,7 @@ namespace Index {
 
 	void Renderer2D::Initialize() {
 		WebGPUSpriteResources::Acquire();
-		// Hook texture destruction so the persistent bind-group cache evicts
-		// entries whose underlying GPU texture is about to disappear. Without
-		// this, a stale bind group would hold a freed TextureView and trigger
-		// a use-after-free on the next draw using the same poolId.
+		// Evict cache entry before GPU teardown — stale group holding freed TextureView causes use-after-free on next draw.
 		if (g_TextureDestroyListenerToken == 0) {
 			g_TextureDestroyListenerToken = TextureManager::AddDestroyListener(
 				[](TextureHandle handle) {
@@ -986,20 +777,10 @@ namespace Index {
 		}
 
 #ifdef INDEX_PROFILER_ENABLED
-		// Stand up the GPU timer. Initialize is a no-op when the device
-		// wasn't created with TimestampQuery (some Metal / older Vulkan
-		// drivers) — the profiler's "GPU" module just stays at "N/A".
-		// Otherwise we get a per-frame ms reading of the sprite pass's
-		// actual GPU work, distinct from CPU submission cost.
 		m_GpuTimer = std::make_unique<GpuTimer>();
 		m_GpuTimer->Initialize();
 #endif
 
-		// Post-process subsystem. Init may fail (no WebGPU device, shader
-		// compile error, etc.); when it does, RenderSceneWithVP detects
-		// !IsInitialized() and skips the PP redirect, falling through to
-		// the legacy direct-to-caller render path. That keeps the engine
-		// usable even if PP setup goes wrong on weird drivers.
 		if (!m_PostProcessor.Initialize()) {
 			IDX_CORE_WARN_TAG("Renderer2D",
 				"PostProcessor::Initialize failed — scene will render direct to caller (no PP)");
@@ -1018,28 +799,19 @@ namespace Index {
 		}
 
 #ifdef INDEX_PROFILER_ENABLED
-		// Release GPU timer resources before WebGPUApi::Shutdown unconfigures
-		// the device — the QuerySet + resolve / readback buffers all hold
-		// Dawn handles.
+		// MUST shut down before WebGPUApi::Shutdown — QuerySet + readback buffers hold Dawn handles.
 		if (m_GpuTimer) {
 			m_GpuTimer->Shutdown();
 			m_GpuTimer.reset();
 		}
 #endif
 
-		// Release PP resources before WebGPUApi::Shutdown unconfigures the
-		// device — the intermediate scene FBO and the PostProcessor's
-		// pipelines all hold Dawn handles.
+		// MUST precede WebGPUApi::Shutdown — FBO and pipelines hold Dawn handles.
 		m_PostProcessor.Shutdown();
 		m_SceneFbo.Destroy();
 
-		// Persistent GPU resources — drop now so the device is fully idle by
-		// the time WebGPUApi::Shutdown unconfigures the surface.
 		g_BindGroupCache.clear();
 		g_StaticSpriteGrids.clear();
-		// EnTT cleans observer connections when the registry is destroyed
-		// (scene unload), so we just drop the bookkeeping set — no manual
-		// disconnect needed across all known scenes.
 		g_DynamicRenderDataObservedRegistries.clear();
 		g_InstanceBuffer         = nullptr;
 		g_InstanceBufferCapacity = 0;
@@ -1051,54 +823,20 @@ namespace Index {
 	void Renderer2D::ClearSceneCache(const Scene* scene) {
 		if (!scene) {
 			g_StaticSpriteGrids.clear();
-			// Drop all observed-registry bookkeeping too — if anything
-			// allocates at the same registry-pointer address later, a
-			// dangling membership entry would silently skip the on_destroy
-			// connect for the new registry.
+			// Also clear: a dangling ptr at the same address would silently skip on_destroy connect for the new registry.
 			g_DynamicRenderDataObservedRegistries.clear();
 			return;
 		}
 		g_StaticSpriteGrids.erase(scene);
-		// Best-effort eviction from the dynamic-cache observer set. The
-		// scene's registry is about to be destroyed by the caller, so the
-		// EnTT connection will be cleaned up by the registry's destructor
-		// regardless — this just keeps the set from leaking a stale
-		// pointer that could collide with a later registry allocation.
 		g_DynamicRenderDataObservedRegistries.erase(
 			const_cast<entt::registry*>(&scene->GetRegistry()));
 	}
 
 	void Renderer2D::BeginFrame() {
 		m_DrawCallsCount = 0;
-		// m_RenderedInstancesCount is intentionally NOT reset here. The
-		// editor throttles its Game View panel to its own framerate, so
-		// RenderSceneWithVP only runs on a subset of Application frames.
-		// Resetting here would clobber the count to 0 on every skipped
-		// frame and the StatsOverlay (Tris = inst*2, Verts = inst*4)
-		// would flicker between the real value and 0 as the editor
-		// alternates between rendered and skipped frames. Letting the
-		// counter persist across no-render frames matches the same
-		// "sticky last value" pattern m_RenderLoopDuration uses below.
+		// NOT reset: editor throttles Game View so RenderSceneWithVP runs on a subset of frames; resetting here flickers the overlay to 0.
 		m_RenderLoopDuration = 0.0f;
-		// Note: GpuTimer::OnFrameStart() (deferred MapAsync) does NOT
-		// belong here in the editor flow — Layer.OnPreRender (which
-		// invokes the editor's RenderSceneIntoFBO → RenderSceneWithVP →
-		// ResolveCurrentFrame) runs BEFORE Renderer2D::BeginFrame. Issuing
-		// MapAsync here would race against the same frame's Submit and
-		// validation-fail. The hook now lives in OnAfterPresent() instead.
-		// Bind-group cache is persistent across frames now — entries are
-		// evicted by the TextureManager DestroyListener registered in
-		// Initialize() whenever the underlying texture is unloaded or
-		// hot-reloaded. No per-frame clear here.
-
-		// Runtime auto-render path. Editors set SkipBeginFrameRender=true
-		// and drive RenderSceneWithVP themselves into per-panel FBOs; the
-		// runtime (Index-Runtime / Index-Launcher) leaves the flag false
-		// and expects BeginFrame to do the work against the swap chain.
-		// Without this, the Index-Runtime window stays whatever colour
-		// `g_ClearColor` defaulted to at Init and no SpriteRenderer2D
-		// quads ever appear — the symptom of the renderer's auto-path
-		// being a leftover stub from the bgfx era.
+		// GpuTimer::OnFrameStart (deferred MapAsync) MUST NOT run here — Layer.OnPreRender calls RenderSceneWithVP before BeginFrame; MapAsync here would race the same-frame Submit.
 		if (m_SkipBeginFrameRender) return;
 		if (!m_SceneProvider) return;
 
@@ -1107,27 +845,13 @@ namespace Index {
 
 		RenderApi::BindDefaultFramebuffer();
 
-		// Aspect-locked runtime builds render the scene into an
-		// intermediate FBO sized to the centered sub-rect (see
-		// RenderSceneWithVP's m_SceneFbo path) and composite it back to
-		// the swap chain via PostProcessor::Blit with a sub-rect viewport.
-		// The surround letterbox/pillarbox is whatever the swap chain was
-		// cleared to before the blit — clear it to BLACK here so the
-		// bars are black. The camera's clear color is restored
-		// immediately after so the FBO clear inside RenderSceneWithVP
-		// (which reads g_ClearColor) still paints the in-game background
-		// with the camera's color, matching how the editor's Game View
-		// panel shows the same camera clear color centered with black
-		// borders around it.
+		// Clear swap chain to BLACK for aspect-locked letterbox bars before the sub-rect blit; restore camera clear color immediately after.
 		Viewport* mainViewport = Window::GetMainViewport();
 		const bool hasLetterbox = mainViewport && mainViewport->HasLetterbox();
 		if (hasLetterbox) {
 			RenderApi::SetClearColor(Color{ 0.0f, 0.0f, 0.0f, 1.0f });
 			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
-			// Re-arm g_ClearColor so the m_SceneFbo Clear in
-			// RenderSceneWithVP's PostProcessor-redirect block paints the
-			// FBO interior (= the rendered sub-rect on the final
-			// composite) with the camera's color, not black.
+			// Restore camera clear color so the scene FBO (not just the letterbox bars) uses it.
 			RenderApi::SetClearColor(cam->GetClearColor());
 		} else {
 			// Standard path: clear swap chain to camera color.
@@ -1135,16 +859,6 @@ namespace Index {
 			RenderApi::Clear(ClearFlags::Color | ClearFlags::Depth);
 		}
 
-		// Refresh the cached view (and projection) from the current
-		// Transform2D before reading the matrix. Camera2DComponent only
-		// rebuilds m_ViewMat from its own setters — scripts that move
-		// the camera entity through Transform.Position (the standard
-		// Transform2D binding, not Camera2DComponent::SetPosition) mark
-		// the transform dirty but never reach the camera's cache, so
-		// without this call the runtime renders against the previous
-		// frame's view matrix and the camera appears frozen. The
-		// editor's Game View path already does the same refresh — this
-		// closes the gap so standalone behaves identically.
 		cam->UpdateViewport();
 
 		const glm::mat4 vp = cam->GetViewProjectionMatrix();
@@ -1155,20 +869,10 @@ namespace Index {
 	}
 
 	void Renderer2D::EndFrame() {
-		// All submission already happened in RenderSceneWithVP; Present()
-		// (from Window::SwapBuffers) finishes the encoder + surface.Present.
-		// Publish the per-frame totals here (BeginFrame zeroed them, each
-		// RenderSceneWithVP call accumulated). Done once per frame instead
-		// of per-camera so the profiler graph shows whole-frame work, not
-		// per-camera slices.
 		INDEX_PROFILE_VALUE("Batches", static_cast<float>(m_DrawCallsCount));
 		INDEX_PROFILE_VALUE("Rendered Sprites", static_cast<float>(m_RenderedInstancesCount));
 
 #ifdef INDEX_PROFILER_ENABLED
-		// Drain any GPU timer readback buffers whose MapAsync has fulfilled
-		// (typically two-to-three frames behind real-time). Push the ms
-		// delta into the "GPU" profiler module. No-op when the adapter
-		// lacks TimestampQuery — module stays at the default 0.0.
 		if (m_GpuTimer) {
 			m_GpuTimer->PollAndPublish();
 		}
@@ -1177,14 +881,7 @@ namespace Index {
 
 	void Renderer2D::OnAfterPresent() {
 #ifdef INDEX_PROFILER_ENABLED
-		// Issue deferred MapAsync calls for slots whose Copy just got
-		// submitted. Calling MapAsync any earlier (BeginFrame, EndFrame,
-		// or inline in ResolveCurrentFrame) puts the buffer into Pending
-		// state while the frame's Submit still holds a CopyBufferToBuffer
-		// referencing it — Dawn rejects the whole command buffer and no
-		// draws reach the GPU. By the time this hook runs, Submit (in
-		// WebGPUBackend::Present, via Window::SwapBuffers) has completed,
-		// so MapAsync transitions the buffer safely.
+		// MUST run here (post-Present): MapAsync earlier races the same-frame CopyBufferToBuffer; Dawn rejects the command buffer.
 		if (m_GpuTimer) {
 			m_GpuTimer->OnFrameStart();
 		}
@@ -1192,9 +889,6 @@ namespace Index {
 	}
 
 	void Renderer2D::RenderScene(Scene& /*scene*/) {
-		// Touch-equivalent already happened in RenderApi::Clear (or will
-		// happen in Present's touch-fallback), so this is genuinely a
-		// no-op when no VP / no instances are available.
 	}
 
 	void Renderer2D::RenderSceneWithVP(Scene& scene,
@@ -1207,31 +901,15 @@ namespace Index {
 		auto finishTiming = [&]() {
 			m_RenderLoopDuration = std::chrono::duration<float, std::milli>(
 				std::chrono::steady_clock::now() - renderStart).count();
-			// Publish to the "Rendering" profiler bucket so it stops being
-			// permanently 0 and the "Others" residual (Frame - Rendering -
-			// Scripts - Physics - VSync) reflects only un-instrumented work.
 			Profiler::PushSample("Rendering", m_RenderLoopDuration);
 			};
 
 		const size_t n = CollectSpriteInstances(scene, viewportAABB, g_InstancesScratch, g_TexturesScratch);
-		// Overwrite (not accumulate). Avoids a stats-overlay flicker when
-		// the editor throttles its Game View panel: BeginFrame runs every
-		// Application frame and would otherwise reset this to 0 between
-		// the editor's lower-rate RenderSceneWithVP calls, causing the
-		// Tris/Verts overlay to oscillate between the rendered value and
-		// 0. For multi-camera setups this shows the last camera's count
-		// rather than the frame total — fine for the typical 1-camera
-		// case, which is the only one the overlay was tuned for.
 		m_RenderedInstancesCount = n;
 		if (n > 0) {
 			SortInstancesInPlace(n);
 		}
 
-		// Capture the caller's bound target up front. After the optional
-		// PP redirect below, we'll restore this so subsequent renderers in
-		// the same frame (editor's UI + gizmo passes after Renderer2D)
-		// keep writing to the right surface. callerInfo also feeds the
-		// final blit's destination view + format.
 		const auto callerSnap = WebGPUBackend::SaveBoundTarget();
 		const auto callerInfo = WebGPUBackend::BeginRenderToCurrentTarget();
 		if (!callerInfo.Valid) {
@@ -1239,28 +917,8 @@ namespace Index {
 			return;
 		}
 
-		// Two related but distinct decisions:
-		//   runEffects     — actually execute the effect passes (bloom,
-		//                    grading, grain, ...). Gated on PostProcessor
-		//                    init, the project's EnablePostProcessing, and
-		//                    the active camera's per-camera PP toggle.
-		//   usePostProcess — route the sprite pass through the intermediate
-		//                    HDR FBO and then composite back to caller. We
-		//                    need this whenever runEffects is true OR the
-		//                    swap chain is aspect-locked (letterbox needs
-		//                    the composite path to clip to the sub-rect).
-		//                    When aspect-locked but !runEffects we pass
-		//                    ppSettings = nullptr below, so the composite
-		//                    collapses to PostProcessor::Blit (passthrough)
-		//                    — visually identical to direct rendering plus
-		//                    the centered sub-rect clip.
-		//
-		// Splitting these is what makes "disable PP on a camera" actually
-		// turn the effects off in the shipped runtime: the old single-flag
-		// model forced usePostProcess back on for aspect-locked games and
-		// dragged the effects in with it, so disabling PP on the camera was
-		// silently ignored in standalone builds even though the editor (FBO-
-		// based GameView render, never IsSwapChain) respected the flag.
+		// runEffects: execute effect passes. usePostProcess: route through intermediate FBO (needed for effects OR aspect-locked letterbox).
+		// These MUST stay separate: collapsing to one flag silently ignores "disable PP on camera" in aspect-locked standalone builds.
 		bool runEffects = m_PostProcessor.IsInitialized();
 		if (runEffects) {
 			if (IndexProject* proj = ProjectManager::GetCurrentProject()) {
@@ -1274,14 +932,6 @@ namespace Index {
 		}
 		bool usePostProcess = runEffects;
 
-		// Aspect-locked runtime path: even when no effects will run, we
-		// HAVE to go through the intermediate-FBO + final-Blit flow so the
-		// scene renders into a sub-rect-sized FBO and the composite back
-		// to the swap chain can be clipped to the centered sub-rect via
-		// the cached viewport (PostProcessor::Blit applies it on its
-		// pass). Without this, the swap chain would receive sprites at
-		// full window dimensions — the stretched look that was the bug.
-		// Detection mirrors Renderer2D::BeginFrame.
 		Viewport* mvp = Window::GetMainViewport();
 		const bool aspectLocked = callerInfo.IsSwapChain && mvp && mvp->HasLetterbox()
 			&& m_PostProcessor.IsInitialized();
@@ -1289,12 +939,6 @@ namespace Index {
 			usePostProcess = true;
 		}
 
-		// Size the intermediate FBO: sub-rect dims when aspect-locked,
-		// caller dims otherwise. The sprite pass below writes the entire
-		// FBO with the locked aspect built into the camera projection (the
-		// camera reads Window::GetMainViewport()->GetAspect(), which IS
-		// the sub-rect aspect when locked), so there's no stretching at
-		// the rasterisation stage.
 		const int fboWidth  = aspectLocked
 			? mvp->GetWidth()
 			: static_cast<int>(callerInfo.Width);
@@ -1308,30 +952,11 @@ namespace Index {
 			}
 		}
 
-		// Empty scene fast path: only safe to bail when PP is also off.
-		// When PP is on, effects (vignette, color grading, ...) must still
-		// apply to the cleared background, so we fall through and let the
-		// PP redirect + PostProcessor::Run handle the empty intermediate.
 		if (n == 0 && !usePostProcess) {
 			finishTiming();
 			return;
 		}
 
-		// Redirect the upcoming sprite pass into the intermediate HDR FBO
-		// instead of writing direct to the caller. Reuse whatever clear
-		// colour the caller already set (BeginFrame pulls it from the
-		// active main camera; the editor sets its panel clear colour
-		// before calling us), so the intermediate's background matches
-		// what the caller expected. Without this clear the intermediate
-		// would carry last frame's contents through.
-		//
-		// Wireframe pass exception: clear the intermediate to TRANSPARENT
-		// (alpha=0) so the alpha-aware PostProcessor::Blit below preserves
-		// whatever the caller already painted (the filled pass + UI +
-		// gizmos in Mixed mode) and writes only the line pixels (which the
-		// wireframe pipeline outputs as alpha=1 opaque black) on top.
-		// Filled-pass intermediates stay opaque, so blitting them is
-		// visually identical to the previous overwrite behaviour.
 		if (usePostProcess) {
 			RenderApi::BindFramebuffer(m_SceneFbo);
 			RenderApi::SetViewport(0, 0, fboWidth, fboHeight);
@@ -1405,9 +1030,7 @@ namespace Index {
 			}
 
 			INDEX_PROFILE_SCOPE("Renderer2D.Submit");
-			// Open the sprite render pass — Load semantics so a prior
-			// RenderApi::Clear's result is preserved instead of double-cleared.
-			wgpu::RenderPassColorAttachment colorAtt{};
+				wgpu::RenderPassColorAttachment colorAtt{};
 			colorAtt.view       = target.ColorView;
 			colorAtt.loadOp     = wgpu::LoadOp::Load;
 			colorAtt.storeOp    = wgpu::StoreOp::Store;
@@ -1429,11 +1052,6 @@ namespace Index {
 			passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
 
 #ifdef INDEX_PROFILER_ENABLED
-			// Attach beginning/end-of-pass timestamp writes when the GpuTimer
-			// has resources (adapter supports TimestampQuery + ring slot is
-			// free). The QuerySet + indices live for the pass's lifetime —
-			// the descriptor pointer is consumed by BeginRenderPass before
-			// it returns, so a stack `tsWrites` is safe.
 			GpuTimer::FrameSlots gpuTimerSlots;
 			wgpu::PassTimestampWrites tsWrites{};
 			if (m_GpuTimer) {
@@ -1450,36 +1068,15 @@ namespace Index {
 			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
 			WebGPUBackend::ApplyCachedViewportToPass(pass);
 
-			// Set common state once. The pipeline carries vertex layout / blend /
-			// primitive state — only what varies per batch (bind group +
-			// firstInstance offset) gets re-set inside the loop.
 			pass.SetPipeline(pipeline);
 			pass.SetVertexBuffer(0, WebGPUSpriteResources::GetQuadVertexBuffer());
 			pass.SetVertexBuffer(1, g_InstanceBuffer);
 			pass.SetIndexBuffer(WebGPUSpriteResources::GetQuadIndexBuffer(pipelineMode),
 				wgpu::IndexFormat::Uint16);
 
-			// Group instances by resolved texture and issue one DrawIndexed
-			// per run with firstInstance offsetting into the same instance
-			// buffer — uses WebGPU's firstInstance parameter rather than
-			// per-batch buffer rebinding.
-			//
-			// When WebGPUBackend::HasBindlessTextures() flips to true (Dawn
-			// stabilises its bindless feature surface), the bindless path
-			// replaces the per-texture-run loop below with a single
-			// DrawIndexed(instanceCount = n). The per-instance struct grows
-			// by 4 bytes (uint32 TextureIndex), the WGSL fragment shader
-			// samples via textures[in.tex_idx], and ResolveBindGroup is
-			// replaced by a single bind group holding the full texture
-			// array. Everything else (sort, upload, instance buffer growth)
-			// stays put — the bindless variant is purely a submit-time
-			// difference. See WebGPUBackend::HasBindlessTextures() for the
-			// gate.
+			// When HasBindlessTextures() becomes true, replace this loop with a single DrawIndexed(n) — see WebGPUBackend::HasBindlessTextures().
 			if (WebGPUBackend::HasBindlessTextures()) {
-				// Bindless submit path — currently never taken. Left empty
-				// rather than half-implemented so a future bindless port
-				// has a clean integration site without sketchy
-				// half-implementation drift between today and then.
+				// Bindless path is not yet implemented — fallback warning below.
 				IDX_CORE_WARN_TAG("Renderer2D",
 					"HasBindlessTextures returned true but the bindless submit "
 					"path is not implemented. Falling back to per-texture-run.");
@@ -1504,9 +1101,6 @@ namespace Index {
 
 				wgpu::BindGroup bg = ResolveBindGroup(device, runHandle);
 				if (!bg) {
-					// Default texture also missing — engine-shutdown edge case,
-					// or IndexAssets not on disk. Skip the run rather than
-					// crash; warning is already logged by TextureManager.
 					i = runEnd;
 					continue;
 				}
@@ -1524,33 +1118,14 @@ namespace Index {
 			pass.End();
 
 #ifdef INDEX_PROFILER_ENABLED
-			// Resolve the timestamp writes the GPU just emitted into the
-			// QuerySet, then copy into the readback buffer. MapAsync is
-			// queued internally; PollAndPublish in EndFrame drains
-			// whichever slots have completed since last frame.
 			if (m_GpuTimer && gpuTimerSlots.Valid) {
 				m_GpuTimer->ResolveCurrentFrame(encoder);
 			}
 #endif
 		}
 
-		// If we redirected through the intermediate HDR FBO, run the
-		// PostProcessor stage (effect passes + final composite back to
-		// caller). The settings come from a PostProcessing2DComponent on
-		// the active main camera entity — if the component is absent or
-		// no effects are enabled, Run() collapses to the passthrough Blit
-		// (visually identical to the legacy direct-to-caller path).
-		// RestoreBoundTarget puts the caller's bind state back so
-		// subsequent renderers in the same frame (editor's UI / gizmo
-		// passes after Renderer2D) keep writing to the right surface.
 		if (usePostProcess) {
-			// ppSettings = nullptr forces PostProcessor::Run into its
-			// passthrough Blit fallback (no effect passes, just the FBO →
-			// caller composite). That's exactly what we want when
-			// usePostProcess was forced on purely for aspect-locked
-			// letterboxing while the camera (or project) has effects off
-			// — we still need the composite to clip to the sub-rect, but
-			// every effect pass must be skipped to honour the toggle.
+			// ppSettings=nullptr forces passthrough Blit (no effects) — needed when usePostProcess is on for letterbox but runEffects is off.
 			const PostProcessing2DComponent* ppSettings = nullptr;
 			if (runEffects) {
 				if (Camera2DComponent* mainCam = Camera2DComponent::Main()) {
@@ -1564,14 +1139,7 @@ namespace Index {
 					}
 				}
 			}
-			// Aspect-locked composite: set the cached viewport to the
-			// swap-chain sub-rect BEFORE Run so PostProcessor::Blit's
-			// fullscreen-triangle pass gets clipped to (offsetX, offsetY,
-			// subW, subH) of the swap chain — leaving the surround bars
-			// painted by the BeginFrame BLACK clear untouched.
-			// dstWidth/dstHeight are forwarded as the sub-rect dims so
-			// any PingPong intermediates the PP allocates match the
-			// source FBO size.
+			// MUST set viewport to sub-rect BEFORE Run so Blit clips to the letterbox sub-rect and leaves the surrounding bars black.
 			uint32_t dstW = callerInfo.Width;
 			uint32_t dstH = callerInfo.Height;
 			if (aspectLocked) {
@@ -1582,21 +1150,8 @@ namespace Index {
 				dstH = static_cast<uint32_t>(mvp->GetHeight());
 			}
 
-			// Aspect-locked + at least one effect enabled is the only
-			// branch where PostProcessor::Run takes its multi-pass
-			// dispatch path — and the FINAL effect (RunEffectPass) does
-			// NOT apply the cached viewport, so a direct Run-to-swap-
-			// chain would smear the chain's output across the full window
-			// and undo the letterbox. Route the chain into a sub-rect
-			// sized intermediate, then composite to the swap chain via
-			// Blit (which DOES apply the cached viewport). The no-effects
-			// passthrough already lands through Blit, so it doesn't need
-			// the indirection.
-			//
-			// HasEnabledEffect mirrors the enabled-set inside
-			// PostProcessor::Run. If a new effect type is added there,
-			// add it here too — otherwise the new effect would smear in
-			// aspect-locked standalone builds.
+			// Aspect-locked + effects: RunEffectPass does NOT apply the cached viewport, so route through a sub-rect FBO then Blit (which does).
+			// HasEnabledEffect MUST mirror PostProcessor::Run's effect set — add new effects here or they smear in aspect-locked standalone builds.
 			auto HasEnabledEffect = [](const PostProcessing2DComponent* s) {
 				if (!s) return false;
 				return s->Bloom.Enabled
@@ -1634,10 +1189,6 @@ namespace Index {
 						callerInfo.Height);
 				}
 				else {
-					// FBO created but view lookup failed — extremely rare.
-					// Fall back to the direct Run path so the build still
-					// renders (effects will stretch, but better than a
-					// black screen).
 					m_PostProcessor.Run(m_SceneFbo,
 						callerInfo.ColorView,
 						callerInfo.ColorFormat,
@@ -1655,11 +1206,7 @@ namespace Index {
 			WebGPUBackend::RestoreBoundTarget(callerSnap);
 		}
 
-		// Use callerInfo.IsSwapChain (NOT target.IsSwapChain) because
-		// after the PP redirect, `target` refers to the intermediate FBO
-		// — which is never the swap chain. The swap chain bookkeeping
-		// must reflect whether the FINAL written-to surface is the swap
-		// chain (caller's target), which is what callerInfo describes.
+		// Use callerInfo (NOT target): after PP redirect, target is the intermediate FBO, not the swap chain.
 		if (callerInfo.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
@@ -1667,8 +1214,6 @@ namespace Index {
 	}
 
 	void Renderer2D::RenderScenes() {
-		// SceneProvider iteration scaffolding — a no-op until SceneProvider
-		// is wired into the WebGPU renderer in a later stage.
 	}
 
 	void Renderer2D::CollectAndRenderInstances(Scene& /*scene*/,

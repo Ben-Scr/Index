@@ -3,10 +3,6 @@ using System.IO;
 
 namespace Index;
 
-/// <summary>
-/// Provides static access to application-level runtime information
-/// such as timing, screen dimensions, and lifecycle control.
-/// </summary>
 public static class Application
 {
     public static event Action? OnPaused;
@@ -29,17 +25,10 @@ public static class Application
         set => InternalCalls.Application_SetVsyncEnabled(value);
     }
 
-    /// <summary>
-    /// The path to the persistent data directory of the application.
-    /// Use this to store save files, settings, or any data that should
-    /// persist across sessions. The directory is guaranteed to be writable.
-    /// </summary>
+    /// <summary>Writable persistent data directory (save files, settings). Guaranteed to exist.</summary>
     public static string PersistentDataPath => EnsureDirectory(
         Path.Combine(GetLocalApplicationDataPath(), "Index"));
 
-    /// <summary>
-    /// The path to the directory where the application is installed.
-    /// </summary>
     public static string DataPath => AppContext.BaseDirectory;
 
     /// <summary>
@@ -58,37 +47,13 @@ public static class Application
         set => InternalCalls.Application_SetRunInBackground(value);
     }
 
-    /// <summary>
-    /// True when the script is running inside the editor process (editor
-    /// preview / play-mode), false when running in a built game.
-    ///
-    /// Runtime sibling of the compile-time INDEX_EDITOR define — both are
-    /// available so callers can pick whichever fits the use:
-    /// <code>
-    /// #if INDEX_EDITOR                    // strips at compile time
-    ///     EditorOnlyDebugDraw();
-    /// #endif
-    ///
-    /// if (Application.IsEditor) {         // runtime branch (no #if)
-    ///     SkipFatalErrorsThatWouldKillTheEditorProcess();
-    /// }
-    /// </code>
-    /// </summary>
+    /// <summary>Runtime sibling of the compile-time INDEX_EDITOR define; use <c>#if INDEX_EDITOR</c> to strip at compile time, this property for runtime branches.</summary>
     public static bool IsEditor => InternalCalls.Application_IsEditor();
 
-    /// <summary>
-    /// Number of logical CPU cores on the host machine. Returns 4 as a
-    /// floor when the OS can't report a value. Use this to size
-    /// thread-count budgets — e.g. <c>JobSystem.Configure(cores - 2)</c>
-    /// to leave headroom for the OS, render, and audio threads.
-    /// </summary>
+    /// <summary>Logical CPU core count; returns 4 as a floor when the OS can't report a value.</summary>
     public static int ProcessorCount => InternalCalls.Application_GetProcessorCount();
 
-    /// <summary>
-    /// The current OS clipboard contents as a UTF-8 string. Reads/writes the
-    /// system clipboard via the engine's GLFW window. Returns an empty string
-    /// in headless contexts (no window); the setter is a no-op there.
-    /// </summary>
+    /// <summary>OS clipboard string via GLFW; returns empty and setter is a no-op in headless (no window) contexts.</summary>
     public static string ClipboardString
     {
         get => InternalCalls.Application_GetClipboardString();

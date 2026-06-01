@@ -28,10 +28,7 @@ namespace Index {
         static  int NextInt(int max);
         static int NextInt(int min, int max);
 
-        // Seeds the calling thread's generator. Each thread has its own
-        // generator (lazy-seeded from std::random_device on first use), so
-        // SetSeed only affects the thread that calls it — exactly what most
-        // gameplay code wants (deterministic per-thread sequences).
+        // Seeds the calling thread's generator only — each thread has its own.
         static void SetSeed(uint32_t seed);
     };
 

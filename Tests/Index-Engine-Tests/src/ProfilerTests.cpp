@@ -1,10 +1,4 @@
-// Tests for Index::Profiler.
-//
-// These exercise the parts that don't need a window or a GL context — ring
-// buffer + avg/min/max bookkeeping, sampling-rate cadence, gate logic, and
-// per-module enable/disable. The Tracy backend is exercised implicitly
-// (the macros expand into both Tracy + ring-buffer pushes; here we drive
-// the in-engine ring-buffer side directly via Profiler::PushSample).
+// Tests for Index::Profiler (ring buffer, avg/min/max, sampling-rate cadence, gates, per-module enable/disable).
 
 #include <doctest/doctest.h>
 
@@ -18,11 +12,6 @@
 using namespace Index;
 
 namespace {
-	// Each test starts from a clean Profiler state. We can't strictly avoid
-	// state bleed without making Profiler a per-instance class (it's a
-	// process-global by design), so the convention is: every test calls
-	// Initialize() up front, which resets module storage and re-registers
-	// the built-ins. SetPanelVisible(true) is what unlocks sample writes.
 	void ResetProfiler() {
 		Profiler::Shutdown();
 		Profiler::Initialize();
@@ -121,12 +110,6 @@ TEST_CASE("Profiler — gates: panel hidden + background off => no collection") 
 TEST_CASE("Profiler — sampling rate gate drops pushes below cadence") {
 	ResetProfiler();
 
-	// 10 Hz = at most one sample every ~100ms. Push 100k times in a tight
-	// loop and verify only a handful land — orders of magnitude fewer than
-	// the push count. The exact number depends on how long the loop took
-	// to run (one extra sample per ~100ms wall-clock), so we bound below
-	// (>= 1) and above (<= a generous ceiling that catches the gate being
-	// effectively disabled). Avoids tying the test to scheduler precision.
 	Profiler::SetSamplingHz(10);
 
 	const auto loopStart = std::chrono::steady_clock::now();
@@ -152,10 +135,6 @@ TEST_CASE("Profiler — sampling rate gate drops pushes below cadence") {
 TEST_CASE("Profiler — PushFrameDelta populates Frame Time") {
 	ResetProfiler();
 
-	// 1/60 sec = ~16.6667 ms. PushFrameDelta records the dt in milliseconds
-	// into the internal "Frame Time" module. (FPS as a separate module was
-	// removed in the four-category restructure — the panel derives an FPS
-	// readout from Frame Time at render time.)
 	Profiler::PushFrameDelta(1.0f / 60.0f);
 
 	const ProfilerModule* frame = Profiler::Find("Frame Time");
@@ -166,9 +145,6 @@ TEST_CASE("Profiler — PushFrameDelta populates Frame Time") {
 TEST_CASE("Profiler — unregistered module names are ignored, not asserted") {
 	ResetProfiler();
 
-	// Calling PushValue with an unknown name must not crash, must not
-	// silently auto-register (we want the registered-module set to be the
-	// stable contract for the panel).
 	Profiler::PushValue("NotARealModule", 99.0f);
 	CHECK(Profiler::Find("NotARealModule") == nullptr);
 }

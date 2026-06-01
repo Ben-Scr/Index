@@ -24,9 +24,6 @@ namespace Index {
 }
 
 namespace Index::SceneSerializerInternal {
-	// Shared scene/prefab format constants. Previously duplicated as
-	// anonymous-namespace constexprs in SceneSerializer.cpp and
-	// SceneSerializerDeserialize.cpp, where they could silently drift.
 	inline constexpr int k_SceneFormatVersion = 1;
 	inline constexpr float k_MinScaleAxis = 0.0001f;
 }
@@ -38,10 +35,6 @@ namespace Index::SceneSerializerStorage {
 }
 
 namespace Index::Detail {
-	// Canonical SerializeEntity / override-diff helpers. Definitions live in
-	// SceneSerializer.cpp; declared here so SceneSerializerDeserialize.cpp
-	// can call them too without re-implementing a divergent copy. Anonymous
-	// namespaces can't cross translation units, so we use a named namespace.
 	Json::Value SerializeEntity(Scene& scene, EntityHandle entity);
 	Json::Value SerializeScriptFields(const ScriptComponent& scriptComponent);
 
@@ -93,10 +86,6 @@ namespace Index::SceneSerializerShared {
 			catch (...) {
 				// non-numeric / overflow: handled by the shared warn+fallback below
 			}
-			// Logged at warn level so corrupt asset/scene IDs (overflow,
-			// non-numeric, trailing garbage) are visible during load instead of
-			// silently collapsing to the fallback. Most production data has
-			// well-formed numeric strings, so this only triggers on malformed input.
 			const std::string memberName(key);
 			IDX_CORE_WARN_TAG(
 				"Serialization",

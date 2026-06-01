@@ -6,21 +6,7 @@
 
 namespace Index {
 
-	// RAII mark/restore for an Arena. On construction, captures the arena's
-	// current bump offset; on destruction, rewinds the arena to that offset.
-	//
-	// Nests cleanly: inner scopes are restored before outer ones, so
-	// allocations inside an inner scope cannot survive past it.
-	//
-	//   Arena& a = FrameArenas::Frame();
-	//   {
-	//       ScopedArena scope(a);
-	//       auto buf = a.CreateArray<Vertex>(1024);  // scratch
-	//       Submit(buf);
-	//   } // <- arena rewound here, buf is dangling
-	//
-	// Non-copyable, non-movable: the lifetime model only makes sense as a
-	// strict stack scope.
+	// RAII mark/restore for an Arena; non-copyable/non-movable — must be a strict stack scope.
 	class ScopedArena {
 	public:
 		explicit ScopedArena(Arena& arena) noexcept

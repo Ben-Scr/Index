@@ -7,31 +7,9 @@ namespace Index {
 
 	class Scene;
 
-	// Categorized + searchable Add Component popup body. Shared between the
-	// entity inspector (RenderInspectorPanel) and the asset-side prefab
-	// inspector (PrefabInspector) so the user gets the same UX whether they
-	// click "Add Component" on a regular entity or on a `.prefab` asset.
-	//
-	// The caller is responsible for placing the trigger button and calling
-	// ImGui::OpenPopup(popupId). This function only renders the body inside
-	// BeginPopup/EndPopup.
-	//
-	// `searchBuffer`/`searchBufferSize` is per-popup persistent state for the
-	// search box; the caller owns it across frames so the input survives a
-	// rebuild of the popup contents on each frame.
-	//
-	// Multi-entity selections: components present on EVERY entity are hidden;
-	// adding writes to every selected entity that's currently missing the
-	// component (matches the rest of the multi-edit inspector behavior).
-	// Conflict checks run against the union of components on the selection,
-	// so an entry is disabled when adding it to ANY selected entity would
-	// violate a `conflictsWith` declaration.
-	//
-	// `outChanged` (optional): set to true when the popup actually adds a
-	// component (or game system) this frame. Callers that cache derived
-	// per-selection state — currently the entity inspector's component-
-	// intersection cache — use this to invalidate exactly when needed
-	// rather than every frame the popup is open.
+	// Multi-entity: hides components present on ALL entities; conflict checks use the union,
+	// so an entry is disabled if adding it would violate conflictsWith on ANY selected entity.
+	// outChanged signals callers (e.g. component-intersection cache) to invalidate this frame.
 	void RenderAddComponentPopup(
 		const char* popupId,
 		Scene& scene,

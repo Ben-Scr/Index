@@ -3,50 +3,11 @@ using Index.Components;
 
 namespace Index.Native;
 
-// Native (ECS pool-resident) view of the Sprite Renderer component. The managed
-// `Index.SpriteRenderer` class is the script-friendly wrapper around the same
-// underlying data; this struct is the zero-marshal hot-path view used by
-// Entity.GetRef<NativeSpriteRenderer>() / scene.QueryRef<...>.
-//
-// PREFIX VIEW: the C++ SpriteRendererComponent carries additional trailing
-// fields the mirror deliberately does NOT expose (currently a `std::string
-// SpriteName` for sprite-sheet slicing). Those bytes live past offset 40 and
-// are accessed only through C++ code or dedicated InternalCalls (e.g.
-// SpriteRenderer_GetSpriteName). The first 40 bytes of the C++ struct MUST
-// match the layout below; the layout-drift guard in ComponentTypes<T>
-// verifies `sizeof(SpriteRendererComponent) >= 40` at script host init.
-//
-// Field offsets (Windows x64, MSVC natural alignment):
-//   00: short SortingOrder
-//   02: byte  SortingLayer
-//   03: 1-byte tail pad (next field is 2-aligned)
-//   04: TextureHandle (2 × uint16)
-//   08: ulong TextureAssetId (UUID)
-//   16: Color (4 × float)
-//   32: int  FilterMode (TextureFilter enum, 4 bytes)
-//   36: 4-byte tail pad (struct rounded up to UUID's 8-byte alignment)
-//   40: end of mirror prefix — C++ struct continues with std::string SpriteName
-//
-// The texture is identified two ways:
-//   - `TextureAssetId` (UUID) is the persistent identity that survives scene
-//     reload and serializes; this is what scripts should write to swap sprites.
-//   - `TextureHandle` is the live runtime slot in TextureManager — set by the
-//     engine's asset-load hook AFTER the UUID changes. Scripts treat it as
-//     read-only; writing it directly will be overwritten on next refresh and
-//     can desync against TextureManager's generation tracking.
+// PREFIX VIEW: mirrors only the first 40 bytes of C++ SpriteRendererComponent (verified by ComponentTypes<T> size guard). Write TextureAssetId to swap sprites — TextureHandle is set by the engine after UUID changes and MUST NOT be written by scripts.
 [StructLayout(LayoutKind.Sequential)]
 public struct NativeSpriteRenderer : IComponent
 {
-    // Parameterless constructor exists so `new NativeSpriteRenderer()` (and
-    // object-initializer syntax like `new NativeSpriteRenderer { SortingOrder = 1 }`)
-    // triggers the field initializers below. WARNING: C# language rule —
-    // `default(NativeSpriteRenderer)` and uninitialized struct declarations
-    // still produce a zero-init value where Color = (0,0,0,0). This trap is
-    // real for any direct `ecb.AddComponent<NativeSpriteRenderer>(e, default)`
-    // call. The `ecb.CreateEntityWith<..., NativeSpriteRenderer>()` family is
-    // safe — it records a payload-free Ecb_DefaultConstructComponent op so
-    // the C++ member-initializers fire on the native side and the renderer
-    // paints sprites white, not transparent black.
+    // WARNING: `default(NativeSpriteRenderer)` zero-inits Color to (0,0,0,0). Use ecb.CreateEntityWith<..., NativeSpriteRenderer>() so C++ member-initializers fire and the sprite renders white.
     public NativeSpriteRenderer() { }
 
     public short SortingOrder;

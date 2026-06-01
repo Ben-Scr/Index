@@ -5,14 +5,6 @@
 
 namespace Index {
 
-	// Editor-wide preferences window. Opened from the menubar's
-	// Edit -> Preferences... item. Backed by EditorPreferences for
-	// persistence; this class is purely the ImGui rendering surface.
-	//
-	// Modeled on PackageManagerPanel / PrefabInspector for parity with
-	// the other editor panels: explicit Initialize / Shutdown, single
-	// Render call per frame controlled by an open-bool owned by the
-	// caller.
 	class EditorPreferencesPanel {
 	public:
 		void Initialize();
@@ -33,10 +25,7 @@ namespace Index {
 		bool IsPreferenceSearchActive() const;
 		bool PreferenceSectionVisible(const char* section, const char* keywords) const;
 
-		// Layout preset modal state. Lives on the panel (not as TU-static)
-		// so the modals can OpenPopup at the same id-stack scope as the
-		// matching BeginPopupModal — see the matching comment that was
-		// in RenderMainMenu before the controls migrated here.
+		// Layout modal state lives on the panel (not TU-static) so OpenPopup and BeginPopupModal share the same id-stack scope.
 		char m_SaveLayoutBuffer[64]{};
 		bool m_OpenSaveLayoutRequest = false;
 		std::string m_PendingDeleteLayoutName;

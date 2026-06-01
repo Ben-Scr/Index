@@ -8,14 +8,10 @@ namespace Index {
 
 	namespace {
 
-		// True iff `alignment` is a power of two AND non-zero. Required by
-		// the bump-align math below; we also assert it on entry to Allocate.
 		constexpr bool IsPowerOfTwo(std::size_t value) noexcept {
 			return value != 0 && (value & (value - 1)) == 0;
 		}
 
-		// Round `offset` up to the next multiple of `alignment`. Alignment
-		// must be a power of two — the caller has already asserted that.
 		constexpr std::size_t AlignUp(std::size_t offset, std::size_t alignment) noexcept {
 			const std::size_t mask = alignment - 1;
 			return (offset + mask) & ~mask;
@@ -30,11 +26,7 @@ namespace Index {
 			return;
 		}
 
-		// Use std::malloc directly rather than going through Index::Allocator:
-		// the tracked allocator records every allocation in a per-pointer map,
-		// which is exactly the overhead an arena exists to avoid. We're also
-		// callable before Allocator::Init() runs, which keeps the arena usable
-		// in static-init contexts.
+		// std::malloc bypasses the tracked allocator (avoids per-pointer overhead) and works before Allocator::Init().
 		void* memory = std::malloc(capacity);
 		if (!memory) {
 			m_Capacity = 0;
@@ -87,11 +79,7 @@ namespace Index {
 			return nullptr;
 		}
 
-		// Align the absolute address, not the offset. std::malloc only
-		// guarantees alignof(std::max_align_t) — typically 16 on x64 — so
-		// aligning the offset alone leaves the returned pointer mis-aligned
-		// whenever the request exceeds the backing buffer's alignment
-		// (e.g. a 64- or 128-byte request from a 16-byte-aligned block).
+		// Align the absolute address (not the offset): malloc's 16-byte guarantee is insufficient for >16-byte alignments.
 		const std::uintptr_t baseAddr    = reinterpret_cast<std::uintptr_t>(m_Base);
 		const std::uintptr_t currentAddr = baseAddr + m_Offset;
 		const std::uintptr_t alignedAddr = AlignUp(currentAddr, alignment);
@@ -110,10 +98,7 @@ namespace Index {
 	}
 
 	void Arena::Reset(std::size_t mark) noexcept {
-		// Clamp rather than assert: a Mark() from a previous, larger capacity
-		// could outrun the current one after a move-assignment shrank us.
-		// Clamping is the conservative behavior — we never grow Used() past
-		// what's actually backed.
+		// Clamp rather than assert: a stale Mark from before a move-assignment may exceed the new capacity.
 		m_Offset = mark < m_Capacity ? mark : m_Capacity;
 	}
 

@@ -12,38 +12,12 @@
 
 namespace Index {
 
-	// Unity-style Sprite Editor for `.png` / `.jpg` / `.tga` / `.bmp` / `.jpeg`
-	// texture assets. Opened from the texture asset inspector via the
-	// "Open Sprite Editor" button.
-	//
-	// Layout:
-	//   [Slice ▼  Apply  Revert   Zoom: [−][100%][+] Reset]
-	//   ┌──────────────────────────────────────┬────────────┐
-	//   │   zoomable / pannable canvas          │ slice list │
-	//   │   • drawn slice rects + selection     │  • name    │
-	//   │     handles                            │  • x/y/w/h │
-	//   │   • drag-to-create (Manual mode)      │  • pivot   │
-	//   │   • drag handles to resize             │            │
-	//   └──────────────────────────────────────┴────────────┘
-	//
-	// Slice modes: Manual (drag rect), Grid By Cell Size, Grid By Cell Count,
-	// Auto (BFS flood-fill of non-transparent regions using the texture's
-	// re-decoded CPU bitmap).
-	//
-	// Persistence: Apply writes the slice list back to the texture's `.meta`
-	// via `AssetRegistry::WriteTextureMeta` and bumps the global slice epoch
-	// (Phase D) so any SpriteRenderer / Image consumers re-resolve UV rects.
 	class SpriteEditorPanel {
 	public:
 		void Initialize();
 		void Render(bool* pOpen);
 		void Shutdown();
 
-		// Swap the panel to a different texture. Prompts before discarding
-		// unsaved slice edits on the currently-open asset. Pass the asset's
-		// canonical path AND the resolved AssetGUID — the GUID is what the
-		// slice epoch keys on; passing 0 falls back to a `ReadTextureMeta`
-		// without epoch invalidation.
 		void OpenTexture(const std::string& assetPath, uint64_t assetId);
 
 		bool HasUnsavedChanges() const { return m_Dirty; }
@@ -85,10 +59,6 @@ namespace Index {
 		ImVec2 ScreenToTexture(ImVec2 screenPx) const;
 		void   FitCanvasToSlice(const SpriteSlice& slice);
 		void   ZoomToFitTexture();
-		// Returns the slice index under `mouseTexPx`, and writes the
-		// hit Handle into `outHandle` (Handle::None when the hit is on
-		// the slice body, a handle value when on a resize gizmo, or -1
-		// returned for "no hit").
 		int    HitTestSlice(ImVec2 mouseTexPx, Handle& outHandle) const;
 		bool   PointInRect(ImVec2 pt, ImVec2 rectMin, ImVec2 rectMax) const;
 
@@ -106,9 +76,6 @@ namespace Index {
 		void Revert();  // re-read m_Slices from disk, drop staged edits
 
 		// ── CPU bitmap (lazy via stb_image, cached on the panel) ───────
-		// Decoded once per OpenTexture and re-used by Auto-slice. Empty
-		// when decode failed (e.g. format stb_image doesn't speak); Auto
-		// mode falls back to Grid behaviour with a warning in that case.
 		void EnsureDecodedBitmap();
 		bool BitmapAvailable() const { return !m_DecodedPixels.empty(); }
 
@@ -123,10 +90,6 @@ namespace Index {
 		std::vector<int>         m_Selection;    // indices into m_Slices
 		bool                     m_Dirty = false;
 
-		// Canvas: m_PanOffset is the screen-space offset of the texture's
-		// top-left corner inside the canvas region; m_Zoom is pixels per
-		// texel. m_PanInitialized is set on first frame after OpenTexture
-		// so we recentre + ZoomToFitTexture exactly once per asset switch.
 		ImVec2 m_PanOffset{ 0.0f, 0.0f };
 		float  m_Zoom            = 1.0f;
 		bool   m_PanInitialized  = false;
@@ -159,9 +122,6 @@ namespace Index {
 		bool  m_KeepExistingOnSlice     = false;
 		bool  m_OpenSlicePopup          = false;
 
-		// Pending asset switch + unsaved-changes prompt state. When the
-		// user presses Open from the asset inspector while m_Dirty is set,
-		// the new path is staged here and the prompt fires next frame.
 		std::string m_PendingAssetPath;
 		uint64_t    m_PendingAssetId = 0;
 		bool        m_ShowUnsavedPrompt = false;

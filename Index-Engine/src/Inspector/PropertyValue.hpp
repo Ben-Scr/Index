@@ -10,17 +10,6 @@
 
 namespace Index {
 
-	// Flat tagged union holding any value of a known PropertyType. Trivially
-	// copyable for the numeric / vector cases; std::string lives outside the
-	// union so the type stays a regular C++ object.
-	//
-	// Equality is canonical: two PropertyValues compare equal iff their type
-	// matches and every byte of the payload matches. The drawer uses this to
-	// detect mixed-state across selections.
-	//
-	// String round-trip (ToString / FromString) lets the existing C# script
-	// pipeline keep its "value as JSON string" wire format. Native code that
-	// holds the descriptor doesn't need to touch the string form.
 	struct PropertyValue {
 		PropertyType Type = PropertyType::None;
 

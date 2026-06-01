@@ -32,6 +32,41 @@ jobs:
       # header errors when the optional-module headers are off the include
       # path. Re-enable once the source is made truly core-clean.
 
+      # WebGPU/Dawn is the engine's only graphics backend. External/dawn/ is
+      # git-ignored and built out-of-band by scripts/dawn/SetupDawn.bat, so CI
+      # has to produce webgpu_dawn.lib + the webgpu/ headers itself or the ImGui
+      # backend fails with `C1083: webgpu/webgpu.h` and the engine fails to link.
+      # The build is ~30-60 min, so cache it keyed on the pinned Dawn revision
+      # (scripts/dawn/dawn-revision.txt) + the build scripts. Restore/build/save
+      # is split so a cache-miss build is saved even if a later step fails.
+      - name: Restore Dawn cache
+        id: cache-dawn
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            External/dawn/include
+            External/dawn/build/gen/include
+            External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
+          key: dawn-v1-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.bat', 'scripts/dawn/FetchDawnDepsMinimal.py') }}
+
+      - name: Build Dawn (cache miss only)
+        if: steps.cache-dawn.outputs.cache-hit != 'true'
+        shell: cmd
+        env:
+          DAWN_BUILD_CONFIGS: Release
+          DAWN_SKIP_PREMAKE: "1"
+        run: scripts\dawn\SetupDawn.bat
+
+      - name: Save Dawn cache
+        if: steps.cache-dawn.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            External/dawn/include
+            External/dawn/build/gen/include
+            External/dawn/build/src/dawn/native/Release/webgpu_dawn.lib
+          key: ${{ steps.cache-dawn.outputs.cache-primary-key }}
+
       - name: Generate Project Files
         shell: pwsh
         run: python scripts/Setup.py
@@ -70,6 +105,20 @@ jobs:
         shell: pwsh
         run: python scripts/ci/runtime_smoke_test.py --binary bin/Release-windows-x86_64/Index-Runtime/Index-Runtime.exe
 
+      - name: Verify Stripped Profiler Runtime Build
+        shell: pwsh
+        run: |
+          .\vendor\bin\premake5.exe --no-profiler vs2022
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) {
+            throw 'MSBuild.exe not found via vswhere.'
+          }
+          & $msbuild Index-Runtime\Index-Runtime.vcxproj /m /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
   linux-build:
     runs-on: ubuntu-latest
 
@@ -87,7 +136,9 @@ jobs:
       - name: Install Native Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb
+          # xorg-dev + libglu: GLFW. pkg-config: Dawn's CMake dep probing when
+          # building webgpu_dawn from source. xvfb: headless runtime smoke test.
+          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config
 
       - name: Install Premake
         run: |
@@ -103,6 +154,36 @@ jobs:
 
       # The `--module-profile core` validation step was removed: see the
       # equivalent comment in the windows-build job for the C1083 root cause.
+
+      # See the windows-build job for why CI builds Dawn. On Linux SetupDawn.sh
+      # is single-config: the lib lands at .../native/libwebgpu_dawn.a (no
+      # Release/ subfolder), and the Release .a links into both the Release and
+      # Debug engine builds (libstdc++ has no _ITERATOR_DEBUG_LEVEL ABI split).
+      - name: Restore Dawn cache
+        id: cache-dawn
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            External/dawn/include
+            External/dawn/build/gen/include
+            External/dawn/build/src/dawn/native/libwebgpu_dawn.a
+          key: dawn-v1-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh') }}
+
+      - name: Build Dawn (cache miss only)
+        if: steps.cache-dawn.outputs.cache-hit != 'true'
+        run: |
+          chmod +x scripts/dawn/SetupDawn.sh
+          ./scripts/dawn/SetupDawn.sh
+
+      - name: Save Dawn cache
+        if: steps.cache-dawn.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            External/dawn/include
+            External/dawn/build/gen/include
+            External/dawn/build/src/dawn/native/libwebgpu_dawn.a
+          key: ${{ steps.cache-dawn.outputs.cache-primary-key }}
 
       - name: Generate Makefiles
         run: |

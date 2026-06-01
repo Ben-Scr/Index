@@ -10,12 +10,6 @@
 #include <utility>
 #include <vector>
 
-// Shared registration helpers used by both BuiltInComponentRegistration.cpp
-// (hand-written engine components) and the IndexComponentCodegen output in
-// `src/Generated/` (user-defined C# components mirrored into C++ at build
-// time). Living in `namespace Index::Codegen` keeps these template helpers
-// out of the engine's public Index::* surface while still letting both
-// registration sites share one definition.
 namespace Index::Codegen {
 
     template <typename T>
@@ -31,10 +25,7 @@ namespace Index::Codegen {
         sceneManager.RegisterComponentType<T>(info);
     }
 
-    // Symmetric conflict declaration. Adds B to A.conflictsWith AND A to
-    // B.conflictsWith — the lookup paths (HasConflict / TypesConflict) accept
-    // either side, but ValidateConflictSymmetry asserts both directions exist
-    // so a partial declaration would trip a debug build.
+    // Adds both A→B and B→A to conflictsWith; ValidateConflictSymmetry asserts symmetry in debug.
     template <typename A, typename B>
     void DeclareConflict(SceneManager& sceneManager) {
         const std::type_index aId(typeid(A));

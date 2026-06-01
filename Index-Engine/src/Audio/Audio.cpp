@@ -115,12 +115,7 @@ namespace Index {
 			m_FrameCount = frameCount;
 		}
 		else {
-			// E32: ma_decoder_get_length_in_pcm_frames failed or returned 0 —
-			// stream of unknown length (rare; e.g. some live/streaming sources).
-			// The known-length branch above is the fast path that reserves and
-			// decodes in one pass. Here we fall back to chunked decode but use
-			// exponential capacity growth so we don't reallocate on every chunk
-			// for large unknown-length files.
+			// Unknown-length stream: fall back to chunked decode with exponential capacity growth.
 			constexpr ma_uint64 chunkFrames = 4096;
 			const size_t chunkSampleCount = static_cast<size_t>(chunkFrames * static_cast<ma_uint64>(m_Channels));
 			std::vector<float> decodedFrames;

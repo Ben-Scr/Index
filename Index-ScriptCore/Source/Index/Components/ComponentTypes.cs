@@ -6,26 +6,9 @@ using Index.Interop;
 
 namespace Index.Components;
 
-// Maps an `IComponent` struct type to the native serialized/display name the
-// binding layer uses to resolve the component's pool. Static-generic dispatch
-// (ComponentTypes<T>.NativeName) so the JIT can hoist the lookup once per call
-// site — there's no per-call dictionary cost on the hot ref-API path.
-//
-// Also performs the one-time layout-size verification in the static
-// constructor: the first time C# touches `ComponentTypes<T>` we compare
-// sizeof(T) against the C++ `sizeof(ComponentT)` reported by
-// Entity_GetComponentSize. The C# mirror is a PREFIX VIEW — C++ may
-// carry trailing fields the mirror deliberately ignores (e.g.
-// `std::string SpriteName` on SpriteRendererComponent). The guard
-// throws only when the C++ struct is SMALLER than the mirror, which is
-// the dangerous direction (GetRef<T> would read past the end of the
-// pool entry). C++ larger than C# is fine.
+// Maps IComponent struct types to native names; static-generic so the JIT hoists lookups per call site.
 internal static class ComponentTypes
 {
-    // Registry filled at module init. Add a line here when migrating each
-    // new component to the ref-API. Empty/tag types and managed-only types
-    // (UI widgets with event delegates) deliberately stay out — they aren't
-    // reachable through GetRef<T>.
     private static readonly Dictionary<Type, string> s_NativeNames = new()
     {
         { typeof(Native.NativeTransform2D),    Native.NativeTransform2D.NativeName },
@@ -99,12 +82,6 @@ internal static class ComponentTypes
             candidates.Add(stripped.Substring(0, stripped.Length - suffix.Length));
     }
 
-    // Force the static constructor of every registered ComponentTypes<T> so
-    // the layout-size guard runs at script-host init instead of lazily on
-    // first GetRef<T>. A drift between C++ and C# struct sizes throws here,
-    // ScriptHostBridge.Initialize catches it, and the user assembly fails
-    // to load — the user sees the error before the first frame, not five
-    // minutes into play mode when an unlucky entity touches the broken type.
     internal static void RunAllStaticInitializers()
     {
         Type generic = typeof(ComponentTypes<>);
@@ -115,20 +92,10 @@ internal static class ComponentTypes
     }
 }
 
-// One per `T : IComponent` — `ComponentTypes<T>.NativeName` and `.NativeId`
-// are JIT-time constants for each T, and the static constructor runs the
-// size check and ID resolution exactly once per type, lazily on first use.
 internal static class ComponentTypes<T> where T : unmanaged, IComponent
 {
     internal static readonly string NativeName;
-    // Stable u32 component ID assigned by the native ComponentRegistry at
-    // engine startup. The EntityCommandBuffer recorder writes this u32 into
-    // its wire stream so playback can resolve the target component in one
-    // vector indirection — zero string marshaling on the spawn path.
-    // Resolved exactly once per T (this static ctor), cached for the
-    // process lifetime. A zero ID would mean the component name didn't
-    // resolve on the native side; we throw at type-init rather than ship
-    // a silently broken ECB.
+    // Zero-cost cache of the stable native type ID; used by ECB playback for pointer-only resolution.
     internal static readonly uint NativeId;
 
     static ComponentTypes()
@@ -137,11 +104,6 @@ internal static class ComponentTypes<T> where T : unmanaged, IComponent
         string? name = ComponentTypes.ResolveNativeName(typeof(T), managedSize, out int nativeSize);
         if (name == null)
         {
-            // Most likely cause: user authored `struct T : IComponent` but the
-            // user assembly hasn't loaded yet (engine is still initialising), or
-            // the type lives in a different assembly than DynamicComponentRegistrar
-            // scans. Hand-mirrors of built-in C++ components should declare an
-            // `internal const string NativeName = "Foo";` matching the C++ side.
             throw new InvalidOperationException(
                 $"Component '{typeof(T).Name}' is not registered for the ECS ref-API. " +
                 "If this is a user-authored component, ensure the user assembly is loaded " +
@@ -149,20 +111,7 @@ internal static class ComponentTypes<T> where T : unmanaged, IComponent
                 "declare `internal const string NativeName = \"Display Name\";` on the struct.");
         }
 
-        // Layout drift guard: the C++ component is the source of truth for
-        // the FIRST managedSize bytes — the C# mirror is a prefix view used
-        // by GetRef<T>, so as long as the C++ struct is at least as large
-        // as the mirror, reading those bytes through the mirror is safe.
-        // C++ may carry additional *trailing* fields the C# side never
-        // touches (e.g. `std::string`, owner pointers, dirty flags) without
-        // tripping this guard — those bytes live past the mirror's end and
-        // are accessed only through C++-side code or dedicated InternalCalls.
-        //
-        // The check still catches the dangerous direction (C++ smaller than
-        // C#), which would otherwise read past the end of the native pool
-        // entry. It does NOT catch field-order changes inside the shared
-        // prefix — that remains a manual programmer responsibility, same as
-        // every other zero-marshal layout contract in the engine.
+        // C# mirror is a prefix view: nativeSize >= managedSize is safe (C++ may have trailing fields); nativeSize < managedSize would walk past the pool entry.
         if (nativeSize != 0 && nativeSize < managedSize)
         {
             throw new InvalidOperationException(

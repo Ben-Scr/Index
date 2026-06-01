@@ -5,11 +5,7 @@
 #include "Scene/EntityHandle.hpp"
 #include <glm/glm.hpp>
 
-// Box2D's b2Rot is only used by the GetB2Rotation() return type below.
-// Forward-declaring it keeps every non-physics consumer of this header
-// (renderer, gizmos, UI, scripts) from pulling Box2D's headers into
-// their include graph. The definition is reached in Transform2DComponent
-// .cpp via <box2d/types.h>.
+// Forward-declared to avoid pulling Box2D headers into non-physics consumers; full def in Transform2DComponent.cpp.
 struct b2Rot;
 
 namespace Index {
@@ -27,27 +23,16 @@ namespace Index {
 
 	class INDEX_API Transform2DComponent {
     public:
-        // World-space cached values. These are READ by renderer, physics, camera,
-        // gizmos, scripts, etc. — keeping the public field name unchanged keeps
-        // every reader compatible. They are WRITTEN by TransformHierarchySystem
-        // each frame from the Local* values composed with the parent's world
-        // transform (or by the physics engine for rigidbody entities).
 		Vec2 Position{ 0.0f, 0.0f };
 		Vec2 Scale{ 1.0f, 1.0f };
         float Rotation{ 0.0f };   // Info: Z-Rotation angle in radians
 
-        // Authored local-space values. For root entities these match Position
-        // /Scale/Rotation. For child entities they describe the offset from
-        // the parent's world transform. Edits in the inspector and JSON
-        // (de)serialization act on these — Position is a derived snapshot.
         Vec2 LocalPosition{ 0.0f, 0.0f };
         Vec2 LocalScale{ 1.0f, 1.0f };
         float LocalRotation{ 0.0f };
 
 
 		Transform2DComponent() = default;
-        // Constructors mirror the world value into Local* so freshly-created
-        // root entities behave the same as before the hierarchy split.
         Transform2DComponent(const Vec2& position)
             : Position{ position }, LocalPosition{ position } {};
         Transform2DComponent(const Vec2& position, const Vec2& scale)
@@ -66,15 +51,7 @@ namespace Index {
             m_OwnerScene = scene;
             m_OwnerEntity = entity;
         }
-        // Setters write only the authored Local value. World (Position/Scale
-        // /Rotation) is recomputed by TransformHierarchySystem; in particular
-        // the editor calls TransformHierarchySystem::Propagate immediately
-        // before drawing the viewport FBO so the slider edit is reflected the
-        // same frame. Writing Position here would briefly stamp the local
-        // value into the world cache and the renderer would draw the entity
-        // at "local interpreted as world" for one frame before propagation
-        // corrected it — that was the source of the one-frame jump on child
-        // transform edits.
+        // Setters write Local* only; writing world Position directly would cause a one-frame jump on child entities.
         void SetPosition(const Vec2& position) { LocalPosition = position; MarkDirty(); }
         void SetRotation(float rotation) { LocalRotation = rotation; MarkDirty(); }
         void SetScale(const Vec2& scale) { LocalScale = scale; MarkDirty(); }

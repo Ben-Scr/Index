@@ -13,15 +13,10 @@ namespace Index {
 		AssetRegistry::MarkDirty();
 		AssetRegistry::Sync();
 
-		// Re-arm the prefab cache: drop every template baked against the
-		// previous project and (in editor builds only) point the file
-		// watcher at the new project's assets root so on-disk edits to a
-		// .prefab invalidate the cache before the next spawn replays
-		// stale bytes. The first-call cost is just the watcher thread
-		// spin-up; subsequent project switches replace the watcher.
+		// Invalidate stale prefab templates and re-point the file watcher at the new project root.
 		PrefabTemplateCache& cache = PrefabTemplateCache::Get();
 		cache.InvalidateAll();
-#if defined(INDEX_WITH_EDITOR)
+#if INDEX_WITH_EDITOR
 		if (IndexProject* live = s_CurrentProject.get(); live != nullptr && !live->AssetsDirectory.empty()) {
 			cache.InitializeForProject(live->AssetsDirectory);
 		}

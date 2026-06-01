@@ -45,11 +45,6 @@ namespace Index {
 			return InspectorBinding{ std::type_index(typeid(T)), inspector };
 		}
 
-		// Editor-only: attach a draw-inspector callback to an already-registered
-		// component. The component itself (display name, category, serializedName,
-		// has/add/remove/copyTo) MUST be registered by the engine in
-		// BuiltInComponentRegistration.cpp first; this file only paints in the UI
-		// behavior on top.
 		void AttachInspector(SceneManager& sceneManager, std::type_index type, InspectorFn inspector) {
 			bool attached = false;
 			sceneManager.GetComponentRegistry().ForEachComponentInfo([&](const std::type_index& id, ComponentInfo& info) {
@@ -63,10 +58,6 @@ namespace Index {
 		}
 	}
 
-	// Single dispatch entry-point used by every inspector loop. If the
-	// component carries a custom drawInspector lambda we honour it; otherwise
-	// we fall through to the unified PropertyDrawer driven by the component's
-	// declared PropertyDescriptors. Components with neither path are skipped.
 	void DispatchComponentInspector(const ComponentInfo& info, std::span<const Entity> entities) {
 		if (info.drawInspector) {
 			info.drawInspector(entities);
@@ -78,20 +69,6 @@ namespace Index {
 	}
 
 	void RegisterEditorComponentInspectors(SceneManager& sceneManager) {
-		// Inspector-only attachments. The component metadata itself lives in
-		// Index-Engine/src/Scene/BuiltInComponentRegistration.cpp — do not
-		// re-declare display names, categories, or serialized names here.
-		//
-		// Most built-ins now declare PropertyDescriptors in their engine-side
-		// registration (see BuiltInComponentRegistration.cpp). Those flow
-		// through DispatchComponentInspector's auto-drawer fallback and don't
-		// need an entry here. The bindings below are for components that
-		// either:
-		//   * have no PropertyDescriptors at all (ParticleSystem2D — variant
-		//     fields don't fit the declarative model), OR
-		//   * need a SLIM inspector that draws PropertyDrawer::DrawAll(...)
-		//     first and then appends a few extra widgets the property model
-		//     can't express (texture preview, runtime read-outs, scripts UI).
 		const InspectorBinding bindings[] = {
 			// Hybrid: properties + extras (texture preview, runtime read-outs).
 			Bind<SpriteRendererComponent>(DrawSpriteRendererInspector),
@@ -99,11 +76,6 @@ namespace Index {
 			Bind<Camera2DComponent>(DrawCamera2DInspector),
 			Bind<FastBody2DComponent>(DrawFastBody2DInspector),
 
-			// Hybrid: properties + Unity-style event lists. Each value-
-			// driven UI widget owns one or more InspectorEventLists below
-			// its standard fields (Slider/Toggle/Dropdown have a single
-			// "On Value Changed (T)" list; InputField has both
-			// OnValueChanged and OnSubmitted).
 			Bind<ButtonComponent>(DrawButtonInspector),
 			Bind<SliderComponent>(DrawSliderInspector),
 			Bind<ToggleComponent>(DrawToggleInspector),
@@ -113,9 +85,6 @@ namespace Index {
 			// Custom-only: variant types + per-shape branches don't map cleanly.
 			Bind<ParticleSystem2DComponent>(DrawParticleSystem2DInspector),
 
-			// Custom-only: Unity-style RectTransform layout — column-header
-			// rows for Position / Size and inline axis-labeled rows for the
-			// rest don't fit the declarative property model.
 			Bind<RectTransform2DComponent>(DrawRectTransform2DInspector),
 
 			// Custom-only: per-script field rendering goes through its own

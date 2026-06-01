@@ -6,36 +6,17 @@
 
 namespace Index {
 
-	// Optional keyboard / gamepad focus-navigation pass for the UI.
-	// Runs BEFORE UIEventSystem each frame so its mouse-focus promotion
-	// uses fresh resolved rects from UILayoutSystem and so its Activate
-	// flag (InteractableComponent::ActivatedThisFrame) is in place when
-	// UIEventSystem's hit-test loop runs and synthesises a click.
-	//
-	// Opt-in semantics — only entities whose InteractableComponent has
-	// Focusable = true participate in navigation. The system writes
-	// IsFocused on every InteractableComponent it sees (true on the one
-	// focused entity, false on all others), so widgets that opt out
-	// (the default) are guaranteed to read IsFocused == false and behave
-	// exactly like the mouse-only path.
-	//
-	// Bindings (hardcoded for now — exposed as a future input-action
-	// rebinding layer):
-	//   Tab / D-pad-Down / left-stick-down / down-arrow → next
-	//   Shift+Tab / D-pad-Up / left-stick-up / up-arrow → previous
-	//   D-pad-Left / left-stick-left / left-arrow       → previous
-	//   D-pad-Right / left-stick-right / right-arrow    → next
-	//   Enter / Space / Gamepad-A                       → activate
-	//   Esc / Gamepad-B                                 → cancel (clear focus)
-	//
-	// When the focused widget is an InputField the system surrenders
-	// arrow keys to UIEventSystem's caret handler — Tab and gamepad
-	// still navigate, so the user can always escape the field with
-	// the keyboard. Clicking with the mouse on a focusable widget
-	// also moves focus there (so mouse + keyboard mix naturally).
+	// MUST run before UIEventSystem: writes ActivatedThisFrame and IsFocused so UIEventSystem's hit-test sees them; when an InputField owns focus it surrenders arrow keys to UIEventSystem's caret handler.
 	class UIFocusSystem : public ISystem {
 	public:
 		void Update(Scene& scene) override;
+		void OnDestroy(Scene&) override {
+			m_FocusedEntity = entt::null;
+			m_PrevAxisLeftPushed = false;
+			m_PrevAxisRightPushed = false;
+			m_PrevAxisUpPushed = false;
+			m_PrevAxisDownPushed = false;
+		}
 
 	private:
 		// Persistent across frames so Tab navigation is sticky between

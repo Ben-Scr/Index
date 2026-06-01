@@ -26,21 +26,13 @@ namespace Index::FrameArenas {
 	} // anonymous namespace
 
 	void Initialize(const FrameArenasSpec& spec) {
-		// Idempotent. Re-initializing replaces the backing buffers; any
-		// pointers handed out by the previous arenas are invalidated. The
-		// engine only calls this once per Application lifetime, but tests
-		// re-Initialize between cases to control capacity.
 		FrameStorage()      = Arena(spec.FrameCapacityBytes);
 		PersistentStorage() = Arena(spec.PersistentCapacityBytes);
 		InitializedFlag()   = true;
 	}
 
 	void Shutdown() {
-		// Drop both backing buffers by move-assigning empty arenas. After
-		// this, Frame()/Persistent() still return valid references — they
-		// just have zero capacity, so Allocate returns nullptr. Avoids
-		// the "use-after-shutdown" footgun where a late caller would touch
-		// freed memory.
+		// Move-assign empty arenas: Frame()/Persistent() remain valid references but return nullptr from Allocate.
 		FrameStorage()      = Arena();
 		PersistentStorage() = Arena();
 		InitializedFlag()   = false;

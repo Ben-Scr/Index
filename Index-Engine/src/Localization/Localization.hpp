@@ -12,12 +12,6 @@
 
 namespace Index {
 
-	// User-scoped UI language. Strings live in
-	// IndexAssets/Localization/<code>.json (bundled) or
-	// %LOCALAPPDATA%/Index/Localization/<code>.json (downloaded), and the
-	// active code is persisted to %LOCALAPPDATA%/Index/locale.json. Both the
-	// Launcher and the Editor link the engine DLL, so the same facade serves
-	// both binaries without coupling their per-app settings classes.
 	namespace Localization {
 
 		enum class LanguageStatus : std::uint8_t {
@@ -34,42 +28,17 @@ namespace Index {
 			bool RequiresCjkFont = false;
 		};
 
-		// Idempotent. Scans bundled IndexAssets/Localization, then
-		// %LOCALAPPDATA%/Index/Localization, then loads manifest.json so the
-		// dropdown can offer not-yet-downloaded languages too. Safe to call
-		// before any UI layer attaches — both binaries invoke this from
-		// EntryPoint.hpp::Main right after InitializeCore.
 		INDEX_API void Initialize();
 
-		// Reference stays valid for the lifetime of the active language (i.e.
-		// until SetLanguage swaps the table). Missing-key path:
-		//   1. fall back to English
-		//   2. otherwise log once and return a reference into a side map keyed
-		//      by `key` so the raw identifier shows in the UI — visible to
-		//      developers, harmless to end users.
+		// Missing key: falls back to English, then logs once and returns a reference into a side map keyed by  so the raw identifier shows in the UI.
 		INDEX_API const std::string& Get(std::string_view key);
 
 		INDEX_API const std::vector<LanguageInfo>& GetAvailableLanguages();
 		INDEX_API const std::string& GetCurrentLanguage();
 
-		// Best installed match for the operating system's UI language —
-		// e.g. "de" on a German Windows install, "en" otherwise. Probes
-		// the OS via GetUserDefaultLocaleName (Windows) or $LANG /
-		// $LC_MESSAGES (POSIX), normalises to the bare language tag
-		// (strips region/encoding), and returns it only if an Installed
-		// entry exists for that code. Falls back to "en" so callers can
-		// pass the result straight into SetLanguage without a null check.
-		// The display name of that language can be looked up via
-		// GetAvailableLanguages() — used by the launcher's "Auto (Deutsch)"
-		// combo label.
+		// Returns the best installed match for the OS UI language (via GetUserDefaultLocaleName/$LANG), or "en" as fallback.
 		INDEX_API std::string GetSystemLanguage();
 
-		// If the language is `Installed`, swaps the active table immediately.
-		// If `Available`, queues a download and applies the switch once the
-		// download completes (callers see the dropdown update next frame as
-		// status flips through Downloading → Installed).
-		// Invalid codes are ignored with a warning (no assert — locale.json is
-		// user-editable).
 		INDEX_API void SetLanguage(std::string_view code);
 
 		// Kick off an async download for an `Available` language (and the
@@ -91,10 +60,6 @@ namespace Index {
 		// download has been initiated since Initialize().
 		INDEX_API std::optional<DownloadProgress> GetActiveDownload();
 
-		// Called once per frame from the main loop to settle a finished
-		// download — applies any queued language switch, clears transient
-		// state, etc. Without this the worker's results would never affect
-		// the visible UI. Cheap on the common path (no work if no download).
 		INDEX_API void Poll();
 
 		using ChangeCallbackHandle = std::uint32_t;
@@ -111,10 +76,7 @@ namespace Index {
 				return std::vformat(tmpl, std::make_format_args(args...));
 			}
 			catch (const std::format_error&) {
-				// A malformed translation string (stray '{', wrong placeholder
-				// index, type mismatch) must not crash the app — downloaded
-				// language packs are untrusted input. Degrade to the raw
-				// template instead of throwing through every call site.
+				// Untrusted downloaded strings may have malformed format specs; degrade to raw template rather than throw.
 				return tmpl;
 			}
 		}

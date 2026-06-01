@@ -7,11 +7,7 @@
 #include <algorithm>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
-// ImGui backend lives inside Index-Engine.dll
-// (Index-Engine/src/Gui/ImGuiImplWebGPU.{hpp,cpp}). The runtime previously
-// static-linked imgui_impl_opengl3 here, but the engine's window has no GL
-// context (GLFW_NO_API) so that path can't init. Going through engine.dll's
-// INDEX_API exports keeps the runtime and engine on the same wgpu::Device.
+// Must use engine.dll's WebGPU backend (GLFW_NO_API window has no GL context).
 #include "Gui/ImGuiImplWebGPU.hpp"
 
 namespace Index {
@@ -34,12 +30,7 @@ namespace Index {
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 
-		// Engine.dll has its own static-linked copy of ImGui (so it can
-		// host the ImGui WebGPU backend alongside wgpu::Device). Publish
-		// our context + allocators here so engine.dll's ImGui state can
-		// sync to our context on every backend entry point. See
-		// Index-Engine/src/Gui/ImGuiImplWebGPU.cpp
-		// `SyncImGuiContextFromBridge`.
+		// Publish context+allocators so engine.dll's static ImGui copy syncs to our context on every backend entry point.
 		{
 			ImGuiMemAllocFunc allocFn = nullptr;
 			ImGuiMemFreeFunc  freeFn  = nullptr;

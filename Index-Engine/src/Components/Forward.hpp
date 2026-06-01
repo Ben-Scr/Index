@@ -1,19 +1,5 @@
 #pragma once
 
-// Forward declarations for every built-in component type.
-//
-// Include this header from translation units that only need to *name* component
-// types (pointers, references, templated registry queries) without depending on
-// their full definitions. This keeps Graphics / Physics / Audio / Scripting
-// headers out of the include graph for TUs that don't actually touch their
-// internals.
-//
-// For TUs that do touch component internals, include the specific component
-// header directly. For TUs that need every built-in (registration sites,
-// editor inspector aggregator), the legacy "Components/Components.hpp"
-// umbrella is still available — it just no longer transitively pulls in
-// Graphics / Physics / Audio / Scripting concrete headers.
-
 #include "Core/Export.hpp"
 #include "Components/Tags.hpp"
 

@@ -10,22 +10,10 @@
 
 namespace Index {
 
-	// Compute a sensible chunk size when the caller passes grainSize == 0.
-	// Aims for roughly (workerCount * 4) chunks so each worker can pick up
-	// 4 chunks on average — small enough that imbalanced workloads
-	// redistribute, large enough that per-chunk overhead stays trivial.
 	INDEX_API size_t ComputeAutoGrainSize(size_t rangeLength, int workerCount);
 
 	namespace Detail {
 
-		// Dispatches a chunk to the user's callable. Supports two body
-		// forms — pick whichever reads better at the call site:
-		//   fn(size_t i)              -> per-index
-		//   fn(size_t lo, size_t hi)  -> per-chunk (for per-chunk setup
-		//                                amortization, e.g. allocating a
-		//                                local scratch buffer once)
-		// If both work (e.g. a generic-lambda taking auto...), per-chunk
-		// wins because it's the cheaper dispatch.
 		template <typename F>
 		inline void InvokeParallelChunk(F& fn, size_t lo, size_t hi) {
 			if constexpr (std::is_invocable_v<F&, size_t, size_t>) {
@@ -44,10 +32,6 @@ namespace Index {
 
 	} // namespace Detail
 
-	// Fire-and-forget parallel-for. Splits [begin, end) into chunks,
-	// schedules each chunk as a job, and returns a handle that completes
-	// when every chunk has finished. The callable is copied/moved into a
-	// shared owner so it can safely outlive the calling function.
 	template <typename F>
 	JobHandle ParallelForAsync(size_t begin, size_t end, F&& fn, size_t grainSize = 0) {
 		if (begin >= end) {
@@ -97,9 +81,6 @@ namespace Index {
 		return JobHandle(std::move(block));
 	}
 
-	// Synchronous parallel-for. Blocks until every chunk completes,
-	// work-stealing while waiting so a nested ParallelFor from inside a
-	// job body cannot deadlock.
 	template <typename F>
 	void ParallelFor(size_t begin, size_t end, F&& fn, size_t grainSize = 0) {
 		JobHandle handle = ParallelForAsync(begin, end, std::forward<F>(fn), grainSize);

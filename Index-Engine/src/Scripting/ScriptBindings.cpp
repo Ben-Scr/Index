@@ -88,13 +88,7 @@ namespace Index {
 
 	uint64_t GetEntityScriptId(const Scene& scene, EntityHandle handle)
 	{
-		// Persistent UUID — see ScriptEngine::CreateScriptInstance for the
-		// rationale. Every entity ID handed to managed code goes through
-		// here (FindEntity, parent/child queries, raycasts, instantiate,
-		// collision callbacks) so they all line up with the script's own
-		// Entity.ID and with serialized component-ref fields. Falls back to
-		// the entt handle integer when the entity has no UUIDComponent yet
-		// (mid-construction race), matching prior behavior.
+		// Returns the persistent UUID so all script-side entity IDs match Entity.ID and serialized refs; falls back to entt handle during mid-construction before UUIDComponent is added.
 		if (scene.IsValid(handle)) {
 			const uint64_t persistentId = scene.GetEntityPersistentID(handle);
 			if (persistentId != 0) {
@@ -107,12 +101,6 @@ namespace Index {
 
 	bool TryResolveEntityByUUID(const Scene& scene, uint64_t entityID, EntityHandle& outHandle)
 	{
-		// Single source of truth for "given an entity ID from C# (which may be
-		// a RuntimeID handed out by an older binding, or a persistent UUID
-		// stored in a serialized field), find the live EntityHandle". The
-		// editor's display resolver (ReferencePicker) and this runtime
-		// resolver share Scene::TryResolveEntityRef so a ref the editor shows
-		// as valid is also resolvable from script code.
 		return scene.TryResolveEntityRef(entityID, outHandle);
 	}
 
@@ -163,45 +151,11 @@ namespace Index {
 		return nullptr;
 	}
 
-	// Legacy string callbacks use this per-thread scratch buffer. Managed callers use
-	// the Buffer variants below so returned strings are copied into caller-owned memory.
-	//
-	// HAZARD: the const char* returned by every "no-buffer" binding below points into
-	// this thread-local. Managed code that holds the pointer past the next binding
-	// call on the same thread reads stale or different content. The Buffer variants
-	// (those whose C# signature ends with `out byte[]` or `(IntPtr, int)`) copy the
-	// string into caller-owned memory and are safe.
-	//
-	// Audit (2026-05): the legacy non-Buffer thunks (Entity_GetManagedComponentFields,
-	// NameComponent_GetName, TextRenderer_GetText, Asset_GetPath/DisplayName/FindAll,
-	// Scene_GetActiveSceneName/EntityNameByUUID/LoadedSceneNameAt) were removed
-	// entirely; the Index-ScriptCore C# layer already routes every string-returning
-	// call through its Buffer variant (see Index-ScriptCore/Source/Index/Core/InternalCalls.cs),
-	// and NativeBindings was updated in lockstep with C# NativeBindingsStruct.
-	// Do not reintroduce no-Buffer string returns: a thread-local buffer race across
-	// re-entrant bindings was the original hazard.
-	//
-	// s_StringReturnBuffer survives because ScriptBindingsScene.cpp's clipboard
-	// thunk uses it as a one-shot scratch space across the two-call buffer pattern
-	// (capacity=0 to learn required size, then capacity=N to copy). Its scope is
-	// strictly local to each binding invocation — it must NEVER be returned to
-	// managed code as a const char*.
+	// HAZARD: never return this pointer to managed code — it is per-thread scratch for the two-call size/copy pattern only; thread-local re-entrant races caused all unbuffered thunks to be removed.
 	thread_local std::string s_StringReturnBuffer;
 
-	// C++ exceptions MUST NOT propagate across the C++/C# boundary — managed code
-	// invokes these via [UnmanagedCallersOnly] function pointers, and an exception
-	// unwinding through CoreCLR-managed frames is undefined behavior. Many bindings
-	// allocate (std::string, std::vector, JSON parse), and any of those can throw
-	// std::bad_alloc on a near-OOM editor. The macros below give us a uniform way
-	// to swallow exceptions at every binding boundary while still logging them.
-	//
-	// Usage:
-	//   static T MyBinding(args...) {
-	//       IDX_BINDING_TRY {
-	//           ... body that may allocate ...
-	//           return result;
-	//       } IDX_BINDING_CATCH(default_return_value);
-	//   }
+	// MUST swallow exceptions here: bindings are called via [UnmanagedCallersOnly] and unwinding
+	// through CoreCLR frames is UB. Allocations (std::string, JSON parse, etc.) can throw std::bad_alloc.
 	#define IDX_BINDING_TRY try
 	#define IDX_BINDING_CATCH(default_return)                                                  \
 		catch (const std::exception& _idx_ex) {                                                \
@@ -245,9 +199,7 @@ namespace Index {
 	void PopulateEcbBindings(NativeBindings& b);
 	void PopulateJobsBindings(NativeBindings& b);
 
-	// IsValid re-check: ResolveEntityReference can succeed at lookup time, but a
-	// script callback firing between resolution and the registry access may have
-	// destroyed the entity. Without IsValid, GetComponent walks a stale handle.
+	// IsValid re-check required: entity may be destroyed between ResolveEntityReference and the registry access.
 	#define GET_COMPONENT(Type, entityID, failReturn) \
 		Scene* scene = nullptr; \
 		EntityHandle handle = entt::null; \
@@ -257,19 +209,6 @@ namespace Index {
 		auto& comp = scene->GetComponent<Type>(handle)
 
 
-	// Tries displayName, serializedName, and the +"Component" C# fallbacks for package types.
-	//
-	// Fast path: every component whose serializedName matches `name` exactly
-	// (the overwhelmingly common case — C# script names are generated from
-	// the same source as serializedName) resolves via a single hash lookup.
-	// Only the legacy displayName / displayName+"Component" / normalized
-	// variants fall through to the linear scan, which we keep for backwards
-	// compatibility with hand-written script that still uses display names.
-	//
-	// Takes std::string_view so the C# bridge's UTF-8 char* lands here without
-	// the heap allocation a const std::string& parameter forced — the previous
-	// `FindComponentByName(const char*)` overload built a temporary std::string
-	// on every entity/component crossing.
 	static const ComponentInfo* FindComponentByName(std::string_view name) {
 		if (name.empty()) return nullptr;
 		const auto& registry = SceneManager::Get().GetComponentRegistry();
@@ -404,12 +343,7 @@ namespace Index {
 		scene->MarkDirty();
 	}
 
-	// Authored "Enabled" — the value of the inspector checkbox. True
-	// when this entity itself isn't user-disabled, regardless of any
-	// ancestor's state. A child whose parent is disabled has both
-	// DisabledTag and InheritedDisabledTag, so the parent's disable
-	// doesn't drag this checkbox off; the user keeps their authored
-	// intent for when the parent re-enables.
+	// Authored state only: DisabledTag without InheritedDisabledTag means user-disabled. Ancestor disable doesn't change the authored intent.
 	static int Index_Entity_GetIsEnabled(uint64_t entityID)
 	{
 		Scene* scene = nullptr;
@@ -422,11 +356,7 @@ namespace Index {
 		return authoredDisabled ? 0 : 1;
 	}
 
-	// Effective "EnabledInHierarchy" — the runtime active flag. False
-	// when this entity is disabled for any reason (authored OR inherited
-	// from an ancestor). Engine systems already filter their views with
-	// `entt::exclude<DisabledTag>`, so callers that mean "is this entity
-	// actually live this frame" should use this, not GetIsEnabled.
+	// Runtime flag: false if disabled for ANY reason (authored or inherited). Use this — not GetIsEnabled — to check if entity is actually live this frame.
 	static int Index_Entity_GetIsEnabledInHierarchy(uint64_t entityID)
 	{
 		Scene* scene = nullptr;
@@ -441,11 +371,7 @@ namespace Index {
 		EntityHandle handle = entt::null;
 		if (!ResolveEntityReference(entityID, scene, handle)) return;
 
-		// Compare against the authored state, not the effective one — a
-		// SetIsEnabled(true) on a child whose parent is disabled is a
-		// no-op for the runtime DisabledTag (still inherited-disabled)
-		// but flips the authored intent so the next parent re-enable
-		// cascade restores it. SetEnabled() handles that bookkeeping.
+		// Compare authored state: SetIsEnabled(true) on a child with a disabled parent flips authored intent so the next parent re-enable cascade restores it.
 		const bool shouldBeEnabled = isEnabled != 0;
 		const bool authoredDisabled = scene->HasComponent<DisabledTag>(handle)
 			&& !scene->HasComponent<InheritedDisabledTag>(handle);
@@ -479,10 +405,7 @@ namespace Index {
 			return true;
 		}
 
-		// Native lookup failed — fall back to managed-component dispatch.
-		// Only here do we materialise an owning std::string, because the
-		// QueryComponentRequirement outlives the (potentially transient)
-		// view-of-source-buffer passed in by the caller.
+		// Owning string allocated here because QueryComponentRequirement outlives the caller's transient string_view.
 		out.ManagedClassName.assign(name);
 		return true;
 	}
@@ -510,22 +433,10 @@ namespace Index {
 		Entity entity = scene->GetEntity(handle);
 		if (info->has && info->has(entity)) return 1;
 
-		// Dynamic (runtime-registered) components share typeid(void) and
-		// live in ComponentRegistry::m_dynamicMap, not m_map — so
-		// AddWithDependencies (keyed on std::type_index → m_map) can't find
-		// them and silently no-ops. Route directly through info->add, which
-		// the RegisterDynamic path wires to the backing DynamicComponentStorage.
-		// Without this branch, Entity.AddNativeComponent<T>() from C# returns
-		// true but the component never lands in the pool, so a follow-up
-		// HasNativeComponent<T>() returns false.
+		// Dynamic components bypass AddWithDependencies (keyed on type_index in m_map, not m_dynamicMap);
+		// also must seed a ScriptComponent.Scripts Managed entry so the inspector field renderer finds it.
 		if (info->isDynamic) {
 			info->add(entity);
-			// Mirror AttachScriptToEntity (AddComponentPopup.cpp): a `:IComponent`
-			// add must also seed a ScriptComponent.Scripts entry of type Managed
-			// so the inspector's script-field renderer (the only path that
-			// reflects over [ShowInEditor]) picks the component up. Without
-			// this, the registry iteration draws an empty wrapper and the
-			// fields never surface.
 			if (!entity.HasComponent<ScriptComponent>()) {
 				entity.AddComponent<ScriptComponent>();
 			}
@@ -552,11 +463,7 @@ namespace Index {
 		Entity entity = scene->GetEntity(handle);
 		if (info->has && !info->has(entity)) return 0;
 
-		// Dynamic `:IComponent` components are dual-attached (storage row +
-		// Managed ScriptComponent.Scripts entry — see Index_Entity_AddComponent
-		// above). Tear down via ScriptSystem::RemoveScript so both halves drop
-		// together; otherwise the inspector would render an orphan empty header
-		// from the leftover Scripts entry.
+		// Dynamic components are dual-attached; tear down via ScriptSystem::RemoveScript so both the storage row and Scripts entry drop together.
 		if (info->isDynamic) {
 			if (entity.HasComponent<ScriptComponent>()) {
 				auto& sc = entity.GetComponent<ScriptComponent>();
@@ -580,21 +487,6 @@ namespace Index {
 	}
 
 	// ── Entity_AddScript / HasScript / RemoveScript ─────────────────
-	// Companion to AddComponent / HasComponent / RemoveComponent for
-	// EntityScript-derived types. The class-name string (passed as
-	// `typeof(T).Name` from C#) is matched directly against
-	// ScriptComponent::Scripts[i].GetClassName() — the same key
-	// ScriptSystem uses when binding.
-	//
-	// Add: emplaces a ScriptComponent if absent, appends a
-	// Managed-type ScriptInstance (mirroring AddManagedComponent's
-	// behavior), and lets ScriptSystem::Update pick up the bind
-	// + Awake/Start on its next tick. We don't synchronously call
-	// BindAndAwakeNow here — the next ScriptSystem tick handles
-	// the lifecycle in the same code path that scene-load uses,
-	// keeping a single bind-source-of-truth. Returns 1 on success
-	// (already-present is also success — idempotent), 0 on
-	// invalid entity / empty name.
 
 	int Index_Entity_AddScript(uint64_t entityID, const char* className)
 	{
@@ -613,14 +505,7 @@ namespace Index {
 		scriptComponent.AddScript(className, ScriptType::Managed);
 		scene->MarkDirty();
 
-		// Synchronous bind + Awake so the C# wrapper returned by
-		// `entity.AddComponent<MyScript>()` is already live (and has
-		// its OnAwake invoked) before AddComponent returns. Otherwise
-		// the C# side would have to wait a frame for ScriptSystem.Update
-		// to pick the slot up, and `e.AddComponent<MyScript>()` would
-		// momentarily return null. Locate the freshly-added instance
-		// (always the last entry — AddScript appends), bind it, and
-		// drive the managed Awake.
+		// Synchronous bind + Awake so the returned C# wrapper is already live; without this, AddComponent<MyScript>() would return null until the next ScriptSystem tick.
 		ScriptInstance* added = nullptr;
 		for (auto& inst : scriptComponent.Scripts) {
 			if (inst.GetClassName() == className && inst.GetType() == ScriptType::Managed) {
@@ -680,13 +565,7 @@ namespace Index {
 		return removedAny ? 1 : 0;
 	}
 
-	// Raw component pointer for the ScriptCore ref-API. Returns the address of
-	// the entity's component instance inside EnTT's storage pool, or nullptr
-	// when the entity / component is missing. The C# side casts to a blittable
-	// struct mirroring the C++ layout and reads/writes fields directly.
-	// Validity contract: the returned pointer is invalidated by any structural
-	// change to the same component pool (add/remove of any T on any entity).
-	// Callers refetch each frame rather than caching.
+	// Validity contract: pointer is invalidated by any structural change to the pool; callers must refetch each frame.
 	static void* Index_Entity_GetComponentPtr(uint64_t entityID, const char* componentName)
 	{
 		Scene* scene = nullptr;
@@ -699,9 +578,6 @@ namespace Index {
 		return info->getRaw(scene->GetEntity(handle));
 	}
 
-	// sizeof(T) for the named component, 0 when unknown / empty. Used by C# at
-	// script-engine init to verify its struct mirror's size matches the C++
-	// component before any ref reads / writes happen.
 	static int Index_Entity_GetComponentSize(const char* componentName)
 	{
 		const ComponentInfo* info = FindComponentByName(componentName);
@@ -824,12 +700,7 @@ namespace Index {
 	}
 
 	static int LoadSceneByName(const char* sceneName, bool additive) {
-		// Validate name before any side effects. Without this guard, an empty
-		// or unsafe name passed from a script would still trigger RegisterScene
-		// + LoadScene below — and in the non-additive path, LoadScene calls
-		// UnloadAllScenes(false) before its OnLoad runs, so we'd destroy the
-		// current scene and leave the editor holding stale EntityHandles into
-		// it (crash in Scene::GetEntity).
+		// Validate before any side effects: in non-additive path, LoadScene calls UnloadAllScenes before OnLoad, so an empty name would destroy the current scene and crash in Scene::GetEntity.
 		if (!sceneName || sceneName[0] == '\0') {
 			IDX_CORE_ERROR_TAG("ScriptBindings", "LoadScene called with an empty name");
 			return 0;
@@ -840,20 +711,13 @@ namespace Index {
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		const bool hasDefinition = sm.HasSceneDefinition(name);
 
-		// Resolve the scene file path up-front. GetSceneFilePath also rejects
-		// unsafe names (traversal characters, control bytes) via IsValidSceneName,
-		// returning empty — so an empty result here means either "no project",
-		// "name failed validation", or "no .scene file exists under Assets/".
+		// GetSceneFilePath also rejects traversal/control-byte names via IsValidSceneName.
 		std::string scenePath;
 		if (project) {
 			scenePath = project->GetSceneFilePath(name);
 		}
 		const bool fileResolves = !scenePath.empty() && File::Exists(scenePath);
 
-		// Only auto-register if we have something usable to load. If the
-		// caller pre-registered the definition (e.g. via a SceneDefinition
-		// with custom OnLoad callbacks that don't rely on a .scene file),
-		// honour that.
 		if (!hasDefinition && !fileResolves) {
 			IDX_CORE_ERROR_TAG("ScriptBindings",
 				"LoadScene: no scene file resolves for '{}' and no definition is registered", name);
@@ -867,12 +731,7 @@ namespace Index {
 					SceneSerializer::LoadFromFile(scene, scenePath);
 				}
 				else {
-					// The .scene file the definition captured no longer
-					// resolves (deleted/renamed between LoadScene calls).
-					// We're committed to instantiating an empty scene at
-					// this point — surface it so the user understands why
-					// their entities vanished instead of silently swapping
-					// in an empty world.
+					// File deleted/renamed between LoadScene calls; committed to empty scene — warn so entities vanishing isn't silent.
 					IDX_CORE_WARN_TAG("ScriptBindings",
 						"LoadScene: '{}' was loaded as an empty scene because '{}' is no longer on disk.",
 						name, scenePath);
@@ -948,14 +807,7 @@ namespace Index {
 	}
 
 	// ── Scene by GUID ───────────────────────────────────────────────────
-	// Scenes are persisted as `<Name>.scene` files under the project's
-	// Assets/ tree and tracked by AssetRegistry through their companion
-	// `.meta` (carrying the stable AssetGUID). Scripts that want to load
-	// by GUID — the natural choice when wiring scenes via [ShowInEditor]
-	// SceneRef fields or the asset picker — route through this resolver
-	// which maps the GUID back to the scene's name and then forwards to
-	// the same SceneManager calls the name-based path uses. Returns the
-	// empty string if the GUID is unknown or not a Scene asset.
+
 	static std::string ResolveSceneNameForGuid(uint64_t sceneGuid) {
 		if (sceneGuid == 0) return {};
 		if (AssetRegistry::GetKind(sceneGuid) != AssetKind::Scene) return {};
@@ -963,10 +815,6 @@ namespace Index {
 		const std::string path = AssetRegistry::ResolvePath(sceneGuid);
 		if (path.empty()) return {};
 
-		// Scene file name on disk is "<sceneName>.scene"; the engine
-		// uses the stem as the scene's canonical name (matches the
-		// convention in IndexProject::GetSceneFilePath and the scene
-		// serializer).
 		return std::filesystem::path(path).stem().string();
 	}
 
@@ -1017,11 +865,6 @@ namespace Index {
 		return ResolveSceneNameForGuid(sceneGuid).empty() ? 0 : 1;
 	}
 
-	// Resolves the active scene to its tracked AssetGUID, or 0 when the
-	// active scene isn't an asset-tracked file (e.g. a freshly-created
-	// scene that hasn't been saved yet). Mirrors
-	// Scene_GetActiveSceneNameBuffer but on the GUID side so scripts can
-	// round-trip through the same handle they passed to LoadByGuid.
 	static uint64_t Index_Scene_GetActiveSceneGuid() {
 		Scene* scene = GetScene();
 		if (!scene) return 0;
@@ -1047,12 +890,7 @@ namespace Index {
 		if (!scene || !componentNames || !outEntityIDs || maxOut <= 0) return 0;
 		if (!scene->IsLoaded()) return 0;
 
-		// Walk the pipe-delimited component-name buffer with string_views
-		// instead of copying. Previously we built a `std::string` over the
-		// entire buffer and then `substr`'d each token into a fresh string —
-		// two allocations per token, per query call, in C#'s hot per-frame
-		// path. Now the only allocation is the final ManagedClassName when
-		// we have to fall back to managed dispatch.
+		// string_view walk avoids the two-heap-allocations-per-token cost of the old std::string + substr approach in this hot per-frame path.
 		std::vector<QueryComponentRequirement> requirements;
 		const std::string_view names(componentNames);
 		size_t start = 0;
@@ -1073,13 +911,7 @@ namespace Index {
 		int count = 0;
 		auto& registry = scene->GetRegistry();
 
-		// Fast path: single native-component requirement → iterate only that
-		// component's storage. UIEventDispatcher.Tick() calls this 9× per
-		// frame (one per UI widget type); the registry-wide walk below was
-		// O(totalEntities × widgetTypes) and dominated the frame at 100k+
-		// entities even when zero UI widgets existed. The typed-storage walk
-		// is O(matchingEntities) — returns instantly when the component pool
-		// is empty.
+		// Fast path for single native component: iterate its typed storage (O(matchingEntities)) instead of the registry-wide walk (O(totalEntities × types)).
 		if (requirements.size() == 1
 			&& requirements[0].Native
 			&& requirements[0].Native->storageHash != 0)
@@ -1193,14 +1025,6 @@ namespace Index {
 		return texture ? static_cast<int>(texture->GetHeight()) : 0;
 	}
 
-	// Surface engine-shipped default textures (Square, Circle, Capsule, etc.)
-	// to managed scripts. The C++ side has these accessible by enum via
-	// `TextureManager::GetDefaultTexture`, but C# only had handle-by-UUID
-	// lookup — meaning a script that wanted "the default white square" had
-	// to either know the path-hash GUID by heart or load its own copy of
-	// the engine asset. We resolve the asset GUID through the AssetRegistry
-	// here so the C# Texture wrapper round-trips through the same
-	// `FromAssetUUID` path as any user-loaded texture.
 	static uint64_t Index_Texture_GetDefaultAssetUUID(uint8_t which)
 	{
 		// Cap is exclusive of any future enum entries — `Invisible` is the
@@ -1223,11 +1047,7 @@ namespace Index {
 
 	static int Index_Font_LoadAsset(uint64_t assetId)
 	{
-		// Validity check only — DO NOT bake an atlas here. Atlas slots are
-		// per (uuid, pixelSize) so picking a default size would waste a GL
-		// texture every time `Font.IsValid` is called from script while the
-		// consumer's actual FontSize differs. The TextRenderer system bakes
-		// at TextRendererComponent::FontSize on first draw.
+		// DO NOT bake an atlas here — atlas slots are per (uuid, pixelSize); TextRenderer bakes at FontSize on first draw.
 		return assetId != 0 && AssetRegistry::IsFont(assetId) ? 1 : 0;
 	}
 
@@ -1239,12 +1059,6 @@ namespace Index {
 		}
 	}
 
-	// Helper: parse pipe-delimited names into native or managed component
-	// requirements. Walks the input buffer as string_views — the only owning
-	// allocation is BuildComponentRequirement's fallback ManagedClassName
-	// when native lookup misses. Previously this built a std::string over
-	// the entire buffer and substr'd each token, allocating twice per token
-	// in the per-frame filtered-query path.
 	static bool ParseComponentNames(const char* names, std::vector<QueryComponentRequirement>& out) {
 		if (!names || names[0] == '\0') return true; // empty is valid (no filter)
 		const std::string_view str(names);
@@ -1330,17 +1144,7 @@ namespace Index {
 		return QueryEntitiesFilteredInScene(GetScene(), withComponents, withoutComponents, mustHaveComponents, enableFilter, outEntityIDs, maxOut);
 	}
 
-	// Pool descriptor for OpenQueryView. Carries the resolved
-	// entt::sparse_set* alongside ComponentInfo so the hot iteration loop
-	// hits direct (inline) sparse_set::contains / value calls instead of
-	// the std::function-based info->has / info->getRaw indirection — the
-	// latter was costing one virtual-style dispatch per (entity × pool)
-	// inside a registry-wide scan and dominated the snapshot phase for
-	// any filtered multi-pool query at 10K+ matched entities.
-	//
-	// Storage is `common_type*` (i.e. basic_sparse_set*), which exposes
-	// the size / contains / value / iteration surface we need without
-	// depending on the component's concrete type at this call site.
+	// Carries raw sparse_set* so the inner loop uses direct contains/value calls instead of std::function dispatch (one virtual-style call per entity×pool was the dominant cost at 10K+ entities).
 	struct ResolvedQueryPool {
 		const ComponentInfo*     Info = nullptr;
 		entt::sparse_set*        Storage = nullptr;     // EnTT-backed (built-in components)
@@ -1369,16 +1173,7 @@ namespace Index {
 				// here exactly as the prior ParseQueryViewPools did.
 				if (requireValue && !info->getRaw) return false;
 				if (!info->has) return false;
-				// Resolve the pool's storage backend. Built-in components live
-				// in EnTT's typed sparse_set (registry.storage(hash)); dynamic
-				// components live in a side DynamicComponentStorage owned by
-				// the ComponentRegistry. Exactly one of Storage / DynStorage
-				// is non-null for a populated pool — both null means the pool
-				// has never had any entity (storage not yet instantiated for
-				// built-ins, or info->dynamicStorage genuinely null which
-				// shouldn't happen for valid dynamic registrations). The
-				// dispatcher treats both-null as "zero rows for required
-				// pools / trivially satisfied for without pools".
+				// Both-null = pool never instantiated = zero rows for required pools / trivially satisfied for without pools.
 				entt::sparse_set* storage =
 					info->storageHash != 0 ? registry.storage(info->storageHash) : nullptr;
 				DynamicComponentStorage* dynStorage =
@@ -1391,30 +1186,7 @@ namespace Index {
 		return true;
 	}
 
-	// Opens an EnTT-style view across the named pools and fills `outPointers`
-	// with one row per matching entity, `(writeCount + roCount)` pointers per
-	// row, in declaration order. The actual row count is returned; if it
-	// exceeds `maxRows` the caller resizes and retries (same convention as
-	// Scene_QueryEntities).
-	//
-	// Iteration strategy: among the AND-set (writes + readonlys + must-haves)
-	// we pick the smallest pool as the driver and iterate ONLY that pool's
-	// packed entity array. Every other AND-pool is collapsed to an inline
-	// `contains()` check, and write/readonly pointer fills use a direct
-	// value-fetch — both touching only the packed and sparse arrays of one
-	// component pool.
-	//
-	// Dynamic components (registered via RegisterDynamic, e.g. user-authored
-	// C# native structs like UserData) are first-class here: their backing
-	// DynamicComponentStorage exposes the same packed Entities() + paged
-	// sparse layout as entt::sparse_set, so a query mixing built-in and
-	// dynamic components iterates exactly the same shape — no per-row
-	// std::function dispatch, no registry-wide entity walk.
-	//
-	// Result: snapshot cost scales with `min(pool sizes)` instead of total
-	// registry size — order-of-magnitude speedup whenever the rarest required
-	// component is sparse against the scene (the common case for filtered
-	// jobs like `[WithAll(typeof(UserData))]`).
+	// Iterates the smallest AND-pool as driver; all other pools are probed via inline contains(). Cost scales with min(pool sizes) — O(matchingEntities) not O(totalEntities).
 	static int Index_Scene_OpenQueryView(
 		const char* sceneName,
 		const char* writeNames,
@@ -1443,10 +1215,6 @@ namespace Index {
 			const size_t poolCount = writeCount + roCount;
 			if (poolCount == 0) return 0;  // empty query is a no-op
 
-			// Fast path: single write component, no filters → iterate that
-			// component's own storage directly via its registered fillRawPointers
-			// lambda. Preserved verbatim from the prior implementation; matches
-			// the simplest IJobQuery shape (`ref T` with no [WithAll]/[Without]).
 			if (writeCount == 1
 				&& roCount == 0
 				&& withPools.empty()
@@ -1455,10 +1223,6 @@ namespace Index {
 				return writePools[0].Info->fillRawPointers(registry, outPointers, maxRows, enableFilter);
 			}
 
-			// Pool-size accessor — unified for both EnTT and dynamic backings.
-			// Returns 0 when both Storage and DynStorage are null, which
-			// matches "pool never had any entity" and lets the empty-required
-			// short-circuit treat it as zero rows.
 			auto poolSize = [](const ResolvedQueryPool& p) -> size_t {
 				if (p.Storage)    return p.Storage->size();
 				if (p.DynStorage) return p.DynStorage->Size();
@@ -1489,10 +1253,6 @@ namespace Index {
 			// guaranteed non-null here. Belt-and-braces:
 			if (!driver) return 0;
 
-			// Cache the DisabledTag storage pointer once. DisabledTag is always
-			// EnTT-backed (built-in tag), so we only consult Storage here.
-			// Null when no entity has ever been disabled — equivalent to
-			// "everyone is enabled".
 			const entt::sparse_set* disabledStorage = nullptr;
 			if (enableFilter != 0) {
 				disabledStorage = registry.storage(entt::type_hash<DisabledTag>::value());
@@ -1500,10 +1260,7 @@ namespace Index {
 				if (enableFilter == 2 && (!disabledStorage || disabledStorage->empty())) return 0;
 			}
 
-			// Hoist non-driver pools into stack arrays. Each entry carries the
-			// concrete storage pointer it'll be probed against — exactly one of
-			// ss / ds is non-null per entry. SmallVector-ish: IJobQuery caps at
-			// 8 components per category.
+			// Stack arrays capped at 8 per category (IJobQuery limit); avoids heap allocation in the hot snapshot path.
 			struct OtherPool {
 				entt::sparse_set*        ss = nullptr;
 				DynamicComponentStorage* ds = nullptr;
@@ -1525,19 +1282,10 @@ namespace Index {
 				}
 			}
 
-			// Inline membership test. The ss-vs-ds branch is loop-invariant per
-			// pool (the pool's identity doesn't change across iterations), so
-			// the branch predictor pins it after the first row. EnTT's
-			// sparse_set::contains and DynamicComponentStorage::Contains both
-			// run the same versioned XOR check on the paged sparse array —
-			// they're symmetric in cost.
 			auto poolContains = [](const OtherPool& op, EntityHandle h) -> bool {
 				return op.ss ? op.ss->contains(h) : op.ds->Contains(h);
 			};
 
-			// Full filter predicate: enable filter + every AND-pool (write/ro/with) +
-			// negated without pools. Called per candidate driver entity. Read-only,
-			// safe for concurrent invocation by worker threads.
 			auto matchesAllFilters = [&](EntityHandle h) -> bool {
 				if (enableFilter == 1) {
 					if (disabledStorage && disabledStorage->contains(h)) return false;
@@ -1552,11 +1300,6 @@ namespace Index {
 				return true;
 			};
 
-			// Per-row pointer fill: writes go first, then readonlys, matching the
-			// IL invoker's slot layout (IJobQuery.cs:237-254). Read-only on the
-			// pools; safe under concurrent invocation as long as no structural
-			// changes occur — the IJobQuery contract (IJobQuery.cs:52-57) guarantees
-			// that for the duration of the snapshot.
 			auto fillRow = [&](void** rowBase, EntityHandle h) {
 				for (size_t j = 0; j < writeCount; ++j) {
 					rowBase[j] = writePools[j].Storage
@@ -1577,18 +1320,8 @@ namespace Index {
 				? driver->Storage->data()
 				: driver->DynStorage->Entities().data();
 
-			// Parallel dispatch decision. Below the threshold or with a single
-			// worker, dispatch + atomic overhead dominates the work — stay serial.
-			// ParallelFor inline-runs when worker pool isn't ready, so this is just
-			// the perf tipping-point gate.
-			//
-			// Path A (bitmap) vs Path B (chunked-claim): both handle filtered queries.
-			// Path A calls matchesAllFilters once per entity and records the result in
-			// a stack-resident bitmap; Path B calls it twice (count sweep + fill sweep).
-			// Bitmap wins when chunks fit on the stack — true for the vast majority of
-			// workloads. The gate is the EXPECTED chunk size from ComputeAutoGrainSize
-			// (ParallelFor.cpp:7-22 — rangeLength / (workerCount * 4)). If that fits in
-			// kMaxStackBitmap entities, Path A fires; otherwise Path B.
+			// Path A (bitmap): one matchesAllFilters call per entity, result recorded in stack bitmap, then fill pass — faster when chunks fit in kMaxStackBitmap.
+			// Path B (chunked-claim): two sweeps per chunk (count then fill) — fallback when chunks exceed bitmap budget.
 			constexpr size_t kParallelThreshold = 1024;
 			constexpr size_t kMaxStackBitmap = 8192;  // one bool per chunk entity, stack-allocated
 			const int workerCount = JobSystem::GetWorkerCount();
@@ -1600,24 +1333,11 @@ namespace Index {
 			const bool useBitmap = tryParallel && expectedChunkSize <= kMaxStackBitmap;
 
 			if (useBitmap) {
-				// Path A — bitmap-assisted single-sweep. Each chunk:
-				//   1. One sweep: matchesAllFilters per entity → write bool into
-				//      stack bitmap. Track localCount.
-				//   2. fetch_add(localCount) claims a contiguous output region.
-				//   3. Second sweep: read bitmap (free, no filter recompute) and
-				//      fillRow only matched entities at the claimed offsets.
-				// Saves one matchesAllFilters call per entity vs Path B, which is
-				// usually the dominant per-entity cost in the snapshot. Bitmap is
-				// a fixed 8KB stack array — sized for any chunk auto-grain produces
-				// on workloads up to ~workerCount × 32k entities (~256k entities on
-				// an 8-worker system).
 				INDEX_PROFILE_SCOPE("Scene.OpenQueryView.Snapshot.ParallelBitmap");
 				std::atomic<int> writeCursor{ 0 };
 				ParallelFor(0, driverSize, [&](size_t lo, size_t hi) {
 					const size_t chunkLen = hi - lo;
-					// Defensive: if ComputeAutoGrainSize produces a larger chunk
-					// than expected (e.g. heuristic change), fall back to two-sweep
-					// inline rather than stack-overflow. Shouldn't fire today.
+					// Defensive fallback if auto-grain exceeds stack budget.
 					if (chunkLen > kMaxStackBitmap) {
 						int lc = 0;
 						for (size_t i = lo; i < hi; ++i) {
@@ -1663,13 +1383,6 @@ namespace Index {
 			}
 
 			if (tryParallel) {
-				// Path B — chunked-claim, 2-sweep. Fallback for queries whose
-				// auto-grain chunks would overflow the kMaxStackBitmap budget
-				// (rare: requires workloads with worker-count × 32k+ entities).
-				// Each chunk: sweep 1 counts matches, single fetch_add claims a
-				// contiguous output region, sweep 2 fills rows at the claimed
-				// offsets — same 2-sweep shape as before. Atomic fires once per
-				// chunk (~4×workerCount total) keeping contention negligible.
 				INDEX_PROFILE_SCOPE("Scene.OpenQueryView.Snapshot.ParallelChunked");
 				std::atomic<int> writeCursor{ 0 };
 				ParallelFor(0, driverSize, [&](size_t lo, size_t hi) {
@@ -2017,10 +1730,7 @@ namespace Index {
 
 		comp.TextureAssetId = UUID(assetId);
 		comp.TextureHandle = TextureManager::LoadTextureByUUID(assetId);
-		// Apply the component's filter to the freshly bound texture so a
-		// script that does `sprite.Texture = ...` after setting FilterMode
-		// doesn't render with whatever sampler the texture happened to
-		// have from a previous owner.
+		// Apply FilterMode to the freshly bound texture; the sampler carries over from the previous owner otherwise.
 		if (auto* tex = TextureManager::GetTexture(comp.TextureHandle); tex) {
 			tex->SetFilter(comp.FilterMode);
 		}
@@ -2075,17 +1785,9 @@ namespace Index {
 	{
 		GET_COMPONENT(SpriteRendererComponent, entityID, );
 		comp.SpriteName = name ? std::string(name) : std::string{};
-		// No need to invalidate the renderer-side resolver cache from here —
-		// SpriteName changes go through entity state, which the next
-		// Renderer2D frame pack reads directly. The slice-epoch counter
-		// only invalidates the per-asset slice list, which the user didn't
-		// touch by scripting this field.
 	}
 
 	// ── Dynamic component registration (runtime, reflection-driven) ─────
-	// Pendant to Index_Component_GetTypeId — the only register/unregister
-	// callable from managed code. Bodies are thin: marshal the strings and
-	// delegate to ComponentRegistry::RegisterDynamic / UnregisterAllDynamic.
 
 	static uint32_t Index_Component_RegisterDynamic(
 		const char* displayName,
@@ -2387,9 +2089,6 @@ namespace Index {
 	}
 
 	// ── Rigidbody2D constraints (motion locks) ─────────────────────────
-	// Wire format mirrors the binding-struct declarations: bools travel as
-	// int (0/1) so the C++/C# ABI agreement on bool width can't trip us up
-	// across the FFI boundary.
 	static int Index_Rigidbody2D_GetFreezePositionX(uint64_t entityID)
 	{
 		GET_COMPONENT(Rigidbody2DComponent, entityID, 0);
@@ -2636,6 +2335,25 @@ namespace Index {
 		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
 		comp.PlayOnAwake = (enabled != 0);
 	}
+	static uint64_t Index_ParticleSystem2D_GetTexture(uint64_t entityID) {
+		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0);
+		uint64_t assetId = static_cast<uint64_t>(comp.GetTextureAssetId());
+		const TextureHandle texHandle = comp.GetTextureHandle();
+		if (assetId == 0 && TextureManager::IsValid(texHandle)) {
+			assetId = TextureManager::GetTextureAssetUUID(texHandle);
+			if (assetId != 0) comp.SetTexture(texHandle, UUID(assetId));
+		}
+		return assetId;
+	}
+	static void Index_ParticleSystem2D_SetTexture(uint64_t entityID, uint64_t assetId) {
+		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
+		if (assetId == 0) {
+			comp.SetTexture(TextureHandle::Invalid(), UUID(0));
+			return;
+		}
+		const TextureHandle texHandle = TextureManager::LoadTextureByUUID(assetId);
+		comp.SetTexture(texHandle, UUID(assetId));
+	}
 	static void Index_ParticleSystem2D_GetColor(uint64_t entityID, float* r, float* g, float* b, float* a) {
 		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
 		*r = comp.RenderingSettings.Color.r; *g = comp.RenderingSettings.Color.g;
@@ -2879,12 +2597,7 @@ namespace Index {
 		GET_COMPONENT(RectTransform2DComponent, entityID, );
 		comp.SizeDelta = { x, y };
 	}
-	// Get* returns the world (resolved) value written by UILayoutSystem;
-	// Set* writes the authored Local* value. Mirrors the Transform2D
-	// pattern — for a root rect Local and world match, but for a parented
-	// rect "set Rotation = 0" should mean "axis-align this rect inside
-	// its parent", not "wipe ancestors' rotations". Writes to the world
-	// field would be overwritten on the next layout pass anyway.
+	// Get* returns world value (set by UILayoutSystem); Set* writes Local* — world writes would be overwritten on next layout pass.
 	static float Index_RectTransform_GetRotation(uint64_t entityID) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, 0.0f);
 		return comp.Rotation;
@@ -3017,14 +2730,7 @@ namespace Index {
 		comp.IsFocused = (value != 0);
 	}
 
-	// ── UI: state-color bindings (Button / Toggle / Slider /
-	//       InputField / Dropdown) ─────────────────────────────────────
-	// Every interactable widget exposes the same Normal/Hovered/Pressed/
-	// Disabled palette to script. The macro generates one
-	// {get,set}-by-color-channel pair per (component, member) — channel-
-	// based marshaling matches how every other Color/Vector binding in
-	// this file talks to managed code, so we don't need a struct layout
-	// agreement with C# for `Color`.
+	// ── UI: state-color bindings (Button / Toggle / Slider / InputField / Dropdown) ──
 
 	#define WIDGET_COLOR_BINDING(COMP, MEMBER, GETTER, SETTER) \
 		static void GETTER(uint64_t entityID, float* r, float* g, float* b, float* a) { \
@@ -3072,9 +2778,7 @@ namespace Index {
 	#undef WIDGET_COLOR_BINDING
 
 	// ── UI: TransitionMode + per-state sprite UUIDs ─────────────────
-	// Same approach as the color bindings — one (get,set) pair per
-	// (component, member) generated from a small macro pair so adding
-	// a new widget is one line per state.
+
 	#define WIDGET_TRANSITIONMODE_BINDING(COMP, GETTER, SETTER) \
 		static int GETTER(uint64_t entityID) { \
 			GET_COMPONENT(COMP, entityID, 0); \
@@ -3134,10 +2838,7 @@ namespace Index {
 	#undef WIDGET_SPRITE_BINDING
 
 	// ── UI: IsReadOnly + entity-ref + popup-option-color bindings ──
-	// IsReadOnly applies to Toggle / Slider / Dropdown (InputField
-	// already has its own dedicated binding from earlier). Entity-ref
-	// fields marshal as the persistent UUID (the same encoding the
-	// editor's reference picker uses), so refs survive scene reload.
+	// Entity-ref fields marshal as persistent UUID so refs survive scene reload.
 	#define WIDGET_BOOL_BINDING(COMP, MEMBER, GETTER, SETTER) \
 		static int GETTER(uint64_t entityID) { \
 			GET_COMPONENT(COMP, entityID, 0); \
@@ -3235,11 +2936,7 @@ namespace Index {
 		GET_COMPONENT(SliderComponent, entityID, 0);
 		return comp.ValueChangedThisFrame ? 1 : 0;
 	}
-	// Snapshot Value into LastObservedValue so the next UIEventSystem
-	// tick's diff sees no change and skips firing OnValueChanged.
-	// Called from C# Slider.SetValue right before its immediate-fire
-	// path so a programmatic change with notifyEvent=true doesn't
-	// double up via the diff one frame later.
+	// Prevents UIEventSystem from double-firing OnValueChanged when C# SetValue fires immediately before the tick diff.
 	static void Index_Slider_MarkValueObserved(uint64_t entityID) {
 		GET_COMPONENT(SliderComponent, entityID, );
 		comp.LastObservedValue = comp.Value;
@@ -3364,12 +3061,7 @@ namespace Index {
 		comp.Options.clear();
 	}
 
-	// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layout Groups /
-	//       ContentSizeFitter / WidthConstraint ────────────────────────
-	// One Get/Set pair per field, generated through scalar macros so the
-	// per-field code stays one line each. The macros assume comp.MEMBER is
-	// the underlying storage — same convention as the earlier WIDGET_*
-	// blocks above.
+	// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layout Groups / ContentSizeFitter / WidthConstraint ──
 
 	#define WIDGET_FLOAT_BINDING(COMP, MEMBER, GETTER, SETTER) \
 		static float GETTER(uint64_t entityID) { \
@@ -3658,13 +3350,7 @@ namespace Index {
 		b.Entity_AddScript = &Index_Entity_AddScript;
 		b.Entity_HasScript = &Index_Entity_HasScript;
 		b.Entity_RemoveScript = &Index_Entity_RemoveScript;
-		// Note: legacy non-buffer string slots (Entity_GetManagedComponentFields,
-		// NameComponent_GetName, TextRenderer_GetText, Asset_GetPath/DisplayName/FindAll,
-		// Scene_GetActiveSceneName/EntityNameByUUID/LoadedSceneNameAt) were removed
-		// from both NativeBindings (C++) and NativeBindingsStruct (C#) — they returned
-		// a pointer to a thread-local scratch buffer that raced across calls. Managed
-		// code only ever used the *Buffer variants. Don't reintroduce the unbuffered
-		// slots without a thread-safe scheme.
+		// Unbuffered string slots removed: they returned a thread-local pointer that raced across calls. Use *Buffer variants only.
 		b.Entity_GetManagedComponentFieldsBuffer = &Index_Entity_GetManagedComponentFieldsBuffer;
 		b.Entity_GetIsStatic = &Index_Entity_GetIsStatic;
 		b.Entity_SetIsStatic = &Index_Entity_SetIsStatic;
@@ -4106,10 +3792,7 @@ namespace Index {
 		b.Entity_GetComponentSize  = &Index_Entity_GetComponentSize;
 		b.Scene_OpenQueryView      = &Index_Scene_OpenQueryView;
 
-		// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider / Layouts /
-		//       ContentSizeFitter / WidthConstraint (appended for binary
-		//       compat — order MUST match NativeBindings struct field
-		//       order in ScriptGlue.hpp and the C# mirror.) ──────────────
+		// ── UI (appended for binary compat — order MUST match NativeBindings in ScriptGlue.hpp and the C# mirror) ──
 
 		// Scrollbar
 		b.Scrollbar_GetValue                 = &Index_Scrollbar_GetValue;
@@ -4371,6 +4054,9 @@ namespace Index {
 		b.Rigidbody2D_SetFreezePositionY = &Index_Rigidbody2D_SetFreezePositionY;
 		b.Rigidbody2D_GetFreezeRotation  = &Index_Rigidbody2D_GetFreezeRotation;
 		b.Rigidbody2D_SetFreezeRotation  = &Index_Rigidbody2D_SetFreezeRotation;
+
+		b.ParticleSystem2D_GetTexture = &Index_ParticleSystem2D_GetTexture;
+		b.ParticleSystem2D_SetTexture = &Index_ParticleSystem2D_SetTexture;
 	}
 
 } // namespace Index

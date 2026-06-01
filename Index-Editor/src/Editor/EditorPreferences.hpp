@@ -7,11 +7,7 @@
 
 namespace Index {
 
-	// User-scoped editor preferences. Lives in
-	// %LOCALAPPDATA%\Index\Editor\EditorPreferences.json and is loaded once
-	// at editor startup. Anything here is intentionally NOT per-project —
-	// it follows the user, not the project file. Project-scoped settings
-	// still live on IndexProject.
+	// User-scoped preferences in %LOCALAPPDATA%\Index\Editor\EditorPreferences.json; NOT per-project.
 	enum class EditorThemeMode : uint8_t {
 		SystemDefault = 0,
 		Dark,
@@ -21,15 +17,9 @@ namespace Index {
 
 	class EditorPreferences {
 	public:
-		// Read JSON from disk (creates file with defaults if missing).
 		// Call once during editor OnAttach BEFORE ApplyTheme(). Idempotent.
 		static void Load();
-		// True if the most recent Load() call had to create a new prefs
-		// file from defaults (i.e. first launch). Used by the editor's
-		// legacy-project migration: when a project loaded with pre-2026-05
-		// editor-pref fields is opened on a fresh editor install, those
-		// values seed EditorPreferences. On subsequent launches the user's
-		// already-customised prefs win — legacy project values are ignored.
+		// True on first launch (prefs file was just created); lets the editor seed values from a legacy project without clobbering an existing pref set.
 		static bool WasFreshlyCreated();
 		// Persist current state to disk. Cheap synchronous write; called
 		// after every mutation by the Set*-helpers below.
@@ -46,9 +36,7 @@ namespace Index {
 
 		// ── Appearance ────────────────────────────────────────────
 		static EditorThemeMode GetThemeMode();
-		// Setting Custom for the first time seeds m_CustomColors from the
-		// style currently on screen so the user starts from "what they
-		// were just looking at" rather than zeroed-out swatches.
+		// First switch to Custom seeds m_CustomColors from the current on-screen style.
 		static void SetThemeMode(EditorThemeMode mode);
 		// Mutable accessor — ColorEdit4 writes through this. Caller must
 		// pass a valid ImGuiCol_ index (asserted internally).
@@ -64,9 +52,6 @@ namespace Index {
 		static void SetEditorFontAssetId(uint64_t id);
 
 		static int GetEditorFontZoomPercent();
-		// Clamped to [k_MinEditorFontZoomPercent, k_MaxEditorFontZoomPercent]
-		// and snapped to k_EditorFontZoomStepPercent. Persisted immediately
-		// and applied live through ImGuiContextLayer.
 		static void SetEditorFontZoomPercent(int percent);
 
 		static constexpr int k_MinEditorFontZoomPercent = 75;
@@ -95,11 +80,6 @@ namespace Index {
 		// UI enforced when these fields lived on IndexProject.
 		static void SetAutoSaveIntervalSeconds(float seconds);
 
-		// Auto-save for in-viewport prefab edit mode. Event-driven (saves on
-		// widget release via ImGui::IsAnyItemActive), so unlike scene
-		// auto-save there is no interval — the toggle alone gates it. On by
-		// default since the in-viewport prefab edit flow has no separate
-		// save-and-keep-editing affordance besides the toolbar button.
 		static bool GetAutoSavePrefabs();
 		static void SetAutoSavePrefabs(bool value);
 	};

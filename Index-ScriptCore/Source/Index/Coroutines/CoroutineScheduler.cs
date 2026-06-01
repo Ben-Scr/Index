@@ -5,21 +5,7 @@ using System.Threading;
 namespace Index.Coroutines;
 
 /// <summary>
-/// Owns the queues of pending coroutine continuations. Pumped each frame
-/// by ScriptSystem.Update / FixedUpdate via two managed callbacks wired
-/// in ScriptHostBridge.Initialize.
-///
-/// Cancellation: each entry holds a CancellationToken captured from its
-/// owning EntityScript's destroy CTS. When the script is destroyed the
-/// token cancels — the next pump tick fires the continuation, GetResult
-/// throws OperationCanceledException, and the user's async state machine
-/// unwinds. No closures retain the script after that point, so the user
-/// AssemblyLoadContext can unload on hot reload.
-///
-/// Thread safety: Register may come from a thread-pool thread when a
-/// user awaits Task.Run().ConfigureAwait(false); pump always runs on the
-/// engine main thread. A single lock protects all four lists — contention
-/// is negligible at game frame rates.
+/// Owns pending coroutine queues; pumped each frame by ScriptSystem. Register is thread-safe; pump is main-thread-only. Cancelled entries fire their continuation so the async state machine unwinds and the ALC can unload.
 /// </summary>
 internal static class CoroutineScheduler
 {
@@ -109,12 +95,6 @@ internal static class CoroutineScheduler
         }
     }
 
-    /// <summary>
-    /// Drains the sync-context queue, then ticks frame / seconds / condition
-    /// entries, then drains the sync-context queue again so async void
-    /// exceptions thrown by continuations we just ran are logged this
-    /// frame instead of bleeding into next.
-    /// </summary>
     public static void PumpUpdate(float deltaTime)
     {
         IndexSynchronizationContext.Instance.Pump();
@@ -154,12 +134,7 @@ internal static class CoroutineScheduler
         }
     }
 
-    /// <summary>
-    /// Drop every pending entry without firing. Called from
-    /// ScriptInstanceManager.UnloadUserAssembly during hot reload — the
-    /// owning AssemblyLoadContext is about to unload so any captured user
-    /// types must be released for the GC dance to succeed.
-    /// </summary>
+    // MUST be called before ALC unload; releases captured user types so the GC dance succeeds.
     public static void Reset()
     {
         lock (s_Lock)
@@ -242,10 +217,6 @@ internal static class CoroutineScheduler
             try { predicateResult = entry.Predicate(); }
             catch (Exception ex)
             {
-                // A broken predicate must not loop forever; fire the
-                // continuation so the await unwinds with the predicate
-                // exception (caught by AsyncVoidMethodBuilder for async
-                // void, or stored on the Task for async Task).
                 Log.Error($"[Coroutine] WaitUntil predicate threw: {ex}");
                 FireOrCancel(entry.Continuation);
                 continue;

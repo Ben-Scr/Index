@@ -146,10 +146,15 @@ async Task<int> GitHubIndex(string[] args)
 
 async Task<int> GitHubDownload(string[] args)
 {
-    if (args.Length < 3) return Error("Usage: github-download <url> <outputPath>");
+    if (args.Length < 3) return Error("Usage: github-download <url> <outputPath> [expectedSha256]");
 
     string url = args[1];
     string outputPath = args[2];
+    string expectedSha = args.Length >= 4 ? args[3].Trim().ToLowerInvariant() : "";
+    if (!string.IsNullOrEmpty(expectedSha) && !IsSha256Hex(expectedSha))
+        return Error("Expected SHA-256 must be exactly 64 hexadecimal characters.");
+
+    const long maxDownloadBytes = 512L * 1024L * 1024L;
 
     string? dir = Path.GetDirectoryName(outputPath);
     if (!string.IsNullOrEmpty(dir))
@@ -160,10 +165,12 @@ async Task<int> GitHubDownload(string[] args)
     dlHttp.DefaultRequestHeaders.UserAgent.ParseAdd("Index-PackageTool/1.0");
 
     using var response = await dlHttp.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-    response.EnsureSuccessStatusCode();
-    long? total = response.Content.Headers.ContentLength;
+        response.EnsureSuccessStatusCode();
+        long? total = response.Content.Headers.ContentLength;
+        if (total > maxDownloadBytes)
+            return Error($"Download exceeds the {maxDownloadBytes} byte limit.");
 
-    await using var fileStream = File.Create(outputPath);
+        await using var fileStream = File.Create(outputPath);
     await using var netStream = await response.Content.ReadAsStreamAsync();
 
     var buf = new byte[64 * 1024];
@@ -172,8 +179,14 @@ async Task<int> GitHubDownload(string[] args)
     int n;
     while ((n = await netStream.ReadAsync(buf, 0, buf.Length)) > 0)
     {
-        await fileStream.WriteAsync(buf, 0, n);
-        copied += n;
+            await fileStream.WriteAsync(buf, 0, n);
+            copied += n;
+            if (copied > maxDownloadBytes)
+            {
+                fileStream.Close();
+                try { File.Delete(outputPath); } catch { }
+                return Error($"Download exceeds the {maxDownloadBytes} byte limit.");
+            }
         if ((DateTime.UtcNow - lastEmit).TotalMilliseconds >= 100)
         {
             Console.WriteLine(JsonSerializer.Serialize(new
@@ -184,6 +197,16 @@ async Task<int> GitHubDownload(string[] args)
                 progress = total.HasValue && total.Value > 0 ? (double)copied / total.Value : (double?)null
             }, jsonOpts));
             lastEmit = DateTime.UtcNow;
+        }
+    }
+
+    if (!string.IsNullOrEmpty(expectedSha))
+    {
+        string actualSha = await ComputeSha256(outputPath);
+        if (actualSha != expectedSha)
+        {
+            try { File.Delete(outputPath); } catch { }
+            return Error($"SHA-256 mismatch (expected {expectedSha}, got {actualSha})");
         }
     }
 
@@ -396,8 +419,14 @@ async Task<int> RegistryDownload(string[] args)
     string zipUrl = args[1];
     string expectedSha = args[2].Trim().ToLowerInvariant();
     string destPackagesDir = args[3];
+    if (!IsSha256Hex(expectedSha))
+        return Error("Expected SHA-256 must be exactly 64 hexadecimal characters.");
 
     Directory.CreateDirectory(destPackagesDir);
+
+    const long maxDownloadBytes = 512L * 1024L * 1024L;
+    const long maxExtractedBytes = 2L * 1024L * 1024L * 1024L;
+    const int maxArchiveEntries = 10000;
 
     string token = Guid.NewGuid().ToString("N");
     string tempZip = Path.Combine(destPackagesDir, $".registry-{token}.zip.tmp");
@@ -427,6 +456,12 @@ async Task<int> RegistryDownload(string[] args)
         {
             response.EnsureSuccessStatusCode();
             long? total = response.Content.Headers.ContentLength;
+            if (total > maxDownloadBytes)
+            {
+                Cleanup();
+                Console.Error.WriteLine($"Package download exceeds the {maxDownloadBytes} byte limit.");
+                return 1;
+            }
 
             await using var fileStream = File.Create(tempZip);
             await using var netStream = await response.Content.ReadAsStreamAsync();
@@ -439,6 +474,11 @@ async Task<int> RegistryDownload(string[] args)
             {
                 await fileStream.WriteAsync(buf, 0, n);
                 copied += n;
+                if (copied > maxDownloadBytes)
+                {
+                    throw new InvalidDataException(
+                        $"Package download exceeds the {maxDownloadBytes} byte limit.");
+                }
                 if ((DateTime.UtcNow - lastEmit).TotalMilliseconds >= 100)
                 {
                     Console.WriteLine(JsonSerializer.Serialize(new
@@ -455,15 +495,9 @@ async Task<int> RegistryDownload(string[] args)
         }
 
         // 2. SHA-256 verify (lowercase hex).
-        string actualSha;
-        using (var sha = System.Security.Cryptography.SHA256.Create())
-        await using (var input = File.OpenRead(tempZip))
-        {
-            byte[] hash = await sha.ComputeHashAsync(input);
-            actualSha = Convert.ToHexString(hash).ToLowerInvariant();
-        }
+        string actualSha = await ComputeSha256(tempZip);
 
-        if (!string.IsNullOrEmpty(expectedSha) && actualSha != expectedSha)
+        if (actualSha != expectedSha)
         {
             Cleanup();
             Console.Error.WriteLine($"SHA-256 mismatch (expected {expectedSha}, got {actualSha})");
@@ -478,6 +512,14 @@ async Task<int> RegistryDownload(string[] args)
         Directory.CreateDirectory(tempExtract);
         using (var archive = System.IO.Compression.ZipFile.OpenRead(tempZip))
         {
+            if (archive.Entries.Count > maxArchiveEntries)
+            {
+                Cleanup();
+                Console.Error.WriteLine($"Invalid package zip: more than {maxArchiveEntries} entries.");
+                return 1;
+            }
+
+            long extractedBytes = 0;
             foreach (var entry in archive.Entries)
             {
                 // Normalize separators and reject any path-traversal attempts.
@@ -506,6 +548,14 @@ async Task<int> RegistryDownload(string[] args)
                     continue;
                 }
 
+                extractedBytes += entry.Length;
+                if (extractedBytes > maxExtractedBytes)
+                {
+                    Cleanup();
+                    Console.Error.WriteLine($"Invalid package zip: extracted size exceeds {maxExtractedBytes} bytes.");
+                    return 1;
+                }
+
                 string? parent = Path.GetDirectoryName(targetPath);
                 if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
                 entry.ExtractToFile(targetPath, overwrite: false);
@@ -524,6 +574,12 @@ async Task<int> RegistryDownload(string[] args)
 
         string topDir = topDirs[0];
         string packageFolderName = Path.GetFileName(topDir);
+        if (!IsSafePathComponent(packageFolderName))
+        {
+            Cleanup();
+            Console.Error.WriteLine($"Invalid package zip: unsafe package folder name ({packageFolderName})");
+            return 1;
+        }
         string manifestPath = Path.Combine(topDir, "index-package.lua");
         if (!File.Exists(manifestPath))
         {
@@ -588,6 +644,31 @@ async Task<int> RegistryDownload(string[] args)
         Console.Error.WriteLine($"Registry download error: {ex.Message}");
         return 1;
     }
+}
+
+bool IsSha256Hex(string value)
+{
+    return value.Length == 64 && value.All(Uri.IsHexDigit);
+}
+
+bool IsSafePathComponent(string value)
+{
+    if (string.IsNullOrWhiteSpace(value) || value == "." || value == ".."
+        || value.Contains("..", StringComparison.Ordinal))
+        return false;
+
+    return value.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+        && !value.Contains('/')
+        && !value.Contains('\\')
+        && !Path.IsPathRooted(value);
+}
+
+async Task<string> ComputeSha256(string path)
+{
+    using var sha = System.Security.Cryptography.SHA256.Create();
+    await using var input = File.OpenRead(path);
+    byte[] hash = await sha.ComputeHashAsync(input);
+    return Convert.ToHexString(hash).ToLowerInvariant();
 }
 
 // Pulls a top-level string value from `index-package.lua` for use in the

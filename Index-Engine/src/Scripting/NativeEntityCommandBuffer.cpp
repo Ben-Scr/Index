@@ -24,19 +24,7 @@ namespace Index {
 	NativeEntityCommandBuffer::Instantiate(uint64_t prefabGuid) {
 		EntityRef ref{ m_EntityCount };
 		++m_EntityCount;
-		// Playback pre-creates a placeholder entity through
-		// CreateEntitiesBulk and writes its handle into
-		// m_CreatedHandles[ref.Index]. The Instantiate thunk destroys
-		// that placeholder, calls SceneSerializer::InstantiatePrefab
-		// (which builds the real tree with proper identity), and
-		// rewrites the handle slot in place via the EntityHandle&
-		// out-parameter so any later AddComponent commands targeting
-		// this EntityRef land on the prefab root rather than the
-		// destroyed placeholder.
-		//
-		// The captured guid (8 bytes) fits comfortably inside the
-		// 32-byte SBO and is trivially destructible (no Destroy
-		// thunk needed).
+		// Thunk replaces the bulk-create placeholder with the real prefab tree, rewriting the handle slot so subsequent AddComponent commands land on the root.
 		Command& cmd = AppendCommand(ref.Index,
 			[](void* state, Scene& scene, EntityHandle& handleSlot) {
 				const uint64_t guid = *std::launder(reinterpret_cast<uint64_t*>(state));
@@ -87,22 +75,12 @@ namespace Index {
 			return 0;
 		}
 
-		// Reserve the entity pool up-front. We pass an empty perTypeCounts
-		// span — the per-component pool reserves are a separate optimization
-		// (would require us to track types as we record). Even without it,
-		// the single pool growth is the dominant win.
 		scene.ReserveForLoadRuntime(m_EntityCount, {});
 
-		// Bulk-create every entity in one call — collapses N pool growths
-		// into one. Reuse m_CreatedHandles across Clear() cycles so a
-		// per-frame spawn loop stays allocation-free.
 		m_CreatedHandles.resize(m_EntityCount);
 		scene.CreateEntitiesBulk(m_EntityCount, m_CreatedHandles);
 
-		// Defer idempotent on_construct hooks (Transform2D, SpriteRenderer,
-		// StaticTag, ParticleSystem2D) until the guard destructor. They fire
-		// once per recorded entity in a tight loop at the end of the scope
-		// instead of being interleaved with each emplace.
+		// LoadGuard defers on_construct hooks to end-of-scope instead of firing per-emplace.
 		Scene::LoadGuard guard(scene);
 
 		// Stamp runtime metadata on every entity — same as the managed ECB
@@ -112,39 +90,18 @@ namespace Index {
 			scene.SetEntityMetaDataNoFlags(m_CreatedHandles[i], EntityOrigin::Runtime);
 		}
 
-		// Walk the command stream and apply each. The Apply thunk knows the
-		// component type at template-instantiation time so this loop is just
-		// "indirect call, indirect call, ..." — no type lookup, no
-		// emplaceFromBytes registration requirement (which is why the native
-		// path supports every C++ component, including ones the managed ECB
-		// can't handle for lack of an emplacer).
-		//
-		// Instantiate commands rewrite their entry in m_CreatedHandles
-		// through the EntityHandle& out-parameter: the thunk destroys
-		// the bulk-create placeholder, runs the prefab serializer, and
-		// reassigns the slot to the new root. AddComponent thunks see
-		// the same reference but only read from it.
 		for (Command& cmd : m_Commands) {
 			if (cmd.EntityIndex < m_EntityCount) {
 				cmd.Apply(cmd.Storage, scene, m_CreatedHandles[cmd.EntityIndex]);
 			}
 		}
 
-		// Guard goes out of scope here, flushing deferred hooks. The single
-		// end-of-batch dirty pulse runs after the flush — matches the
-		// managed ECB ordering (ScriptBindingsEcb.cpp:227).
-		// (Falling out of the guard's scope happens automatically as we
-		// return from the inner block.)
 		scene.MarkAllDirtyOnce();
 
 		return static_cast<int>(m_EntityCount);
 	}
 
 	void NativeEntityCommandBuffer::Clear() {
-		// Run captured-state destructors for any non-trivial captures. Most
-		// builtin uses (lambdas that capture only Vec2/float, value-payload
-		// commands for POD components) hit the trivial-destructor fast path
-		// where Destroy is nullptr and this loop is a no-op.
 		for (Command& cmd : m_Commands) {
 			if (cmd.Destroy != nullptr) {
 				cmd.Destroy(cmd.Storage);

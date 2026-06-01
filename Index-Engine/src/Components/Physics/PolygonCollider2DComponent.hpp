@@ -22,10 +22,6 @@ namespace Index {
 		PolygonCollider2DComponent();
 		explicit PolygonCollider2DComponent(EntityHandle entity);
 
-		// Replace the polygon's local-space vertex list. Must contain
-		// 3..k_MaxVertices points; out-of-range values are clamped and a
-		// warning is logged. The points are convex-hulled before upload to
-		// Box2D, so winding order doesn't matter.
 		void SetPoints(const std::vector<Vec2>& localPoints, const Scene& scene);
 		const std::vector<Vec2>& GetLocalPoints() const { return m_LocalPoints; }
 		std::vector<Vec2> GetWorldPoints() const;
@@ -36,9 +32,6 @@ namespace Index {
 		void SetSides(int sides, const Scene& scene);
 		int GetSides() const { return static_cast<int>(m_LocalPoints.size()); }
 
-		// Per-axis scaling on top of the entity's transform scale, mirroring
-		// BoxCollider2D's local size — lets the inspector tweak the polygon
-		// without changing transform scale (which would also affect rendering).
 		void SetSize(const Vec2& size, const Scene& scene);
 		Vec2 GetSize() const { return m_LocalSize; }
 		Vec2 GetLocalSize(const Scene& scene) const { (void)scene; return m_LocalSize; }

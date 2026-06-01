@@ -15,11 +15,7 @@ namespace Index {
 
 		static bool Exists(const std::string& path);
 
-		// Writes `text` to `path` atomically: stages to `path + ".tmp"` then renames over
-		// the destination. Returns true on success. Returns false (without modifying the
-		// original file) if the staging open fails, the write fails, the rename fails, or
-		// the target volume is full. Callers MUST check the return value before treating
-		// data as persisted (e.g. before clearing a dirty flag).
+		// Atomic write via ".tmp" rename; [[nodiscard]] — callers MUST check before clearing dirty flags.
 		[[nodiscard]] static bool WriteAllText(const std::string& path, const std::string& text);
 		[[nodiscard]] static bool WriteAllBytes(const std::string& path, const std::vector<std::uint8_t>& bytes);
 

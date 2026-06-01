@@ -12,10 +12,7 @@
 namespace Index {
 
 	namespace {
-		// All conversions go through std::to_chars / std::from_chars so the
-		// wire format is locale-immune (LC_NUMERIC won't turn "3.14" into
-		// "3,14" or fail to parse it). The matching parser-side fix lives in
-		// Json.cpp around lines 321-323.
+		// std::to_chars / std::from_chars for locale-immune formatting (LC_NUMERIC-safe). Parser-side complement in Json.cpp ~321.
 		std::string FormatFloat(double v) {
 			char buf[64];
 			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general);
@@ -137,10 +134,7 @@ namespace Index {
 		case PropertyType::String:
 			return StringValue;
 		case PropertyType::StringList: {
-			// Wire format: items joined by '\n', with embedded literal
-			// '\n' / '\\' inside an item escaped as `\n` / `\\`. This
-			// keeps the round-trip reversible without needing a real
-			// JSON encoder for the simple list-of-strings case.
+			// Wire format: items joined by newlines; embedded newline/backslash chars are backslash-escaped.
 			std::string out;
 			for (size_t i = 0; i < StringListValue.size(); ++i) {
 				if (i > 0) out.push_back('\n');
@@ -153,12 +147,7 @@ namespace Index {
 			return out;
 		}
 		case PropertyType::List:
-			// Native-only path today — descriptors built via
-			// Properties::MakeList own the round-trip through their Get/Set
-			// lambdas (no string serialization needed in-process). The C#
-			// side hasn't shipped list-of-T support yet, so there's nothing
-			// for ToString to encode here. Return empty rather than asserting
-			// so any accidental call path keeps the round-trip lossless-empty.
+			// Native-only: no C# string round-trip needed; return empty so accidental callers get a well-formed PropertyValue.
 			return {};
 		case PropertyType::Vec2: {
 			return FormatFloat(FloatVec[0]) + "," + FormatFloat(FloatVec[1]);
@@ -332,14 +321,7 @@ namespace Index {
 			break;
 		}
 		case PropertyType::TextureRef: {
-			// Slice-aware texture-ref encoding: the ReferencePicker emits
-			// `<textureUUID>|slice|<sliceName>` when the user picks a sprite-
-			// sheet sub-rect instead of the full texture. We split here so
-			// slice-aware setters (SpriteRenderer / Image) receive both halves
-			// in one PropertyValue: UIntValue = parent texture UUID,
-			// StringValue = slice name. Generic texture refs (Material slots,
-			// particle textures, …) ignore StringValue and behave identically
-			// to the legacy `<uuid>` form.
+			// Slice-aware encoding: uuid|slice|sliceName from ReferencePicker; UIntValue = parent UUID, StringValue = slice name. Generic refs ignore StringValue.
 			static constexpr std::string_view sliceSep = "|slice|";
 			const std::size_t sliceIdx = text.find(sliceSep);
 			if (sliceIdx != std::string::npos) {
@@ -348,10 +330,7 @@ namespace Index {
 			}
 			else {
 				v.UIntValue = text.empty() ? 0 : ToUInt64(text);
-				// Explicit clear — the previous selection on the same field may
-				// have left a slice name in StringValue and a subsequent
-				// full-texture pick must wipe it so the slice-aware setter
-				// reverts the entity to "full texture" rendering.
+				// Explicit clear: a prior slice selection leaves StringValue set; a subsequent full-texture pick must wipe it so the slice-aware setter reverts to full-texture.
 				v.StringValue.clear();
 			}
 			break;
@@ -385,10 +364,6 @@ namespace Index {
 			break;
 		}
 		case PropertyType::List:
-			// Same rationale as ToString — native-only, no string round-trip
-			// needed for in-process descriptors. Falls through with an empty
-			// ListValue so a caller that ignores the type tag still gets a
-			// well-formed PropertyValue.
 			break;
 		}
 		return v;

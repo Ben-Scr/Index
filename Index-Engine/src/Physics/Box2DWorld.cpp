@@ -165,12 +165,7 @@ namespace Index {
 			m_BodyBindings.erase(id);
 		}
 
-		// Even after every body is destroyed, the dispatcher's m_activeContacts
-		// can still hold ContactKey entries whose ShapeA/ShapeB referenced bodies
-		// of the destroyed scene — UnregisterShape only removes entries on a
-		// matching shape id, but bodies destroyed *before* their shape ids were
-		// looked up (e.g. wholesale teardown paths) leave dangling rows. Sweep
-		// them by Scene* so a subsequent contact query can't return a freed Scene.
+		// UnregisterShape only removes by shape id; bodies torn down before their ids are walked leave dangling rows — sweep by Scene* to purge them.
 		m_Dispatcher.PurgeContactsForScene(scene);
 	}
 

@@ -44,9 +44,6 @@ namespace Index::Win32BuildProgressWindow {
         }
 
         UINT QueryDpi(HWND hwnd) {
-            // GetDpiForWindow is Win10 1607+. Fall back to system DPI on
-            // older Windows so the popup still renders at a reasonable
-            // size instead of dividing by zero.
             HMODULE user32 = GetModuleHandleW(L"user32.dll");
             if (user32) {
                 using GetDpiForWindowFn = UINT (WINAPI*)(HWND);
@@ -204,10 +201,6 @@ namespace Index::Win32BuildProgressWindow {
         }
 
         void ComputeCenteredRect(int width, int height, int& outX, int& outY) {
-            // Prefer the editor's main window monitor so the popup lands on
-            // the same screen the user is looking at. Fall back to the
-            // primary monitor's work area when the engine window isn't up
-            // yet (e.g. command-line build invocation).
             HWND parent = nullptr;
             if (Window* w = Window::GetActiveWindow()) {
                 if (GLFWwindow* g = w->GetGLFWWindow()) {
@@ -248,10 +241,6 @@ namespace Index::Win32BuildProgressWindow {
             return;
         }
 
-        // Compute size first using the primary monitor's DPI; once the
-        // HWND exists we re-query its actual monitor's DPI and resize if
-        // needed (cross-monitor DPI mismatch is rare here since the popup
-        // is centered on the editor's monitor below).
         UINT seedDpi = QueryDpi(nullptr);
         int width  = Scale(k_LogicalWidth,  seedDpi);
         int height = Scale(k_LogicalHeight, seedDpi);
@@ -265,10 +254,6 @@ namespace Index::Win32BuildProgressWindow {
             }
         }
 
-        // WS_POPUP for a captionless window; WS_EX_TOPMOST keeps it above
-        // the editor without us having to chase focus changes. WS_EX_-
-        // TOOLWINDOW excludes it from Alt-Tab + the taskbar — this is a
-        // transient progress popup, not a real window the user manages.
         st.Hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             k_ClassName,
@@ -294,9 +279,6 @@ namespace Index::Win32BuildProgressWindow {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
 
-        // Native dark-mode titlebar attribute — no visible titlebar on a
-        // WS_POPUP, but DWM still uses it for the drop shadow + border
-        // tint so the popup matches the editor's dark theme.
         BOOL dark = TRUE;
         DwmSetWindowAttribute(st.Hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */,
             &dark, sizeof(dark));
@@ -318,11 +300,7 @@ namespace Index::Win32BuildProgressWindow {
         st.Progress = clamped;
         st.Stage = std::move(newStage);
         InvalidateRect(st.Hwnd, nullptr, FALSE);
-        // Force the WM_PAINT to dispatch this frame so the bar advances
-        // visibly without waiting for the next message-loop tick (the
-        // editor's glfwPollEvents would deliver it eventually, but
-        // UpdateWindow keeps the popup smoother during long builds).
-        UpdateWindow(st.Hwnd);
+        UpdateWindow(st.Hwnd); // flush WM_PAINT immediately; glfwPollEvents would deliver it eventually but UpdateWindow keeps the bar smooth during long builds
     }
 
     void Hide() {

@@ -30,9 +30,6 @@ namespace Index::ReferencePicker {
 	namespace {
 
 		struct PickerState {
-			// IsOpen drives ImGui::Begin's visibility — it goes false when the
-			// user clicks the [X] in the title bar or picks an entry. RequestOpen
-			// is the "set me to true on the next frame" pulse from callers.
 			bool IsOpen = false;
 			bool RequestOpen = false;
 			char Search[128] = {};
@@ -43,49 +40,22 @@ namespace Index::ReferencePicker {
 			std::string PendingValue;
 			Style Style = Style::Plain;
 
-			// Eye toggle: when true, engine-shipped (built-in) assets like
-			// the default font appear in the picker list. When false, they
-			// are hidden so the project's own assets are easier to scan.
-			// Persists across opens for the session — the user typically
-			// has a stable preference here.
 			bool IncludeBuiltIns = true;
 
-			// Thumbnail cache lives on the picker (one cache for any kind of
-			// asset preview). The cache LRU-evicts past 256 entries; it's
-			// cheap to keep around and lazy-initialised the first time the
-			// thumbnail style runs.
 			ThumbnailCache Thumbnails;
 			bool ThumbnailsInitialized = false;
 			std::unordered_set<std::string> LoadedThumbnailPaths;
 
-			// Multiple panels (Inspector, ProjectSettings, PrefabInspector)
-			// each call RenderPopup defensively because OpenForFieldKey can
-			// originate from any of them. When two such panels are visible
-			// in the same frame, RenderPopup gets called twice — both calls
-			// hit ImGui::Begin with the same window title, ImGui treats that
-			// as one window with the widgets stacked, and every internal ID
-			// (search box, list child, per-row InvisibleButton) collides.
-			// This counter tracks the last ImGui frame the popup actually
-			// rendered so subsequent calls in the same frame return early.
+			// Tracks the last frame RenderPopup rendered; subsequent calls in the same frame return early to avoid duplicate ImGui window IDs.
 			int LastRenderedFrame = -1;
 
-			// Deferred thumbnail discard. Set when the picker closes or
-			// reopens with new entries; processed at the start of the next
-			// RenderPopup frame. Inline discard is unsafe because ImGui's
-			// draw list for the current frame still references the cached
-			// textures via drawList->AddImage(ImTextureID=raw view ptr).
-			// Releasing them mid-frame leaves dangling pointers that crash
-			// imgui_impl_wgpu when it walks the draw data in OnPostRender.
+			// Deferred discard: inline release is unsafe because the current frame's draw list still references those texture pointers.
 			bool DiscardPending = false;
 		};
 
 		PickerState s_State;
 
-		// Promoted from EnsureBuiltInsRegisteredInEditor's local static so
-		// ReferencePicker::Shutdown() can reset it on reload — otherwise the
-		// guard sticks at `true` after Application::Reload, the editor never
-		// re-runs the IndexAssets directory walk, and any built-ins that
-		// got purged during teardown remain absent from the picker.
+		// Module-level (not local static) so Shutdown() can reset it on reload — a local static would stick true and skip the re-walk.
 		bool s_BuiltInsDone = false;
 
 		void EnsureThumbnailCacheInitialized() {
@@ -117,22 +87,8 @@ namespace Index::ReferencePicker {
 			return "Entity " + std::to_string(entityId);
 		}
 
-		// AssetRegistry's static state lives in a header-only inline-static
-		// class with no INDEX_API export, so each binary that includes the
-		// header gets its own copy of `s_BuiltInById` (Index-Engine.dll has
-		// one, Index-Editor.exe has another). Engine-side built-in
-		// registrations (FontManager::Initialize, Application::Initialize's
-		// directory scan) populate the DLL's copy; this picker reads the
-		// EXE's copy. Without re-registering in editor context the picker
-		// sees nothing — explaining why the texture/font lists were empty.
-		//
-		// This helper mirrors the engine-side built-in registration into
-		// the editor binary's copy. Idempotent — guarded by a static flag
-		// so the directory walk only runs once per process.
-		//
-		// TODO: convert AssetRegistry to a properly DLL-exported class
-		// (move methods + statics into a .cpp, mark with INDEX_API) so
-		// this duplicate population isn't necessary.
+		// AssetRegistry is header-only with inline statics, so the editor EXE has its own copy that the engine DLL never populates; this re-registers built-ins into the EXE's copy.
+		// TODO: export AssetRegistry properly (INDEX_API) to remove this duplication.
 		void EnsureBuiltInsRegisteredInEditor() {
 			if (s_BuiltInsDone) return;
 			s_BuiltInsDone = true;
@@ -174,22 +130,10 @@ namespace Index::ReferencePicker {
 	std::vector<Entry> CollectAssetsByKind(AssetKind kind) {
 		EnsureBuiltInsRegisteredInEditor();
 
-		// Force a re-scan: AssetRegistry only auto-rebuilds when something
-		// has marked it dirty. Without this, dropping a new asset into
-		// Assets/ won't show up in the picker until a save / reload.
 		AssetRegistry::MarkDirty();
 		AssetRegistry::Sync();
 
-		// Editor-icon textures are an implementation detail of the
-		// editor chrome (FileIcons / General / etc. inside
-		// IndexAssets/Textures/Editor). They balloon the texture
-		// picker by hundreds of entries no project ever wants to
-		// reference, so filter them out of every asset-kind listing.
-		// Match path-separator-agnostic: the AssetRegistry stores
-		// canonicalised paths with native separators, while the .ico
-		// scanner and copy_file emit forward slashes. Matching both
-		// shapes covers the BuiltIn (engine-shipped) and project copy
-		// alike.
+		// Filter out IndexAssets/Textures/Editor entries (editor chrome icons) from all asset-kind listings.
 		auto isEditorIconPath = [](const std::string& path) {
 			auto contains = [&path](std::string_view needle) {
 				return path.find(needle) != std::string::npos;
@@ -202,12 +146,6 @@ namespace Index::ReferencePicker {
 		entries.push_back({ k_NoneLabel, "", "(none)", "", "__none__", false });
 		const auto records = AssetRegistry::GetAssetsByKind(kind);
 #ifndef NDEBUG
-		// I2: an empty result here is the load-bearing symptom of the
-		// AssetRegistry DLL-boundary issue (see EnsureBuiltInsRegisteredInEditor
-		// header comment / known-issues note in CLAUDE.md). The editor's
-		// copy of `s_BuiltInById` may not have been populated by the engine
-		// DLL's initialization path. Warn once per process so a developer
-		// notices instead of staring at an empty picker.
 		if (records.empty()) {
 			static bool s_Warned = false;
 			if (!s_Warned) {
@@ -228,14 +166,6 @@ namespace Index::ReferencePicker {
 			entry.IsBuiltIn = AssetRegistry::IsBuiltIn(record.Id);
 			entries.push_back(std::move(entry));
 
-			// Slice sub-entries for sprite sheets. Surfaces every authored
-			// SpriteSlice as its own pickable entry so a user can assign a
-			// sub-rect directly from the picker — same UX as expanding the
-			// sheet in the Asset Browser, just routed through the modal.
-			// The encoded Value (<textureUUID>|slice|<sliceName>) is parsed
-			// by PropertyValue::FromString for PropertyType::TextureRef so
-			// slice-aware setters (SpriteRenderer / Image) apply both fields
-			// atomically; generic texture refs ignore the slice name.
 			if (kind != AssetKind::Texture) continue;
 			TextureMeta meta = AssetRegistry::ReadTextureMeta(record.Path);
 			if (meta.Sprites.empty()) continue;
@@ -248,10 +178,6 @@ namespace Index::ReferencePicker {
 				sliceEntry.Value = std::to_string(record.Id) + "|slice|" + slice.Name;
 				sliceEntry.UniqueId = "slice:" + std::to_string(record.Id) + ":" + slice.Name;
 				sliceEntry.IsBuiltIn = AssetRegistry::IsBuiltIn(record.Id);
-				// Carry the slice's pixel rect so the thumbnail layout below
-				// can crop the parent texture preview to just this slice
-				// (UVs computed from rect / texture-size at draw time, so we
-				// don't need the texture's dimensions in CollectAssetsByKind).
 				sliceEntry.IsSlice = true;
 				sliceEntry.SliceX = slice.X;
 				sliceEntry.SliceY = slice.Y;
@@ -277,11 +203,6 @@ namespace Index::ReferencePicker {
 			auto view = scene.GetRegistry().view<entt::entity>();
 			for (EntityHandle handle : view) {
 				if (!scene.IsValid(handle)) continue;
-				// Persistent UUID, not RuntimeID — RuntimeID is reallocated on
-				// scene reload, so a reference saved with it would point at
-				// nothing after the next load. Scene::TryResolveEntityRef and
-				// the script-binding resolver both accept either form, so
-				// writing the UUID keeps refs valid across save/load.
 				const uint64_t entityId = scene.GetEntityPersistentID(handle);
 				if (entityId == 0) continue;
 
@@ -326,11 +247,6 @@ namespace Index::ReferencePicker {
 			auto view = scene.GetRegistry().view<entt::entity>();
 			for (EntityHandle handle : view) {
 				if (!scene.IsValid(handle)) continue;
-				// Persistent UUID, not RuntimeID — RuntimeID is reallocated on
-				// scene reload, so a reference saved with it would point at
-				// nothing after the next load. Scene::TryResolveEntityRef and
-				// the script-binding resolver both accept either form, so
-				// writing the UUID keeps refs valid across save/load.
 				const uint64_t entityId = scene.GetEntityPersistentID(handle);
 				if (entityId == 0) continue;
 
@@ -364,13 +280,6 @@ namespace Index::ReferencePicker {
 		s_State.Entries = std::move(entries);
 		s_State.Search[0] = '\0';
 		s_State.Style = style;
-		// Thumbnail style: queue the previous open's stale entries for
-		// discard at the start of the next RenderPopup frame. We can't
-		// discard inline — if a panel earlier in this same frame already
-		// rendered the picker, its drawList->AddImage calls still
-		// reference those textures, and freeing them now would dangle
-		// the pointers (crashes imgui_impl_wgpu's draw walk). The cache
-		// itself stays initialised so we don't pay the setup cost again.
 		if (style == Style::Thumbnails) {
 			EnsureThumbnailCacheInitialized();
 			s_State.DiscardPending = true;
@@ -386,36 +295,19 @@ namespace Index::ReferencePicker {
 	}
 
 	void RenderPopup() {
-		// Per-frame idempotency guard — see LastRenderedFrame comment in
-		// PickerState. Without this, two visible panels both rendering the
-		// popup in the same frame stack widgets into one ImGui window and
-		// trigger "visible items with conflicting ID" warnings.
 		const int frame = ImGui::GetFrameCount();
 		if (s_State.LastRenderedFrame == frame) return;
 		s_State.LastRenderedFrame = frame;
 
-		// Process any deferred thumbnail discard. Runs BEFORE we begin
-		// rendering this frame, so the prior frame's ImGui draw list
-		// (which referenced the cached texture pointers) has already
-		// been consumed by imgui_impl_wgpu — releasing the textures
-		// now is safe. See DiscardPending comment in PickerState.
 		if (s_State.DiscardPending) {
 			DiscardThumbnails();
 			s_State.DiscardPending = false;
 		}
 
-		// Mirror the SpriteRenderer texture picker's UX: a regular window
-		// (not a modal) with its own [X] close button. RequestOpen is the
-		// "appear this frame" pulse from OpenForFieldKey; IsOpen is the
-		// living visibility state ImGui::Begin reads + writes via the
-		// title-bar X.
 		if (!s_State.IsOpen) {
 			return;
 		}
 
-		// Use a fresh window the first time the picker opens; ImGui will
-		// reposition it on top. Reset position so the picker doesn't end
-		// up off-screen if the editor docking layout changed since last open.
 		const ImVec2 size = (s_State.Style == Style::Thumbnails)
 			? ImVec2(360.0f, 460.0f)
 			: ImVec2(440.0f, 430.0f);
@@ -440,16 +332,6 @@ namespace Index::ReferencePicker {
 			return;
 		}
 
-		// Eye toggle on the right; search bar fills the remainder. The icon
-		// itself carries the state — eye_open when built-ins are visible,
-		// eye_closed when hidden — so we use the full-white tint in both
-		// cases instead of the brightness-as-state convention the older
-		// single-icon (visibility_eye) version used. Both PNGs live at
-		// IndexAssets/Textures/Editor/General/{eye_open,eye_closed}/ at
-		// the standard 16/32/64/128 snap sizes. If the icon fails to
-		// load (asset dir missing on a fresh build before postbuild copy
-		// ran) we fall back to an ASCII-labelled button so the toggle
-		// stays usable during dev iteration.
 		const ImGuiStyle& style = ImGui::GetStyle();
 		const bool showingBuiltIns = s_State.IncludeBuiltIns;
 		const uint64_t eyeIcon = EditorIcons::Get(
@@ -495,10 +377,6 @@ namespace Index::ReferencePicker {
 
 		const std::string filter = ToLowerCopy(std::string(s_State.Search));
 
-		// Pre-filter entries once so both layouts share the same visible
-		// set + the empty-state message can be displayed correctly. The
-		// eye toggle hides built-ins; the (None) entry has IsBuiltIn=false
-		// so it always survives the filter.
 		std::vector<const Entry*> visible;
 		visible.reserve(s_State.Entries.size());
 		for (const Entry& entry : s_State.Entries) {
@@ -516,11 +394,6 @@ namespace Index::ReferencePicker {
 		ImGui::BeginChild("##ReferencePickerList");
 
 		if (s_State.Style == Style::Thumbnails) {
-			// Thumbnail-row layout, copied from the SpriteRenderer texture
-			// picker. Each entry shows a 48px image preview + filename +
-			// relative path. Entries with empty Secondary (e.g. "(None)")
-			// fall back to a label-only row so the (None) entry still
-			// renders sanely at the top.
 			const float thumbnailSize = 48.0f;
 			const float rowPadding = 6.0f;
 			const float lineHeight = ImGui::GetTextLineHeight();
@@ -564,17 +437,6 @@ namespace Index::ReferencePicker {
 							const float texW = static_cast<float>(texture->GetWidth());
 							const float texH = static_cast<float>(texture->GetHeight());
 
-							// Slice entries crop the parent texture preview to
-							// the slice's pixel rect so the user sees what
-							// they'd actually be picking ("undead_4"), not the
-							// whole sheet that contains it. Aspect-fitting
-							// uses the slice's own dimensions; UVs are
-							// computed against the parent texture's full
-							// size. Non-slice entries keep (0,1)→(1,0) UVs
-							// and aspect-fit on the full texture, which is
-							// the existing browser preview convention
-							// (thumbnails are uploaded bottom-up, hence the
-							// Y-axis flip in both branches).
 							float aspectW = texW;
 							float aspectH = texH;
 							float u0 = 0.0f, u1 = 1.0f;
@@ -639,9 +501,6 @@ namespace Index::ReferencePicker {
 				}
 			}
 
-			// LRU eviction for off-screen thumbnails — match the existing
-			// texture-picker behaviour so memory stays bounded as the user
-			// scrolls a large texture project.
 			for (auto it = s_State.LoadedThumbnailPaths.begin(); it != s_State.LoadedThumbnailPaths.end();) {
 				if (visiblePaths.find(*it) == visiblePaths.end()) {
 					s_State.Thumbnails.Invalidate(*it);
@@ -653,9 +512,6 @@ namespace Index::ReferencePicker {
 			}
 		}
 		else {
-			// Plain layout for non-asset reference types (entities, prefabs,
-			// component refs, scenes). PushID(UniqueId) keeps Selectable IDs
-			// distinct without having to bake them into the visible label.
 			for (const Entry* entryPtr : visible) {
 				const Entry& entry = *entryPtr;
 				ImGui::PushID(entry.UniqueId.c_str());
@@ -694,11 +550,6 @@ namespace Index::ReferencePicker {
 		ImGui::EndChild();
 		ImGui::End();
 
-		// The user just clicked the title-bar [X] or picked an entry
-		// (applySelection sets IsOpen=false). The thumbnails they
-		// rendered this frame are still referenced by ImGui's draw
-		// list — defer the actual release to the next RenderPopup
-		// frame so imgui_impl_wgpu doesn't walk dangling pointers.
 		if (!s_State.IsOpen) s_State.DiscardPending = true;
 	}
 
@@ -752,12 +603,6 @@ namespace Index::ReferencePicker {
 		if (outSecondary) outSecondary->clear();
 		if (assetId == 0) return k_NoneLabel;
 
-		// The editor binary has its own copy of AssetRegistry's built-in
-		// table (engine DLL static state doesn't cross the DLL boundary),
-		// so populate it on demand. Without this, defaults that point at
-		// engine-shipped GUIDs — most visibly TextRendererComponent's
-		// k_DefaultFontAssetId — render as "(Missing Asset)" on the first
-		// inspector frame, before the user has opened any picker.
 		EnsureBuiltInsRegisteredInEditor();
 
 		const AssetKind kind = AssetRegistry::GetKind(assetId);
@@ -801,10 +646,6 @@ namespace Index::ReferencePicker {
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
 			if (resolved) return;
 			EntityHandle handle = entt::null;
-			// UUID-aware: tries RuntimeID first, then UUIDComponent. The
-			// picker now persists UUIDs (post-reload RuntimeIDs differ from
-			// what was saved), so we must resolve through both paths to
-			// avoid a "(Missing Entity)" display after every scene reload.
 			if (scene.TryResolveEntityRef(entityId, handle)) {
 				display = GetEntityName(scene, handle, entityId);
 				secondary = scene.GetName();
@@ -846,12 +687,6 @@ namespace Index::ReferencePicker {
 	}
 
 	void Shutdown() {
-		// Clear in-flight UI state (search field, request-open pulse,
-		// pending selection, target field key, eye-toggle, ...) and
-		// reset the built-ins one-shot guard so the next session re-runs
-		// EnsureBuiltInsRegisteredInEditor against whatever AssetRegistry
-		// the new project sets up. The thumbnail cache also needs to
-		// drop its GL handles before the OpenGL context goes away.
 		if (s_State.ThumbnailsInitialized) {
 			s_State.Thumbnails.Clear();
 		}

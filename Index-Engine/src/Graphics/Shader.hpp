@@ -2,11 +2,7 @@
 #include <string>
 #include <cstdint>
 
-// Shader was historically a thin wrapper around an OpenGL program handle
-// (typed GLuint). The public interface still exposes the handle as a
-// 32-bit unsigned with 0 reserved as "invalid". The GLuint/GLenum
-// aliases remain for header back-compat; they're plain integer typedefs
-// now.
+// GLuint/GLenum kept as plain uint32_t typedefs for back-compat.
 using GLuint = std::uint32_t;
 using GLenum = std::uint32_t;
 

@@ -42,12 +42,6 @@ namespace Index {
 	}
 
 	namespace {
-		// Resolve the parent of the camera entity (if any) into its world
-		// Transform2DComponent. Returns nullptr when the entity is a root,
-		// has no HierarchyComponent, or the parent is invalid / lacks a
-		// transform — in any of those cases SetPosition/SetRotation can
-		// write the world value through to LocalPosition/LocalRotation
-		// directly because no parent transform composes on top of it.
 		const Transform2DComponent* TryGetParentWorldTransform(Scene* scene, EntityHandle entity) {
 			if (!scene || entity == entt::null || !scene->IsValid(entity)) return nullptr;
 			if (!scene->HasComponent<HierarchyComponent>(entity)) return nullptr;
@@ -60,12 +54,6 @@ namespace Index {
 
 	void Camera2DComponent::SetPosition(Vec2 p) {
 		if (auto* transform = TryGetTransform()) {
-			// `p` is a world-space position. If the camera entity is a child,
-			// LocalPosition has to be `p` expressed in the parent's local
-			// frame — otherwise TransformHierarchySystem will compose
-			// (parentWorld * p) next propagation pass and place the camera
-			// at twice the intended offset. For root entities Local* and
-			// world coincide so the inverse is the identity.
 			Vec2 localP = p;
 			if (const auto* parentTr = TryGetParentWorldTransform(m_OwnerScene, m_OwnerEntity)) {
 				// Inverse of TransformPoint: T^-1 (parent.Position), R^-1
@@ -77,11 +65,6 @@ namespace Index {
 				const float invSy = parentTr->Scale.y != 0.0f ? 1.0f / parentTr->Scale.y : 1.0f;
 				localP = Vec2{ unrotated.x * invSx, unrotated.y * invSy };
 			}
-			// Route through Transform2DComponent::SetPosition so we update
-			// the authored Local* value. Writing transform->Position directly
-			// would be silently overwritten by the next TransformHierarchySystem
-			// propagation pass (which derives Position from LocalPosition) and
-			// the camera would snap back.
 			transform->SetPosition(localP);
 			// Cache the world value too so UpdateView (and any same-frame
 			// reader) sees the new placement before propagation runs.
@@ -105,9 +88,6 @@ namespace Index {
 
 	void Camera2DComponent::SetRotation(float rad) {
 		if (auto* transform = TryGetTransform()) {
-			// Same logic as SetPosition: `rad` is a world rotation. If we
-			// have a parent, LocalRotation must be the offset from the
-			// parent's world rotation so propagation reproduces `rad`.
 			float localRad = rad;
 			if (const auto* parentTr = TryGetParentWorldTransform(m_OwnerScene, m_OwnerEntity)) {
 				localRad = rad - parentTr->Rotation;
@@ -135,10 +115,7 @@ namespace Index {
 		const float halfH = m_OrthographicSize * m_Zoom;
 		const float halfW = halfH * aspect;
 
-		// 2D rendering submits at world z=0. An OpenGL-convention range
-		// like (0, 100) maps z=0 to NDC z=-1, which Vulkan/D3D12 clip-space
-		// (valid range [0, 1]) culls. A symmetric (-1, 1) range maps z=0
-		// to NDC z=0 — visible under every backend the engine targets.
+		// Symmetric z range [-1,1] maps world z=0 to NDC z=0, valid under all backends (Vulkan/D3D12 clip [0,1] culls z<0).
 		const float zNear = -1.0f;
 		const float zFar  =  1.0f;
 
@@ -195,16 +172,7 @@ namespace Index {
 	{
 		if (!m_Viewport) return { 0.0f, 0.0f };
 
-		// `pos` is expected in viewport-local pixel space — Game View
-		// panel-relative in the editor, OS-window-relative in shipped
-		// builds. The script binding for Input.MousePosition rebases via
-		// Window::GetUIRegion() before this function ever runs, so we
-		// only need the viewport dimensions here — not the offset.
-		//
-		// Dimensions: in editor the camera's m_Viewport gets restored to
-		// OS-window size after RenderGameView's RAII guard, so we still
-		// need to read the panel size from UIRegion. Runtime leaves
-		// UIRegion unset and m_Viewport IS the render target.
+		// Editor: m_Viewport is restored to OS-window size after RenderGameView's RAII guard, so read panel size from UIRegion. Runtime: UIRegion unset, m_Viewport is the target.
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		float vpW = 0.0f;
 		float vpH = 0.0f;
@@ -221,14 +189,7 @@ namespace Index {
 		const float xNdc = (2.0f * pos.x / vpW) - 1.0f;
 		const float yNdc = 1.0f - (2.0f * pos.y / vpH);
 
-		// Build the projection from the same (vpW, vpH) we just used to
-		// derive NDC. m_ProjMat is cached from m_Viewport's aspect — and
-		// the editor's Game View flow temporarily resizes m_Viewport to
-		// the FBO, then restores it to the OS-window size before scripts
-		// run. Using m_ProjMat here would invert against the OS-window
-		// aspect while NDC was derived against the panel aspect, which
-		// drifts X (and Y, on a width-letterboxed render) any time those
-		// aspects differ.
+		// Rebuild proj from panel dims rather than cached m_ProjMat: editor restores m_Viewport to OS-window size before scripts run, so aspects may differ.
 		const float aspect = vpW / vpH;
 		const float halfH = m_OrthographicSize * m_Zoom;
 		const float halfW = halfH * aspect;

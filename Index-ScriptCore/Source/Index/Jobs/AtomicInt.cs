@@ -2,14 +2,7 @@ using System.Threading;
 
 namespace Index.Jobs;
 
-/// <summary>
-/// Reference-typed atomic 32-bit integer for sharing state across parallel jobs.
-/// <para>
-/// IJob / IJobParallelFor structs are copied per partition, so plain int fields
-/// inside them are not shared. Capture an <see cref="AtomicInt"/> by reference to
-/// get a single counter every worker mutates.
-/// </para>
-/// </summary>
+/// <summary>Reference-typed atomic 32-bit integer. IJob structs are copied per partition, so plain int fields are not shared — capture this by reference to get a single counter all workers mutate.</summary>
 public sealed class AtomicInt
 {
     private int m_Value;

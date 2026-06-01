@@ -22,9 +22,6 @@ namespace Index::Win32Titlebar {
             Window* Owner = nullptr;
         };
 
-        // Per-HWND state. Single-threaded access — Win32 messages dispatch
-        // on the same thread that pumps glfwPollEvents, so no locking.
-        // Static-local pattern avoids order-of-init issues across TUs.
         std::unordered_map<HWND, State>& StateMap() {
             static std::unordered_map<HWND, State> s_Map;
             return s_Map;
@@ -40,11 +37,6 @@ namespace Index::Win32Titlebar {
             bool Empty() const { return W <= 0 || H <= 0; }
         };
 
-        // Published by the titlebar layer each frame (window-local pixels).
-        // Empty until the layer publishes, so a CustomTitlebar=true window
-        // with no layer drawing has no drag region — safer than auto-
-        // designating "top N px" as caption when the app's UI might be
-        // drawing real widgets there.
         Rect g_CaptionRect{};
         std::vector<Rect> g_NonClientRects;
 
@@ -80,13 +72,7 @@ namespace Index::Win32Titlebar {
             switch (msg) {
             case WM_NCCALCSIZE: {
                 if (wparam == TRUE) {
-                    // Strip the non-client area so we render edge-to-edge.
-                    // When maximized, Windows would extend the window past
-                    // the screen edges by the system frame size — inset
-                    // here to keep it within the monitor work area. The
-                    // resize handles + maximize-edge-bleed fix come in
-                    // Phase 2; this minimal version keeps the maximized
-                    // window inside the visible area.
+                    // Maximized: inset by frame+padding to keep window inside the monitor work area.
                     if (IsZoomed(hwnd)) {
                         NCCALCSIZE_PARAMS* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
                         const UINT dpi = GetDpiForWindow(hwnd);
@@ -103,10 +89,6 @@ namespace Index::Win32Titlebar {
                 break;
             }
             case WM_NCHITTEST: {
-                // Order of precedence: 8-way resize border first (with
-                // corners taking precedence over edges), then caption
-                // (only inside the published caption rect, and only
-                // outside any registered non-client override).
                 const POINT cursor{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) };
                 RECT window;
                 GetWindowRect(hwnd, &window);
@@ -116,10 +98,6 @@ namespace Index::Win32Titlebar {
                 const int h = window.bottom - window.top;
                 const UINT dpi = GetDpiForWindow(hwnd);
                 const int border = MulDiv(8, static_cast<int>(dpi), 96);
-                // WS_THICKFRAME tracks the GLFW_RESIZABLE attribute even
-                // after GLFW_DECORATED is turned off — querying it here
-                // means the hit-test naturally follows runtime resize-
-                // ability changes without extra plumbing.
                 const bool resizable = (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_THICKFRAME) != 0;
                 const bool maximized = IsZoomed(hwnd) != FALSE;
 
@@ -149,12 +127,7 @@ namespace Index::Win32Titlebar {
                 return HTCLIENT;
             }
             case WM_GETMINMAXINFO: {
-                // Without WS_CAPTION the default WM_GETMINMAXINFO can
-                // size a maximized window to the full monitor rect
-                // instead of the work area, which would cover the
-                // taskbar. Constrain to rcWork explicitly so maximize
-                // stops at the taskbar regardless of taskbar position
-                // (top/bottom/left/right docks).
+                // Without WS_CAPTION the default sizing covers the full monitor; constrain to rcWork so maximize respects the taskbar.
                 HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
                 MONITORINFO mi{};
                 mi.cbSize = sizeof(mi);
@@ -175,11 +148,6 @@ namespace Index::Win32Titlebar {
                 // flicker that DWM otherwise does on focus change.
                 return TRUE;
             case WM_DPICHANGED: {
-                // Windows hands us a suggested rect in lparam (in the new
-                // DPI's coordinates) so the window keeps an appropriate
-                // physical size across monitors. Honor it directly — the
-                // titlebar height is DPI-scaled at hit-test time, so the
-                // caller doesn't need to retransmit it after this point.
                 const RECT* suggested = reinterpret_cast<const RECT*>(lparam);
                 if (suggested) {
                     SetWindowPos(hwnd, nullptr,
@@ -191,10 +159,7 @@ namespace Index::Win32Titlebar {
                 return 0;
             }
             case WM_SIZE: {
-                // Some Windows builds drop the extended-frame margins
-                // across minimize/restore — re-apply on SIZE_RESTORED
-                // so the drop shadow doesn't disappear. Cheap (a few
-                // microseconds) and idempotent.
+                // Re-apply DWM margins on restore; some Windows builds drop them across minimize/restore.
                 if (wparam == SIZE_RESTORED) {
                     MARGINS m{ 0, 0, 0, 1 };
                     DwmExtendFrameIntoClientArea(hwnd, &m);
@@ -232,15 +197,10 @@ namespace Index::Win32Titlebar {
         }
         map.emplace(hwnd, state);
 
-        // {0,0,0,1} keeps DWM rendering the system drop shadow on a
-        // window with no OS frame. Standard "frameless window with
-        // shadow" recipe.
         MARGINS margins{ 0, 0, 0, 1 };
         DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-        // Without SWP_FRAMECHANGED, the WM_NCCALCSIZE strip doesn't
-        // apply until the first user-triggered resize — the window
-        // would show old non-client area for a frame.
+        // SWP_FRAMECHANGED forces WM_NCCALCSIZE immediately; without it the NC strip is deferred to the next user resize.
         SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -293,10 +253,6 @@ namespace Index::Win32Titlebar {
         HWND hwnd = glfwGetWin32Window(window);
         if (!hwnd) return;
         constexpr DWORD k_DwmwaUseImmersiveDarkMode = 20;
-        // Attribute 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Win10 1809+).
-        // DwmSetWindowAttribute returns a failure HRESULT on older
-        // builds where the attribute is unknown but does not crash, so
-        // the call is safe to make unconditionally.
         BOOL useDark = enabled ? TRUE : FALSE;
         DwmSetWindowAttribute(hwnd, k_DwmwaUseImmersiveDarkMode, &useDark, sizeof(useDark));
     }

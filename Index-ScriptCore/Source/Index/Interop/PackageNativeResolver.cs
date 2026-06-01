@@ -6,41 +6,7 @@ using System.Runtime.InteropServices;
 
 namespace Index.Interop;
 
-// Routes `[DllImport("Pkg.<Name>.Native")]` calls from package C# layers to the
-// matching native sibling DLL.
-//
-// Why this exists
-// ----------------
-// Engine packages with both a `csharp` and `engine_core`/`standalone_cpp`
-// layer build to two separate output folders:
-//
-//   bin/<config>/Pkg.<Name>/         — managed assembly (Pkg.<Name>.dll)
-//   bin/<config>/Pkg.<Name>.Native/  — unmanaged DLL (Pkg.<Name>.Native.dll)
-//
-// .NET's default DllImport resolver searches the host's app dir
-// (`AppContext.BaseDirectory`) and then platform PATH. Neither contains the
-// package's native DLL — they're siblings of the host's exe folder, not
-// children. Without an explicit resolver, every P/Invoke call from a package
-// throws DllNotFoundException at first invocation.
-//
-// This resolver registers a callback on Index-ScriptCore's load. ScriptCore is
-// referenced by every Pkg.<Name> assembly the loader emits, so the
-// `[ModuleInitializer]` fires the first time any package code touches a
-// ScriptCore type — which in practice is always before any P/Invoke runs.
-//
-// Resolution order
-// ----------------
-// For library names that start with "Pkg.", we try (in order):
-//   1. <baseDir>/../<libraryName>/<libraryName>.{dll,so,dylib}
-//      — the dev layout: native sits next to the host exe folder.
-//   2. <baseDir>/Packages/<libraryName>/<libraryName>.{dll,so,dylib}
-//      — the future shipped layout: native bundled under Packages/.
-//   3. <baseDir>/<libraryName>.{dll,so,dylib}
-//      — fallback if the user copied the DLL alongside the host.
-//
-// On miss we return IntPtr.Zero so .NET's default search still gets a chance.
-// We do NOT throw — the package's own DllImport call site will surface the
-// underlying DllNotFoundException with the right context if every probe fails.
+// DllImport resolver for Pkg.*.Native DLLs: .NET's default search doesn't find package native siblings. Probe order: <exeDir>/../<lib>/, <exeDir>/Packages/<lib>/, <exeDir>/ (fallback).
 internal static class PackageNativeResolver
 {
     private const string PackagePrefix = "Pkg.";
@@ -55,12 +21,6 @@ internal static class PackageNativeResolver
 #pragma warning restore CA2255
     internal static void Init()
     {
-        // Register against the executing assembly (Index-ScriptCore). Each
-        // Pkg.<Name> assembly that depends on ScriptCore inherits this hook
-        // because the runtime walks the import chain when resolving — but to
-        // be defensive, we also register on every newly-loaded assembly that
-        // looks like an Index package. Ensures resolution even if a package
-        // is loaded before ScriptCore (shouldn't happen, but cheap).
         try
         {
             NativeLibrary.SetDllImportResolver(typeof(PackageNativeResolver).Assembly, Resolve);

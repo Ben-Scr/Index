@@ -10,11 +10,7 @@
 
 namespace Index {
 
-	// Implementation detail of Application — intentionally NOT INDEX_API.
-	// Exporting a class with a `vector<unique_ptr<...>>` member triggers MSVC's
-	// well-known dllexport-instantiates-deleted-copy-op error. Consumers reach
-	// LayerStack only via Application's public methods, so direct DLL export
-	// isn't needed.
+	// NOT INDEX_API: exporting a class with vector<unique_ptr<...>> triggers MSVC dllexport / deleted-copy-op errors.
 	class LayerStack {
 	public:
 		using Storage = std::vector<std::unique_ptr<Layer>>;
@@ -33,14 +29,7 @@ namespace Index {
 			m_Layers.push_back(std::move(overlay));
 		}
 
-		// Pop semantics: if a dispatch is currently iterating a snapshot of the
-		// stack (BeginDispatch/EndDispatch around it), the layer is *flagged* for
-		// removal and the actual erase + destructor runs in EndDispatch. Without
-		// a dispatch in flight, removal is immediate.
-		//
-		// Why: snapshots hand out raw `Layer*`. If a callback's pop destroyed a
-		// sibling unique_ptr, later iterations would dispatch to freed memory.
-		// Deferred-pop keeps the layer object alive until iteration finishes.
+		// Deferred-pop during dispatch: raw Layer* snapshots would alias freed memory if a sibling unique_ptr was destroyed mid-iteration.
 		bool PopLayer(Layer* layer) {
 			auto begin = m_Layers.begin();
 			auto end = begin + static_cast<std::ptrdiff_t>(m_InsertIndex);
@@ -88,10 +77,6 @@ namespace Index {
 		bool Empty() const { return m_Layers.empty(); }
 		std::size_t Size() const { return m_Layers.size(); }
 
-		// Open a dispatch window. PopLayer/PopOverlay calls inside the window
-		// defer their erase until the matching EndDispatch. Re-entrant: nested
-		// dispatches share the same pending-pop list and only the outermost
-		// EndDispatch flushes.
 		void BeginDispatch() {
 			++m_DispatchDepth;
 		}
@@ -128,10 +113,6 @@ namespace Index {
 			m_PendingPop.clear();
 		}
 
-		// True iff `layer` is staged for removal. Snapshot iteration uses this
-		// to skip layers a sibling has already popped during the current
-		// dispatch — visiting them would still be safe (they exist) but is
-		// surprising and burns work.
 		bool IsPendingPop(Layer* layer) const {
 			if (m_PendingPop.empty()) {
 				return false;
@@ -139,11 +120,6 @@ namespace Index {
 			return std::find(m_PendingPop.begin(), m_PendingPop.end(), layer) != m_PendingPop.end();
 		}
 
-		// Index-based access. Returns nullptr on out-of-range. Callers that
-		// dispatch into Layer callbacks should iterate with a fresh
-		// `Size()` check each step rather than range-for, since user code
-		// inside the callback may PushLayer/PopLayer and invalidate
-		// iterators (the underlying vector can reallocate).
 		Layer* At(std::size_t index) {
 			return index < m_Layers.size() ? m_Layers[index].get() : nullptr;
 		}

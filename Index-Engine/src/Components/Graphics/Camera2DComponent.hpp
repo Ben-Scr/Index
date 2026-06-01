@@ -48,19 +48,11 @@ namespace Index {
 		const glm::mat4 GetViewMatrix() const { return m_ViewMat; }
 		const glm::mat4 GetProjectionMatrix() const { return m_ProjMat; }
 
-		// Null-guard: cameras created before Initialize() (or after Destroy())
-		// have m_Viewport == nullptr; callers that probe these dimensions
-		// for layout/projection math should see a sentinel zero rather than
-		// crash on the deref.
 		float ViewportWidth() const { return m_Viewport ? static_cast<float>(m_Viewport->GetWidth()) : 0.0f; }
 		float ViewportHeight() const { return m_Viewport ? static_cast<float>(m_Viewport->GetHeight()) : 0.0f; }
 
 		bool IsValid() const { return m_OwnerScene != nullptr; }
 
-		// Owning scene + entity. Used by Renderer2D to look up sibling
-		// components on the camera entity (e.g. PostProcessing2DComponent)
-		// at render time. Returns nullptr / entt::null when the camera
-		// hasn't been Initialized yet or has been Destroyed.
 		Scene* GetOwnerScene() const { return m_OwnerScene; }
 		EntityHandle GetOwnerEntity() const { return m_OwnerEntity; }
 

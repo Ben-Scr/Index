@@ -1,8 +1,4 @@
-// NOTE: this .cpp uses <imgui.h>. The Index-Engine premake EXCLUDES this
-// file from the engine DLL's compile set (it's covered by the broader
-// `removefiles { "src/Diagnostics/**.cpp" }` filter alongside StatsOverlay.cpp).
-// Index-Editor and Index-Runtime each compile this file into their own
-// binary via explicit `files { ... }` entries.
+// NOTE: excluded from the engine DLL compile set (see premake5.lua); Index-Editor and Index-Runtime each compile it directly.
 
 #include "Diagnostics/LogOverlay.hpp"
 
@@ -37,20 +33,12 @@ namespace Index::Diagnostics {
 			return "???";
 		}
 
-		// Filter: skip core engine logs in the runtime overlay. The user's
-		// game logs (Type::Client) and explicit editor-console logs
-		// (Type::EditorConsole) are what game devs care about; engine
-		// internals would drown the overlay otherwise.
 		bool ShouldShow(Log::Type source) {
 			return source == Log::Type::Client || source == Log::Type::EditorConsole;
 		}
 	}
 
 	LogOverlay::LogOverlay() {
-		// Subscribe to log events. Capture `this` is safe because
-		// destructor unsubscribes before `this` goes away. The callback
-		// fires on whatever thread called IDX_INFO etc. — the mutex in
-		// OnLogEntry handles that.
 		m_SubscriptionId = Log::OnLog.Add([this](const Log::Entry& e) {
 			OnLogEntry(e);
 		});
@@ -79,10 +67,7 @@ namespace Index::Diagnostics {
 		ImGui::TextUnformatted("Logs");
 		ImGui::Separator();
 
-		// Snapshot under the lock, then render outside it. The deque is
-		// small (≤256 entries) and the snapshot is one allocation per
-		// frame — acceptable for a debug overlay. Rendering inside the
-		// lock would block any logging thread for the duration.
+		// Snapshot under lock, render outside — rendering inside would block logging threads for the full ImGui draw.
 		std::deque<StoredEntry> snapshot;
 		{
 			std::scoped_lock lock(m_Mutex);
@@ -94,10 +79,6 @@ namespace Index::Diagnostics {
 			return;
 		}
 
-		// Bounded scroll region — fixed width and capped height so the
-		// overlay doesn't grow without bound when many lines pile up.
-		// AlwaysAutoResize on the parent window means the child sets the
-		// effective window size.
 		const float childWidth  = 420.0f;
 		const float childHeight = 220.0f;
 		ImGui::BeginChild("##IndexLogScroll", ImVec2(childWidth, childHeight),

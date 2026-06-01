@@ -9,13 +9,7 @@ namespace Index {
 
 	class Scene;
 
-	/// Circle collider component using the Axiom-Physics library.
-	///
-	/// The authored Radius is multiplied by the larger absolute axis of the
-	/// owning entity's Transform2D.Scale before being pushed to the underlying
-	/// AxiomPhys circle (a single radius can't represent non-uniform scaling;
-	/// taking the max keeps collisions from silently shrinking). Matches the
-	/// scale-follows-transform convention BoxCollider2DComponent already uses.
+	/// Circle collider using Axiom-Physics. Radius is scaled by max(|Scale.x|, |Scale.y|) — a circle can't represent non-uniform scale so max avoids silent shrinkage.
 	struct INDEX_API FastCircleCollider2DComponent {
 		float Radius = 0.5f;
 

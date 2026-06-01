@@ -82,13 +82,7 @@ namespace Index {
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		if (Application::IsEditor()) {
-			// In editor: route through the editor's stop-play path
-			// instead of closing the editor window. Without this hook,
-			// the call was a silent no-op and the user couldn't end a
-			// play session from script (had to click Stop manually);
-			// with it, scripted Application.Quit() inside the editor
-			// behaves like clicking Stop. The editor's pre-render
-			// drains the flag via ApplicationEditorAccess.
+			// In editor: scripted Quit routes to RequestEditorStopPlay instead of closing the editor window; the flag is drained in the pre-render pass.
 			Application::RequestEditorStopPlay();
 			return;
 		}
@@ -99,28 +93,17 @@ namespace Index {
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		if (Application::IsEditor()) {
-			// Mirror Application.Quit()'s editor routing: a scripted
-			// reload inside the editor would otherwise tear down the
-			// editor process. Stop play instead — that's the editor
-			// analog of a runtime "restart from scratch".
+			// In editor: scripted Reload routes to RequestEditorStopPlay to avoid tearing down the editor process.
 			Application::RequestEditorStopPlay();
 			return;
 		}
 		Application::Reload();
 	}
 
-	// Runtime sibling of the compile-time INDEX_EDITOR define. True when
-	// the host process is the editor binary, false in shipped runtime
-	// builds. Useful for runtime branches that can't be #if'd because
-	// the same script DLL feeds both editor preview and ship builds.
 	static int Index_Application_IsEditor() {
 		return Application::IsEditor() ? 1 : 0;
 	}
 
-	// Logical-core count on the host machine. Returns 4 as a floor when
-	// the OS can't report a value (matches the JobSystem auto path's
-	// fallback so script-driven thread budgets stay consistent with
-	// engine-internal sizing).
 	static int Index_Application_GetProcessorCount() {
 		unsigned int hw = std::thread::hardware_concurrency();
 		return hw > 0 ? static_cast<int>(hw) : 4;
@@ -214,10 +197,6 @@ namespace Index {
 		return requiredBytes;
 	}
 
-	// ── Window Bindings ─────────────────────────────────────────────────
-	// All Window_* thunks share the same null-window safety: if the
-	// engine hasn't created a window yet (early init / headless test
-	// host), getters return zero / empty and setters silently no-op.
 
 	static int Index_Window_GetWidth()
 	{
@@ -231,10 +210,6 @@ namespace Index {
 		return window ? window->GetHeight() : 0;
 	}
 
-	// Two-call buffer pattern — see Index_Application_GetClipboardStringBuffer
-	// for the protocol. The thread-local s_StringReturnBuffer stages the
-	// value between the size-probe call and the copy call so the reported
-	// byte count matches what the second call writes.
 	static int Index_Window_GetTitleBuffer(char* outBuffer, int capacity)
 	{
 		auto* window = Application::GetWindow();
@@ -372,11 +347,6 @@ namespace Index {
 		return CopyToManagedBuffer(IDX_VERSION_LONG, outBuffer, capacity);
 	}
 
-	// 0 = Debug (editor preview), 1 = Development, 2 = Release. Editor mode
-	// always reports Debug — that mirrors the INDEX_EDITOR define being the
-	// "I am iterating" signal from the C# side. Outside the editor we honor
-	// the project's ActiveBuildProfile which drives INDEX_BUILD_DEVELOPMENT
-	// vs INDEX_BUILD_RELEASE for shipped game binaries.
 	static int Index_Engine_GetBuildConfiguration()
 	{
 		if (Application::IsEditor()) return 0;
@@ -495,18 +465,7 @@ namespace Index {
 		auto* app = Application::GetInstance();
 		if (!CanReadScriptInput()) { *outX = 0.0f; *outY = 0.0f; return; }
 
-		// Rebase to the visible viewport's top-left so scripts see (0, 0)
-		// where the game actually renders, not the OS-window origin.
-		// Two cases both publish through Window::UIRegion:
-		//   * Editor: Game View panel writes its panel rect every frame.
-		//   * Standalone with a build aspect lock: Window::SyncViewport
-		//     FromFramebuffer publishes the centered sub-rect, so cursor
-		//     positions inside the black-bar surround read as negative or
-		//     out-of-bounds — which is the right semantics for a script
-		//     asking "where is the cursor inside the game?".
-		// When neither path is active (standalone, no aspect lock), the
-		// region stays inactive and we fall through to raw OS-window
-		// coords — which IS the game viewport.
+		// Rebases cursor coords to viewport origin via Window::UIRegion (editor Game View panel rect, or aspect-lock sub-rect); falls through to raw OS coords when inactive.
 		Vec2 pos = app->GetInput().GetMousePosition();
 		const Window::UIRegion uiRegion = Window::GetUIRegion();
 		if (uiRegion.IsActive()) {

@@ -10,18 +10,6 @@ namespace Index {
 
 	class Entity;
 
-	// Per-descriptor metadata. Optional fields default to "no override". The
-	// drawer reads these to pick clamp ranges, drag speeds, tooltip strings,
-	// section headers, etc.
-	//
-	// All numeric metadata is stored as double so a single struct works for
-	// integer and floating-point clamps without templating.
-	//
-	// Builder methods (`WithClamp`, `WithTooltip`, ...) return *this so authors
-	// can chain configuration in one expression. Free helpers in
-	// `Properties::Meta` (PropertyRegistration.hpp) start a fresh metadata so
-	// the common shapes read like English: `Properties::Meta::Clamp(0, 1)`,
-	// `Properties::Meta::Header("Audio").WithSpace(8.0f)`, etc.
 	struct PropertyMetadata {
 		// Hover tooltip text (empty = no tooltip).
 		std::string Tooltip;
@@ -44,17 +32,8 @@ namespace Index {
 		// Whether the field is read-only in the inspector.
 		bool ReadOnly = false;
 
-		// Vector-field stepper toggle. The default DragFloat/DragInt row for
-		// Vec2/Vec3/Vec4/IntVec* draws a `[-] [drag] [+]` triple per channel;
-		// setting this true drops the +/- buttons so the row is just the
-		// drag/input field — useful for component fields where the steppers
-		// would crowd the inspector (e.g. collider sizes/offsets).
 		bool HideStepperButtons = false;
 
-		// PropertyType::String only: when true the drawer renders a
-		// resizable multi-line text box instead of the default single
-		// line. MultiLineRows controls the visible row count (defaults
-		// to 4 lines when MultiLine is set, ignored otherwise).
 		bool MultiLine = false;
 		int MultiLineRows = 4;
 
@@ -69,22 +48,8 @@ namespace Index {
 		// drawer dispatches per-row through the matching primitive widget.
 		PropertyType ListItemType = PropertyType::None;
 
-		// Optional gate. If set, evaluated against every entity in the
-		// selection before drawing the field. If any entity returns false
-		// the row is rendered through ImGui::BeginDisabled (greyed-out
-		// widget, edits ignored). Use this for "enable field B only when
-		// field A is set" patterns — declarative, reusable, and the same
-		// gate works for native components and C# script fields.
 		std::function<bool(const Entity&)> EnabledIfFn;
 
-		// Optional "reset this section to defaults" callback. When set on
-		// a descriptor that carries HeaderContent, the inspector renders
-		// a right-click context menu on the CollapsingHeader with a
-		// "Reset to defaults" option that invokes this callback per
-		// selected entity. Use this for grouped settings like the
-		// PostProcessing component's per-effect sections, where the user
-		// wants to revert just one effect group's parameters without
-		// nuking the whole component.
 		std::function<void(Entity&)> ResetSectionFn;
 
 		// === Builder methods ===

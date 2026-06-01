@@ -2,32 +2,15 @@
 
 #include <cstdint>
 
-// =============================================================================
-// Backend-neutral rendering enums.
-// -----------------------------------------------------------------------------
-// These types mediate between the engine and the graphics backend. They
-// MUST NOT include any backend headers (glad, vulkan, d3d, webgpu) so
-// callers in renderer / UI / editor code can be compiled against the
-// abstract `RenderApi` without leaking backend types into their headers.
-// Translation to backend constants happens inside the backend .cpp file
-// (see Backend/WebGPUApi.cpp).
-// =============================================================================
+// Backend-neutral rendering enums. MUST NOT include backend headers — translation happens in Backend/WebGPUApi.cpp.
 
 namespace Index {
 
-	// Polygon rasterization mode. The Editor View's "Triangle / Mixed" draw
-	// modes flip into Wireframe to render every primitive's edges; default is
-	// Filled. Backends without per-face polygon mode (Metal, WebGPU) emulate
-	// Wireframe by repacking the index buffer at submission time — that work
-	// stays inside the backend, callers just request the mode.
 	enum class PolygonMode : uint8_t {
 		Filled = 0,
 		Wireframe,
 	};
 
-	// Cull-face mode. Mirrors GL's GL_NONE / GL_FRONT / GL_BACK / GL_FRONT_AND_BACK
-	// without leaking the GLenum. The default for 2D rendering is `None` because
-	// quads are submitted in mixed winding orders depending on flip flags.
 	enum class CullMode : uint8_t {
 		None = 0,
 		Back,
@@ -35,11 +18,6 @@ namespace Index {
 		FrontAndBack,
 	};
 
-	// Predefined blend recipes. Most engine call sites need exactly one of
-	// these (alpha-blended sprite quads, premultiplied UI text). A custom
-	// `(srcRGB, dstRGB, srcAlpha, dstAlpha)` overload lives on RenderApi for
-	// the rare exception. The intent: `RenderApi::SetBlendMode(BlendMode::Alpha)`
-	// is the readable, common-case form.
 	enum class BlendMode : uint8_t {
 		Disabled = 0,
 		Alpha,           // src = SRC_ALPHA, dst = ONE_MINUS_SRC_ALPHA
@@ -48,9 +26,6 @@ namespace Index {
 		Opaque,          // src = ONE,       dst = ZERO
 	};
 
-	// Channels to clear in a `RenderApi::Clear` call. Bitmask so callers can
-	// `Color | Depth` in one call. The historical engine-init clear path
-	// always cleared both, so `Color | Depth` is the typical default.
 	enum class ClearFlags : uint32_t {
 		None  = 0,
 		Color = 1u << 0,
@@ -68,10 +43,6 @@ namespace Index {
 		return (static_cast<uint32_t>(value) & static_cast<uint32_t>(flag)) != 0;
 	}
 
-	// Pixel format for offscreen render targets. The editor's per-viewport
-	// FBOs use RGBA8 + Depth24Stencil8; the post-processing pipeline uses
-	// RGBA16F for its intermediate scene target so bloom's bright-pass
-	// threshold can survive on un-clamped HDR pixels.
 	enum class TextureFormat : uint8_t {
 		RGBA8 = 0,
 		R8,
@@ -79,10 +50,6 @@ namespace Index {
 		RGBA16F,
 	};
 
-	// Filtering for offscreen-render-target attachments (and the editor's
-	// ImGui::Image preview, which samples the same texture). The renderer's
-	// own assets use the existing Texture2D class which carries its own
-	// Filter/Wrap enums — those don't change.
 	enum class TextureFilter : uint8_t {
 		Nearest = 0,
 		Linear,

@@ -27,12 +27,6 @@ namespace Index {
 		void   (*Application_SetVsyncEnabled)(int enabled);
 
 		// ── Window ───────────────────────────────────────────────────
-		// Direct accessors for the engine's OS window (title bar, size,
-		// position, fullscreen state, focus). The C# `Index.Window` static
-		// class wraps these. Strings cross via the two-call buffer
-		// pattern; bools are int 1/0; Vector2Int comes back via two
-		// out-int pointers (same shape as Input_GetMousePosition's float
-		// pair) and goes in as two ints.
 		int    (*Window_GetWidth)();
 		int    (*Window_GetHeight)();
 		int    (*Window_GetTitleBuffer)(char* outBuffer, int capacity);
@@ -51,8 +45,6 @@ namespace Index {
 		void   (*Window_GetScreenSize)(int* outWidth, int* outHeight);
 
 		// ── Engine ───────────────────────────────────────────────────
-		// Build identity + GPU caps. Two-call buffer pattern for strings:
-		// pass (null, 0) to learn required size, then a sized buffer.
 		int    (*Engine_GetVersionBuffer)(char* outBuffer, int capacity);
 		// "Index <version> (<platform> <config>)" — matches IDX_VERSION_LONG.
 		int    (*Engine_GetVersionLongBuffer)(char* outBuffer, int capacity);
@@ -101,10 +93,6 @@ namespace Index {
 		int      (*Entity_HasComponent)(uint64_t entityID, const char* componentName);
 		int      (*Entity_AddComponent)(uint64_t entityID, const char* componentName);
 		int      (*Entity_RemoveComponent)(uint64_t entityID, const char* componentName);
-		// Script-specific routes (EntityScript subclasses). Mirror the
-		// component triplet but target ScriptComponent.Scripts +
-		// ScriptSystem instead of the ECS pool. Class name is the C#
-		// short type name (e.g. "TutorialScript").
 		int      (*Entity_AddScript)(uint64_t entityID, const char* className);
 		int      (*Entity_HasScript)(uint64_t entityID, const char* className);
 		int      (*Entity_RemoveScript)(uint64_t entityID, const char* className);
@@ -215,13 +203,9 @@ namespace Index {
 		void  (*CircleCollider2D_SetEnabled)(uint64_t entityID, int enabled);
 
 		// ── PolygonCollider2D ────────────────────────────────────────
-		// Vertex count, world-space vertex copy-out, and a custom hull setter
-		// (mirrors Physics2D_OverlapPolygon's `points + count` interleaved-floats convention).
 		int   (*PolygonCollider2D_GetVertexCount)(uint64_t entityID);
-		// Copies up to maxOut interleaved floats (x,y pairs) of world-space
-		// vertices into outPoints; returns the number of vertices actually written.
 		int   (*PolygonCollider2D_GetWorldPoints)(uint64_t entityID, float* outPoints, int maxOut);
-		// `points` is interleaved x,y; pointCount must be in [3, B2_MAX_POLYGON_VERTICES (8)].
+		// points: interleaved x,y; pointCount in [3, B2_MAX_POLYGON_VERTICES (8)].
 		void  (*PolygonCollider2D_SetPoints)(uint64_t entityID, const float* points, int pointCount);
 		void  (*PolygonCollider2D_SetSides)(uint64_t entityID, int sides);
 		void  (*PolygonCollider2D_GetCenter)(uint64_t entityID, float* outX, float* outY);
@@ -341,9 +325,6 @@ namespace Index {
 		int (*Physics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
 
 		// ── EntityPicker ─────────────────────────────────────────────
-		// AABB-based "what entity is at this world point" query. Shares the
-		// algorithm with the editor viewport's click-to-select handler — see
-		// Scene/EntityPicker.{hpp,cpp}.
 		int (*EntityPicker_TryPickEntity)(float worldX, float worldY, uint64_t* entityID);
 
 		// ── UI: RectTransform2D ──────────────────────────────────────
@@ -599,35 +580,13 @@ namespace Index {
 		void (*Dropdown_SetDisabledColor)(uint64_t entityID, float r, float g, float b, float a);
 
 		// ── ECS ref-API (appended for binary compat) ────────────────
-		// Direct pointer into the component's EnTT storage slot for `entityID`,
-		// or nullptr when the entity / component is missing. The C# side casts
-		// the void* to a blittable struct that mirrors the C++ component's
-		// layout and reads/writes fields with no per-property P/Invoke. Pointer
-		// is valid only until the next structural change to the same component
-		// pool, so callers refetch rather than cache across frames.
+		// Pointer into EnTT storage; valid only until next structural change — callers must NOT cache across frames.
 		void* (*Entity_GetComponentPtr)(uint64_t entityID, const char* componentName);
 
-		// sizeof(T) of the underlying C++ component, 0 when the name doesn't
-		// resolve or the type is empty/tag. C# checks its mirror struct's
-		// sizeof against this at script-engine init and refuses to load the
-		// user assembly on mismatch — catches silent layout drift before it
-		// corrupts memory.
+		// sizeof(T); C# checks this against its mirror struct at init and refuses to load on mismatch (guards layout drift).
 		int (*Entity_GetComponentSize)(const char* componentName);
 
-		// Opens a view across the named pools and fills outPointers with
-		// one row per matching entity. Each row contains poolCount slots:
-		// the first `writeCount` are raw pointers into the write pools (in
-		// the order names appear in `writeNames`), followed by `roCount`
-		// pointers into the readonly pools (in `readonlyNames` order). C#
-		// derives poolCount itself from the type parameters and indexes
-		// outPointers as `outPointers[row * poolCount + col]`.
-		//
-		// Returns the actual matched row count. If the return is larger than
-		// `maxRows`, only the first `maxRows` rows were written and the
-		// caller should resize and retry (same pattern as Scene_QueryEntities).
-		// Pointers are invalidated by any structural change to the same
-		// component pool — scripts must NOT add/remove/destroy entities
-		// inside a query iteration.
+		// Pointers are invalidated by any structural change; scripts must NOT add/remove/destroy entities inside iteration.
 		int (*Scene_OpenQueryView)(
 			const char* sceneName,
 			const char* writeNames,
@@ -638,7 +597,6 @@ namespace Index {
 			void** outPointers,
 			int maxRows);
 
-		// Core API appended after the ref-API block to preserve existing field order.
 		int      (*Application_GetRunInBackground)();
 		void     (*Application_SetRunInBackground)(int enabled);
 		void     (*Window_Restore)();
@@ -648,87 +606,34 @@ namespace Index {
 		void     (*Cursor_SetTexture)(uint64_t assetId);
 
 		// ── EntityCommandBuffer (appended for binary compat) ────────────
-		// Resolve a component's serializedName / displayName to its stable
-		// u32 typeId assigned by ComponentRegistry::Register. Called once
-		// per component type at managed AppDomain load, the result is
-		// cached in ComponentTypes<T>.NativeId, and every ECB command on
-		// the hot path references components purely by this u32. Returns
-		// 0 when the name is unknown (matching the "unregistered"
-		// sentinel of ComponentRegistry::GetByTypeId).
+		// Returns 0 when unknown; cached in ComponentTypes<T>.NativeId so the hot path avoids string lookups.
 		uint32_t (*Component_GetTypeId)(const char* componentName);
 
-		// Replay an entire ECB payload against the active scene in one
-		// P/Invoke. `buffer` is the byte-packed command stream produced
-		// by the managed NativeEntityCommandBuffer recorder; `length`
-		// bounds its size. On success, the runtime ID of each created
-		// entity is written into `outRuntimeIds` (which must hold at
-		// least `entityCount` ulong slots; managed code derives that
-		// count from its own recorder state). Returns the number of
-		// entities actually created, or a negative error code:
-		//   -1 = invalid header / truncated buffer
-		//   -2 = no active scene
-		//   -3 = output buffer too small
-		// Wire format documented in EntityCommandBufferWire.hpp.
+		// Returns entities created, or -1 = bad header, -2 = no scene, -3 = output buffer too small.
 		int (*Ecb_Playback)(const uint8_t* buffer, int length,
 			uint64_t* outRuntimeIds, int maxOut);
 
 		// ── JobSystem (appended for binary compat) ──────────────────────
-		// Cross-runtime job dispatch — managed schedules feed into the
-		// same native work-stealing pool that physics / particles use, so
-		// the CLR ThreadPool no longer fights the engine pool for cores.
-		//
-		// Handles are monotonically-numbered uint64_t IDs (0 = invalid).
-		// The native side keeps a small map from id → JobHandle + context
-		// + releaseContext callback. Release calls releaseContext(context)
-		// then erases the entry — managed dispatch passes a
-		// `&FreeGCHandle` style callback that owns the per-job
-		// GCHandle-wrapped box.
-
-		// Enqueue a single work item. `work(context)` runs on a native
-		// worker exactly once. `releaseContext(context)` fires on Release
-		// (after Wait completes) so the managed side can free the
-		// associated GCHandle. Returns 0 if the pool is shut down or the
-		// map can't accept another entry (extremely unlikely in practice).
+		// releaseContext fires on Release (after Wait) — managed side passes &FreeGCHandle to free the per-job GCHandle.
 		uint64_t (*JobSystem_Enqueue)(
 			void (*work)(void* context),
 			void* context,
 			void (*releaseContext)(void* context));
 
-		// Partitioned dispatch. The native side fans out [begin, end) into
-		// chunks of `batchSize` (or auto when 0) and invokes
-		// `work(context, lo, hi)` once per chunk concurrently. Returns a
-		// single handle that waits on all chunks. `releaseContext` fires
-		// once on Release (NOT per chunk) — chunks share the GCHandle.
 		uint64_t (*JobSystem_ParallelFor)(
 			int begin, int end, int batchSize,
 			void (*work)(void* context, int lo, int hi),
 			void* context,
 			void (*releaseContext)(void* context));
 
-		// Block the calling thread until the handle completes. Drains the
-		// queue while waiting (work-stealing) so a job that spawns
-		// sub-jobs and waits on them cannot deadlock. Idempotent.
+		// Work-steals while waiting; deadlock-safe for sub-job patterns.
 		void (*JobSystem_Wait)(uint64_t handle);
-
-		// Non-blocking completion query. Returns 1 when the handle's work
-		// is done, 0 otherwise. A zero / unknown handle returns 1
-		// ("nothing to do" reads as done).
 		int (*JobSystem_IsComplete)(uint64_t handle);
-
-		// Free the handle's slot in the native side's map. Calls the
-		// stored releaseContext(context) before erasing. Must be called
-		// exactly once per Enqueue / ParallelFor return value, after
-		// either Wait completes or IsComplete returned 1.
+		// Must be called exactly once after Wait / IsComplete==1.
 		void (*JobSystem_Release)(uint64_t handle);
 
 		int (*JobSystem_GetWorkerCount)();
 		int (*JobSystem_GetCallerWorkerIndex)(); // -1 when not on a worker
-
-		// ── UI: Scrollbar / ScrollRect / Mask / CircularSlider /
-		//       Layout Groups / ContentSizeFitter / WidthConstraint
-		//       (appended for binary compat — order MUST match the C#
-		//       NativeBindingsStruct mirror and the assignments at the
-		//       end of ScriptBindings::PopulateNativeBindings.) ──
 
 		// ── UI: Scrollbar ─────────────────────────────────────────────
 		float    (*Scrollbar_GetValue)(uint64_t entityID);
@@ -963,43 +868,21 @@ namespace Index {
 		void  (*WidthConstraint_SetMaxWidth)(uint64_t entityID, float value);
 
 		// ── CPU / JobSystem tuning (appended for binary compat) ──
-		// Returns std::thread::hardware_concurrency() with a floor of 4
-		// when the OS can't report a value. Exposed to scripts as
-		// `Index.Application.ProcessorCount` so games can size their
-		// own thread budgets against the host machine.
 		int (*Application_GetProcessorCount)();
-
-		// Resize the engine job pool. `workerCount <= 0` selects the
-		// auto-resolved default; positive values pass through verbatim
-		// (clamped to [1, 32]). Returns the resolved worker count after
-		// the resize. Drains queued work and joins existing workers, so
-		// safe to call at any time but may briefly stall the caller.
+		// workerCount <= 0 = auto-default; clamped to [1, 32]. Drains + joins existing workers — may briefly stall caller.
 		int (*JobSystem_Reconfigure)(int workerCount);
 
 		// ── SpriteRenderer filter (appended for binary compat) ──
-		// Mirrors the inspector setter — writes the component's FilterMode
-		// AND calls Texture2D::SetFilter on the bound texture so the
-		// sampler is regenerated. Filter ints map to enum class Filter
-		// {Point=0, Bilinear=1, Trilinear=2, Anisotropic=3}.
+		// Also calls Texture2D::SetFilter to regenerate the sampler. Filter: 0=Point, 1=Bilinear, 2=Trilinear, 3=Anisotropic.
 		int  (*SpriteRenderer_GetFilter)(uint64_t entityID);
 		void (*SpriteRenderer_SetFilter)(uint64_t entityID, int filter);
 
-		// Sprite-slice name. Empty string ("") = render the full texture
-		// (legacy behaviour). Non-empty string = render only the named
-		// SpriteSlice authored in the bound texture's `.meta`. The renderer
-		// resolves the name → UV rect via SpriteUVResolver every frame;
-		// stale references silently fall back to the full texture with a
-		// one-shot warning in the editor log.
+		// Empty = full texture; stale names fall back to full texture with a one-shot editor warning.
 		int  (*SpriteRenderer_GetSpriteNameBuffer)(uint64_t entityID, char* outBuffer, int capacity);
 		void (*SpriteRenderer_SetSpriteName)(uint64_t entityID, const char* name);
 
 		// ── Dynamic component registration (appended for binary compat) ──
-		// Called from the C# host (DynamicComponentRegistrar) at user-
-		// assembly load. Reflects over every struct annotated
-		// [NativeComponent(..., Generate = true)] and registers it with
-		// ComponentRegistry via this entry point — no codegen, no engine
-		// rebuild. Returns the assigned stable typeIdU32, or 0 on failure
-		// (duplicate name, zero size, etc.). Category: 0 = Component, 1 = Tag.
+		// Returns stable typeIdU32, or 0 on failure. Category: 0 = Component, 1 = Tag.
 		uint32_t (*Component_RegisterDynamic)(
 			const char* displayName,
 			const char* serializedName,
@@ -1008,23 +891,10 @@ namespace Index {
 			uint32_t size,
 			uint32_t alignment);
 
-		// Drops every dynamic registration. Called from UnloadUserAssembly
-		// BEFORE the ALC tears down so captured lambdas don't outlive the
-		// storage they reference. Idempotent.
+		// MUST be called before ALC teardown; captured lambdas would outlive their storage otherwise.
 		void (*Component_UnregisterAllDynamic)();
 
 		// ── Scene load-by-GUID (appended for binary compat) ──
-		// Scenes are tracked by AssetRegistry through `<Name>.scene` files
-		// + their `.meta` companion (carrying the stable AssetGUID). These
-		// entries let scripts route the asset-picker's UUID handle through
-		// the same SceneManager paths the name-based bindings hit, so a
-		// [ShowInEditor] SceneRef field can power SceneManager.LoadScene
-		// without the script having to know the file's stem.
-		//
-		// Resolver: GUID → AssetRegistry::ResolvePath → file stem →
-		// existing LoadSceneByName / UnloadScene / SetActiveScene. Returns
-		// 0 (or warns + no-ops, for Unload) when the GUID isn't a Scene
-		// asset or isn't tracked.
 		int      (*Scene_LoadByGuid)(uint64_t sceneGuid);
 		int      (*Scene_LoadAdditiveByGuid)(uint64_t sceneGuid);
 		void     (*Scene_UnloadByGuid)(uint64_t sceneGuid);
@@ -1037,19 +907,16 @@ namespace Index {
 		uint64_t (*Scene_GetActiveSceneGuid)();
 
 		// ── Rigidbody2D motion locks (appended for binary compat) ──
-		// Unity-style FreezePosition/FreezeRotation constraints, routed
-		// through Box2D's native b2MotionLocks. Setting any of these
-		// re-derives the body's effective mass / inertia in the solver, so
-		// changes are picked up on the next physics step without an extra
-		// dirty flag. Bool flags travel as int (0/1) across the FFI for the
-		// same reason every other bool-typed binding in this struct does:
-		// platform ABI agreement on `bool` width is fiddly.
 		int  (*Rigidbody2D_GetFreezePositionX)(uint64_t entityID);
 		void (*Rigidbody2D_SetFreezePositionX)(uint64_t entityID, int freeze);
 		int  (*Rigidbody2D_GetFreezePositionY)(uint64_t entityID);
 		void (*Rigidbody2D_SetFreezePositionY)(uint64_t entityID, int freeze);
 		int  (*Rigidbody2D_GetFreezeRotation)(uint64_t entityID);
 		void (*Rigidbody2D_SetFreezeRotation)(uint64_t entityID, int freeze);
+
+		// ── ParticleSystem2D texture (appended for binary compat) ──
+		uint64_t (*ParticleSystem2D_GetTexture)(uint64_t entityID);
+		void     (*ParticleSystem2D_SetTexture)(uint64_t entityID, uint64_t assetId);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1113,54 +980,24 @@ namespace Index {
 		void        (*SetGameSystemField)(int32_t handle, const char* fieldName, const char* value);
 
 		// ── UI event dispatch (appended for binary compat) ──
-		// Called by native UIEventSystem once per frame after writing
-		// transient UI state flags. The managed handler iterates UI
-		// components and fans out to static UI events.
 		void        (*RaiseUiEventDispatch)();
 
 		// ── Coroutine pump (appended for binary compat) ──
-		// Drains the IndexSynchronizationContext queue and ticks
-		// pending EntityScript coroutine awaiters. PumpCoroutinesUpdate
-		// is called once at the top of ScriptSystem::Update with the
-		// frame's scaled delta time; PumpCoroutinesFixedUpdate is
-		// called at the top of ScriptSystem::FixedUpdate.
 		void        (*PumpCoroutinesUpdate)(float deltaTime);
 		void        (*PumpCoroutinesFixedUpdate)();
 
 		// ── Inspector event bindings (appended for binary compat) ──
-		// Powers Unity-style "On Click ()" lists wired from the editor.
-		// GetInvokableMethodsBuffer returns a JSON string array of every
-		// invokable method declared on `className`'s user subclass — the
-		// inspector's method-name combo populates from this. Each entry
-		// is encoded as "<methodName>:<argKind>" where argKind is the
-		// numeric value of `InspectorEventArgKind` describing the
-		// method's first (and only) parameter type, or 0 for void.
-		// Methods with more than one parameter or unsupported types
-		// are filtered out at enumeration time.
-		// InvokeScriptMethodByName invokes the named method on the
-		// live instance addressed by `handle` and passes the typed
-		// `argValue` parsed against `argKind`; returns 1 on success,
-		// 0 when the method isn't on the class so the native side can
-		// log-once. argValue may be null when argKind == 0 (Void).
+		// Each entry encoded as "<name>:<argKind>"; methods with >1 param or unsupported types filtered out. Returns 1 on success, 0 if method not on class.
 		int         (*GetInvokableMethodsBuffer)(const char* className, char* outBuffer, int capacity);
 		int         (*InvokeScriptMethodByName)(int32_t handle, const char* methodName,
 			uint8_t argKind, const char* argValue);
 
 		// ── Window events (appended for binary compat) ──
-		// Native Window::SetWindowResizedCallback routes the resize event
-		// through Application's dispatcher; the dispatcher fires this so
-		// `Index.Window.OnResize` subscribers run on the same frame the
-		// GLFW callback delivered the new framebuffer size.
 		void        (*RaiseWindowResize)();
 		void        (*RaiseEnterChar)(uint32_t codepoint);
 
 		// ── Play-mode lifecycle (appended for binary compat) ──
-		// Editor calls this when stopping play mode, before the saved-
-		// scene snapshot is restored, so the managed side can strip any
-		// static-event subscribers that still point into the user
-		// assembly. Without it a stray play-mode `Log.LogMessage +=`
-		// keeps firing in edit mode and reaches through a destroyed
-		// EntityScript / Transform2D wrapper.
+		// Called before scene snapshot restore; strips static-event subscribers that would otherwise keep firing in edit mode.
 		void        (*OnPlayModeExited)();
 	};
 

@@ -52,13 +52,7 @@ namespace Index {
 		float aspect = static_cast<float>(m_ViewportWidth) / static_cast<float>(m_ViewportHeight);
 		float halfH = OrthographicSize * Zoom;
 		float halfW = halfH * aspect;
-		// 2D rendering submits at world z=0. The OpenGL-convention zNear/zFar
-		// of (0, 100) maps z=0 to NDC z=-1, which Vulkan/D3D12 clip-space
-		// (valid range [0, 1]) considers behind the near plane and culls.
-		// A symmetric (-1, 1) range maps z=0 to NDC z=0 — inside [0, 1] for
-		// Vulkan AND inside [-1, 1] for OpenGL, so the matrix is portable
-		// across every backend the engine targets without needing to
-		// branch on homogeneous-depth here.
+		// (-1, 1) zNear/zFar keeps z=0 in NDC z=0, which is valid for both Vulkan [0,1] and OpenGL [-1,1] depth ranges.
 		m_ProjMat = glm::ortho(-halfW, halfW, -halfH, halfH, -1.0f, 1.0f);
 	}
 
