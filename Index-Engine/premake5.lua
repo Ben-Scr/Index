@@ -292,14 +292,14 @@ project "Index-Engine"
     -- BuiltInComponentRegistration.cpp pulls heavy template instantiations from every
     -- registered component's Properties::Make / inspector descriptors, blowing past
     -- the COFF section limit on MSVC without /bigobj.
-    filter "files:**/BuiltInComponentRegistration.cpp"
+    filter { "files:**/BuiltInComponentRegistration.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 
     -- ScriptBindings.cpp hosts every Index_<Component>_<Member> binding for the
     -- C#/native bridge. Each WIDGET_*_BINDING macro expands into a pair of free
     -- functions, and with every UI widget covered the TU's section count exceeds
     -- the COFF default limit (C1128). Same fix as BuiltInComponentRegistration.
-    filter "files:**/ScriptBindings.cpp"
+    filter { "files:**/ScriptBindings.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 
     filter "system:windows"

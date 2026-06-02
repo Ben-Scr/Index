@@ -119,10 +119,10 @@ project "Index-Editor"
     -- Index-Engine/premake5.lua's "files:**/BuiltInComponentRegistration.cpp"
     -- filter). Without /bigobj these TUs hit the 64K COFF section limit
     -- (C1128) once a handful more components are added.
-    filter "files:**/ComponentInspectors.cpp"
+    filter { "files:**/ComponentInspectors.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 
-    filter "files:**/EditorComponentRegistration.cpp"
+    filter { "files:**/EditorComponentRegistration.cpp", "system:windows" }
         buildoptions { "/bigobj" }
 
     filter {}
