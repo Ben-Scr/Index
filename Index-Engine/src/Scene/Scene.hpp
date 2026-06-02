@@ -175,7 +175,7 @@ namespace Index {
 			}
 
 			auto entity = *view.begin();
-			return &view.get<TComponent>(entity);
+			return &view.template get<TComponent>(entity);
 		}
 
 		template<typename TComponent>
