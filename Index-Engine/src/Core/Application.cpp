@@ -805,7 +805,7 @@ namespace Index {
 		if (m_Input.GetKey(KeyCode::LeftControl) && m_Input.GetKeyDown(KeyCode::M)) {
 			if (m_Window) m_Window->MinimizeWindow();
 		}
-		if (m_Input.GetKeyDown(KeyCode::F11)) {
+		if (m_Configuration.EnableFullscreenToggle && m_Input.GetKeyDown(KeyCode::F11)) {
 			if (m_Window) m_Window->SetFullScreen(!m_Window->IsFullScreen());
 		}
 	}

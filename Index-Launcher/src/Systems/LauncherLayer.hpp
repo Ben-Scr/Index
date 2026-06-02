@@ -83,6 +83,19 @@ namespace Index {
 			bool InitialBuildSucceeded = true;
 		};
 
+		// Async deep-copy of an existing project; Stage/Progress read by the popup each frame.
+		struct DuplicateProjectTaskState {
+			std::mutex Mutex;
+			std::thread Worker;
+			std::optional<IndexProject> Result;
+			std::string Error;
+			std::string Stage = "Idle";
+			float Progress = 0.0f;
+			bool Running = false;
+			bool Finished = false;
+			bool Success = false;
+		};
+
 		struct ProjectSizeTaskState {
 			std::mutex Mutex;
 			bool Finished = false;
@@ -179,6 +192,12 @@ namespace Index {
 		void RenderErrorPopup();
 		void RenderRenameProjectPopup();
 		void RequestProjectRename(const LauncherProjectEntry& entry);
+		void RenderDuplicateProjectPopup();
+		void RequestProjectDuplicate(const LauncherProjectEntry& entry);
+		void StartDuplicateProjectAsync(const std::string& sourceRoot, const std::string& newName,
+			const std::string& location, const std::string& directoryName);
+		void PollDuplicateProjectTask();
+		void ResetDuplicateProjectTask(bool clearWorker = true);
 		void RemoveProjectFromList(const LauncherProjectEntry& entry);
 		const LauncherProjectEntry* GetSelectedProject() const;
 
@@ -290,6 +309,15 @@ namespace Index {
 		std::optional<LauncherProjectEntry> m_PendingRenameProject;
 		bool m_OpenRenamePopup = false;
 		char m_RenameBuffer[256]{};
+
+		std::optional<LauncherProjectEntry> m_PendingDuplicateProject;
+		bool m_OpenDuplicatePopup = false;
+		bool m_CloseDuplicatePopup = false;
+		bool m_IsDuplicating = false;
+		char m_DuplicateNameBuffer[256]{};
+		char m_DuplicateLocationBuffer[512]{};
+		std::string m_DuplicateError;
+		DuplicateProjectTaskState m_DuplicateTask;
 
 		std::string m_SelectedProjectPath;
 

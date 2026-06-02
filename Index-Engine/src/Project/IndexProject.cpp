@@ -21,6 +21,7 @@
 #include <sstream>
 #include <iomanip>
 #include <random>
+#include <stdexcept>
 
 namespace Index {
 	namespace {
@@ -1859,6 +1860,143 @@ public class GameScript : EntityScript
 		ReportCreateProgress(progressCallback, 0.82f, "Project files ready.");
 		IDX_INFO_TAG("IndexProject", "Created project: {} at {}", name, project.RootDirectory);
 		return project;
+	}
+
+	IndexProject IndexProject::Duplicate(const std::string& sourceRootDir, const std::string& newName,
+		const std::string& parentDir, const std::string& directoryName,
+		const CreateProgressCallback& progressCallback) {
+
+		if (!Validate(sourceRootDir)) {
+			throw std::runtime_error("Source is not a valid Index project: " + sourceRootDir);
+		}
+
+		// Load the source so the duplicate inherits every setting (packages, build
+		// profiles, scene list, ...). Only the name and on-disk location change.
+		IndexProject source = Load(sourceRootDir);
+		const std::string oldName = source.Name;
+
+		const std::string targetDirName = directoryName.empty() ? newName : directoryName;
+		const std::string targetRoot = Path::Combine(parentDir, targetDirName);
+		if (std::filesystem::exists(targetRoot)) {
+			throw std::runtime_error("Target directory already exists: " + targetRoot);
+		}
+
+		ReportCreateProgress(progressCallback, 0.05f, "Copying project files...");
+
+		// Recursive copy, skipping build artifacts and VCS metadata so the duplicate
+		// starts clean (these are regenerated on first open/build).
+		auto isExcluded = [](const std::filesystem::path& rel) -> bool {
+			if (rel.empty()) return false;
+			const std::string top = rel.begin()->string();
+			if (top == "bin" || top == "obj" || top == ".vs" || top == ".git" || top == "Builds") {
+				return true;
+			}
+			auto it = rel.begin();
+			if (it != rel.end() && it->string() == "NativeScripts") {
+				++it;
+				if (it != rel.end() && it->string() == "build") return true;
+			}
+			return rel.extension() == ".user";
+		};
+
+		const std::filesystem::path src(sourceRootDir);
+		const std::filesystem::path dst(targetRoot);
+		std::error_code ec;
+		std::filesystem::create_directories(dst, ec);
+		if (ec) {
+			throw std::runtime_error("Failed to create target directory '" + targetRoot + "': " + ec.message());
+		}
+
+		for (std::filesystem::recursive_directory_iterator it(src,
+				std::filesystem::directory_options::skip_permission_denied, ec);
+			!ec && it != std::filesystem::recursive_directory_iterator();
+			it.increment(ec)) {
+			const std::filesystem::path rel = std::filesystem::relative(it->path(), src, ec);
+			if (ec) { ec.clear(); continue; }
+			if (isExcluded(rel)) {
+				if (it->is_directory(ec)) it.disable_recursion_pending();
+				ec.clear();
+				continue;
+			}
+			const std::filesystem::path outPath = dst / rel;
+			if (it->is_directory(ec)) {
+				std::filesystem::create_directories(outPath, ec);
+				ec.clear();
+			}
+			else {
+				std::filesystem::create_directories(outPath.parent_path(), ec);
+				ec.clear();
+				std::filesystem::copy_file(it->path(), outPath,
+					std::filesystem::copy_options::overwrite_existing, ec);
+				if (ec) {
+					IDX_CORE_WARN_TAG("IndexProject",
+						"Duplicate: failed to copy '{}': {}", it->path().string(), ec.message());
+					ec.clear();
+				}
+			}
+		}
+
+		ReportCreateProgress(progressCallback, 0.6f, "Rewriting project metadata...");
+
+		// New project view: inherit settings, retarget name + paths.
+		IndexProject target = source;
+		target.Name = newName;
+		target.RootDirectory = targetRoot;
+		ResolvePaths(target);
+
+		auto replaceAll = [](std::string s, const std::string& from, const std::string& to) {
+			if (from.empty()) return s;
+			std::size_t pos = 0;
+			while ((pos = s.find(from, pos)) != std::string::npos) {
+				s.replace(pos, from.size(), to);
+				pos += to.size();
+			}
+			return s;
+		};
+
+		// Rename .csproj / .sln to the new name (their basenames are the project
+		// name; the .csproj body uses SDK defaults keyed off the file name).
+		if (oldName != newName) {
+			const std::filesystem::path oldCsproj = dst / (oldName + ".csproj");
+			if (std::filesystem::exists(oldCsproj)) {
+				std::filesystem::rename(oldCsproj, std::filesystem::path(target.CsprojPath), ec);
+				if (ec) ec.clear();
+			}
+			const std::filesystem::path oldSln = dst / (oldName + ".sln");
+			if (std::filesystem::exists(oldSln)) {
+				std::filesystem::rename(oldSln, std::filesystem::path(target.SlnPath), ec);
+				if (ec) ec.clear();
+			}
+		}
+
+		// The .sln body embeds the display name and the "<name>.csproj" reference.
+		if (File::Exists(target.SlnPath)) {
+			std::string sln = File::ReadAllText(target.SlnPath);
+			sln = replaceAll(sln, "\"" + oldName + ".csproj\"", "\"" + newName + ".csproj\"");
+			sln = replaceAll(sln, "= \"" + oldName + "\"", "= \"" + newName + "\"");
+			(void)File::WriteAllText(target.SlnPath, sln);
+		}
+
+		// .vscode/settings.json points dotnet.defaultSolution at "<name>.sln".
+		const std::string vscodeSettings = Path::Combine(target.RootDirectory, ".vscode", "settings.json");
+		if (File::Exists(vscodeSettings)) {
+			std::string s = File::ReadAllText(vscodeSettings);
+			s = replaceAll(s, oldName + ".sln", newName + ".sln");
+			(void)File::WriteAllText(vscodeSettings, s);
+		}
+
+		// Persist index-project.json with the new name (all other settings inherited).
+		{
+			Json::Value root = BuildProjectJson(target);
+			(void)File::WriteAllText(target.ProjectFilePath, Json::Stringify(root, true));
+		}
+
+		// Native script project files (CMakeLists) embed the target name; regenerate.
+		target.EnsureNativeScriptProjectFiles();
+
+		ReportCreateProgress(progressCallback, 1.0f, "Duplicate ready.");
+		IDX_INFO_TAG("IndexProject", "Duplicated project '{}' -> '{}' at {}", oldName, newName, target.RootDirectory);
+		return target;
 	}
 
 	std::string IndexProject::GetEngineRootDir() {

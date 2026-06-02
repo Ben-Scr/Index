@@ -468,6 +468,7 @@ artifacts/
 		ImGui::GetIO().FontGlobalScale = GetEffectiveFontScale();
 		Localization::Poll();
 		PollCreateProjectTask();
+		PollDuplicateProjectTask();
 		const std::string titlebarText = IDX_TR("launcher.title") + std::string(" ") + std::string(IDX_VERSION);
 		EditorRuntime::RenderTitlebar(EditorRuntime::TitlebarConfig{ titlebarText, /*Centered=*/false });
 		RenderLauncherPanel();
@@ -515,6 +516,7 @@ artifacts/
 	void LauncherLayer::OnDetach(Application& app) {
 		(void)app;
 		ResetCreateProjectTask();
+		ResetDuplicateProjectTask();
 		if (m_OpenTask.Worker.joinable()) {
 			m_OpenTask.Worker.join();
 		}
@@ -774,6 +776,7 @@ artifacts/
 		RenderProjectInfoPopup();
 		RenderErrorPopup();
 		RenderRenameProjectPopup();
+		RenderDuplicateProjectPopup();
 		RenderAssetLibraryDetailModal();
 		RenderAssetLibraryTrustModal();
 
@@ -1059,6 +1062,12 @@ artifacts/
 					RequestProjectRename(entry);
 				}
 
+				if (Icons::MenuItemWithIcon(Icons::Type::Copy,
+					IDX_TR("launcher.context.duplicate").c_str()))
+				{
+					RequestProjectDuplicate(entry);
+				}
+
 				if (Icons::MenuItemWithIcon(Icons::Type::Info,
 					IDX_TR("launcher.context.info").c_str()))
 				{
@@ -1298,6 +1307,211 @@ artifacts/
 		}
 
 		ImGui::EndPopup();
+	}
+
+	// ── Duplicate Project ───────────────────────────────────────────
+
+	void LauncherLayer::RequestProjectDuplicate(const LauncherProjectEntry& entry) {
+		m_PendingDuplicateProject = entry;
+		m_DuplicateError.clear();
+		// Prefill "<Name> Copy" into the source's parent directory so the common
+		// case (a sibling copy) needs no edits.
+		const std::string suggested = entry.Name + " Copy";
+		std::snprintf(m_DuplicateNameBuffer, sizeof(m_DuplicateNameBuffer), "%s", suggested.c_str());
+		const std::filesystem::path parent = std::filesystem::path(entry.Path).parent_path();
+		std::snprintf(m_DuplicateLocationBuffer, sizeof(m_DuplicateLocationBuffer), "%s", parent.string().c_str());
+		m_OpenDuplicatePopup = true;
+	}
+
+	void LauncherLayer::RenderDuplicateProjectPopup() {
+		constexpr const char* k_DuplicateId = "###LauncherDuplicateProject";
+
+		if (m_OpenDuplicatePopup) {
+			ImGui::OpenPopup(k_DuplicateId);
+			m_OpenDuplicatePopup = false;
+		}
+
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_Appearing);
+
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		const std::string title = IDX_TR("launcher.duplicate.title") + k_DuplicateId;
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+
+		// Closed from PollDuplicateProjectTask once the worker succeeds.
+		if (m_CloseDuplicatePopup) {
+			m_CloseDuplicatePopup = false;
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+		if (!m_PendingDuplicateProject.has_value()) {
+			ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+			return;
+		}
+
+		ImGui::TextUnformatted(IDX_TR("launcher.duplicate.new_name").c_str());
+		ImGui::SetNextItemWidth(-1);
+		if (ImGui::IsWindowAppearing()) {
+			ImGui::SetKeyboardFocusHere();
+		}
+		ImGui::InputText("##DuplicateName", m_DuplicateNameBuffer, sizeof(m_DuplicateNameBuffer));
+
+		ImGui::Spacing();
+		ImGui::TextUnformatted(IDX_TR("launcher.duplicate.location").c_str());
+		ImGui::SetNextItemWidth(-1);
+		ImGui::InputText("##DuplicateLocation", m_DuplicateLocationBuffer, sizeof(m_DuplicateLocationBuffer));
+
+		const std::string directoryName = ApplyDirectoryNameConvention(m_DuplicateNameBuffer, m_DirectoryNameConvention);
+		ImGui::Spacing();
+		const std::string preview = Path::Combine(m_DuplicateLocationBuffer, directoryName);
+		ImGui::TextDisabled("%s", Localization::Format("launcher.create.path_preview", preview).c_str());
+
+		if (!m_DuplicateError.empty()) {
+			ImGui::Spacing();
+			ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", m_DuplicateError.c_str());
+		}
+
+		if (m_IsDuplicating) {
+			std::string stage;
+			float progress = 0.0f;
+			{
+				std::scoped_lock lock(m_DuplicateTask.Mutex);
+				stage = m_DuplicateTask.Stage;
+				progress = m_DuplicateTask.Progress;
+			}
+			ImGui::Spacing();
+			ImGui::ProgressBar(progress, ImVec2(-1, 0));
+			ImGui::TextDisabled("%s", stage.c_str());
+		}
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		const bool canDuplicate = IndexProject::IsValidProjectName(m_DuplicateNameBuffer)
+			&& IndexProject::IsValidProjectName(directoryName)
+			&& !m_IsDuplicating;
+
+		if (!canDuplicate) ImGui::BeginDisabled();
+		if (ImGui::Button(IDX_TR("launcher.duplicate.duplicate_button").c_str(), ImVec2(120, 0))) {
+			StartDuplicateProjectAsync(m_PendingDuplicateProject->Path,
+				std::string(m_DuplicateNameBuffer),
+				std::string(m_DuplicateLocationBuffer),
+				directoryName);
+		}
+		if (!canDuplicate) ImGui::EndDisabled();
+
+		ImGui::SameLine();
+		if (m_IsDuplicating) ImGui::BeginDisabled();
+		if (ImGui::Button(IDX_TR("launcher.duplicate.cancel").c_str(), ImVec2(120, 0))) {
+			m_PendingDuplicateProject.reset();
+			ImGui::CloseCurrentPopup();
+		}
+		if (m_IsDuplicating) ImGui::EndDisabled();
+
+		ImGui::EndPopup();
+	}
+
+	void LauncherLayer::StartDuplicateProjectAsync(const std::string& sourceRoot, const std::string& newName,
+		const std::string& location, const std::string& directoryName) {
+		ResetDuplicateProjectTask();
+
+		m_DuplicateError.clear();
+		m_IsDuplicating = true;
+		{
+			std::scoped_lock lock(m_DuplicateTask.Mutex);
+			m_DuplicateTask.Stage = "Preparing...";
+			m_DuplicateTask.Progress = 0.02f;
+			m_DuplicateTask.Running = true;
+		}
+
+		m_DuplicateTask.Worker = std::thread([this, sourceRoot, newName, location, directoryName]() {
+			auto updateProgress = [this](float progress, std::string_view stage) {
+				std::scoped_lock lock(m_DuplicateTask.Mutex);
+				m_DuplicateTask.Progress = progress;
+				m_DuplicateTask.Stage = std::string(stage);
+			};
+
+			try {
+				IndexProject duplicated =
+					IndexProject::Duplicate(sourceRoot, newName, location, directoryName, updateProgress);
+
+				std::scoped_lock lock(m_DuplicateTask.Mutex);
+				m_DuplicateTask.Result = duplicated;
+				m_DuplicateTask.Progress = 1.0f;
+				m_DuplicateTask.Stage = "Duplicate ready.";
+				m_DuplicateTask.Finished = true;
+				m_DuplicateTask.Running = false;
+				m_DuplicateTask.Success = true;
+			}
+			catch (const std::exception& e) {
+				std::scoped_lock lock(m_DuplicateTask.Mutex);
+				m_DuplicateTask.Error = e.what();
+				m_DuplicateTask.Stage = "Duplicate failed";
+				m_DuplicateTask.Finished = true;
+				m_DuplicateTask.Running = false;
+				m_DuplicateTask.Success = false;
+			}
+		});
+	}
+
+	void LauncherLayer::PollDuplicateProjectTask() {
+		bool finished = false;
+		bool success = false;
+		std::string error;
+		std::optional<IndexProject> result;
+
+		{
+			std::scoped_lock lock(m_DuplicateTask.Mutex);
+			finished = m_DuplicateTask.Finished;
+			if (!finished) {
+				return;
+			}
+			success = m_DuplicateTask.Success;
+			error = m_DuplicateTask.Error;
+			result = m_DuplicateTask.Result;
+		}
+
+		if (m_DuplicateTask.Worker.joinable()) {
+			m_DuplicateTask.Worker.join();
+		}
+
+		m_IsDuplicating = false;
+
+		if (!success || !result.has_value()) {
+			m_DuplicateError = error.empty() ? std::string("Duplication failed.") : error;
+			ResetDuplicateProjectTask(false);
+			return;
+		}
+
+		m_Registry.AddProject(result->Name, result->RootDirectory);
+		m_Registry.Save();
+		RefreshProjectsList();
+
+		m_PendingDuplicateProject.reset();
+		m_CloseDuplicatePopup = true;
+		ResetDuplicateProjectTask(false);
+	}
+
+	void LauncherLayer::ResetDuplicateProjectTask(bool clearWorker) {
+		if (clearWorker && m_DuplicateTask.Worker.joinable()) {
+			m_DuplicateTask.Worker.join();
+		}
+
+		std::scoped_lock lock(m_DuplicateTask.Mutex);
+		m_DuplicateTask.Worker = std::thread();
+		m_DuplicateTask.Result.reset();
+		m_DuplicateTask.Error.clear();
+		m_DuplicateTask.Stage = "Idle";
+		m_DuplicateTask.Progress = 0.0f;
+		m_DuplicateTask.Running = false;
+		m_DuplicateTask.Finished = false;
+		m_DuplicateTask.Success = false;
 	}
 
 	void LauncherLayer::RenderDeleteProjectPopups() {

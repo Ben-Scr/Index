@@ -203,6 +203,13 @@ namespace Index {
 			const CreateProgressCallback& progressCallback = {});
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
 			const std::string& directoryName, const CreateProgressCallback& progressCallback = {});
+		// Deep-copies an existing project to a new name/location. Inherits every
+		// setting, rewrites the name-bound files (index-project.json, .csproj/.sln
+		// rename + .sln/.vscode contents), and skips build artifacts
+		// (bin/obj/.vs/Builds/NativeScripts/build, *.user) and .git. Throws on failure.
+		static IndexProject Duplicate(const std::string& sourceRootDir, const std::string& newName,
+			const std::string& parentDir, const std::string& directoryName,
+			const CreateProgressCallback& progressCallback = {});
 		static IndexProject Load(const std::string& rootDir);
 		static bool Validate(const std::string& rootDir);
 		static bool IsValidProjectName(const std::string& name);

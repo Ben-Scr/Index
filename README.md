@@ -34,11 +34,11 @@ Index is a lightweight C++20 2D game engine mainly focused on performance and mo
 - Python 3.10 or newer. `scripts/Setup.py` enforces this version.
 - Premake 5. Windows expects `vendor/bin/premake5.exe`; Linux expects `vendor/bin/premake5` or a `premake5` executable on `PATH`.
 - Windows: Visual Studio 2022 with the MSVC v143 C++ toolset, Windows SDK, and .NET 9 SDK/runtime for scripting projects and native hosting files.
-- Linux: a C++20-capable compiler, GNU Make, Python 3.10+, and native packages for GLFW. On Ubuntu:
+- Linux: a C++20 compiler (GCC builds the engine; Dawn's bundled source build additionally requires Clang), GNU Make, Python 3.10+, and native packages for GLFW and Dawn's X11 backend. On Ubuntu:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential xorg-dev xvfb
+sudo apt-get install -y build-essential clang xorg-dev libx11-xcb-dev libglu1-mesa-dev pkg-config xvfb
 ```
 
 - GPU backend: the engine renders through Dawn (WebGPU). Dawn is pre-built and linked via `scripts/dawn/SetupDawn.bat` — re-run that script if `External/dawn/build/` is missing or out of date. Dawn picks the underlying runtime API (D3D12 / Vulkan / Metal) at adapter-request time; you do not select it at build time.

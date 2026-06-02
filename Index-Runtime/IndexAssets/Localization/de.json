@@ -40,6 +40,7 @@
     "launcher.context.open_in_explorer": "Im Explorer öffnen",
     "launcher.context.copy_path": "Pfad kopieren",
     "launcher.context.rename": "Umbenennen...",
+    "launcher.context.duplicate": "Duplizieren...",
     "launcher.context.remove_from_list": "Aus Liste entfernen",
     "launcher.context.delete_project": "Projekt löschen...",
 
@@ -47,6 +48,12 @@
     "launcher.rename.new_name": "Neuer Name:",
     "launcher.rename.save": "Speichern",
     "launcher.rename.cancel": "Abbrechen",
+
+    "launcher.duplicate.title": "Projekt duplizieren",
+    "launcher.duplicate.new_name": "Neuer Name:",
+    "launcher.duplicate.location": "Speicherort:",
+    "launcher.duplicate.duplicate_button": "Duplizieren",
+    "launcher.duplicate.cancel": "Abbrechen",
 
     "launcher.delete.title": "Projekt löschen?",
     "launcher.delete.message": "Projekt '{0}' löschen?",

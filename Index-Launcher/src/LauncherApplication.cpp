@@ -29,6 +29,9 @@ public:
 		config.EnablePackageHost = false;
 		config.SetWindowIcon = true;
 		config.Vsync = false;
+		// No F11 exclusive fullscreen: it takes over the display and breaks the
+		// launcher's secondary dialog windows (Settings, Create / Rename).
+		config.EnableFullscreenToggle = false;
 
 		SetTargetFramerate(144.f);
 

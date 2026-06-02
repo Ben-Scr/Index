@@ -86,6 +86,7 @@
     "launcher.context.open_in_explorer": "Show in Explorer",
     "launcher.context.copy_path": "Copy Path",
     "launcher.context.rename": "Rename",
+    "launcher.context.duplicate": "Duplicate",
     "launcher.context.remove_from_list": "Remove from list",
     "launcher.context.delete_project": "Delete from disk",
     "launcher.search.placeholder": "Search projects and library...",
@@ -94,6 +95,12 @@
     "launcher.rename.new_name": "New name:",
     "launcher.rename.save": "Save",
     "launcher.rename.cancel": "Cancel",
+
+    "launcher.duplicate.title": "Duplicate Project",
+    "launcher.duplicate.new_name": "New name:",
+    "launcher.duplicate.location": "Location:",
+    "launcher.duplicate.duplicate_button": "Duplicate",
+    "launcher.duplicate.cancel": "Cancel",
 
     "launcher.delete.title": "Delete Project?",
     "launcher.delete.message": "Delete project '{0}'?",

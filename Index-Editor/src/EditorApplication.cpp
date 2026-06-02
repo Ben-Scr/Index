@@ -40,6 +40,9 @@ public:
 		config.EnableGuiRenderer = true;
 		config.EnablePhysics2D = true;
 		config.SetWindowIcon = true;
+		// No F11 exclusive fullscreen: it takes over the display and breaks the
+		// multi-window editor UI (detached panels / dialogs get covered).
+		config.EnableFullscreenToggle = false;
 		SetRunInBackground(true);
 		return config;
 	}

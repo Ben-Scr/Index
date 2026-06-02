@@ -81,6 +81,12 @@ namespace Index {
 		bool Vsync = INDEX_DEFAULT_ENABLE_VSYNC != 0;
 		bool UseTargetFrameRateForMainLoop = true;
 
+		// F11 toggles true exclusive fullscreen (glfwSetWindowMonitor). Games
+		// want it; the editor and launcher do NOT — exclusive fullscreen takes
+		// over the display and breaks their multi-window UI (secondary OS
+		// windows get covered / auto-iconified). Those apps set this false.
+		bool EnableFullscreenToggle = true;
+
 		std::size_t FrameArenaCapacityBytes      = INDEX_DEFAULT_FRAME_ARENA_CAPACITY_BYTES;
 		std::size_t PersistentArenaCapacityBytes = INDEX_DEFAULT_PERSISTENT_ARENA_CAPACITY_BYTES;
 
