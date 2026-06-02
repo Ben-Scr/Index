@@ -138,7 +138,8 @@ jobs:
           sudo apt-get update
           # xorg-dev + libglu: GLFW. pkg-config: Dawn's CMake dep probing when
           # building webgpu_dawn from source. xvfb: headless runtime smoke test.
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config
+          # clang: Dawn's build is Clang-oriented and fails to compile under GCC 13.
+          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang
 
       - name: Install Premake
         run: |

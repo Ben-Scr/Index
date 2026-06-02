@@ -54,14 +54,28 @@ fi
 
 # --- Configure ---------------------------------------------------------------
 echo "[2/3] Configuring Dawn via CMake..."
-cmake -S "${DAWN_DIR}" -B "${DAWN_BUILD_DIR}" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DDAWN_FETCH_DEPENDENCIES=ON \
-    -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC \
-    -DDAWN_ENABLE_INSTALL=OFF \
-    -DDAWN_BUILD_SAMPLES=OFF \
-    -DTINT_BUILD_TESTS=OFF \
+# Dawn's build is Clang-oriented: it passes Clang-only -Wno-* flags, and under
+# GCC 13 / libstdc++ it fails to compile (no operator== for dawn::native::Format
+# during ityp::array instantiation). Prefer Clang when present; fall back to the
+# CMake default otherwise (macOS already defaults to Clang). The resulting
+# libstdc++/Itanium-ABI static lib links fine against the GCC-built engine.
+CMAKE_ARGS=(
+    -S "${DAWN_DIR}" -B "${DAWN_BUILD_DIR}"
+    -DCMAKE_BUILD_TYPE=Release
+    -DDAWN_FETCH_DEPENDENCIES=ON
+    -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC
+    -DDAWN_ENABLE_INSTALL=OFF
+    -DDAWN_BUILD_SAMPLES=OFF
+    -DTINT_BUILD_TESTS=OFF
     -DTINT_BUILD_CMD_TOOLS=OFF
+)
+if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+    echo "      Compiler: Clang ($(command -v clang++))"
+    CMAKE_ARGS+=(-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++)
+else
+    echo "      Compiler: CMake default (Clang not found; Dawn may fail under GCC)."
+fi
+cmake "${CMAKE_ARGS[@]}"
 
 # --- Build -------------------------------------------------------------------
 echo "[3/3] Building webgpu_dawn..."
