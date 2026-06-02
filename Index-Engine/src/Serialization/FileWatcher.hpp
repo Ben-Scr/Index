@@ -73,6 +73,8 @@ namespace Index {
 		std::thread m_Worker;
 		std::condition_variable m_WakeCondition;
 		std::mutex m_StateMutex;
+		// Win32 event so Stop() interrupts the native wait at once; null off-Windows / polling path.
+		void* m_NativeStopEvent = nullptr;
 		std::atomic<bool> m_Watching{ false };
 		std::atomic<bool> m_PendingChanges{ false };
 		std::atomic<int> m_PollIntervalMs{ 1000 };

@@ -13,6 +13,7 @@
 #include "Profiling/Profiler.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
+#include "Serialization/Json.hpp"
 #include "Project/ProjectManager.hpp"
 
 #include <algorithm>
@@ -870,6 +871,38 @@ namespace Index {
 		}
 
 		// MUST run after GCHandle is set but before InvokeAwake/InvokeStart so OnAwake/OnStart see inspector-assigned values.
+		// Read the live managed instance's current field values back into
+		// PendingFieldValues so they survive a managed-assembly reload. Without
+		// this, recompile resets editor-set fields to type-defaults: the values
+		// live only on the instance after ApplyPendingFieldValues applied (and
+		// erased) them, and the reload destroys the instance before the new one
+		// is created. Capturing here also preserves runtime-modified fields.
+		void SnapshotManagedFieldsToPending(ScriptComponent& scriptComp, const ScriptInstance& instance) {
+			if (!instance.HasManagedInstance()) return;
+			auto& callbacks = ScriptEngine::GetCallbacks();
+			if (!callbacks.GetScriptFields) return;
+
+			const char* rawJson = callbacks.GetScriptFields(static_cast<int32_t>(instance.GetGCHandle()));
+			if (!rawJson || !*rawJson) return;
+
+			Json::Value fields;
+			if (!Json::TryParse(rawJson, fields, nullptr) || !fields.IsArray()) return;
+
+			const std::string prefix = instance.GetClassName() + ".";
+			for (const Json::Value& field : fields.GetArray()) {
+				if (!field.IsObject()) continue;
+				const Json::Value* nameNode = field.FindMember("name");
+				const Json::Value* valueNode = field.FindMember("value");
+				if (!nameNode || !valueNode) continue;
+				const std::string name = nameNode->AsStringOr();
+				if (name.empty()) continue;
+				// Overwrite: the live instance is the freshest source — a stale
+				// pending value (from a value applied earlier this session)
+				// would otherwise shadow a runtime change.
+				scriptComp.PendingFieldValues[prefix + name] = valueNode->AsStringOr();
+			}
+		}
+
 		void ApplyPendingFieldValues(ScriptComponent& scriptComp, ScriptInstance& instance) {
 			if (!instance.HasManagedInstance()) return;
 			auto& callbacks = ScriptEngine::GetCallbacks();
@@ -1350,6 +1383,10 @@ namespace Index {
 			scripts.reserve(scriptComp.Scripts.size());
 			for (const ScriptInstance& instance : scriptComp.Scripts) {
 				if (instance.HasManagedInstance()) {
+					// Snapshot live field values BEFORE teardown so a managed
+					// reload (recompile) re-applies them instead of resetting
+					// to type-defaults. See SnapshotManagedFieldsToPending.
+					SnapshotManagedFieldsToPending(scriptComp, instance);
 					scripts.push_back(CaptureManagedTeardownState(instance));
 				}
 			}

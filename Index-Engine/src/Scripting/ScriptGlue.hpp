@@ -16,6 +16,7 @@ namespace Index {
 		void   (*Application_Quit)();
 		void   (*Application_Reload)();
 		float  (*Application_GetFixedDeltaTime)();
+		void   (*Application_SetFixedDeltaTime)(float step);
 		float  (*Application_GetUnscaledDeltaTime)();
 		float  (*Application_GetFixedUnscaledDeltaTime)();
 		float  (*Application_GetTimeScale)();

@@ -8,7 +8,7 @@
 using namespace Index;
 
 namespace {
-	// Helper: confirm that `ptr` is aligned to `alignment`.
+	// Helper: confirm that "ptr" is aligned to "alignment".
 	bool IsAligned(const void* ptr, std::size_t alignment) {
 		return (reinterpret_cast<std::uintptr_t>(ptr) % alignment) == 0;
 	}
@@ -57,7 +57,7 @@ TEST_CASE("Arena returns nullptr when exhausted without growing") {
 	void* a = arena.Allocate(48);
 	CHECK(a != nullptr);
 
-	// 48 used, 64 capacity — a 32B request must not fit, even though the
+	// 48 used, 64 capacity a 32B request must not fit, even though the
 	// arena is far from empty. Non-growing is the contract.
 	void* b = arena.Allocate(32);
 	CHECK(b == nullptr);

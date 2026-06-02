@@ -15,6 +15,7 @@ internal static unsafe class InternalCalls
     internal static void Application_Quit() => NativeCallbacks.Bindings.Application_Quit();
     internal static void Application_Reload() => NativeCallbacks.Bindings.Application_Reload();
     internal static float Application_GetFixedDeltaTime() => NativeCallbacks.Bindings.Application_GetFixedDeltaTime();
+    internal static void Application_SetFixedDeltaTime(float step) => NativeCallbacks.Bindings.Application_SetFixedDeltaTime(step);
     internal static float Application_GetUnscaledDeltaTime() => NativeCallbacks.Bindings.Application_GetUnscaledDeltaTime();
     internal static float Application_GetFixedUnscaledDeltaTime() => NativeCallbacks.Bindings.Application_GetFixedUnscaledDeltaTime();
     internal static float Application_GetTimeScale() => NativeCallbacks.Bindings.Application_GetTimeScale();

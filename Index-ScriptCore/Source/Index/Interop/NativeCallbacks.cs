@@ -17,6 +17,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<void> Application_Quit;
     public delegate* unmanaged<void> Application_Reload;
     public delegate* unmanaged<float> Application_GetFixedDeltaTime;
+    public delegate* unmanaged<float, void> Application_SetFixedDeltaTime;
     public delegate* unmanaged<float> Application_GetUnscaledDeltaTime;
     public delegate* unmanaged<float> Application_GetFixedUnscaledDeltaTime;
     public delegate* unmanaged<float> Application_GetTimeScale;

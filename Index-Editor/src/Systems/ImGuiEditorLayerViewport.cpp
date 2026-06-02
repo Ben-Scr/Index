@@ -238,18 +238,29 @@ namespace Index {
 	
 			if (scene.HasComponent<FastBoxCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<FastBoxCollider2DComponent>(m_SelectedEntity);
-				const Vec2 halfExtents = collider.GetHalfExtents();
-				const Vec2 worldSize(
-					std::abs(halfExtents.x * transform.Scale.x) * 2.0f,
-					std::abs(halfExtents.y * transform.Scale.y) * 2.0f);
+				// GetHalfExtents() returns the live AxiomPhys collider's
+				// world-scaled extents (SyncWithTransform already folded
+				// Transform2D.Scale in), so it must NOT be multiplied by scale
+				// again — that double-scaled the gizmo. Only the no-live-
+				// collider fallback returns the raw authored field and needs
+				// the manual scale multiply.
+				const Vec2 he = collider.IsValid()
+					? collider.GetHalfExtents()
+					: Vec2{ collider.HalfExtents.x * transform.Scale.x,
+					        collider.HalfExtents.y * transform.Scale.y };
+				const Vec2 worldSize(std::abs(he.x) * 2.0f, std::abs(he.y) * 2.0f);
 				Gizmo::SetColor(Color(0.10f, 0.85f, 0.85f, 1.0f));
 				Gizmo::SetLineWidth(2.0f);
 				Gizmo::DrawSquare(transform.Position, worldSize, rotationDegrees);
 			}
-	
+
 			if (scene.HasComponent<FastCircleCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<FastCircleCollider2DComponent>(m_SelectedEntity);
-				const float worldRadius = collider.GetRadius() * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
+				// Same double-scale fix as the box above: GetRadius() is the
+				// live scaled radius; only the fallback re-applies scale.
+				const float worldRadius = collider.IsValid()
+					? collider.GetRadius()
+					: collider.Radius * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
 				Gizmo::SetColor(Color(0.10f, 0.85f, 0.85f, 1.0f));
 				Gizmo::SetLineWidth(2.0f);
 				Gizmo::DrawCircle(transform.Position, worldRadius);

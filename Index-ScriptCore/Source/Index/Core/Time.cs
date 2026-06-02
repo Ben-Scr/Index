@@ -5,7 +5,19 @@ public static class Time
 {
     public static float DeltaTime => InternalCalls.Application_GetDeltaTime();
     public static float UnscaledDeltaTime => InternalCalls.Application_GetUnscaledDeltaTime();
-    public static float FixedDeltaTime => InternalCalls.Application_GetFixedDeltaTime();
+
+    /// <summary>
+    /// Interval in seconds between FixedUpdate ticks. Settable from scripts;
+    /// the engine clamps to [1/240, 1] and warns on a non-positive value
+    /// (which would otherwise disable FixedUpdate). Lowering it raises physics
+    /// fidelity at higher CPU cost; raising it does the inverse.
+    /// </summary>
+    public static float FixedDeltaTime
+    {
+        get => InternalCalls.Application_GetFixedDeltaTime();
+        set => InternalCalls.Application_SetFixedDeltaTime(value);
+    }
+
     public static float FixedUnscaledDeltaTime => InternalCalls.Application_GetFixedUnscaledDeltaTime();
 
     public static float ElapsedTime => InternalCalls.Application_GetElapsedTime();

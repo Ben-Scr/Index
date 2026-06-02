@@ -105,17 +105,33 @@ namespace Index {
 			? m_Targets.front().Path.string()
 			: std::to_string(m_Targets.size()) + " targets";
 
+#ifdef IDX_PLATFORM_WINDOWS
+		// Created before the worker so Stop() can signal it to break WaitForMultipleObjects at once.
+		m_NativeStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+#endif
 		m_Worker = std::thread(&FileWatcher::WorkerMain, this);
 		IDX_CORE_INFO_TAG("FileWatcher", "Watching {} for {} pattern(s)", m_WatchDescription, patterns.size());
 	}
 
 	void FileWatcher::Stop() {
 		m_Watching.store(false);
+#ifdef IDX_PLATFORM_WINDOWS
+		if (m_NativeStopEvent) {
+			SetEvent(static_cast<HANDLE>(m_NativeStopEvent));
+		}
+#endif
 		m_WakeCondition.notify_all();
 
 		if (m_Worker.joinable()) {
 			m_Worker.join();
 		}
+
+#ifdef IDX_PLATFORM_WINDOWS
+		if (m_NativeStopEvent) {
+			CloseHandle(static_cast<HANDLE>(m_NativeStopEvent));
+			m_NativeStopEvent = nullptr;
+		}
+#endif
 
 		m_Targets.clear();
 		m_Extensions.clear();
@@ -268,18 +284,33 @@ namespace Index {
 			}
 		} handleCloser{ handles };
 
+		// Stop event in the wait set so Stop() interrupts WaitForMultipleObjects immediately;
+		// a condition_variable can't wake a native wait, so without this each Stop() stalled up
+		// to kNativeWatchTimeoutMs (two watchers torn down on play-exit = the ~0.5s editor freeze).
+		const HANDLE stopEvent = static_cast<HANDLE>(m_NativeStopEvent);
+		const DWORD changeHandleCount = static_cast<DWORD>(handles.size());
+		std::vector<HANDLE> waitHandles = handles;
+		if (stopEvent) {
+			waitHandles.push_back(stopEvent);
+		}
+		const DWORD waitTimeout = stopEvent ? INFINITE : kNativeWatchTimeoutMs;
+
 		while (m_Watching.load()) {
 			const DWORD waitResult = WaitForMultipleObjects(
-				static_cast<DWORD>(handles.size()),
-				handles.data(),
+				static_cast<DWORD>(waitHandles.size()),
+				waitHandles.data(),
 				FALSE,
-				kNativeWatchTimeoutMs);
+				waitTimeout);
 
 			if (waitResult == WAIT_TIMEOUT) {
 				continue;
 			}
 
-			if (waitResult >= WAIT_OBJECT_0 && waitResult < WAIT_OBJECT_0 + handles.size()) {
+			if (stopEvent && waitResult == WAIT_OBJECT_0 + changeHandleCount) {
+				break;
+			}
+
+			if (waitResult >= WAIT_OBJECT_0 && waitResult < WAIT_OBJECT_0 + changeHandleCount) {
 				Snapshot nextSnapshot = BuildSnapshot();
 				const bool changed = HasSnapshotChanged(m_FileTimestamps, nextSnapshot);
 				m_FileTimestamps = std::move(nextSnapshot);

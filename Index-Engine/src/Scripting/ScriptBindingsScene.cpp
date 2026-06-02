@@ -113,6 +113,12 @@ namespace Index {
 		auto* app = Application::GetInstance();
 		return app ? app->GetTime().GetFixedDeltaTime() : (1.0f / 50.0f);
 	}
+	static void Index_Application_SetFixedDeltaTime(float step) {
+		auto* app = Application::GetInstance();
+		// Time::SetFixedDeltaTime clamps to [1/240, 1] and warns on a
+		// non-positive step (which would otherwise disable FixedUpdate).
+		if (app) app->GetTime().SetFixedDeltaTime(step);
+	}
 	static float Index_Application_GetUnscaledDeltaTime() {
 		auto* app = Application::GetInstance();
 		return app ? app->GetTime().GetDeltaTimeUnscaled() : 0.0f;
@@ -548,6 +554,7 @@ namespace Index {
 		b.Application_Quit = &Index_Application_Quit;
 		b.Application_Reload = &Index_Application_Reload;
 		b.Application_GetFixedDeltaTime = &Index_Application_GetFixedDeltaTime;
+		b.Application_SetFixedDeltaTime = &Index_Application_SetFixedDeltaTime;
 		b.Application_GetUnscaledDeltaTime = &Index_Application_GetUnscaledDeltaTime;
 		b.Application_GetFixedUnscaledDeltaTime = &Index_Application_GetFixedUnscaledDeltaTime;
 		b.Application_GetTimeScale = &Index_Application_GetTimeScale;

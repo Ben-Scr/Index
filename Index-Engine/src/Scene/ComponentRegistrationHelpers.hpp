@@ -5,6 +5,8 @@
 #include "Scene/ComponentInfo.hpp"
 #include "Scene/SceneManager.hpp"
 
+#include <algorithm>
+#include <cstring>
 #include <string>
 #include <typeindex>
 #include <utility>
@@ -23,6 +25,35 @@ namespace Index::Codegen {
         info.serializedName = serializedName;
         info.properties = std::move(properties);
         sceneManager.RegisterComponentType<T>(info);
+    }
+
+    // Registers a byte-emplacer for a component whose C# native mirror is a
+    // PREFIX of the larger C++ struct — i.e. the C++ type carries trailing
+    // non-memcpy-safe state (std::string, owning containers) past the bytes
+    // the managed side knows about. SpriteRendererComponent is the case:
+    // NativeSpriteRenderer is the 40-byte POD prefix; SpriteName (std::string)
+    // lives past it.
+    //
+    // The auto byte-emplacer in ComponentRegistry is gated on
+    // is_trivially_destructible and skips these types, leaving emplaceFromBytes
+    // null — so ECB AddComponent of the mirror throws "no native emplacer".
+    // This sets a safe one: default-construct (constructing the trailing
+    // members), copy only the wire bytes into the prefix, then move-emplace.
+    // `prefixSize` is offsetof(T, firstNonMirrorMember) so a future field
+    // added past the mirror can't be clobbered.
+    template <typename T>
+    void RegisterPrefixByteEmplacer(SceneManager& sceneManager, std::size_t prefixSize) {
+        const std::type_index targetId(typeid(T));
+        sceneManager.GetComponentRegistry().ForEachComponentInfo(
+            [targetId, prefixSize](const std::type_index& id, ComponentInfo& info) {
+                if (id != targetId) return;
+                info.emplaceFromBytes = [prefixSize](entt::registry& registry, EntityHandle entity,
+                                                     const void* bytes, std::size_t size) {
+                    T component;  // constructs trailing non-POD members (e.g. std::string)
+                    std::memcpy(&component, bytes, std::min(size, prefixSize));
+                    registry.emplace_or_replace<T>(entity, std::move(component));
+                };
+            });
     }
 
     // Adds both A→B and B→A to conflictsWith; ValidateConflictSymmetry asserts symmetry in debug.

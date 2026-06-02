@@ -95,9 +95,9 @@ Library["GDI32"] = "gdi32.lib"
 Library["NetHost"] = isWindowsTarget and "nethost.lib" or "nethost"
 
 LibDir = {}
-if isWindowsTarget then
-    LibDir["DotNet"] = "External/dotnet/lib"
-end
+-- Set on every target: Windows links nethost.lib, Unix links libnethost.a
+-- (both copied into External/dotnet/lib by scripts/Setup.py).
+LibDir["DotNet"] = "External/dotnet/lib"
 
 Dependency = {}
 Dependency["ImGui"] =

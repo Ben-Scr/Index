@@ -259,16 +259,81 @@ def submodules_need_update(repo_root: Path) -> bool:
 
 
 def dotnet_files_present(repo_root: Path) -> bool:
-    """Return True if External/dotnet already has all required files."""
+    """Return True if External/dotnet already has the hosting files this
+    platform links against."""
     dotnet_dir = repo_root / "External" / "dotnet"
-    required = [
+    headers = [
         dotnet_dir / "nethost.h",
         dotnet_dir / "hostfxr.h",
         dotnet_dir / "coreclr_delegates.h",
-        dotnet_dir / "lib" / "nethost.lib",
-        dotnet_dir / "lib" / "nethost.dll",
     ]
-    return all(f.is_file() for f in required)
+    if not all(h.is_file() for h in headers):
+        return False
+    lib = dotnet_dir / "lib"
+    if platform.system() == "Windows":
+        return (lib / "nethost.lib").is_file() and (lib / "nethost.dll").is_file()
+    # Unix links libnethost (static .a preferred; .so accepted).
+    return (lib / "libnethost.a").is_file() or (lib / "libnethost.so").is_file()
+
+
+def find_dotnet_root_unix() -> Path | None:
+    """Locate the .NET install root (the directory containing packs/) on Unix."""
+    env_root = os.environ.get("DOTNET_ROOT")
+    if env_root and Path(env_root).is_dir():
+        return Path(env_root)
+    exe = shutil.which("dotnet")
+    if exe:
+        root = Path(exe).resolve().parent  # dotnet may be a symlink
+        if (root / "packs").is_dir() or (root / "shared").is_dir():
+            return root
+    for candidate in ("/usr/lib/dotnet", "/usr/share/dotnet", "/usr/lib64/dotnet", "/opt/dotnet"):
+        if Path(candidate).is_dir():
+            return Path(candidate)
+    return None
+
+
+def setup_dotnet_unix(repo_root: Path) -> bool:
+    """Copy the .NET hosting headers + libnethost from the host pack into
+    External/dotnet/ so the native scripting layer links on Unix."""
+    root = find_dotnet_root_unix()
+    if not root:
+        print("  [!!] Could not locate the .NET install root (set DOTNET_ROOT).")
+        return False
+
+    rid_os = "osx" if platform.system() == "Darwin" else "linux"
+    arch = normalize_host_architecture(platform.machine()) or "x64"
+    rid = f"{rid_os}-{arch}"
+    host_pack_base = root / "packs" / f"Microsoft.NETCore.App.Host.{rid}"
+    if not host_pack_base.is_dir():
+        print(f"  [!!] .NET host pack not found at '{host_pack_base}'.")
+        return False
+
+    versions = sorted((d.name for d in host_pack_base.iterdir() if d.is_dir()), reverse=True)
+    if not versions:
+        print(f"  [!!] No host-pack versions under '{host_pack_base}'.")
+        return False
+    native = host_pack_base / versions[0] / "runtimes" / rid / "native"
+
+    dest = repo_root / "External" / "dotnet"
+    lib_dest = dest / "lib"
+    lib_dest.mkdir(parents=True, exist_ok=True)
+    try:
+        for header in ("nethost.h", "hostfxr.h", "coreclr_delegates.h"):
+            shutil.copy2(native / header, dest / header)
+        static_lib = native / "libnethost.a"
+        shared_lib = native / "libnethost.so"
+        if static_lib.is_file():
+            shutil.copy2(static_lib, lib_dest / "libnethost.a")
+        elif shared_lib.is_file():
+            shutil.copy2(shared_lib, lib_dest / "libnethost.so")
+        else:
+            print(f"  [!!] No libnethost.a/.so under '{native}'.")
+            return False
+    except OSError as exc:
+        print(f"  [!!] Failed to copy .NET hosting files: {exc}")
+        return False
+    print(f"  [OK] Copied .NET hosting files from {native}")
+    return True
 
 
 def resolve_premake_executable(repo_root: Path) -> str | None:
@@ -660,6 +725,15 @@ def main() -> int:
                 if dotnet_arch:
                     ps_args += ["-DotNetArch", dotnet_arch]
                 run_step(ps_args, script_dir, "Copying .NET hosting files", allow_failure=True)
+    else:
+        if scripting_wanted and dotnet_exe:
+            if dotnet_files_present(repo_root):
+                print("[Index Setup] .NET hosting files already present - skipping.")
+            else:
+                print("[Index Setup] Setting up .NET hosting files (libnethost)...")
+                setup_dotnet_unix(repo_root)
+        elif scripting_wanted:
+            print("[Index Setup] Skipping .NET hosting setup - dotnet not on PATH.")
 
     if not premake_path:
         raise RuntimeError(describe_premake_expectation(repo_root))

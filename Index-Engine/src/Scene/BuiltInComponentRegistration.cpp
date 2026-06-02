@@ -316,6 +316,14 @@ namespace Index {
 					}),
 			});
 
+		// NativeSpriteRenderer (C#) is the 40-byte POD prefix of
+		// SpriteRendererComponent; the trailing std::string SpriteName makes
+		// the type non-trivially-destructible, so the auto byte-emplacer is
+		// skipped. Register a prefix-aware one so ECB AddComponent of the
+		// native mirror works from scripts.
+		Index::Codegen::RegisterPrefixByteEmplacer<SpriteRendererComponent>(
+			sceneManager, offsetof(SpriteRendererComponent, SpriteName));
+
 		RegisterComponent<ImageComponent>(sceneManager, "Image",
 			ComponentCategory::Component, "UI", "Image",
 			{
