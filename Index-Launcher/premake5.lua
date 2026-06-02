@@ -35,8 +35,9 @@ project "Index-Launcher"
     -- CopyEngineSdk materializes a bundled EngineSDK/ next to the launcher
     -- exe so a zipped distribution works without the source tree. The SDK
     -- bundles Index-ScriptCore.dll, so we depend on the C# project to
-    -- ensure it exists before our postbuild runs.
-    dependson { "Index-ScriptCore" }
+    -- ensure it exists before our postbuild runs. Managed C# builds on
+    -- Windows only (see root premake5.lua), so gate the dependency.
+    if os.target() == "windows" then dependson { "Index-ScriptCore" } end
 
     postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopyGlfwDll, CopyGladDll, CopyEngineSdk }
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end

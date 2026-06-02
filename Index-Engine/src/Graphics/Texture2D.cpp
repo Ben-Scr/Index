@@ -301,6 +301,111 @@ namespace Index {
 		return true;
 	}
 
+	bool Texture2D::CreateFromPixels(int width, int height, const uint8_t* rgba,
+		Filter filter, Wrap wrapU, Wrap wrapV)
+	{
+		Destroy();
+		if (width <= 0 || height <= 0 || rgba == nullptr) return false;
+		if (!WebGPUBackend::IsInitialized()) {
+			IDX_CORE_WARN_TAG("Texture2D", "CreateFromPixels called before WebGPU backend initialized");
+			return false;
+		}
+
+		m_Filter = filter;
+		m_WrapU  = wrapU;
+		m_WrapV  = wrapV;
+		m_FlippedY = false;
+
+		wgpu::Device device = WebGPUBackend::GetDevice();
+		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
+
+		wgpu::TextureDescriptor texDesc{};
+		texDesc.dimension       = wgpu::TextureDimension::e2D;
+		texDesc.size            = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+		texDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
+		texDesc.usage           = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+		texDesc.mipLevelCount   = 1;
+		texDesc.sampleCount     = 1;
+		texDesc.viewFormatCount = 0;
+
+		wgpu::Texture texture = device.CreateTexture(&texDesc);
+		if (!texture) {
+			IDX_CORE_WARN_TAG("Texture2D", "CreateFromPixels: device.CreateTexture failed");
+			return false;
+		}
+
+		wgpu::TexelCopyTextureInfo dst{};
+		dst.texture  = texture;
+		dst.mipLevel = 0;
+		dst.origin   = { 0, 0, 0 };
+		dst.aspect   = wgpu::TextureAspect::All;
+
+		wgpu::TexelCopyBufferLayout layout{};
+		layout.offset       = 0;
+		layout.bytesPerRow  = static_cast<uint32_t>(width) * 4u;
+		layout.rowsPerImage = static_cast<uint32_t>(height);
+
+		wgpu::Extent3D writeSize{ static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+		const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+		queue.WriteTexture(&dst, rgba, byteCount, &layout, &writeSize);
+
+		wgpu::TextureViewDescriptor viewDesc{};
+		viewDesc.format          = wgpu::TextureFormat::RGBA8Unorm;
+		viewDesc.dimension       = wgpu::TextureViewDimension::e2D;
+		viewDesc.mipLevelCount   = 1;
+		viewDesc.arrayLayerCount = 1;
+		viewDesc.aspect          = wgpu::TextureAspect::All;
+		wgpu::TextureView view = texture.CreateView(&viewDesc);
+
+		GpuTexture slot;
+		slot.Texture      = std::move(texture);
+		slot.View         = std::move(view);
+		slot.Sampler      = MakeSamplerFor(m_Filter, m_WrapU, m_WrapV);
+		slot.Width        = static_cast<uint32_t>(width);
+		slot.Height       = static_cast<uint32_t>(height);
+		slot.CachedFilter = m_Filter;
+		slot.CachedWrapU  = m_WrapU;
+		slot.CachedWrapV  = m_WrapV;
+
+		m_Tex      = RegisterTexture(std::move(slot));
+		m_Width    = width;
+		m_Height   = height;
+		m_Channels = 4;
+		m_HasMips  = false;
+		m_SourcePath.clear();
+		return m_Tex != 0;
+	}
+
+	bool Texture2D::UploadPixels(const uint8_t* rgba, size_t byteCount) {
+		if (rgba == nullptr || !IsValid()) return false;
+		const size_t expected = static_cast<size_t>(m_Width) * static_cast<size_t>(m_Height) * 4;
+		if (byteCount != expected) {
+			IDX_CORE_WARN_TAG("Texture2D",
+				"UploadPixels byte count {} != expected {} ({}x{} RGBA8)",
+				byteCount, expected, m_Width, m_Height);
+			return false;
+		}
+		GpuTexture* slot = TryLookup(m_Tex);
+		if (!slot || !slot->Texture) return false;
+
+		wgpu::Queue queue = WebGPUBackend::GetQueue();
+
+		wgpu::TexelCopyTextureInfo dst{};
+		dst.texture  = slot->Texture;
+		dst.mipLevel = 0;
+		dst.origin   = { 0, 0, 0 };
+		dst.aspect   = wgpu::TextureAspect::All;
+
+		wgpu::TexelCopyBufferLayout layout{};
+		layout.offset       = 0;
+		layout.bytesPerRow  = static_cast<uint32_t>(m_Width) * 4u;
+		layout.rowsPerImage = static_cast<uint32_t>(m_Height);
+
+		wgpu::Extent3D writeSize{ static_cast<uint32_t>(m_Width), static_cast<uint32_t>(m_Height), 1 };
+		queue.WriteTexture(&dst, rgba, byteCount, &layout, &writeSize);
+		return true;
+	}
+
 	void Texture2D::Submit(uint8_t /*unit*/) const {}
 
 	// WebGPU samplers are immutable; SetFilter/SetWrapU/V replace the pool entry sampler rather than modifying it.

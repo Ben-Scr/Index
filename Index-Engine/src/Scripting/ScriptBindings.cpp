@@ -1025,6 +1025,27 @@ namespace Index {
 		return texture ? static_cast<int>(texture->GetHeight()) : 0;
 	}
 
+	// ── Runtime / procedural textures ───────────────────────────────────
+	// rgba is width*height*4 RGBA8 bytes owned by the C# side. Returns the
+	// synthetic UUID (0 on failure) which the script assigns to a
+	// SpriteRenderer / Image like any other texture.
+	static uint64_t Index_Texture_CreateRuntime(int width, int height, const uint8_t* rgba, int filter)
+	{
+		return TextureManager::CreateRuntimeTexture(width, height, rgba,
+			static_cast<Filter>(filter), Wrap::Clamp, Wrap::Clamp);
+	}
+	// Re-upload the full image (byteCount must be width*height*4). Returns 1 on success.
+	static int Index_Texture_UpdateRuntime(uint64_t runtimeUuid, const uint8_t* rgba, int byteCount)
+	{
+		if (byteCount < 0) return 0;
+		return TextureManager::UpdateRuntimeTexture(runtimeUuid, rgba,
+			static_cast<size_t>(byteCount)) ? 1 : 0;
+	}
+	static void Index_Texture_DestroyRuntime(uint64_t runtimeUuid)
+	{
+		TextureManager::DestroyRuntimeTexture(runtimeUuid);
+	}
+
 	static uint64_t Index_Texture_GetDefaultAssetUUID(uint8_t which)
 	{
 		// Cap is exclusive of any future enum entries — `Invisible` is the
@@ -3512,6 +3533,9 @@ namespace Index {
 		b.Texture_GetWidth = &Index_Texture_GetWidth;
 		b.Texture_GetHeight = &Index_Texture_GetHeight;
 		b.Texture_GetDefaultAssetUUID = &Index_Texture_GetDefaultAssetUUID;
+		b.Texture_CreateRuntime = &Index_Texture_CreateRuntime;
+		b.Texture_UpdateRuntime = &Index_Texture_UpdateRuntime;
+		b.Texture_DestroyRuntime = &Index_Texture_DestroyRuntime;
 		b.Audio_LoadAsset = &Index_Audio_LoadAsset;
 		b.Audio_PlayOneShotAsset = &Index_Audio_PlayOneShotAsset;
 		b.Font_LoadAsset = &Index_Font_LoadAsset;

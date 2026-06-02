@@ -56,6 +56,17 @@ namespace Index {
 		// (path, filter, wrapU, wrapV) → slot+1 reverse index; 0 = miss. Stores index+1 since 0 is a valid slot.
 		std::unordered_map<std::uint64_t, std::uint32_t> g_PathIndex;
 
+		// Runtime/procedural textures: synthetic UUID ↔ slot. The forward map
+		// lets LoadTextureByUUID resolve a script-created texture without a
+		// file path; the reverse map lets GetTextureAssetUUID hand back the
+		// synthetic UUID so a SpriteRenderer that references it serializes /
+		// resolves consistently. Synthetic UUIDs come from a high counter so
+		// they're effectively disjoint from the AssetRegistry's random file
+		// UUIDs (and the forward map is consulted first regardless).
+		std::unordered_map<std::uint64_t, TextureHandle> g_RuntimeUuidToHandle;
+		std::unordered_map<std::uint32_t, std::uint64_t> g_RuntimeIndexToUuid;
+		std::uint64_t g_NextRuntimeUuid = 0xF000000000000000ULL;
+
 		// Pre-canonicalized key per slot; avoids N stat() syscalls per FileWatcher tick on hot-reload.
 		std::vector<std::string> g_CanonicalKeys;
 
@@ -132,6 +143,8 @@ namespace Index {
 		g_DestroyListeners.clear();
 		g_PathIndex.clear();
 		g_CanonicalKeys.clear();
+		g_RuntimeUuidToHandle.clear();
+		g_RuntimeIndexToUuid.clear();
 		s_IsInitialized = false;
 	}
 
@@ -180,6 +193,14 @@ namespace Index {
 		Filter filter, Wrap u, Wrap v)
 	{
 		if (!s_IsInitialized || assetId == 0) return TextureHandle{};
+
+		// Runtime texture: no file, resolve straight to its live slot.
+		if (auto rt = g_RuntimeUuidToHandle.find(assetId); rt != g_RuntimeUuidToHandle.end()) {
+			if (IsValid(rt->second)) return rt->second;
+			g_RuntimeUuidToHandle.erase(rt);  // slot was freed out from under us
+			return TextureHandle{};
+		}
+
 		std::string path = AssetRegistry::ResolvePath(assetId);
 		if (path.empty()) {
 			AssetRegistry::MarkDirty();
@@ -362,7 +383,66 @@ namespace Index {
 
 	uint64_t TextureManager::GetTextureAssetUUID(TextureHandle handle) {
 		if (!IsValid(handle)) return 0;
+		// Runtime texture: hand back its synthetic UUID (no file path to hash).
+		if (auto it = g_RuntimeIndexToUuid.find(handle.index); it != g_RuntimeIndexToUuid.end()) {
+			return it->second;
+		}
 		return AssetRegistry::GetOrCreateAssetUUID(s_Textures[handle.index].Name);
+	}
+
+	bool TextureManager::IsRuntimeTextureUUID(uint64_t uuid) {
+		return g_RuntimeUuidToHandle.find(uuid) != g_RuntimeUuidToHandle.end();
+	}
+
+	uint64_t TextureManager::CreateRuntimeTexture(int width, int height, const uint8_t* rgba,
+		Filter filter, Wrap u, Wrap v)
+	{
+		if (!s_IsInitialized || width <= 0 || height <= 0 || rgba == nullptr) return 0;
+
+		uint16_t idx;
+		if (!s_FreeIndices.empty()) {
+			idx = s_FreeIndices.front();
+			s_FreeIndices.pop();
+		}
+		else {
+			idx = static_cast<uint16_t>(s_Textures.size());
+			s_Textures.emplace_back();
+		}
+		TextureEntry& slot = s_Textures[idx];
+		if (!slot.Texture.CreateFromPixels(width, height, rgba, filter, u, v)) {
+			s_FreeIndices.push(idx);
+			return 0;
+		}
+		slot.Name = "<runtime>";
+		slot.SamplerFilter = filter;
+		slot.WrapU = u;
+		slot.WrapV = v;
+		slot.IsValid = true;
+		EnsureCanonicalKeyCapacity(s_Textures.size());
+		g_CanonicalKeys[idx].clear();  // never path-matched
+
+		const uint64_t uuid = g_NextRuntimeUuid++;
+		const TextureHandle handle{ idx, slot.Generation };
+		g_RuntimeUuidToHandle[uuid] = handle;
+		g_RuntimeIndexToUuid[idx] = uuid;
+		return uuid;
+	}
+
+	bool TextureManager::UpdateRuntimeTexture(uint64_t runtimeUuid, const uint8_t* rgba, size_t byteCount) {
+		if (!s_IsInitialized) return false;
+		auto it = g_RuntimeUuidToHandle.find(runtimeUuid);
+		if (it == g_RuntimeUuidToHandle.end() || !IsValid(it->second)) return false;
+		return s_Textures[it->second.index].Texture.UploadPixels(rgba, byteCount);
+	}
+
+	void TextureManager::DestroyRuntimeTexture(uint64_t runtimeUuid) {
+		if (!s_IsInitialized) return;
+		auto it = g_RuntimeUuidToHandle.find(runtimeUuid);
+		if (it == g_RuntimeUuidToHandle.end()) return;
+		const TextureHandle handle = it->second;
+		g_RuntimeIndexToUuid.erase(handle.index);
+		g_RuntimeUuidToHandle.erase(it);
+		UnloadTexture(handle);
 	}
 
 	size_t TextureManager::PurgeUnreferenced() {

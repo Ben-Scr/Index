@@ -659,7 +659,11 @@ end
 
 include "Index-Engine"
 
-if IndexModules.Scripting then
+-- The managed (C#) projects build on Windows only (vs2022 + MSBuild). premake's
+-- gmake2 generator builds C# via Mono csc, which cannot build these net9.0
+-- SDK-style projects, so they are excluded from the Linux build for now. The
+-- native scripting layer (DotNetHost + libnethost) still builds cross-platform.
+if IndexModules.Scripting and os.target() == "windows" then
     include "Index-ScriptCore"
     include "Index-Sandbox"
 end

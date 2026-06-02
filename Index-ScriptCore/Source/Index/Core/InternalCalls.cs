@@ -774,6 +774,18 @@ internal static unsafe class InternalCalls
     internal static int Texture_GetHeight(ulong assetId) => NativeCallbacks.Bindings.Texture_GetHeight(assetId);
     internal static ulong Texture_GetDefaultAssetUUID(byte which) => NativeCallbacks.Bindings.Texture_GetDefaultAssetUUID(which);
 
+    internal static unsafe ulong Texture_CreateRuntime(int width, int height, byte[] rgba, int filter)
+    {
+        fixed (byte* ptr = rgba)
+            return NativeCallbacks.Bindings.Texture_CreateRuntime(width, height, ptr, filter);
+    }
+    internal static unsafe bool Texture_UpdateRuntime(ulong uuid, byte[] rgba)
+    {
+        fixed (byte* ptr = rgba)
+            return NativeCallbacks.Bindings.Texture_UpdateRuntime(uuid, ptr, rgba.Length) != 0;
+    }
+    internal static void Texture_DestroyRuntime(ulong uuid) => NativeCallbacks.Bindings.Texture_DestroyRuntime(uuid);
+
     internal static bool Audio_LoadAsset(ulong assetId) => assetId != 0 && NativeCallbacks.Bindings.Audio_LoadAsset(assetId) != 0;
     internal static void Audio_PlayOneShotAsset(ulong assetId, float volume) => NativeCallbacks.Bindings.Audio_PlayOneShotAsset(assetId, volume);
 

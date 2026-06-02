@@ -267,6 +267,11 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, int> Texture_GetWidth;
     public delegate* unmanaged<ulong, int> Texture_GetHeight;
     public delegate* unmanaged<byte, ulong> Texture_GetDefaultAssetUUID;
+    // Runtime/procedural textures: (width, height, rgba*, filter) -> uuid;
+    // (uuid, rgba*, byteCount) -> ok; (uuid) -> void.
+    public delegate* unmanaged<int, int, byte*, int, ulong> Texture_CreateRuntime;
+    public delegate* unmanaged<ulong, byte*, int, int>      Texture_UpdateRuntime;
+    public delegate* unmanaged<ulong, void>                 Texture_DestroyRuntime;
     public delegate* unmanaged<ulong, int> Audio_LoadAsset;
     public delegate* unmanaged<ulong, float, void> Audio_PlayOneShotAsset;
     public delegate* unmanaged<ulong, int> Font_LoadAsset;

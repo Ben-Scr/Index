@@ -49,16 +49,17 @@ project "Index-Runtime"
 
     -- ScriptSystem loads Index-ScriptCore.dll at runtime. The packaged-layout
     -- branch (ScriptSystem.cpp:194) finds it next to the runtime exe; the
-    -- copy lets a zipped Runtime folder work standalone.
-    dependson { "Index-ScriptCore" }
+    -- copy lets a zipped Runtime folder work standalone. The managed C# project
+    -- builds on Windows only (see root premake5.lua), so gate the dep + copy.
+    if os.target() == "windows" then dependson { "Index-ScriptCore" } end
     postbuildcommands
     {
         CopyIndexAssets,
         CopyIndexEngineDll,
-        CopyScriptCoreDll,
         CopyGlfwDll,
         CopyGladDll
     }
+    if os.target() == "windows" then postbuildcommands { CopyScriptCoreDll } end
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
 
     filter "system:windows"

@@ -281,6 +281,12 @@ namespace Index {
 		// AssetRegistry GUID so `new Texture(assetId)` round-trips.
 		// Returns 0 for out-of-range or pre-init queries.
 		uint64_t    (*Texture_GetDefaultAssetUUID)(uint8_t which);
+		// Runtime/procedural textures. rgba is width*height*4 RGBA8 bytes owned
+		// by the managed side; Create returns a synthetic UUID (0 on failure),
+		// Update re-uploads the full image, Destroy frees the GPU resource.
+		uint64_t    (*Texture_CreateRuntime)(int width, int height, const uint8_t* rgba, int filter);
+		int         (*Texture_UpdateRuntime)(uint64_t runtimeUuid, const uint8_t* rgba, int byteCount);
+		void        (*Texture_DestroyRuntime)(uint64_t runtimeUuid);
 		int         (*Audio_LoadAsset)(uint64_t assetId);
 		void        (*Audio_PlayOneShotAsset)(uint64_t assetId, float volume);
 		int         (*Font_LoadAsset)(uint64_t assetId);

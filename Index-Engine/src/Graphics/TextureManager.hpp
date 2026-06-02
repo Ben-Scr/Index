@@ -96,6 +96,27 @@ namespace Index {
 
             static std::size_t GetTotalTextureMemoryBytes();
 
+            // ── Runtime / procedural textures ───────────────────────────
+            // Script-created textures that have no file on disk. They live in
+            // the same slot pool as file textures but are keyed by a synthetic
+            // UUID (high reserved range) instead of a path, so SpriteRenderer /
+            // Image references resolve through the normal LoadTextureByUUID
+            // path. The C# side owns the CPU pixel buffer; UpdateRuntimeTexture
+            // re-uploads it on Apply().
+            //
+            // CreateRuntimeTexture allocates the GPU texture from `rgba`
+            // (width*height*4 bytes) and returns the synthetic UUID (0 on
+            // failure). Pass that UUID to SpriteRenderer.Texture etc.
+            static uint64_t CreateRuntimeTexture(int width, int height, const uint8_t* rgba,
+                Filter filter = Filter::Point, Wrap u = Wrap::Clamp, Wrap v = Wrap::Clamp);
+            // Re-upload the full image. byteCount must equal width*height*4.
+            static bool UpdateRuntimeTexture(uint64_t runtimeUuid, const uint8_t* rgba, size_t byteCount);
+            // Frees the slot + drops the synthetic UUID mapping. Idempotent.
+            static void DestroyRuntimeTexture(uint64_t runtimeUuid);
+            // True when the UUID is in the reserved runtime range (lets the
+            // asset layer skip file-path resolution for these).
+            static bool IsRuntimeTextureUUID(uint64_t uuid);
+
 		private:
 			static TextureHandle FindTextureByPath(const std::string& path, Filter filter, Wrap u, Wrap v);
 			static TextureHandle FindTextureByPath(const std::string& path);
