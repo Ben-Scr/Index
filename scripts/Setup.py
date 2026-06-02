@@ -41,6 +41,200 @@ def check_tool(name: str, cmd: str | None = None) -> bool:
     return exe is not None
 
 
+# ── Auto-install support ──────────────────────────────────────────────────────
+# winget package IDs (Windows) for prerequisites we can install on the user's
+# behalf. premake is handled separately (download into vendor/bin); Python is
+# installed by the shell wrapper before Setup.py runs.
+WINGET_PACKAGE_IDS = {
+    "git": "Git.Git",
+    "dotnet": "Microsoft.DotNet.SDK.9",
+}
+# Linux package names per tool, with per-manager overrides keyed by the manager
+# executable (see detect_linux_package_manager); "default" covers apt/dnf/zypper.
+LINUX_PACKAGES = {
+    "git": {"default": ["git"]},
+    "dotnet": {"default": ["dotnet-sdk-9.0"], "pacman": ["dotnet-sdk"]},
+}
+# Fallback premake build, downloaded only when vendor/bin/premake5 is absent AND
+# premake5 is not on PATH. Bump if the vendored toolchain moves on.
+PREMAKE_FALLBACK_VERSION = "5.0.0-beta2"
+
+
+def is_interactive() -> bool:
+    return bool(sys.stdin) and sys.stdin.isatty()
+
+
+def prompt_yes_no(question: str, assume_yes: bool) -> bool:
+    """Ask a [Y/n] question (default yes). Returns False non-interactively
+    unless *assume_yes* short-circuits the prompt."""
+    if assume_yes:
+        print(f"{question} [Y/n] y")
+        return True
+    if not is_interactive():
+        return False
+    try:
+        answer = input(f"{question} [Y/n] ").strip().lower()
+    except EOFError:
+        return False
+    return answer in ("", "y", "yes")
+
+
+def refresh_windows_path() -> None:
+    """Reload PATH from the registry so a tool installed during this run becomes
+    resolvable (and inheritable by child processes) without reopening the shell."""
+    if platform.system() != "Windows":
+        return
+    import winreg
+
+    collected: list[str] = []
+    for hive, subkey in (
+        (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+    ):
+        try:
+            with winreg.OpenKey(hive, subkey) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if value:
+            collected.append(os.path.expandvars(value))
+
+    merged = os.pathsep.join(collected + [os.environ.get("PATH", "")])
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for part in merged.split(os.pathsep):
+        if part and part not in seen:
+            seen.add(part)
+            ordered.append(part)
+    if ordered:
+        os.environ["PATH"] = os.pathsep.join(ordered)
+
+
+def detect_linux_package_manager() -> tuple[str, list[str]] | None:
+    """Return (name, install-command-prefix) for the host package manager."""
+    for exe, install_cmd in (
+        ("apt-get", ["apt-get", "install", "-y"]),
+        ("dnf", ["dnf", "install", "-y"]),
+        ("pacman", ["pacman", "-S", "--noconfirm"]),
+        ("zypper", ["zypper", "install", "-y"]),
+    ):
+        if shutil.which(exe):
+            return exe, install_cmd
+    return None
+
+
+def winget_install(package_id: str) -> bool:
+    if not shutil.which("winget"):
+        print("  [!!] winget (App Installer) was not found, so auto-install is unavailable.")
+        print("       Install 'App Installer' from the Microsoft Store, then re-run setup.")
+        return False
+    cmd = [
+        "winget", "install", "--exact", "--id", package_id,
+        "--accept-package-agreements", "--accept-source-agreements",
+        "--disable-interactivity",
+    ]
+    print(f"  [..] winget install {package_id}")
+    return subprocess.run(cmd).returncode == 0
+
+
+def linux_package_install(tool: str) -> bool:
+    manager = detect_linux_package_manager()
+    if not manager:
+        print("  [!!] No supported package manager (apt/dnf/pacman/zypper) was found.")
+        return False
+    name, install_cmd = manager
+    spec = LINUX_PACKAGES.get(tool)
+    packages = spec.get(name, spec["default"]) if spec else None
+    if not packages:
+        print(f"  [!!] No known {name} package for {tool}.")
+        return False
+    cmd = list(install_cmd) + packages
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        if shutil.which("sudo"):
+            cmd = ["sudo", *cmd]
+        else:
+            print("  [!!] Root privileges are required but 'sudo' is unavailable.")
+            return False
+    print(f"  [..] {name} install {' '.join(packages)}")
+    return subprocess.run(cmd).returncode == 0
+
+
+def install_premake(repo_root: Path) -> str | None:
+    """Download a fallback premake build into vendor/bin and return its path."""
+    import tarfile
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    system = platform.system()
+    version = PREMAKE_FALLBACK_VERSION
+    if system == "Windows":
+        asset, exe_name = f"premake-{version}-windows.zip", "premake5.exe"
+    elif system == "Darwin":
+        asset, exe_name = f"premake-{version}-macosx.tar.gz", "premake5"
+    else:
+        asset, exe_name = f"premake-{version}-linux.tar.gz", "premake5"
+    url = f"https://github.com/premake/premake-core/releases/download/v{version}/{asset}"
+
+    dest_dir = repo_root / "vendor" / "bin"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  [..] Downloading premake {version}: {url}")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            archive = tmp_path / asset
+            urllib.request.urlretrieve(url, archive)
+            if asset.endswith(".zip"):
+                with zipfile.ZipFile(archive) as zf:
+                    zf.extractall(tmp_path)
+            else:
+                with tarfile.open(archive) as tf:
+                    tf.extractall(tmp_path)
+            sources = [p for p in tmp_path.rglob(exe_name) if p.is_file()]
+            if not sources:
+                print("  [!!] premake executable missing from the downloaded archive.")
+                return None
+            final = dest_dir / exe_name
+            shutil.copy2(sources[0], final)
+            if system != "Windows":
+                final.chmod(0o755)
+    except Exception as exc:  # network, extraction, permissions
+        print(f"  [!!] premake download failed: {exc}")
+        return None
+    print(f"  [OK] premake installed: {final}")
+    return str(final)
+
+
+def offer_install(tool: str, install_enabled: bool, assume_yes: bool) -> bool:
+    """Offer to install *tool* (git/dotnet) via the platform package manager.
+    Returns True only if the tool is reachable afterwards."""
+    if not install_enabled:
+        return False
+    if not (assume_yes or is_interactive()):
+        return False
+    if not prompt_yes_no(f"[Index Setup] {tool} is missing. Install it automatically?", assume_yes):
+        return False
+
+    if platform.system() == "Windows":
+        package = WINGET_PACKAGE_IDS.get(tool)
+        installed = winget_install(package) if package else False
+        if installed:
+            refresh_windows_path()
+    else:
+        installed = linux_package_install(tool)
+
+    if not installed:
+        print(f"  [!!] Could not install {tool} automatically; please install it manually.")
+        return False
+
+    resolved = shutil.which(tool)
+    if resolved:
+        print(f"  [OK] {tool} ready: {resolved}")
+        return True
+    print(f"  [!!] {tool} installed but not yet visible on PATH; please re-run setup.")
+    return False
+
+
 def submodules_need_update(repo_root: Path) -> bool:
     """Return True if any registered submodule is missing, conflicted, or stale."""
     gitmodules = repo_root / ".gitmodules"
@@ -266,6 +460,17 @@ def parse_args() -> argparse.Namespace:
             "fast, actionable error."
         ),
     )
+    parser.add_argument(
+        "--assume-yes",
+        "-y",
+        action="store_true",
+        help="Auto-confirm install prompts for missing prerequisites (for scripted/CI runs).",
+    )
+    parser.add_argument(
+        "--no-install",
+        action="store_true",
+        help="Never offer to install missing prerequisites; only report them.",
+    )
     return parser.parse_args()
 
 
@@ -292,6 +497,8 @@ def build_premake_args(args: argparse.Namespace) -> list[str]:
 def main() -> int:
     ensure_supported_python()
     args = parse_args()
+    install_enabled = not args.no_install
+    assume_yes = args.assume_yes
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
 
@@ -319,7 +526,8 @@ def main() -> int:
     )
 
     if not check_tool("git"):
-        required_missing.append("git")
+        if not offer_install("git", install_enabled, assume_yes):
+            required_missing.append("git")
 
     if not check_tool("python", sys.executable):
         required_missing.append("python")
@@ -329,7 +537,17 @@ def main() -> int:
         print(f"  [OK] premake5 found: {premake_path}")
     else:
         print(f"  [!!] {describe_premake_expectation(repo_root)}")
-        required_missing.append("premake5")
+        if (
+            install_enabled
+            and (assume_yes or is_interactive())
+            and prompt_yes_no(
+                "[Index Setup] premake5 is missing. Download it into vendor/bin now?",
+                assume_yes,
+            )
+        ):
+            premake_path = install_premake(repo_root)
+        if not premake_path:
+            required_missing.append("premake5")
 
     is_windows = platform.system() == "Windows"
     dotnet_exe = shutil.which("dotnet")
@@ -342,7 +560,10 @@ def main() -> int:
         else:
             print("  [!!] dotnet NOT found on PATH")
             if scripting_wanted:
-                required_missing.append("dotnet")
+                if offer_install("dotnet", install_enabled, assume_yes):
+                    dotnet_exe = shutil.which("dotnet")
+                else:
+                    required_missing.append("dotnet")
 
         detected_ver = None
         if not dotnet_arch:
@@ -366,7 +587,10 @@ def main() -> int:
         else:
             print("  [!!] dotnet NOT found on PATH")
             if scripting_wanted:
-                required_missing.append("dotnet")
+                if offer_install("dotnet", install_enabled, assume_yes):
+                    dotnet_exe = shutil.which("dotnet")
+                else:
+                    required_missing.append("dotnet")
 
     # E12: detect MSBuild via vswhere on Windows (non-fatal). Writes
     # scripts/index-build-env.bat with MSBUILD_PATH for downstream tools.
