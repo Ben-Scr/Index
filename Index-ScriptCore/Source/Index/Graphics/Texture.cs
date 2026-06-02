@@ -1,4 +1,5 @@
 using System;
+using Index.Graphics;
 using Index.Interop;
 
 namespace Index;
@@ -34,30 +35,22 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
 {
     public ulong UUID { get; private set; }
 
-    // Runtime/procedural state. Non-null only for textures created via
-    // Texture.Create — the managed byte[] IS the source of truth (RGBA8,
-    // 4 bytes per pixel, row-major, top-left origin). SetPixel/GetPixel
-    // mutate it without crossing the FFI; Apply() uploads it to the GPU in
-    // one call. Asset (file-backed) textures keep all of these null/zero.
-    private byte[]? _pixels;
-    private readonly int _runtimeWidth;
-    private readonly int _runtimeHeight;
+    // Runtime/procedural CPU buffers, keyed by synthetic UUID. The native GPU
+    // texture is already shared by UUID, so we mirror that: ANY managed Texture
+    // wrapper for a given runtime UUID (your Create() handle OR one returned by
+    // SpriteRenderer.Texture) resolves to the SAME pixel buffer here. That's
+    // why `sprite.Texture.SetPixel(...)` works without holding the original
+    // handle. Main-thread only (scripts never touch this concurrently).
+    private sealed class RuntimeBuffer { public byte[] Pixels = System.Array.Empty<byte>(); public int Width; public int Height; public int OutOfBoundsWarnings; }
+    private static readonly System.Collections.Generic.Dictionary<ulong, RuntimeBuffer> s_RuntimeBuffers = new();
 
-    /// <summary>True for a script-created (procedural) texture — owns a CPU
+    /// <summary>True for a script-created (procedural) texture — it owns a CPU
     /// pixel buffer and must be Dispose()d to free its GPU resource.</summary>
-    public bool IsRuntime => _pixels != null;
+    public bool IsRuntime => s_RuntimeBuffers.ContainsKey(UUID);
 
     internal Texture(ulong assetId)
     {
         UUID = assetId;
-    }
-
-    private Texture(ulong runtimeUuid, int width, int height, byte[] pixels)
-    {
-        UUID = runtimeUuid;
-        _runtimeWidth = width;
-        _runtimeHeight = height;
-        _pixels = pixels;
     }
 
     /// <summary>
@@ -82,7 +75,8 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
             Log.Error("Texture.Create: native texture creation failed (WebGPU not ready?).");
             return null;
         }
-        return new Texture(uuid, width, height, pixels);
+        s_RuntimeBuffers[uuid] = new RuntimeBuffer { Pixels = pixels, Width = width, Height = height };
+        return new Texture(uuid);
     }
 
     public bool IsValid => UUID != 0 && (IsRuntime || InternalCalls.Texture_LoadAsset(UUID));
@@ -102,36 +96,73 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     }
 
     public string Path => (UUID != 0 && !IsRuntime) ? InternalCalls.Asset_GetPath(UUID) : "";
-    public int Width => IsRuntime ? _runtimeWidth : (UUID != 0 ? InternalCalls.Texture_GetWidth(UUID) : 0);
-    public int Height => IsRuntime ? _runtimeHeight : (UUID != 0 ? InternalCalls.Texture_GetHeight(UUID) : 0);
+    public int Width => s_RuntimeBuffers.TryGetValue(UUID, out var rb) ? rb.Width : (UUID != 0 ? InternalCalls.Texture_GetWidth(UUID) : 0);
+    public int Height => s_RuntimeBuffers.TryGetValue(UUID, out var rb) ? rb.Height : (UUID != 0 ? InternalCalls.Texture_GetHeight(UUID) : 0);
 
     // ── Per-pixel access (runtime textures only) ────────────────────────
     // All of these operate on the managed CPU buffer; nothing reaches the GPU
-    // until Apply(). GetPixel/SetPixel on an asset (file-backed) texture throw
-    // — only Create()d textures own a readable/writable buffer.
+    // until Apply(). They work on ANY wrapper for a runtime UUID (including one
+    // read back from SpriteRenderer.Texture), since the buffer is keyed by UUID.
+    // GetPixel/SetPixel on an asset (file-backed) texture throw — only Create()d
+    // textures own a buffer.
 
-    /// <summary>Set one pixel. (0,0) is top-left. Out-of-bounds cells are ignored.</summary>
-    public void SetPixel(Vector2Int cell, Color color)
+    private RuntimeBuffer RequireBuffer(string op)
     {
-        if (_pixels == null) throw new InvalidOperationException(
-            "SetPixel is only valid on a texture created with Texture.Create.");
-        if (cell.X < 0 || cell.Y < 0 || cell.X >= _runtimeWidth || cell.Y >= _runtimeHeight) return;
-        int i = (cell.Y * _runtimeWidth + cell.X) * 4;
-        _pixels[i + 0] = ToByte(color.R);
-        _pixels[i + 1] = ToByte(color.G);
-        _pixels[i + 2] = ToByte(color.B);
-        _pixels[i + 3] = ToByte(color.A);
+        if (!s_RuntimeBuffers.TryGetValue(UUID, out var rb))
+            throw new InvalidOperationException(
+                $"{op} is only valid on a texture created with Texture.Create (this one is a file/asset texture).");
+        return rb;
     }
 
-    /// <summary>Read one pixel back from the CPU buffer. (0,0) is top-left.</summary>
+    // Out-of-bounds pixel access is almost always a bug, but SetPixel/GetPixel
+    // are per-pixel APIs frequently called inside tight loops — logging every
+    // miss would flood the editor log (which does NOT coalesce duplicate lines).
+    // So warn, but cap the count per texture and note when the rest are dropped.
+    private const int k_MaxOutOfBoundsWarnings = 8;
+
+    private static void WarnOutOfBounds(RuntimeBuffer rb, string op, Vector2Int cell)
+    {
+        if (rb.OutOfBoundsWarnings >= k_MaxOutOfBoundsWarnings)
+            return;
+        rb.OutOfBoundsWarnings++;
+        string suffix = rb.OutOfBoundsWarnings == k_MaxOutOfBoundsWarnings
+            ? " (further out-of-bounds warnings for this texture are suppressed)"
+            : "";
+        Log.Warn(
+            $"Texture.{op}: cell ({cell.X}, {cell.Y}) is outside the texture bounds {rb.Width}x{rb.Height} — " +
+            $"valid range is (0, 0) to ({rb.Width - 1}, {rb.Height - 1}); pixel skipped.{suffix}");
+    }
+
+    /// <summary>Set one pixel. (0,0) is top-left. An out-of-bounds cell is
+    /// skipped and logs a warning (capped per texture to avoid log spam).</summary>
+    public void SetPixel(Vector2Int cell, Color color)
+    {
+        RuntimeBuffer rb = RequireBuffer(nameof(SetPixel));
+        if (cell.X < 0 || cell.Y < 0 || cell.X >= rb.Width || cell.Y >= rb.Height)
+        {
+            WarnOutOfBounds(rb, nameof(SetPixel), cell);
+            return;
+        }
+        int i = (cell.Y * rb.Width + cell.X) * 4;
+        rb.Pixels[i + 0] = ToByte(color.R);
+        rb.Pixels[i + 1] = ToByte(color.G);
+        rb.Pixels[i + 2] = ToByte(color.B);
+        rb.Pixels[i + 3] = ToByte(color.A);
+    }
+
+    /// <summary>Read one pixel back from the CPU buffer. (0,0) is top-left.
+    /// An out-of-bounds cell returns transparent black and logs a warning
+    /// (capped per texture to avoid log spam).</summary>
     public Color GetPixel(Vector2Int cell)
     {
-        if (_pixels == null) throw new InvalidOperationException(
-            "GetPixel is only valid on a texture created with Texture.Create.");
-        if (cell.X < 0 || cell.Y < 0 || cell.X >= _runtimeWidth || cell.Y >= _runtimeHeight)
+        RuntimeBuffer rb = RequireBuffer(nameof(GetPixel));
+        if (cell.X < 0 || cell.Y < 0 || cell.X >= rb.Width || cell.Y >= rb.Height)
+        {
+            WarnOutOfBounds(rb, nameof(GetPixel), cell);
             return new Color(0, 0, 0, 0);
-        int i = (cell.Y * _runtimeWidth + cell.X) * 4;
-        return new Color(_pixels[i] / 255f, _pixels[i + 1] / 255f, _pixels[i + 2] / 255f, _pixels[i + 3] / 255f);
+        }
+        int i = (cell.Y * rb.Width + cell.X) * 4;
+        return new Color(rb.Pixels[i] / 255f, rb.Pixels[i + 1] / 255f, rb.Pixels[i + 2] / 255f, rb.Pixels[i + 3] / 255f);
     }
 
     /// <summary>
@@ -140,18 +171,17 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     /// </summary>
     public void SetPixels(Color[] colors)
     {
-        if (_pixels == null) throw new InvalidOperationException(
-            "SetPixels is only valid on a texture created with Texture.Create.");
-        int count = _runtimeWidth * _runtimeHeight;
+        RuntimeBuffer rb = RequireBuffer(nameof(SetPixels));
+        int count = rb.Width * rb.Height;
         if (colors.Length != count)
             throw new ArgumentException($"SetPixels expected {count} colors, got {colors.Length}.");
         for (int p = 0; p < count; p++)
         {
             int i = p * 4;
-            _pixels[i + 0] = ToByte(colors[p].R);
-            _pixels[i + 1] = ToByte(colors[p].G);
-            _pixels[i + 2] = ToByte(colors[p].B);
-            _pixels[i + 3] = ToByte(colors[p].A);
+            rb.Pixels[i + 0] = ToByte(colors[p].R);
+            rb.Pixels[i + 1] = ToByte(colors[p].G);
+            rb.Pixels[i + 2] = ToByte(colors[p].B);
+            rb.Pixels[i + 3] = ToByte(colors[p].A);
         }
     }
 
@@ -159,18 +189,48 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     /// once per batch of edits; the whole image is re-uploaded each call.</summary>
     public void Apply()
     {
-        if (_pixels == null) return;  // asset textures are immutable from script
-        InternalCalls.Texture_UpdateRuntime(UUID, _pixels);
+        if (s_RuntimeBuffers.TryGetValue(UUID, out var rb))
+            InternalCalls.Texture_UpdateRuntime(UUID, rb.Pixels);
+        // asset textures are immutable from script — silently no-op
+    }
+
+    /// <summary>
+    /// Write this texture to a PNG file. Only valid for runtime textures created
+    /// with <see cref="Create"/> (their pixels live in a CPU buffer). The current
+    /// CPU buffer is saved as-is, so you do NOT need to call <see cref="Apply"/>
+    /// first — Apply only pushes to the GPU. For a file/asset texture the source
+    /// image is already on disk; copy <see cref="Path"/> instead.
+    /// </summary>
+    /// <param name="path">Destination .png path (absolute, or relative to the working directory); the parent folder is created if missing.</param>
+    /// <returns>true on success; false if this isn't a runtime texture or the write failed.</returns>
+    public bool SaveToPng(string path)
+    {
+        if (!s_RuntimeBuffers.TryGetValue(UUID, out var rb))
+        {
+            Log.Error("Texture.SaveToPng is only valid on a runtime texture created with Texture.Create. " +
+                      "A file/asset texture is already on disk — copy Texture.Path instead.");
+            return false;
+        }
+
+        try
+        {
+            Png.Save(path, rb.Width, rb.Height, rb.Pixels);
+            return true;
+        }
+        catch (Exception e)
+        {
+            Log.Error($"Texture.SaveToPng failed for '{path}': {e.Message}");
+            return false;
+        }
     }
 
     public void Dispose()
     {
-        if (_pixels != null && UUID != 0)
+        if (s_RuntimeBuffers.Remove(UUID) && UUID != 0)
         {
             InternalCalls.Texture_DestroyRuntime(UUID);
-            _pixels = null;
-            UUID = 0;
         }
+        UUID = 0;
     }
 
     private static byte ToByte(float v) => (byte)Math.Clamp((int)(v * 255f + 0.5f), 0, 255);
@@ -180,7 +240,18 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
     // without re-implementing the AssetRegistry lookup.
     public static Texture? FromAssetUUID(ulong assetId)
     {
-        if (assetId == 0 || !InternalCalls.Asset_IsValid(assetId))
+        if (assetId == 0)
+            return null;
+
+        // Runtime/procedural textures aren't in the AssetRegistry, so the
+        // file-asset Asset_IsValid check would reject them. They resolve
+        // through the texture manager instead. The returned wrapper is
+        // reference-only (no CPU buffer) — keep the original Texture.Create
+        // handle if you need GetPixel/SetPixel/Apply on it.
+        if (InternalCalls.Texture_IsRuntime(assetId))
+            return new Texture(assetId);
+
+        if (!InternalCalls.Asset_IsValid(assetId))
             return null;
 
         return InternalCalls.Texture_LoadAsset(assetId) ? new Texture(assetId) : null;

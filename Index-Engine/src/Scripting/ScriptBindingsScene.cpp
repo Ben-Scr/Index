@@ -203,6 +203,13 @@ namespace Index {
 		return requiredBytes;
 	}
 
+	// Application.DataPath → current project's absolute Assets directory ("<root>/Assets"); empty when no project is loaded.
+	static int Index_Application_GetDataPathBuffer(char* outBuffer, int capacity)
+	{
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		return CopyToManagedBuffer(project ? std::string_view(project->AssetsDirectory) : std::string_view{}, outBuffer, capacity);
+	}
+
 
 	static int Index_Window_GetWidth()
 	{
@@ -563,6 +570,7 @@ namespace Index {
 		b.Application_SetClipboardString = &Index_Application_SetClipboardString;
 		b.Application_GetVsyncEnabled = &Index_Application_GetVsyncEnabled;
 		b.Application_SetVsyncEnabled = &Index_Application_SetVsyncEnabled;
+		b.Application_GetDataPathBuffer = &Index_Application_GetDataPathBuffer;
 		b.Application_GetRunInBackground = &Index_Application_GetRunInBackground;
 		b.Application_SetRunInBackground = &Index_Application_SetRunInBackground;
 

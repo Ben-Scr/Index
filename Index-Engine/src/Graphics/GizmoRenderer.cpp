@@ -303,13 +303,25 @@ namespace Index {
 		m_GizmoViewId = viewId;
 	}
 
-	void GizmoRenderer2D::EndFrame() {}
+	void GizmoRenderer2D::EndFrame() {
+		// Single per-frame clear point. RenderWithVP only READS the gizmo
+		// buffer now — it must NOT clear, because a single frame can flush
+		// the same buffer into multiple targets (editor Editor View FBO,
+		// Game View FBO, and the main-window pass). If each flush cleared,
+		// only the first target would ever show gizmos and every later one
+		// (e.g. the Game View, or any script `Gizmo.DrawLine` in play mode)
+		// would draw from an empty buffer. EndFrame is called exactly once
+		// after all RenderWithVP calls in both render paths
+		// (RenderPipelineOnly + RenderOnceForRefresh), so this is the correct
+		// place to reset for the next frame.
+		Gizmo::Clear();
+	}
 
 	void GizmoRenderer2D::RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask) {
 		if (!m_IsInitialized) return;
 		std::span<const PosColorVertex> verts = BuildGeometry(layerMask);
 		FlushGizmosImpl(vp, verts);
-		Gizmo::Clear();
+		// NOTE: do NOT clear here — see GizmoRenderer2D::EndFrame above.
 	}
 
 	std::span<const PosColorVertex>

@@ -272,6 +272,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<int, int, byte*, int, ulong> Texture_CreateRuntime;
     public delegate* unmanaged<ulong, byte*, int, int>      Texture_UpdateRuntime;
     public delegate* unmanaged<ulong, void>                 Texture_DestroyRuntime;
+    public delegate* unmanaged<ulong, int>                  Texture_IsRuntime;
     public delegate* unmanaged<ulong, int> Audio_LoadAsset;
     public delegate* unmanaged<ulong, float, void> Audio_PlayOneShotAsset;
     public delegate* unmanaged<ulong, int> Font_LoadAsset;
@@ -303,6 +304,9 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float*, float*, float*, float*, void> Gizmo_GetColor;
     public delegate* unmanaged<float> Gizmo_GetLineWidth;
     public delegate* unmanaged<float, void> Gizmo_SetLineWidth;
+    public delegate* unmanaged<int, void> Gizmo_SetMaxVertices;
+    public delegate* unmanaged<int> Gizmo_GetMaxVertices;
+    public delegate* unmanaged<int> Gizmo_GetRegisteredVertices;
 
     // ── Physics2D ────────────────────────────────────────────────
     public delegate* unmanaged<float, float, float, float, float, ulong*, float*, float*, float*, float*, float*, int> Physics2D_Raycast;
@@ -879,6 +883,9 @@ internal unsafe struct NativeBindingsStruct
     // ── ParticleSystem2D texture (appended for binary compat) ──
     public delegate* unmanaged<ulong, ulong>        ParticleSystem2D_GetTexture;
     public delegate* unmanaged<ulong, ulong, void>  ParticleSystem2D_SetTexture;
+
+    // ── Application data path (appended for binary compat) ──
+    public delegate* unmanaged<byte*, int, int>     Application_GetDataPathBuffer;
 }
 
 internal static unsafe class NativeCallbacks

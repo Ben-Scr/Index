@@ -12,6 +12,14 @@ workspace "Index"
     filter { "system:windows", "language:C++" }
         toolset "v143"
 
+    filter { "system:linux", "language:C++" }
+        -- GCC rejects a member named identically to its type (e.g. the
+        -- WindowSpecification / Log::Entry::Level fields in core headers) as a
+        -- [-Wchanges-meaning] error, where MSVC accepts it. It is functionally
+        -- harmless scope pedantry, so silence it for the whole GCC/Linux build
+        -- rather than renaming widely-used API members.
+        buildoptions { "-Wno-changes-meaning" }
+
     filter {}
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"

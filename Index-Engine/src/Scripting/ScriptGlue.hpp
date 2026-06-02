@@ -287,6 +287,10 @@ namespace Index {
 		uint64_t    (*Texture_CreateRuntime)(int width, int height, const uint8_t* rgba, int filter);
 		int         (*Texture_UpdateRuntime)(uint64_t runtimeUuid, const uint8_t* rgba, int byteCount);
 		void        (*Texture_DestroyRuntime)(uint64_t runtimeUuid);
+		// 1 when the UUID is a runtime/procedural texture (not in the
+		// AssetRegistry) — lets the managed Texture wrapper accept it without
+		// the file-asset validity check rejecting it.
+		int         (*Texture_IsRuntime)(uint64_t uuid);
 		int         (*Audio_LoadAsset)(uint64_t assetId);
 		void        (*Audio_PlayOneShotAsset)(uint64_t assetId, float volume);
 		int         (*Font_LoadAsset)(uint64_t assetId);
@@ -318,6 +322,9 @@ namespace Index {
 		void (*Gizmo_GetColor)(float* r, float* g, float* b, float* a);
 		float (*Gizmo_GetLineWidth)();
 		void (*Gizmo_SetLineWidth)(float width);
+		void (*Gizmo_SetMaxVertices)(int maxVertices);
+		int (*Gizmo_GetMaxVertices)();
+		int (*Gizmo_GetRegisteredVertices)();
 
 		// ── Physics2D ────────────────────────────────────────────────
 		int (*Physics2D_Raycast)(float originX, float originY, float dirX, float dirY, float distance,
@@ -924,6 +931,10 @@ namespace Index {
 		// ── ParticleSystem2D texture (appended for binary compat) ──
 		uint64_t (*ParticleSystem2D_GetTexture)(uint64_t entityID);
 		void     (*ParticleSystem2D_SetTexture)(uint64_t entityID, uint64_t assetId);
+
+		// ── Application data path (appended for binary compat) ──
+		// Current project's absolute Assets directory; empty if none. Backs Application.DataPath.
+		int (*Application_GetDataPathBuffer)(char* outBuffer, int capacity);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

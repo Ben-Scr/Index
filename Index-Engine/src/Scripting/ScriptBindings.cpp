@@ -1045,6 +1045,10 @@ namespace Index {
 	{
 		TextureManager::DestroyRuntimeTexture(runtimeUuid);
 	}
+	static int Index_Texture_IsRuntime(uint64_t uuid)
+	{
+		return TextureManager::IsRuntimeTextureUUID(uuid) ? 1 : 0;
+	}
 
 	static uint64_t Index_Texture_GetDefaultAssetUUID(uint8_t which)
 	{
@@ -2430,6 +2434,9 @@ namespace Index {
 	static void Index_Gizmo_GetColor(float* r, float* g, float* b, float* a) { Color c = Gizmo::GetColor(); *r = c.r; *g = c.g; *b = c.b; *a = c.a; }
 	static float Index_Gizmo_GetLineWidth() { return Gizmo::GetLineWidth(); }
 	static void Index_Gizmo_SetLineWidth(float width) { Gizmo::SetLineWidth(width); }
+	static void Index_Gizmo_SetMaxVertices(int maxVertices) { Gizmo::SetMaxVertices(static_cast<size_t>(maxVertices < 0 ? 0 : maxVertices)); }
+	static int Index_Gizmo_GetMaxVertices() { return static_cast<int>(Gizmo::GetMaxVertices()); }
+	static int Index_Gizmo_GetRegisteredVertices() { return static_cast<int>(Gizmo::GetRegisteredVertices()); }
 
 	// ── Physics2D ───────────────────────────────────────────────────────
 
@@ -3536,6 +3543,7 @@ namespace Index {
 		b.Texture_CreateRuntime = &Index_Texture_CreateRuntime;
 		b.Texture_UpdateRuntime = &Index_Texture_UpdateRuntime;
 		b.Texture_DestroyRuntime = &Index_Texture_DestroyRuntime;
+		b.Texture_IsRuntime = &Index_Texture_IsRuntime;
 		b.Audio_LoadAsset = &Index_Audio_LoadAsset;
 		b.Audio_PlayOneShotAsset = &Index_Audio_PlayOneShotAsset;
 		b.Font_LoadAsset = &Index_Font_LoadAsset;
@@ -3565,6 +3573,9 @@ namespace Index {
 		b.Gizmo_GetColor = &Index_Gizmo_GetColor;
 		b.Gizmo_GetLineWidth = &Index_Gizmo_GetLineWidth;
 		b.Gizmo_SetLineWidth = &Index_Gizmo_SetLineWidth;
+		b.Gizmo_SetMaxVertices = &Index_Gizmo_SetMaxVertices;
+		b.Gizmo_GetMaxVertices = &Index_Gizmo_GetMaxVertices;
+		b.Gizmo_GetRegisteredVertices = &Index_Gizmo_GetRegisteredVertices;
 
 		b.Physics2D_Raycast = &Index_Physics2D_Raycast;
 		b.Physics2D_OverlapCircle = &Index_Physics2D_OverlapCircle;

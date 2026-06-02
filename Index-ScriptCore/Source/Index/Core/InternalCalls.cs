@@ -36,6 +36,8 @@ internal static unsafe class InternalCalls
     internal static bool Application_GetRunInBackground() => NativeCallbacks.Bindings.Application_GetRunInBackground() != 0;
     internal static void Application_SetRunInBackground(bool enabled) => NativeCallbacks.Bindings.Application_SetRunInBackground(enabled ? 1 : 0);
     internal static int Application_GetProcessorCount() => NativeCallbacks.Bindings.Application_GetProcessorCount();
+    internal static string Application_GetDataPath()
+        => ReadNativeString(NativeCallbacks.Bindings.Application_GetDataPathBuffer);
     internal static int JobSystem_Reconfigure(int workerCount) => NativeCallbacks.Bindings.JobSystem_Reconfigure(workerCount);
 
     // ── Window ──────────────────────────────────────────────────────
@@ -785,6 +787,7 @@ internal static unsafe class InternalCalls
             return NativeCallbacks.Bindings.Texture_UpdateRuntime(uuid, ptr, rgba.Length) != 0;
     }
     internal static void Texture_DestroyRuntime(ulong uuid) => NativeCallbacks.Bindings.Texture_DestroyRuntime(uuid);
+    internal static bool Texture_IsRuntime(ulong uuid) => NativeCallbacks.Bindings.Texture_IsRuntime(uuid) != 0;
 
     internal static bool Audio_LoadAsset(ulong assetId) => assetId != 0 && NativeCallbacks.Bindings.Audio_LoadAsset(assetId) != 0;
     internal static void Audio_PlayOneShotAsset(ulong assetId, float volume) => NativeCallbacks.Bindings.Audio_PlayOneShotAsset(assetId, volume);
@@ -820,6 +823,9 @@ internal static unsafe class InternalCalls
     internal static void Gizmo_GetColor(out float r, out float g, out float b, out float a) { float cr, cg, cb, ca; NativeCallbacks.Bindings.Gizmo_GetColor(&cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static float Gizmo_GetLineWidth() => NativeCallbacks.Bindings.Gizmo_GetLineWidth();
     internal static void Gizmo_SetLineWidth(float w) => NativeCallbacks.Bindings.Gizmo_SetLineWidth(w);
+    internal static void Gizmo_SetMaxVertices(int maxVertices) => NativeCallbacks.Bindings.Gizmo_SetMaxVertices(maxVertices);
+    internal static int Gizmo_GetMaxVertices() => NativeCallbacks.Bindings.Gizmo_GetMaxVertices();
+    internal static int Gizmo_GetRegisteredVertices() => NativeCallbacks.Bindings.Gizmo_GetRegisteredVertices();
 
     // ── Physics2D ───────────────────────────────────────────────────
 

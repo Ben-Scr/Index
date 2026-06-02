@@ -29,7 +29,8 @@ public static class Application
     public static string PersistentDataPath => EnsureDirectory(
         Path.Combine(GetLocalApplicationDataPath(), "Index"));
 
-    public static string DataPath => AppContext.BaseDirectory;
+    /// <summary>Absolute path to the current project's <c>Assets</c> folder (e.g. <c>…/MyGame/Assets</c>); empty if no project is loaded.</summary>
+    public static string DataPath => InternalCalls.Application_GetDataPath();
 
     /// <summary>
     /// The temporary cache directory. Data here may be cleared by the OS.
