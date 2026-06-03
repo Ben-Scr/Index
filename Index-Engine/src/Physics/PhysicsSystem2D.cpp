@@ -74,7 +74,7 @@ namespace Index {
 	void PhysicsSystem2D::Initialize() {
 		s_MainWorld.emplace();
 		s_IndexWorld.emplace();
-		IDX_CORE_INFO_TAG("PhysicsSystem", "Box2D + Axiom-Physics initialized");
+		IDX_CORE_INFO_TAG("PhysicsSystem", "Box2D + Index-Physics initialized");
 	}
 
 	void PhysicsSystem2D::SyncTransformsToPhysics() {

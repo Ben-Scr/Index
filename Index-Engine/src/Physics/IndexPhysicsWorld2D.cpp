@@ -8,7 +8,7 @@ namespace Index {
 
 	IndexPhysicsWorld2D::IndexPhysicsWorld2D() : m_World() {}
 
-	IndexPhysicsWorld2D::IndexPhysicsWorld2D(const AxiomPhys::WorldSettings& settings)
+	IndexPhysicsWorld2D::IndexPhysicsWorld2D(const IndexPhys::WorldSettings& settings)
 		: m_World(settings) {
 	}
 
@@ -37,15 +37,15 @@ namespace Index {
 		m_Colliders.clear();
 	}
 
-	AxiomPhys::Body* IndexPhysicsWorld2D::CreateBody(EntityHandle entity, AxiomPhys::BodyType type, Scene* scene) {
+	IndexPhys::Body* IndexPhysicsWorld2D::CreateBody(EntityHandle entity, IndexPhys::BodyType type, Scene* scene) {
 		uint32_t key = static_cast<uint32_t>(entity);
 		if (m_Bodies.count(key)) {
-			IDX_CORE_WARN_TAG("IndexPhysics", "Entity already has a Axiom-Physics body");
+			IDX_CORE_WARN_TAG("IndexPhysics", "Entity already has a Index-Physics body");
 			return m_Bodies[key].get();
 		}
 
-		auto body = std::make_unique<AxiomPhys::Body>(type);
-		AxiomPhys::Body* ptr = body.get();
+		auto body = std::make_unique<IndexPhys::Body>(type);
+		IndexPhys::Body* ptr = body.get();
 		m_World.RegisterBody(*ptr);
 		m_BodyToEntity[ptr] = entity;
 		m_BodyToScene[ptr] = scene;
@@ -59,7 +59,7 @@ namespace Index {
 		auto it = m_Bodies.find(key);
 		if (it == m_Bodies.end()) return;
 
-		AxiomPhys::Body* ptr = it->second.get();
+		IndexPhys::Body* ptr = it->second.get();
 
 		// Detach but do NOT destroy: collider components own their lifetime; destroying here would dangle the raw m_Collider pointer in the still-alive component.
 		m_World.DetachCollider(*ptr);
@@ -83,20 +83,39 @@ namespace Index {
 		}
 	}
 
-	AxiomPhys::Body* IndexPhysicsWorld2D::GetBody(EntityHandle entity) {
+	IndexPhys::Body* IndexPhysicsWorld2D::GetBody(EntityHandle entity) {
 		uint32_t key = static_cast<uint32_t>(entity);
 		auto it = m_Bodies.find(key);
 		return it != m_Bodies.end() ? it->second.get() : nullptr;
 	}
 
-	AxiomPhys::BoxCollider* IndexPhysicsWorld2D::CreateBoxCollider(EntityHandle entity, const Vec2& halfExtents) {
+	bool IndexPhysicsWorld2D::ResolveColliderEntity(const IndexPhys::Collider* collider, Scene*& outScene, EntityHandle& outEntity) const {
+		outScene = nullptr;
+		outEntity = entt::null;
+		if (!collider) return false;
+
+		// The collider's body carries the entity/scene mapping; an unattached collider has none.
+		IndexPhys::Body* body = const_cast<IndexPhys::Collider*>(collider)->GetBody();
+		if (!body) return false;
+
+		auto itEntity = m_BodyToEntity.find(body);
+		if (itEntity == m_BodyToEntity.end()) return false;
+		outEntity = itEntity->second;
+
+		if (auto itScene = m_BodyToScene.find(body); itScene != m_BodyToScene.end()) {
+			outScene = itScene->second;
+		}
+		return true;
+	}
+
+	IndexPhys::BoxCollider* IndexPhysicsWorld2D::CreateBoxCollider(EntityHandle entity, const Vec2& halfExtents) {
 		uint32_t key = static_cast<uint32_t>(entity);
 
 		// Replace only the BOX collider — keeps a coexisting circle collider's pointer valid.
 		DestroyCollider(entity, FastColliderKind::Box);
 
-		auto collider = std::make_unique<AxiomPhys::BoxCollider>(AxiomPhys::Vec2(halfExtents.x, halfExtents.y));
-		AxiomPhys::BoxCollider* ptr = collider.get();
+		auto collider = std::make_unique<IndexPhys::BoxCollider>(IndexPhys::Vec2(halfExtents.x, halfExtents.y));
+		IndexPhys::BoxCollider* ptr = collider.get();
 		m_World.RegisterCollider(*ptr);
 
 		// Only attach if nothing else is currently attached: deserialization/scripting can produce dual colliders; the second just registers without attaching.
@@ -111,13 +130,13 @@ namespace Index {
 		return ptr;
 	}
 
-	AxiomPhys::CircleCollider* IndexPhysicsWorld2D::CreateCircleCollider(EntityHandle entity, float radius) {
+	IndexPhys::CircleCollider* IndexPhysicsWorld2D::CreateCircleCollider(EntityHandle entity, float radius) {
 		uint32_t key = static_cast<uint32_t>(entity);
 
 		DestroyCollider(entity, FastColliderKind::Circle);
 
-		auto collider = std::make_unique<AxiomPhys::CircleCollider>(radius);
-		AxiomPhys::CircleCollider* ptr = collider.get();
+		auto collider = std::make_unique<IndexPhys::CircleCollider>(radius);
+		IndexPhys::CircleCollider* ptr = collider.get();
 		m_World.RegisterCollider(*ptr);
 
 		auto bodyIt = m_Bodies.find(key);
@@ -136,7 +155,7 @@ namespace Index {
 		auto it = m_Colliders.find(ColliderKey{ key, kind });
 		if (it == m_Colliders.end()) return;
 
-		AxiomPhys::Collider* ptr = it->second.get();
+		IndexPhys::Collider* ptr = it->second.get();
 
 		// Only detach if THIS kind is the one currently attached to the
 		// body. Detaching when a different kind is attached would silently
@@ -251,7 +270,7 @@ namespace Index {
 				continue;
 			}
 
-			// After canonical-pair swap the "A" side may not match AxiomPhys's A; use body-position midpoint as contact point (same fallback as Box2D path).
+			// After canonical-pair swap the "A" side may not match IndexPhys's A; use body-position midpoint as contact point (same fallback as Box2D path).
 			Vec2 midpoint{ 0.0f, 0.0f };
 			if (contact.bodyA && contact.bodyB) {
 				auto pa = contact.bodyA->GetPosition();

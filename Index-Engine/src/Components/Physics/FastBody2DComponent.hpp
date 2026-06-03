@@ -8,17 +8,17 @@
 
 namespace Index {
 
-	/// Physics body component using the Axiom-Physics library (lightweight alternative to Box2D).
+	/// Physics body component using the Index-Physics library (lightweight alternative to Box2D).
 	/// Use this for simple AABB-based collision and movement. For advanced physics (rotation,
 	/// friction, continuous detection), use the standard Rigidbody2DComponent instead.
 	struct INDEX_API FastBody2DComponent {
-		AxiomPhys::BodyType Type = AxiomPhys::BodyType::Dynamic;
+		IndexPhys::BodyType Type = IndexPhys::BodyType::Dynamic;
 		float Mass = 1.0f;
 		bool UseGravity = true;
 		bool BoundaryCheck = false;
 
 		// Runtime pointer — set by scene hooks, not serialized
-		AxiomPhys::Body* m_Body = nullptr;
+		IndexPhys::Body* m_Body = nullptr;
 
 		bool IsValid() const { return m_Body != nullptr; }
 

@@ -22,7 +22,7 @@ workspace "Index"
 
     filter "system:linux"
         -- Every Linux artifact ultimately links into libIndex-Engine.so, so all
-        -- static deps (ImGui, Box2D, glad, Axiom-Physics, ...) must be position-
+        -- static deps (ImGui, Box2D, glad, Index-Physics, ...) must be position-
         -- independent. Set it workspace-wide so no dependency is missed (GLFW and
         -- Tracy already set it locally; this is harmless there).
         pic "On"
@@ -377,11 +377,26 @@ end
 -- staged via one {COPYDIR} next to the consumer exe.
 CopyIndexAssets = '{COPYDIR} "' .. path.join(ROOT_DIR, "Index-Runtime/IndexAssets") .. '" "%{cfg.targetdir}/IndexAssets"'
 
+local function SharedLibFileName(projectName)
+    if os.target() == "windows" then
+        return projectName .. ".dll"
+    elseif os.target() == "macosx" then
+        return "lib" .. projectName .. ".dylib"
+    end
+
+    return "lib" .. projectName .. ".so"
+end
+
+local function CopySharedLib(projectName)
+    local fileName = SharedLibFileName(projectName)
+    return '{COPYFILE} "' ..
+        path.join(ROOT_DIR, "bin/" .. outputdir, projectName, fileName) ..
+        '" "%{cfg.targetdir}/' .. fileName .. '"'
+end
+
 -- Shared postbuild command: copy the engine SharedLib next to each consumer executable
 -- so it resolves at runtime without depending on PATH.
-CopyIndexEngineDll = '{COPYFILE} "' ..
-    path.join(ROOT_DIR, "bin/" .. outputdir, "Index-Engine", "Index-Engine.dll") ..
-    '" "%{cfg.targetdir}/Index-Engine.dll"'
+CopyIndexEngineDll = CopySharedLib("Index-Engine")
 
 -- The Index-GameComponents sidecar DLL is removed — user components now
 -- register at runtime via DynamicComponentRegistrar in Index-ScriptCore.
@@ -406,15 +421,17 @@ CopyScriptCoreDll = '{COPYFILE} "' ..
 -- the bundled SDK ahead of the dev-layout fallbacks. The script is a thin
 -- batch wrapper around robocopy so the lua stays free of per-folder copy
 -- spam; see scripts/CopyEngineSdk.bat for the actual copy list.
-CopyEngineSdk = 'call "' .. path.join(ROOT_DIR, "scripts/CopyEngineSdk.bat") ..
-    '" "%{cfg.targetdir}/EngineSDK" "' .. ROOT_DIR ..
-    '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
+if os.target() == "windows" then
+    CopyEngineSdk = 'call "' .. path.join(ROOT_DIR, "scripts/CopyEngineSdk.bat") ..
+        '" "%{cfg.targetdir}/EngineSDK" "' .. ROOT_DIR ..
+        '" "' .. path.join(ROOT_DIR, "bin/" .. outputdir) .. '"'
+else
+    CopyEngineSdk = ""
+end
 
 -- GLFW and Glad are SharedLibs so all consumers (engine.dll + consumer .exes) share
 -- one copy of their global state. Each consumer ships the DLLs alongside its binary.
-CopyGlfwDll = '{COPYFILE} "' ..
-    path.join(ROOT_DIR, "bin/" .. outputdir, "GLFW", "GLFW.dll") ..
-    '" "%{cfg.targetdir}/GLFW.dll"'
+CopyGlfwDll = CopySharedLib("GLFW")
 
 -- Glad has been removed from the engine build (the render backend
 -- handles its own GPU context). CopyGladDll stays defined as a no-op so
@@ -426,9 +443,7 @@ CopyGladDll = ""
 -- When --no-profiler is set this expands to a no-op string the postbuild
 -- list can still reference safely.
 if IndexProfiler and IndexProfiler.Enabled then
-    CopyTracyDll = '{COPYFILE} "' ..
-        path.join(ROOT_DIR, "bin/" .. outputdir, "Tracy", "Tracy.dll") ..
-        '" "%{cfg.targetdir}/Tracy.dll"'
+    CopyTracyDll = CopySharedLib("Tracy")
 else
     CopyTracyDll = "" -- no-op; consumer postbuild lists keep their structure
 end

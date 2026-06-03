@@ -309,7 +309,7 @@ namespace Index {
 				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(scene.get());
 			}
 			catch (...) {
-				IDX_CORE_ERROR_TAG("SceneManager", "Rollback AxiomPhys body cleanup for '{}' failed", sceneName);
+				IDX_CORE_ERROR_TAG("SceneManager", "Rollback IndexPhys body cleanup for '{}' failed", sceneName);
 			}
 		}
 
@@ -447,7 +447,7 @@ namespace Index {
 				PhysicsSystem2D::GetIndexPhysicsWorld().PurgeBodiesForScene(&scene);
 			}
 			catch (...) {
-				IDX_CORE_ERROR_TAG("SceneManager", "AxiomPhys body cleanup for unloaded scene '{}' failed", sceneName);
+				IDX_CORE_ERROR_TAG("SceneManager", "IndexPhys body cleanup for unloaded scene '{}' failed", sceneName);
 			}
 		}
 		try {

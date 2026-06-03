@@ -1202,7 +1202,7 @@ namespace Index {
 
 		if (const Value* bodyValue = GetObjectMember(entityValue, "FastBody2D")) {
 			auto& body = scene.AddComponent<FastBody2DComponent>(entity);
-			body.Type = static_cast<AxiomPhys::BodyType>(GetIntMember(*bodyValue, "type", 1));
+			body.Type = static_cast<IndexPhys::BodyType>(GetIntMember(*bodyValue, "type", 1));
 			body.Mass = GetFloatMember(*bodyValue, "mass", 1.0f);
 			body.UseGravity = GetBoolMember(*bodyValue, "useGravity", true);
 			body.BoundaryCheck = GetBoolMember(*bodyValue, "boundaryCheck", false);
@@ -1219,7 +1219,7 @@ namespace Index {
 			auto& collider = scene.AddComponent<FastBoxCollider2DComponent>(entity);
 			// SetHalfExtents (not a raw m_Collider->SetHalfExtents) so the
 			// scale composed by OnConstruct stays applied — writing the JSON
-			// extents straight onto the AxiomPhys collider strips the
+			// extents straight onto the IndexPhys collider strips the
 			// Transform2D.Scale and SyncWithTransform's short-circuit then
 			// leaves it stripped because m_LastAppliedScale already equals
 			// the current scale.
@@ -1813,7 +1813,7 @@ namespace Index {
 			auto& body = scene.HasComponent<FastBody2DComponent>(entity)
 				? scene.GetComponent<FastBody2DComponent>(entity)
 				: scene.AddComponent<FastBody2DComponent>(entity);
-			body.Type = static_cast<AxiomPhys::BodyType>(GetIntMember(componentValue, "type", 1));
+			body.Type = static_cast<IndexPhys::BodyType>(GetIntMember(componentValue, "type", 1));
 			body.Mass = GetFloatMember(componentValue, "mass", 1.0f);
 			body.UseGravity = GetBoolMember(componentValue, "useGravity", true);
 			body.BoundaryCheck = GetBoolMember(componentValue, "boundaryCheck", false);

@@ -1,10 +1,10 @@
-local INDEX_PHYSICS_DIR = path.getabsolute(path.join(_SCRIPT_DIR, "../../External/Axiom-Physics"))
+local INDEX_PHYSICS_DIR = path.getabsolute(path.join(_SCRIPT_DIR, "../../External/Index-Physics"))
 local INDEX_PHYSICS_INCLUDE_DIR = path.join(INDEX_PHYSICS_DIR, "include")
 local INDEX_PHYSICS_SOURCE_DIR = path.join(INDEX_PHYSICS_DIR, "src")
 local INDEX_PHYSICS_GLM_INCLUDE_DIR = path.getabsolute(path.join(ROOT_DIR, IncludeDir["GLM"]))
 
-project "Axiom-Physics"
-    location (path.join(ROOT_DIR, "premake/generated/Axiom-Physics"))
+project "Index-Physics"
+    location (path.join(ROOT_DIR, "premake/generated/Index-Physics"))
     kind "StaticLib"
     language "C++"
     cppdialect "C++23"

@@ -10,12 +10,12 @@ namespace Index {
 
 	class Scene;
 
-	/// Box collider using Axiom-Physics (AABB only; no friction/restitution). HalfExtents are multiplied by Transform2D.Scale before upload.
+	/// Box collider using Index-Physics (AABB only; no friction/restitution). HalfExtents are multiplied by Transform2D.Scale before upload.
 	struct INDEX_API FastBoxCollider2DComponent {
 		Vec2 HalfExtents{ 0.5f, 0.5f };
 
 		// Runtime pointer — set by scene hooks, not serialized
-		AxiomPhys::BoxCollider* m_Collider = nullptr;
+		IndexPhys::BoxCollider* m_Collider = nullptr;
 		// Last-applied transform scale; lets PhysicsSystem2D's per-frame
 		// sync short-circuit when nothing changed.
 		Vec2 m_LastAppliedScale{ 1.0f, 1.0f };

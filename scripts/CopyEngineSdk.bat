@@ -62,7 +62,7 @@ call :CopyExternalDir miniaudio
 if errorlevel 1 goto :robofail
 call :CopyExternalDir box2d\include
 if errorlevel 1 goto :robofail
-call :CopyExternalDir Axiom-Physics\include
+call :CopyExternalDir Index-Physics\include
 if errorlevel 1 goto :robofail
 call :CopyExternalDir dotnet
 if errorlevel 1 goto :robofail

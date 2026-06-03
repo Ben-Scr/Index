@@ -238,7 +238,7 @@ namespace Index {
 	
 			if (scene.HasComponent<FastBoxCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<FastBoxCollider2DComponent>(m_SelectedEntity);
-				// GetHalfExtents() returns the live AxiomPhys collider's
+				// GetHalfExtents() returns the live IndexPhys collider's
 				// world-scaled extents (SyncWithTransform already folded
 				// Transform2D.Scale in), so it must NOT be multiplied by scale
 				// again — that double-scaled the gizmo. Only the no-live-

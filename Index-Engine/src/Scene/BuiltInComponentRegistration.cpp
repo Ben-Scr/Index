@@ -1222,14 +1222,14 @@ namespace Index {
 					}),
 			});
 
-		// ── Physics (Axiom-Physics, lightweight AABB) ──────────────
+		// ── Physics (Index-Physics, lightweight AABB) ──────────────
 
 		RegisterComponent<FastBody2DComponent>(sceneManager, "Fast Body 2D",
 			ComponentCategory::Component, "Physics", "FastBody2D",
 			{
-				Properties::MakeWith<AxiomPhys::BodyType>("Type", "Body Type",
+				Properties::MakeWith<IndexPhys::BodyType>("Type", "Body Type",
 					[](const Entity& e) { return e.GetComponent<FastBody2DComponent>().Type; },
-					[](Entity& e, AxiomPhys::BodyType v) {
+					[](Entity& e, IndexPhys::BodyType v) {
 						auto& body = e.GetComponent<FastBody2DComponent>();
 						body.Type = v;
 						if (body.m_Body) body.m_Body->SetBodyType(v);
@@ -2346,7 +2346,7 @@ namespace Index {
 		// occupy the same role and should not coexist on a single entity.
 		DeclareConflict<Transform2DComponent, RectTransform2DComponent>(sceneManager);
 
-		// Box2D and Axiom-Physics stacks must not be mixed per-entity.
+		// Box2D and Index-Physics stacks must not be mixed per-entity.
 		DeclareConflict<Rigidbody2DComponent, FastBody2DComponent>(sceneManager);
 		DeclareConflict<BoxCollider2DComponent, FastBoxCollider2DComponent>(sceneManager);
 		DeclareConflict<BoxCollider2DComponent, FastCircleCollider2DComponent>(sceneManager);
@@ -2362,7 +2362,7 @@ namespace Index {
 		DeclareConflict<BoxCollider2DComponent, PolygonCollider2DComponent>(sceneManager);
 		DeclareConflict<CircleCollider2DComponent, PolygonCollider2DComponent>(sceneManager);
 
-		// Within Axiom-Physics, only one shape per body is supported.
+		// Within Index-Physics, only one shape per body is supported.
 		DeclareConflict<FastBoxCollider2DComponent, FastCircleCollider2DComponent>(sceneManager);
 
 		// Only one layout group per entity — they all rewrite the same

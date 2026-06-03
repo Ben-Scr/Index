@@ -56,7 +56,7 @@ call :RequireDir "%SDK%\External\glfw\include"
 call :RequireDir "%SDK%\External\glad\include"
 call :RequireDir "%SDK%\External\miniaudio"
 call :RequireDir "%SDK%\External\box2d\include"
-call :RequireDir "%SDK%\External\Axiom-Physics\include"
+call :RequireDir "%SDK%\External\Index-Physics\include"
 call :RequireDir "%SDK%\External\dotnet"
 
 REM ---- Sanity: warn when the dev source tree is reachable above the launcher.

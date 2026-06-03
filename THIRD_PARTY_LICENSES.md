@@ -25,7 +25,7 @@ The font bundle has its own attribution file:
 | Dawn (WebGPU) | BSD 3-clause | Copyright 2017-2023 The Dawn & Tint Authors | [External/dawn/LICENSE](External/dawn/LICENSE) |
 | concurrentqueue | BSD 2-clause / Boost Software License | Copyright (c) 2013-2016 Cameron Desrochers | [External/concurrentqueue/LICENSE.md](External/concurrentqueue/LICENSE.md) |
 | glad | Apache 2.0 / MIT (generated from public Khronos OpenGL specs) | Copyright (c) 2013-2022 David Herberth | [External/glad](External/glad) |
-| Axiom-Physics | Same license as Index (this engine) | Copyright (c) 2026 Ben Schneider | [External/Axiom-Physics](External/Axiom-Physics) |
+| Index-Physics | Same license as Index (this engine) | Copyright (c) 2026 Ben Schneider | [External/Index-Physics](External/Index-Physics) |
 
 ### Dawn transitive dependencies
 

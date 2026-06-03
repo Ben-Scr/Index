@@ -234,7 +234,7 @@ namespace Index {
 		uint64_t (*AudioSource_GetAudio)(uint64_t entityID);
 		void     (*AudioSource_SetAudio)(uint64_t entityID, uint64_t assetId);
 
-		// ── Axiom-Physics ─────────────────────────────────────────────
+		// ── Index-Physics ─────────────────────────────────────────────
 		int   (*FastBody2D_GetBodyType)(uint64_t entityID);
 		void  (*FastBody2D_SetBodyType)(uint64_t entityID, int type);
 		float (*FastBody2D_GetMass)(uint64_t entityID);
@@ -337,6 +337,18 @@ namespace Index {
 		int (*Physics2D_OverlapPolygonAll)(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut);
 		int (*Physics2D_ContainsPoint)(float originX, float originY, int mode, uint64_t* entityID);
 		int (*Physics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
+
+		// ── FastPhysics2D (Index-Physics) ────────────────────────────
+		int (*FastPhysics2D_Raycast)(float originX, float originY, float dirX, float dirY, float distance,
+		                             uint64_t* hitEntityID, float* hitX, float* hitY, float* hitNormalX, float* hitNormalY, float* hitDistance);
+		int (*FastPhysics2D_OverlapCircle)(float originX, float originY, float radius, int mode, uint64_t* entityID);
+		int (*FastPhysics2D_OverlapBox)(float originX, float originY, float halfX, float halfY, float degrees, int mode, uint64_t* entityID);
+		int (*FastPhysics2D_OverlapPolygon)(float originX, float originY, const float* points, int pointCount, int mode, uint64_t* entityID);
+		int (*FastPhysics2D_OverlapCircleAll)(float originX, float originY, float radius, uint64_t* outEntityIDs, int maxOut);
+		int (*FastPhysics2D_OverlapBoxAll)(float originX, float originY, float halfX, float halfY, float degrees, uint64_t* outEntityIDs, int maxOut);
+		int (*FastPhysics2D_OverlapPolygonAll)(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut);
+		int (*FastPhysics2D_ContainsPoint)(float originX, float originY, int mode, uint64_t* entityID);
+		int (*FastPhysics2D_ContainsPointAll)(float originX, float originY, uint64_t* outEntityIDs, int maxOut);
 
 		// ── EntityPicker ─────────────────────────────────────────────
 		int (*EntityPicker_TryPickEntity)(float worldX, float worldY, uint64_t* entityID);

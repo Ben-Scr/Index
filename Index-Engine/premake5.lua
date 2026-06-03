@@ -174,7 +174,7 @@ project "Index-Engine"
     local physicsIncludes =
     {
         "../External/box2d/include",
-        "../External/Axiom-Physics/include"
+        "../External/Index-Physics/include"
     }
 
     local scriptingIncludes =

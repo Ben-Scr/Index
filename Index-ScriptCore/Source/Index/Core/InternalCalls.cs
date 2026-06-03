@@ -651,7 +651,7 @@ internal static unsafe class InternalCalls
     internal static ulong AudioSource_GetAudio(ulong id) => NativeCallbacks.Bindings.AudioSource_GetAudio(id);
     internal static void AudioSource_SetAudio(ulong id, ulong assetId) => NativeCallbacks.Bindings.AudioSource_SetAudio(id, assetId);
 
-    // ── Axiom-Physics ────────────────────────────────────────────────
+    // ── Index-Physics ────────────────────────────────────────────────
 
     internal static int FastBody2D_GetBodyType(ulong id) => NativeCallbacks.Bindings.FastBody2D_GetBodyType(id);
     internal static void FastBody2D_SetBodyType(ulong id, int type) => NativeCallbacks.Bindings.FastBody2D_SetBodyType(id, type);
@@ -903,6 +903,85 @@ internal static unsafe class InternalCalls
         fixed (ulong* idPtr = outEntityIDs)
         {
             return NativeCallbacks.Bindings.Physics2D_ContainsPointAll(originX, originY, idPtr, outEntityIDs.Length);
+        }
+    }
+
+    // ── FastPhysics2D (Index-Physics) ───────────────────────────────
+
+    internal static bool FastPhysics2D_Raycast(float originX, float originY, float dirX, float dirY, float distance,
+        out ulong hitEntityID, out float hitX, out float hitY, out float hitNormalX, out float hitNormalY, out float hitDistance)
+    {
+        ulong eid; float hx, hy, hnx, hny, hd;
+        int result = NativeCallbacks.Bindings.FastPhysics2D_Raycast(originX, originY, dirX, dirY, distance, &eid, &hx, &hy, &hnx, &hny, &hd);
+        hitEntityID = eid; hitX = hx; hitY = hy; hitNormalX = hnx; hitNormalY = hny; hitDistance = hd;
+        return result != 0;
+    }
+
+    internal static bool FastPhysics2D_OverlapCircle(float originX, float originY, float radius, int mode, out ulong entityID)
+    {
+        ulong id;
+        int result = NativeCallbacks.Bindings.FastPhysics2D_OverlapCircle(originX, originY, radius, mode, &id);
+        entityID = id;
+        return result != 0 && id != 0;
+    }
+
+    internal static bool FastPhysics2D_OverlapBox(float originX, float originY, float halfX, float halfY, float degrees, int mode, out ulong entityID)
+    {
+        ulong id;
+        int result = NativeCallbacks.Bindings.FastPhysics2D_OverlapBox(originX, originY, halfX, halfY, degrees, mode, &id);
+        entityID = id;
+        return result != 0 && id != 0;
+    }
+
+    internal static bool FastPhysics2D_OverlapPolygon(float originX, float originY, float[] points, int mode, out ulong entityID)
+    {
+        ulong id;
+        fixed (float* pointsPtr = points)
+        {
+            int result = NativeCallbacks.Bindings.FastPhysics2D_OverlapPolygon(originX, originY, pointsPtr, points.Length / 2, mode, &id);
+            entityID = id;
+            return result != 0 && id != 0;
+        }
+    }
+
+    internal static int FastPhysics2D_OverlapCircleAll(float originX, float originY, float radius, Span<ulong> outEntityIDs)
+    {
+        fixed (ulong* idPtr = outEntityIDs)
+        {
+            return NativeCallbacks.Bindings.FastPhysics2D_OverlapCircleAll(originX, originY, radius, idPtr, outEntityIDs.Length);
+        }
+    }
+
+    internal static int FastPhysics2D_OverlapBoxAll(float originX, float originY, float halfX, float halfY, float degrees, Span<ulong> outEntityIDs)
+    {
+        fixed (ulong* idPtr = outEntityIDs)
+        {
+            return NativeCallbacks.Bindings.FastPhysics2D_OverlapBoxAll(originX, originY, halfX, halfY, degrees, idPtr, outEntityIDs.Length);
+        }
+    }
+
+    internal static int FastPhysics2D_OverlapPolygonAll(float originX, float originY, float[] points, Span<ulong> outEntityIDs)
+    {
+        fixed (float* pointsPtr = points)
+        fixed (ulong* idPtr = outEntityIDs)
+        {
+            return NativeCallbacks.Bindings.FastPhysics2D_OverlapPolygonAll(originX, originY, pointsPtr, points.Length / 2, idPtr, outEntityIDs.Length);
+        }
+    }
+
+    internal static bool FastPhysics2D_ContainsPoint(float originX, float originY, int mode, out ulong entityID)
+    {
+        ulong id;
+        int result = NativeCallbacks.Bindings.FastPhysics2D_ContainsPoint(originX, originY, mode, &id);
+        entityID = id;
+        return result != 0 && id != 0;
+    }
+
+    internal static int FastPhysics2D_ContainsPointAll(float originX, float originY, Span<ulong> outEntityIDs)
+    {
+        fixed (ulong* idPtr = outEntityIDs)
+        {
+            return NativeCallbacks.Bindings.FastPhysics2D_ContainsPointAll(originX, originY, idPtr, outEntityIDs.Length);
         }
     }
 

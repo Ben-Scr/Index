@@ -1201,7 +1201,7 @@ namespace Index {
 		m_Registry.on_destroy<DisabledTag>().connect<&Scene::OnDisabledTagDestroy>(this);
 		m_Registry.on_destroy<StaticTag>().connect<&Scene::OnStaticTagDestroy>(this);
 
-		// Axiom-Physics component hooks
+		// Index-Physics component hooks
 		m_Registry.on_construct<FastBody2DComponent>().connect<&Scene::OnFastBody2DConstruct>(this);
 		m_Registry.on_destroy<FastBody2DComponent>().connect<&Scene::OnFastBody2DDestroy>(this);
 		m_Registry.on_construct<FastBoxCollider2DComponent>().connect<&Scene::OnFastBoxCollider2DConstruct>(this);

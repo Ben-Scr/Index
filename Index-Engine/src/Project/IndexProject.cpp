@@ -556,7 +556,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${INDEX_DIR}/External/glad/include"
     "${INDEX_DIR}/External/miniaudio"
     "${INDEX_DIR}/External/box2d/include"
-    "${INDEX_DIR}/External/Axiom-Physics/include"
+    "${INDEX_DIR}/External/Index-Physics/include"
     "${INDEX_DIR}/External/dotnet"
 )
 

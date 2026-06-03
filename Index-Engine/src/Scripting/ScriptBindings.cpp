@@ -60,6 +60,7 @@
 #include "Graphics/Text/FontManager.hpp"
 #include "Graphics/Gizmo.hpp"
 #include "Physics/Physics2D.hpp"
+#include "Physics/FastPhysics2D.hpp"
 #include "Jobs/ParallelFor.hpp"
 #include "Profiling/Profiler.hpp"
 
@@ -2317,10 +2318,10 @@ namespace Index {
 		comp.SetAudioHandle(AudioManager::LoadAudioByUUID(assetId), UUID(assetId));
 	}
 
-	// ── Axiom-Physics ────────────────────────────────────────────────────
+	// ── Index-Physics ────────────────────────────────────────────────────
 
 	static int Index_FastBody2D_GetBodyType(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1); return static_cast<int>(comp.Type); }
-	static void Index_FastBody2D_SetBodyType(uint64_t entityID, int type) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Type = static_cast<AxiomPhys::BodyType>(type); if (comp.m_Body) comp.m_Body->SetBodyType(comp.Type); }
+	static void Index_FastBody2D_SetBodyType(uint64_t entityID, int type) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Type = static_cast<IndexPhys::BodyType>(type); if (comp.m_Body) comp.m_Body->SetBodyType(comp.Type); }
 	static float Index_FastBody2D_GetMass(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1.0f); return comp.Mass; }
 	static void Index_FastBody2D_SetMass(uint64_t entityID, float mass) { GET_COMPONENT(FastBody2DComponent, entityID, ); comp.Mass = mass; if (comp.m_Body) comp.m_Body->SetMass(mass); }
 	static int Index_FastBody2D_GetUseGravity(uint64_t entityID) { GET_COMPONENT(FastBody2DComponent, entityID, 1); return comp.UseGravity ? 1 : 0; }
@@ -2563,6 +2564,89 @@ namespace Index {
 	static int Index_Physics2D_ContainsPointAll(float originX, float originY, uint64_t* outEntityIDs, int maxOut) {
 		return WriteOverlapResults(
 			Physics2D::ContainsPointAllRefs({ originX, originY }),
+			outEntityIDs, maxOut);
+	}
+
+	// ── FastPhysics2D (Index-Physics) ────────────────────────────────────
+	// Same script ABI as Physics2D_*, but routed to the Index-Physics world via
+	// FastPhysics2D. Reuses the shared PhysicsBodyRef2D helpers below.
+
+	static int Index_FastPhysics2D_Raycast(
+		float originX, float originY, float dirX, float dirY, float distance,
+		uint64_t* hitEntityID, float* hitX, float* hitY, float* hitNormalX, float* hitNormalY, float* hitDistance)
+	{
+		if (!hitEntityID || !hitX || !hitY || !hitNormalX || !hitNormalY || !hitDistance) return 0;
+		*hitEntityID = 0; *hitX = 0; *hitY = 0; *hitNormalX = 0; *hitNormalY = 0; *hitDistance = 0;
+
+		auto result = FastPhysics2D::Raycast({ originX, originY }, { dirX, dirY }, distance);
+		if (result.has_value()) {
+			if (result->scene && result->scene->IsValid(result->entity)) {
+				*hitEntityID = GetEntityScriptId(*result->scene, result->entity);
+			}
+			*hitX = result->point.x; *hitY = result->point.y;
+			*hitNormalX = result->normal.x; *hitNormalY = result->normal.y;
+			*hitDistance = result->distance;
+			return 1;
+		}
+		return 0;
+	}
+
+	static int Index_FastPhysics2D_OverlapCircle(float originX, float originY, float radius, int mode, uint64_t* entityID) {
+		return WriteOverlapResult(
+			FastPhysics2D::OverlapCircleRef({ originX, originY }, radius, ToOverlapMode(mode)),
+			entityID);
+	}
+
+	static int Index_FastPhysics2D_OverlapBox(float originX, float originY, float halfX, float halfY, float degrees, int mode, uint64_t* entityID) {
+		return WriteOverlapResult(
+			FastPhysics2D::OverlapBoxRef({ originX, originY }, { halfX, halfY }, degrees, ToOverlapMode(mode)),
+			entityID);
+	}
+
+	static int Index_FastPhysics2D_OverlapPolygon(float originX, float originY, const float* points, int pointCount, int mode, uint64_t* entityID) {
+		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
+		if (polygon.empty()) {
+			if (entityID) *entityID = 0;
+			return 0;
+		}
+
+		return WriteOverlapResult(
+			FastPhysics2D::OverlapPolygonRef({ originX, originY }, polygon, ToOverlapMode(mode)),
+			entityID);
+	}
+
+	static int Index_FastPhysics2D_OverlapCircleAll(float originX, float originY, float radius, uint64_t* outEntityIDs, int maxOut) {
+		return WriteOverlapResults(
+			FastPhysics2D::OverlapCircleAllRefs({ originX, originY }, radius),
+			outEntityIDs, maxOut);
+	}
+
+	static int Index_FastPhysics2D_OverlapBoxAll(float originX, float originY, float halfX, float halfY, float degrees, uint64_t* outEntityIDs, int maxOut) {
+		return WriteOverlapResults(
+			FastPhysics2D::OverlapBoxAllRefs({ originX, originY }, { halfX, halfY }, degrees),
+			outEntityIDs, maxOut);
+	}
+
+	static int Index_FastPhysics2D_OverlapPolygonAll(float originX, float originY, const float* points, int pointCount, uint64_t* outEntityIDs, int maxOut) {
+		std::vector<Vec2> polygon = ReadPolygonPoints(points, pointCount);
+		if (polygon.empty()) {
+			return 0;
+		}
+
+		return WriteOverlapResults(
+			FastPhysics2D::OverlapPolygonAllRefs({ originX, originY }, polygon),
+			outEntityIDs, maxOut);
+	}
+
+	static int Index_FastPhysics2D_ContainsPoint(float originX, float originY, int mode, uint64_t* entityID) {
+		return WriteOverlapResult(
+			FastPhysics2D::ContainsPointRef({ originX, originY }, ToOverlapMode(mode)),
+			entityID);
+	}
+
+	static int Index_FastPhysics2D_ContainsPointAll(float originX, float originY, uint64_t* outEntityIDs, int maxOut) {
+		return WriteOverlapResults(
+			FastPhysics2D::ContainsPointAllRefs({ originX, originY }),
 			outEntityIDs, maxOut);
 	}
 
@@ -3586,6 +3670,16 @@ namespace Index {
 		b.Physics2D_OverlapPolygonAll = &Index_Physics2D_OverlapPolygonAll;
 		b.Physics2D_ContainsPoint = &Index_Physics2D_ContainsPoint;
 		b.Physics2D_ContainsPointAll = &Index_Physics2D_ContainsPointAll;
+
+		b.FastPhysics2D_Raycast = &Index_FastPhysics2D_Raycast;
+		b.FastPhysics2D_OverlapCircle = &Index_FastPhysics2D_OverlapCircle;
+		b.FastPhysics2D_OverlapBox = &Index_FastPhysics2D_OverlapBox;
+		b.FastPhysics2D_OverlapPolygon = &Index_FastPhysics2D_OverlapPolygon;
+		b.FastPhysics2D_OverlapCircleAll = &Index_FastPhysics2D_OverlapCircleAll;
+		b.FastPhysics2D_OverlapBoxAll = &Index_FastPhysics2D_OverlapBoxAll;
+		b.FastPhysics2D_OverlapPolygonAll = &Index_FastPhysics2D_OverlapPolygonAll;
+		b.FastPhysics2D_ContainsPoint = &Index_FastPhysics2D_ContainsPoint;
+		b.FastPhysics2D_ContainsPointAll = &Index_FastPhysics2D_ContainsPointAll;
 
 		b.EntityPicker_TryPickEntity = &Index_EntityPicker_TryPickEntity;
 

@@ -3,7 +3,7 @@ IncludeDir["ExternalRoot"] = "External"
 IncludeDir["ImGui"] = "External/imgui"
 IncludeDir["Spdlog"] = "External/spdlog/include"
 IncludeDir["GLFW"] = "External/glfw/include"
-IncludeDir["IndexPhysics"] = "External/Axiom-Physics/include"
+IncludeDir["IndexPhysics"] = "External/Index-Physics/include"
 IncludeDir["Box2D"] = "External/box2d/include"
 IncludeDir["GLM"] = "External/glm"
 IncludeDir["EnTT"] = "External/entt/src"
@@ -239,13 +239,13 @@ Dependency["EngineCorePhysics"] =
     DependsOn =
     {
         "Box2D",
-        "Axiom-Physics"
+        "Index-Physics"
     },
 
     Links =
     {
         "Box2D",
-        "Axiom-Physics"
+        "Index-Physics"
     }
 }
 

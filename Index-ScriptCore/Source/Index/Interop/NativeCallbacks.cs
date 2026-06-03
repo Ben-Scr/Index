@@ -223,7 +223,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, ulong> AudioSource_GetAudio;
     public delegate* unmanaged<ulong, ulong, void> AudioSource_SetAudio;
 
-    // ── Axiom-Physics ─────────────────────────────────────────────
+    // ── Index-Physics ─────────────────────────────────────────────
     public delegate* unmanaged<ulong, int> FastBody2D_GetBodyType;
     public delegate* unmanaged<ulong, int, void> FastBody2D_SetBodyType;
     public delegate* unmanaged<ulong, float> FastBody2D_GetMass;
@@ -318,6 +318,17 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float, float, float*, int, ulong*, int, int> Physics2D_OverlapPolygonAll;
     public delegate* unmanaged<float, float, int, ulong*, int> Physics2D_ContainsPoint;
     public delegate* unmanaged<float, float, ulong*, int, int> Physics2D_ContainsPointAll;
+
+    // ── FastPhysics2D (Index-Physics) ────────────────────────────
+    public delegate* unmanaged<float, float, float, float, float, ulong*, float*, float*, float*, float*, float*, int> FastPhysics2D_Raycast;
+    public delegate* unmanaged<float, float, float, int, ulong*, int> FastPhysics2D_OverlapCircle;
+    public delegate* unmanaged<float, float, float, float, float, int, ulong*, int> FastPhysics2D_OverlapBox;
+    public delegate* unmanaged<float, float, float*, int, int, ulong*, int> FastPhysics2D_OverlapPolygon;
+    public delegate* unmanaged<float, float, float, ulong*, int, int> FastPhysics2D_OverlapCircleAll;
+    public delegate* unmanaged<float, float, float, float, float, ulong*, int, int> FastPhysics2D_OverlapBoxAll;
+    public delegate* unmanaged<float, float, float*, int, ulong*, int, int> FastPhysics2D_OverlapPolygonAll;
+    public delegate* unmanaged<float, float, int, ulong*, int> FastPhysics2D_ContainsPoint;
+    public delegate* unmanaged<float, float, ulong*, int, int> FastPhysics2D_ContainsPointAll;
 
     // ── EntityPicker ─────────────────────────────────────────────
     public delegate* unmanaged<float, float, ulong*, int> EntityPicker_TryPickEntity;

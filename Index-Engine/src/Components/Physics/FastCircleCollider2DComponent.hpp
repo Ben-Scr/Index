@@ -9,12 +9,12 @@ namespace Index {
 
 	class Scene;
 
-	/// Circle collider using Axiom-Physics. Radius is scaled by max(|Scale.x|, |Scale.y|) — a circle can't represent non-uniform scale so max avoids silent shrinkage.
+	/// Circle collider using Index-Physics. Radius is scaled by max(|Scale.x|, |Scale.y|) — a circle can't represent non-uniform scale so max avoids silent shrinkage.
 	struct INDEX_API FastCircleCollider2DComponent {
 		float Radius = 0.5f;
 
 		// Runtime pointer — set by scene hooks, not serialized
-		AxiomPhys::CircleCollider* m_Collider = nullptr;
+		IndexPhys::CircleCollider* m_Collider = nullptr;
 		float m_LastAppliedScale = 1.0f;
 		EntityHandle m_EntityHandle = entt::null;
 

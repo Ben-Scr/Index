@@ -710,7 +710,7 @@ public class ParticleSystem2D : Component
     public void Emit(int count) => InternalCalls.ParticleSystem2D_Emit(RequireComponent<ParticleSystem2D>(), count);
 }
 
-// ── Axiom-Physics Components (AABB-based; for full physics use Rigidbody2D/Box2D) ─────────────────────────────────────────
+// ── Index-Physics Components (AABB-based; for full physics use Rigidbody2D/Box2D) ─────────────────────────────────────────
 
 public enum FastBodyType { Static = 0, Dynamic = 1, Kinematic = 2 }
 

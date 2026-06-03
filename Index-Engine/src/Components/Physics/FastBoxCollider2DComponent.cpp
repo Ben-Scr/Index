@@ -15,7 +15,7 @@ namespace Index {
 
 	void FastBoxCollider2DComponent::SetHalfExtents(const Vec2& he) {
 		HalfExtents = he;
-		// The underlying AxiomPhys collider is in world units, so SetHalfExtents
+		// The underlying IndexPhys collider is in world units, so SetHalfExtents
 		// has to multiply by the entity's current Transform2D.Scale. SyncWithTransform
 		// re-applies this whenever the transform's scale changes.
 		if (m_Collider) {

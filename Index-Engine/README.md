@@ -118,7 +118,7 @@ Per-module flags (only meaningful with `--module-profile=custom`, or implicitly 
 
 - `--with-render` — GLFW, Glad, OpenGL, `Graphics/`, `Gui/GuiRenderer`, particle/gizmo systems.
 - `--with-audio` — miniaudio, `Audio/`, `Components/Audio/`, `AudioUpdateSystem`.
-- `--with-physics` — Box2D, Axiom-Physics, `Physics/`, `Components/Physics/`.
+- `--with-physics` — Box2D, Index-Physics, `Physics/`, `Components/Physics/`.
 - `--with-scripting` — .NET host, `Scripting/`, `Index-ScriptCore` and `Index-Sandbox` projects.
 - `--with-editor` — ImGui static lib. Implicitly turns on render, audio, physics, and scripting (the editor depends on all of them).
 

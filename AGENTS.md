@@ -11,7 +11,7 @@
 - **Startup project:** Index-Launcher
 - **Configs:** Debug, Release, Dist. All x64.
 - **Output:** `bin/{config}-windows-x64/{project}/`
-- **C++ Standard:** C++20 (Box2D and Axiom-Physics use C++23)
+- **C++ Standard:** C++20 (Box2D and Index-Physics use C++23)
 - **New package:** `python scripts/packages/NewPackage.py <PackageName>` scaffolds a package under `packages/<PackageName>/` with a starter `index-package.lua`.
 
 ## Projects
@@ -83,7 +83,7 @@ Index-Engine/src/
 
 ## External dependencies (all in External/ as git submodules)
 
-GLFW, Glad, ImGui (docking), EnTT, GLM, Box2D, Axiom-Physics, spdlog, miniaudio, STB, magic_enum, Cereal (rapidxml header only — Cereal proper is unused), .NET SDK, Tracy (profiler client + viewer)
+GLFW, Glad, ImGui (docking), EnTT, GLM, Box2D, Index-Physics, spdlog, miniaudio, STB, magic_enum, Cereal (rapidxml header only — Cereal proper is unused), .NET SDK, Tracy (profiler client + viewer)
 
 ## Profiling
 

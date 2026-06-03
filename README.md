@@ -23,7 +23,7 @@ Index is a lightweight C++20 2D game engine mainly focused on performance and mo
 - [GLM](https://github.com/g-truc/glm) - Graphics math library
 - [GLFW](https://github.com/glfw/glfw) - Windowing/input library
 - [Box2D](https://github.com/erincatto/box2d) - 2D physics library
-- [Axiom-Physics](https://github.com/Ben-Scr/Axiom-Physics2D) - Lightweight 2D physics library
+- [Index-Physics](https://github.com/Ben-Scr/Index-Physics) - Lightweight 2D physics library
 - [ENTT](https://github.com/skypjack/entt) - ECS library
 - [Miniaudio](https://github.com/mackron/miniaudio) - Multiplatform audio library
 - [Tracy](https://github.com/wolfpld/tracy) - Profiler (optional, gated by `--no-profiler`)
