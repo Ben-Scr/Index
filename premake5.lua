@@ -20,6 +20,13 @@ workspace "Index"
         -- rather than renaming widely-used API members.
         buildoptions { "-Wno-changes-meaning" }
 
+    filter "system:linux"
+        -- Every Linux artifact ultimately links into libIndex-Engine.so, so all
+        -- static deps (ImGui, Box2D, glad, Axiom-Physics, ...) must be position-
+        -- independent. Set it workspace-wide so no dependency is missed (GLFW and
+        -- Tracy already set it locally; this is harmless there).
+        pic "On"
+
     filter {}
 
 outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
