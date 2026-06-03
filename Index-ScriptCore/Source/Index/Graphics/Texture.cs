@@ -185,6 +185,31 @@ public sealed class Texture : IEquatable<Texture>, IDisposable
         }
     }
 
+    /// <summary>
+    /// Bulk-read every pixel row-major (length Width*Height; (0,0) is top-left)
+    /// — the inverse of <see cref="SetPixels"/>, and faster than calling
+    /// <see cref="GetPixel"/> per cell. The returned array is a fresh copy of
+    /// the CPU buffer; mutating it does not change the texture (write it back
+    /// with <see cref="SetPixels"/> + <see cref="Apply"/>). Only valid on a
+    /// runtime texture created with <see cref="Create"/>.
+    /// </summary>
+    public Color[] GetPixels()
+    {
+        RuntimeBuffer rb = RequireBuffer(nameof(GetPixels));
+        int count = rb.Width * rb.Height;
+        Color[] colors = new Color[count];
+        for (int p = 0; p < count; p++)
+        {
+            int i = p * 4;
+            colors[p] = new Color(
+                rb.Pixels[i + 0] / 255f,
+                rb.Pixels[i + 1] / 255f,
+                rb.Pixels[i + 2] / 255f,
+                rb.Pixels[i + 3] / 255f);
+        }
+        return colors;
+    }
+
     /// <summary>Upload all pending CPU-buffer changes to the GPU. Cheap to call
     /// once per batch of edits; the whole image is re-uploaded each call.</summary>
     public void Apply()

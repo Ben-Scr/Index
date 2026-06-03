@@ -8,6 +8,11 @@
 #include <webgpu/webgpu_cpp.h>
 
 #define STB_IMAGE_IMPLEMENTATION
+#if defined(__GNUC__) && !defined(__clang__) && !defined(__OPTIMIZE__)
+// GCC at -O0 rejects stb_image's SSE2 byte-shift wrappers because the
+// intrinsic immediate arguments are not folded early enough.
+#define STBI_NO_SIMD
+#endif
 #include <stb_image.h>
 
 #include <cstring>
