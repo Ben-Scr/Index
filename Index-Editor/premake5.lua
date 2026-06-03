@@ -15,9 +15,13 @@ project "Index-Editor"
     {
         "src/**.cpp",
         "src/**.h",
-        "src/**.hpp",
-        "icon.rc"
+        "src/**.hpp"
     }
+
+    -- icon.rc is a Windows resource (app icon); Linux has no .rc toolchain. Windows-only.
+    filter "system:windows"
+        files { "icon.rc" }
+    filter {}
 
     -- Engine-level diagnostic overlays (StatsOverlay, LogOverlay, …).
     -- Same cross-binary share pattern as ProfilerPanel: the .cpp files use

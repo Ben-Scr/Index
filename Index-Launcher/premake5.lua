@@ -15,9 +15,13 @@ project "Index-Launcher"
     {
         "src/**.cpp",
         "src/**.h",
-        "src/**.hpp",
-        "icon.rc"
+        "src/**.hpp"
     }
+
+    -- icon.rc is a Windows resource (app icon); Linux has no .rc toolchain. Windows-only.
+    filter "system:windows"
+        files { "icon.rc" }
+    filter {}
 
     UseDependencySet(Dependency.EditorRuntimeCommon)
     defines(GetIndexModuleDefines())

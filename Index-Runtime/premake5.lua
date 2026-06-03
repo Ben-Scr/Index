@@ -14,9 +14,13 @@ project "Index-Runtime"
     {
         "src/**.cpp",
         "src/**.h",
-        "src/**.hpp",
-        "icon.rc"
+        "src/**.hpp"
     }
+
+    -- icon.rc is a Windows resource (app icon); Linux has no .rc toolchain. Windows-only.
+    filter "system:windows"
+        files { "icon.rc" }
+    filter {}
 
     -- When the profiler is enabled the runtime hosts the same ProfilerPanel
     -- the editor uses. We compile its .cpp into the runtime binary directly
