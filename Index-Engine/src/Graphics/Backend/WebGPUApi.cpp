@@ -18,9 +18,13 @@
 #include <string>
 #include <vector>
 
-#define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
+// glfw3native.h pulls in <windows.h> for glfwGetWin32Window; only the Windows
+// surface path needs it (Linux/X11 surface is Stage 1b). Keep it Windows-only.
+#if defined(IDX_PLATFORM_WINDOWS)
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
+#endif
 
 #if defined(IDX_PLATFORM_WINDOWS)
     #ifndef WIN32_LEAN_AND_MEAN
