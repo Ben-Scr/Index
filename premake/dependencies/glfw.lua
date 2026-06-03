@@ -58,6 +58,7 @@ project "GLFW"
             glfwFile("src/win32_monitor.c"),
             glfwFile("src/win32_thread.c"),
             glfwFile("src/win32_time.c"),
+            glfwFile("src/win32_module.c"),
             glfwFile("src/win32_window.c"),
             glfwFile("src/wgl_context.c")
         }
@@ -80,6 +81,7 @@ project "GLFW"
             glfwFile("src/xkb_unicode.c"),
             glfwFile("src/glx_context.c"),
             glfwFile("src/linux_joystick.c"),
+            glfwFile("src/posix_module.c"),
             glfwFile("src/posix_poll.c"),
             glfwFile("src/posix_time.c"),
             glfwFile("src/posix_thread.c")
@@ -107,7 +109,6 @@ project "GLFW"
 
     local optionalSources =
     {
-        "src/win32_module.c",
         "src/null_init.c",
         "src/null_monitor.c",
         "src/null_window.c",
