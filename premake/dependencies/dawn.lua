@@ -68,9 +68,15 @@ DawnLayout.LibDirsRelease =
 DawnLayout.Links =
 {
     "webgpu_dawn",
-    "dxguid",
-    "onecore",
 }
+
+-- dxguid/onecore only exist in the Windows SDK and only back Dawn's D3D11/D3D12
+-- backends; on Linux Dawn renders through Vulkan, so they are both unneeded and
+-- unavailable. Gate them to Windows so the Linux engine .so links.
+if os.target() == "windows" then
+    table.insert(DawnLayout.Links, "dxguid")
+    table.insert(DawnLayout.Links, "onecore")
+end
 
 -- IMPORTANT: do NOT define WGPU_SHARED_LIBRARY here. The webgpu.h header
 -- uses `#if defined(WGPU_SHARED_LIBRARY)` to decide whether to emit
