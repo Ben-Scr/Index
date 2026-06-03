@@ -6,6 +6,7 @@
 #include "Components/General/NameComponent.hpp"
 #include "Graphics/Text/FontHandle.hpp"
 #include "Graphics/Texture2D.hpp"
+#include "Graphics/TextureManager.hpp"
 #include "Gui/AssetType.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/Icons.hpp"
@@ -604,6 +605,15 @@ namespace Index::ReferencePicker {
 		if (assetId == 0) return k_NoneLabel;
 
 		EnsureBuiltInsRegisteredInEditor();
+
+		// Script-created (procedural) textures live in the GPU TextureManager under a
+		// synthetic runtime UUID, never in the AssetRegistry — so the kind check below
+		// would flag them "(Missing Asset)" in red. They're valid, not missing: the
+		// preview thumbnail already resolves. Label them as runtime instead.
+		if (expectedKind == AssetKind::Texture && TextureManager::IsRuntimeTextureUUID(assetId)) {
+			if (outSecondary) *outSecondary = "Created at runtime via Texture.Create()";
+			return "(Runtime Texture)";
+		}
 
 		const AssetKind kind = AssetRegistry::GetKind(assetId);
 		if (kind != expectedKind) {
