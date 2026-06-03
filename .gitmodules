@@ -26,9 +26,6 @@
 	path = External/imgui
 	url = https://github.com/ocornut/imgui.git
 	branch = docking
-[submodule "External/Axiom-Physics"]
-	path = External/Axiom-Physics
-	url = https://github.com/Ben-Scr/Axiom-Physics.git
 [submodule "External/cereal"]
 	path = External/cereal
 	url = https://github.com/USCiLab/cereal.git
@@ -38,3 +35,6 @@
 [submodule "External/tracy"]
 	path = External/tracy
 	url = https://github.com/wolfpld/tracy
+[submodule "External/Index-Physics"]
+	path = External/Index-Physics
+	url = https://github.com/Ben-Scr/Index-Physics.git
