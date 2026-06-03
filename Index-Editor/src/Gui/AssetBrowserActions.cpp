@@ -179,8 +179,27 @@ namespace Index {
 			});
 
 			if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+				// Scenes are referenced BY NAME throughout the project file. A rename
+				// must remap EVERY reference, not just LastOpenedScene — otherwise
+				// StartupScene / BuildSceneList keep pointing at the old stem and a
+				// build's runtime loads a now-missing scene (blank window) even though
+				// the renamed .scene file ships fine.
+				bool dirty = false;
 				if (project->LastOpenedScene == oldStem) {
 					project->LastOpenedScene = newStem;
+					dirty = true;
+				}
+				if (project->StartupScene == oldStem) {
+					project->StartupScene = newStem;
+					dirty = true;
+				}
+				for (std::string& sceneName : project->BuildSceneList) {
+					if (sceneName == oldStem) {
+						sceneName = newStem;
+						dirty = true;
+					}
+				}
+				if (dirty) {
 					project->Save();
 				}
 			}

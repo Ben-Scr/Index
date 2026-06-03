@@ -38,6 +38,13 @@ namespace Index {
 		static void ClearSceneCache(const Scene* scene);
 		void SetEnabled(bool enabled) { m_IsEnabled = enabled; }
 		bool IsEnabled() const { return m_IsEnabled; }
+
+		// Master gate for the post-processing chain. The editor flips this off while
+		// rendering the Editor View so scene editing isn't tinted by bloom / vignette
+		// / etc.; Game View and the runtime leave it on. Restored to true after the
+		// Editor-View pass each frame.
+		void SetPostProcessingEnabled(bool enabled) { m_PostProcessingEnabled = enabled; }
+		bool IsPostProcessingEnabled() const { return m_PostProcessingEnabled; }
 		bool IsInitialized() const override { return m_IsInitialized; }
 
 		void SetOutputTarget(unsigned int fboId, int width, int height) {
@@ -73,6 +80,7 @@ namespace Index {
 		float m_RenderLoopDuration = 0.0f;
 		bool m_IsInitialized = false;
 		bool m_IsEnabled = true;
+		bool m_PostProcessingEnabled = true;
 		bool m_SkipBeginFrameRender = false;
 
 		std::vector<Instance44> m_Instances;

@@ -3,6 +3,7 @@
 #include "Scene/EntityHandle.hpp"
 #include "Scripting/DotNetHost.hpp"
 #include "Scripting/ScriptGlue.hpp"
+#include <cstddef>
 #include <string>
 #include <cstdint>
 #include <vector>
@@ -21,6 +22,7 @@ namespace Index {
 		static void LoadUserAssembly(const std::string& path);
 		static bool HasUserAssembly();
 		static void ReloadAssemblies();
+		static std::size_t RestoreDynamicComponentsForScene(Scene& scene);
 
 		static void SetScene(Scene* scene);
 		static Scene* GetScene();

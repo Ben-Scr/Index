@@ -1449,6 +1449,32 @@ namespace Index {
 			}
 		}
 
+		if (scriptComponent || scene.HasComponent<ScriptComponent>(entity)) {
+			const ComponentRegistry* componentRegistry = nullptr;
+			if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
+				componentRegistry = &app->GetSceneManager()->GetComponentRegistry();
+			}
+
+			auto& dynamicValuesComponent = getOrCreateScriptComponent();
+			for (const ScriptInstance& instance : dynamicValuesComponent.Scripts) {
+				const std::string& className = instance.GetClassName();
+				if (className.empty()) continue;
+
+				const Value* componentValue = entityValue.FindMember(className);
+				if (!componentValue || !componentValue->IsObject()) continue;
+
+				const ComponentInfo* info = componentRegistry
+					? componentRegistry->FindBySerializedName(className)
+					: nullptr;
+				if (info && info->isDynamic && info->deserialize) {
+					continue;
+				}
+
+				dynamicValuesComponent.PendingDynamicComponentValues[className] =
+					Json::Stringify(*componentValue, false);
+			}
+		}
+
 		// Registry-driven deserialize for package components.
 		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
 			Entity entityWrapper = scene.GetEntity(entity);

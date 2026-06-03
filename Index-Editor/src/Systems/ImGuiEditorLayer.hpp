@@ -268,6 +268,7 @@ namespace Index {
 		bool m_IsEditorViewFocused = false;
 		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
 		bool m_ShowGizmos = true;
+		bool m_ShowPostProcessing = true;
 		bool m_EditorCameraFocusActive = false;
 		Vec2 m_EditorCameraFocusTarget{ 0.0f, 0.0f };
 		float m_EditorCameraFocusOrthoSize = 5.0f;

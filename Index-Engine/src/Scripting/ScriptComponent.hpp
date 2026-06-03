@@ -13,6 +13,9 @@ namespace Index {
 		// Pending field values from deserialization, applied when instance binds.
 		// Key: "ClassName.FieldName", Value: string representation.
 		std::unordered_map<std::string, std::string> PendingFieldValues;
+		// Raw dynamic IComponent payloads captured when scene deserialization
+		// runs before the user assembly registers its dynamic component types.
+		std::unordered_map<std::string, std::string> PendingDynamicComponentValues;
 
 		ScriptComponent() = default;
 

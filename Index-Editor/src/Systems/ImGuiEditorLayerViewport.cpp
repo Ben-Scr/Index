@@ -534,6 +534,23 @@ namespace Index {
 					ImGui::SetTooltip("Toggle gizmos in the Editor View");
 				}
 			}
+
+			ImGui::SameLine();
+			{
+				const bool active = m_ShowPostProcessing;
+				if (active) {
+					ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+				}
+				if (ImGui::Button("Post Processing Effects##EditorView")) {
+					m_ShowPostProcessing = !m_ShowPostProcessing;
+				}
+				if (active) {
+					ImGui::PopStyleColor();
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("Toggle post-processing effects (bloom, vignette, ...) in the Editor View");
+				}
+			}
 		}
 
 		Scene* renderScene = IsInPrefabEditMode() ? m_PrefabEditScene.get() : &scene;
@@ -582,9 +599,16 @@ namespace Index {
 				// uiInWorldSpace=true: UI joins sprites and gizmos in
 				// the editor camera's world space so the user can pan
 				// and zoom around the UI like any scene object.
+				// The Editor View honours the "Post Processing Effects" toolbar toggle:
+				// flip the renderer's master PP gate off for this pass so scene editing
+				// isn't tinted by bloom/vignette/etc, then restore it immediately so
+				// Game View (the real game preview) and the runtime keep their effects.
+				auto* ppRenderer = Application::GetInstance() ? Application::GetInstance()->GetRenderer2D() : nullptr;
+				if (ppRenderer) ppRenderer->SetPostProcessingEnabled(m_ShowPostProcessing);
 				RenderSceneIntoFBO(m_EditorViewFBO, *renderScene, vp, viewAABB,
 					true, false, clearColor, IsInPrefabEditMode(), true, m_EditorViewDrawMode,
 					m_ShowGizmos ? GizmoLayerMask::All : GizmoLayerMask::EditorOnly);
+				if (ppRenderer) ppRenderer->SetPostProcessingEnabled(true);
 				Gizmo::ClearViewportAABBOverride();
 
 				ImGui::Image(

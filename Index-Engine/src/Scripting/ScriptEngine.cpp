@@ -8,6 +8,7 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Core/Application.hpp"
 #include "Core/Log.hpp"
+#include "Serialization/Json.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -168,26 +169,9 @@ namespace Index {
 				// Restore dynamic component rows from ScriptComponent.Scripts; new storage instances are empty after reload.
 				if (auto* app = Application::GetInstance()) {
 					if (auto* sceneManager = app->GetSceneManager()) {
-						ComponentRegistry& registry = sceneManager->GetComponentRegistry();
 						std::size_t restoredCount = 0;
 						sceneManager->ForeachLoadedScene([&](Scene& scene) {
-							auto& reg = scene.GetRegistry();
-							auto view = reg.view<ScriptComponent>();
-							for (EntityHandle entity : view) {
-								if (!reg.valid(entity)) continue;
-								const auto& scriptComp = reg.get<ScriptComponent>(entity);
-								Entity entityWrapper = scene.GetEntity(entity);
-								for (const ScriptInstance& instance : scriptComp.Scripts) {
-									const std::string& className = instance.GetClassName();
-									if (className.empty()) continue;
-									const ComponentInfo* info = registry.FindBySerializedName(className);
-									if (!info || !info->isDynamic || !info->add || !info->has) continue;
-									if (!info->has(entityWrapper)) {
-										info->add(entityWrapper);
-										++restoredCount;
-									}
-								}
-							}
+							restoredCount += RestoreDynamicComponentsForScene(scene);
 						});
 						if (restoredCount > 0) {
 							IDX_CORE_INFO_TAG("ScriptEngine",
@@ -220,6 +204,73 @@ namespace Index {
 
 		if (!s_UserAssemblyPath.empty())
 			LoadUserAssembly(s_UserAssemblyPath);
+	}
+
+	std::size_t ScriptEngine::RestoreDynamicComponentsForScene(Scene& scene)
+	{
+		auto* app = Application::GetInstance();
+		if (!app || !app->GetSceneManager()) {
+			return 0;
+		}
+
+		ComponentRegistry& registry = app->GetSceneManager()->GetComponentRegistry();
+		std::size_t restoredCount = 0;
+
+		auto& enttRegistry = scene.GetRegistry();
+		auto view = enttRegistry.view<ScriptComponent>();
+		for (EntityHandle entity : view) {
+			if (!enttRegistry.valid(entity)) continue;
+
+			auto& scriptComponent = enttRegistry.get<ScriptComponent>(entity);
+			Entity entityWrapper = scene.GetEntity(entity);
+			for (const ScriptInstance& instance : scriptComponent.Scripts) {
+				const std::string& className = instance.GetClassName();
+				if (className.empty()) continue;
+
+				const ComponentInfo* info = registry.FindBySerializedName(className);
+				if (!info || !info->isDynamic || !info->add || !info->has) continue;
+
+				if (!info->has(entityWrapper)) {
+					info->add(entityWrapper);
+					++restoredCount;
+				}
+
+				auto pendingIt = scriptComponent.PendingDynamicComponentValues.find(className);
+				if (pendingIt == scriptComponent.PendingDynamicComponentValues.end()) {
+					continue;
+				}
+
+				if (info->deserialize) {
+					Json::Value pendingValue;
+					std::string parseError;
+					if (Json::TryParse(pendingIt->second, pendingValue, &parseError)
+						&& pendingValue.IsObject()) {
+						try {
+							info->deserialize(entityWrapper, pendingValue);
+						}
+						catch (const std::exception& e) {
+							IDX_CORE_ERROR_TAG("ScriptEngine",
+								"Dynamic component '{}' pending deserialize threw on entity {}: {}",
+								className, static_cast<uint32_t>(entity), e.what());
+						}
+						catch (...) {
+							IDX_CORE_ERROR_TAG("ScriptEngine",
+								"Dynamic component '{}' pending deserialize threw an unknown exception on entity {}",
+								className, static_cast<uint32_t>(entity));
+						}
+					}
+					else {
+						IDX_CORE_WARN_TAG("ScriptEngine",
+							"Dynamic component '{}' pending payload could not be parsed: {}",
+							className, parseError);
+					}
+				}
+
+				scriptComponent.PendingDynamicComponentValues.erase(pendingIt);
+			}
+		}
+
+		return restoredCount;
 	}
 
 	void ScriptEngine::SetScene(Scene* scene)

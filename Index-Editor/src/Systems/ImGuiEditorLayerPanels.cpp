@@ -1497,10 +1497,21 @@ namespace Index {
 			// project file's StartupScene field.
 			if (!project->StartupScene.empty()) {
 				auto it = std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), project->StartupScene);
-				if (it != m_BuildSceneList.end() && it != m_BuildSceneList.begin()) {
-					std::string startupScene = *it;
-					m_BuildSceneList.erase(it);
-					m_BuildSceneList.insert(m_BuildSceneList.begin(), startupScene);
+				if (it != m_BuildSceneList.end()) {
+					if (it != m_BuildSceneList.begin()) {
+						std::string startupScene = *it;
+						m_BuildSceneList.erase(it);
+						m_BuildSceneList.insert(m_BuildSceneList.begin(), startupScene);
+					}
+				}
+				else if (!m_BuildSceneList.empty()) {
+					// StartupScene's .scene no longer exists on disk (renamed or
+					// deleted) — repair it to the first available scene so the build
+					// doesn't ship a dangling startup reference that loads blank.
+					// Self-limiting: once repaired, StartupScene is in the list and
+					// this branch won't run again.
+					project->StartupScene = m_BuildSceneList.front();
+					project->Save();
 				}
 			}
 

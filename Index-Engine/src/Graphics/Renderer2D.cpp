@@ -919,7 +919,7 @@ namespace Index {
 
 		// runEffects: execute effect passes. usePostProcess: route through intermediate FBO (needed for effects OR aspect-locked letterbox).
 		// These MUST stay separate: collapsing to one flag silently ignores "disable PP on camera" in aspect-locked standalone builds.
-		bool runEffects = m_PostProcessor.IsInitialized();
+		bool runEffects = m_PostProcessor.IsInitialized() && m_PostProcessingEnabled;
 		if (runEffects) {
 			if (IndexProject* proj = ProjectManager::GetCurrentProject()) {
 				runEffects = proj->EnablePostProcessing;

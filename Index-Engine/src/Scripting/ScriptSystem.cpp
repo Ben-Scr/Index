@@ -569,6 +569,7 @@ namespace Index {
 					++it;
 				}
 			}
+			scriptComp.PendingDynamicComponentValues.erase(className);
 		}
 
 		std::vector<std::string> GetActiveGlobalSystemClassNames()
@@ -950,6 +951,13 @@ namespace Index {
 			// First scene's Awake handles engine/assembly init; subsequent scenes still fire OnAwake.
 			if (ScriptEngine::IsInitialized())
 			{
+				const auto restoredCount = ScriptEngine::RestoreDynamicComponentsForScene(scene);
+				if (restoredCount > 0) {
+					IDX_INFO_TAG("ScriptSystem",
+						"Restored {} dynamic component row(s) for scene '{}' before script Awake.",
+						restoredCount, scene.GetName());
+				}
+
 				ScriptSceneScope sceneScope(scene);
 				const auto entities = CollectScriptEntities(scene);
 				for (EntityHandle entity : entities)
@@ -1172,6 +1180,13 @@ namespace Index {
 		// Eager OnAwake dispatch for first scene; C# side guards against double-fire on reload.
 		if (ScriptEngine::IsInitialized())
 		{
+			const auto restoredCount = ScriptEngine::RestoreDynamicComponentsForScene(scene);
+			if (restoredCount > 0) {
+				IDX_INFO_TAG("ScriptSystem",
+					"Restored {} dynamic component row(s) for scene '{}' before script Awake.",
+					restoredCount, scene.GetName());
+			}
+
 			ScriptSceneScope sceneScope(scene);
 			const auto entities = CollectScriptEntities(scene);
 			for (EntityHandle entity : entities)
