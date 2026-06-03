@@ -4,16 +4,32 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import shutil
 import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BIN_DIR = REPO_ROOT / "bin"
 RUNTIME_NAME = "Index-Runtime.exe" if os.name == "nt" else "Index-Runtime"
+DEFAULT_TIMEOUT_SECONDS = 45.0
+TERMINATE_GRACE_SECONDS = 5.0
+REQUIRED_MARKERS = (
+    "Loaded project:",
+    "Loaded scene: SampleScene",
+)
+FORBIDDEN_MARKERS = (
+    "Failed to load default texture",
+    "IndexAssets/Textures not found",
+    "Texture 'Default/",
+    "Failed to start scene 'SampleScene'",
+    "Scene destroy failed for 'SampleScene'",
+)
 
 
 def fail(message: str, log: str | None = None) -> int:
@@ -31,6 +47,12 @@ def parse_args() -> argparse.Namespace:
         "--binary",
         type=Path,
         help="Exact Index-Runtime binary to test. Falls back to bin/ auto-discovery when omitted.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"Seconds to wait for the smoke-test markers (default: {DEFAULT_TIMEOUT_SECONDS:g}).",
     )
     return parser.parse_args()
 
@@ -173,33 +195,104 @@ def build_command(runtime_binary: Path) -> list[str]:
     return [str(runtime_binary)]
 
 
-def run_runtime(runtime_binary: Path) -> tuple[int, str]:
+def terminate_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        process.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    try:
+        process.wait(timeout=TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=TERMINATE_GRACE_SECONDS)
+
+
+def enqueue_output(stream, output_queue: queue.Queue[str | None]) -> None:
+    try:
+        for line in stream:
+            output_queue.put(line)
+    finally:
+        output_queue.put(None)
+
+
+def run_runtime(runtime_binary: Path, timeout_seconds: float) -> tuple[int, str]:
     command = build_command(runtime_binary)
     creation_flags = 0
     if os.name == "nt":
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    process = subprocess.Popen(
-        command,
-        cwd=runtime_binary.parent,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=creation_flags,
-    )
+    popen_kwargs = {
+        "cwd": runtime_binary.parent,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "creationflags": creation_flags,
+    }
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
 
-    try:
-        stdout, _ = process.communicate(timeout=10)
-        return process.returncode or 0, stdout
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            process.kill()
-        else:
-            process.send_signal(signal.SIGTERM)
-        stdout, _ = process.communicate()
-        return 124, stdout
+    process = subprocess.Popen(command, **popen_kwargs)
+    output_queue: queue.Queue[str | None] = queue.Queue()
+    reader = threading.Thread(
+        target=enqueue_output,
+        args=(process.stdout, output_queue),
+        daemon=True,
+    )
+    reader.start()
+
+    log_lines: list[str] = []
+    seen_markers: set[str] = set()
+    deadline = time.monotonic() + max(timeout_seconds, 1.0)
+    reader_done = False
+
+    while not reader_done:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            terminate_process(process)
+            while not output_queue.empty():
+                item = output_queue.get_nowait()
+                if item is not None:
+                    log_lines.append(item)
+            return 124, "".join(log_lines)
+
+        try:
+            item = output_queue.get(timeout=min(0.1, remaining))
+        except queue.Empty:
+            continue
+
+        if item is None:
+            reader_done = True
+            continue
+
+        log_lines.append(item)
+        for marker in REQUIRED_MARKERS:
+            if marker in item:
+                seen_markers.add(marker)
+
+        if all(marker in seen_markers for marker in REQUIRED_MARKERS):
+            terminate_process(process)
+            while not output_queue.empty():
+                extra = output_queue.get_nowait()
+                if extra is not None:
+                    log_lines.append(extra)
+            return 0, "".join(log_lines)
+
+    return process.returncode or 0, "".join(log_lines)
 
 
 def main() -> int:
@@ -220,27 +313,16 @@ def main() -> int:
         return fail(f"Expected IndexAssets next to the runtime binary at {index_assets_dir}")
 
     stage_smoke_project(runtime_dir)
-    exit_code, log_output = run_runtime(runtime_binary)
+    exit_code, log_output = run_runtime(runtime_binary, args.timeout)
 
     if exit_code not in (0, 124):
         return fail(f"Smoke test process exited with status {exit_code}", log_output)
 
-    required_markers = (
-        "Loaded project:",
-        "Loaded scene: SampleScene",
-    )
-    for marker in required_markers:
+    for marker in REQUIRED_MARKERS:
         if marker not in log_output:
             return fail(f"Runtime did not emit expected marker: {marker}", log_output)
 
-    forbidden_markers = (
-        "Failed to load default texture",
-        "IndexAssets/Textures not found",
-        "Texture 'Default/",
-        "Failed to start scene 'SampleScene'",
-        "Scene destroy failed for 'SampleScene'",
-    )
-    for marker in forbidden_markers:
+    for marker in FORBIDDEN_MARKERS:
         if marker in log_output:
             return fail(f"Runtime log contained failure marker: {marker}", log_output)
 
