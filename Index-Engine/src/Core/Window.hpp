@@ -55,6 +55,13 @@ namespace Index {
 
 
 		void SetCursorImage(const Texture2D* tex2D);
+		// Editor-only gate. When false, SetCursorImage / SetUICursorImage /
+		// SetCursorOverUI keep their state but DON'T touch the OS cursor, so the
+		// project's game cursor stays scoped to the Game View instead of leaking
+		// editor-wide. Always true in standalone builds; the editor flips it true
+		// only while the Game View is hovered/focused.
+		void SetGameCursorEnabled(bool enabled);
+		bool HasGameCursor() const { return m_DefaultCursor != nullptr; }
 		uint64_t GetCursorTextureAsset() const { return m_CursorTextureAssetId; }
 		void SetCursorTextureAsset(uint64_t assetId) { m_CursorTextureAssetId = assetId; }
 		void SetWindowIcon(const Texture2D* tex2D);
@@ -180,6 +187,8 @@ namespace Index {
 		GLFWcursor* m_DefaultCursor = nullptr;
 		GLFWcursor* m_UICursor = nullptr;
 		bool m_CursorOverUI = false;
+		// Runtime: always true. Editor: false except while over the Game View.
+		bool m_GameCursorEnabled = true;
 		int m_CursorMode = 0;
 		uint64_t m_CursorTextureAssetId = 0;
 
