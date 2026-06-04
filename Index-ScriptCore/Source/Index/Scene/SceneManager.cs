@@ -167,15 +167,15 @@ public static class SceneManager
         return sceneGuid != 0 && InternalCalls.Scene_DoesSceneExistByGuid(sceneGuid);
     }
 
-    public static void EnableGlobalScript<T>() where T : GlobalScript
-        => SetGlobalScriptEnabled<T>(true);
+    public static void EnableGlobalSystem<T>() where T : GlobalSystem
+        => SetGlobalSystemEnabled<T>(true);
 
-    public static void DisableGlobalScript<T>() where T : GlobalScript
-        => SetGlobalScriptEnabled<T>(false);
+    public static void DisableGlobalSystem<T>() where T : GlobalSystem
+        => SetGlobalSystemEnabled<T>(false);
 
-    private static void SetGlobalScriptEnabled<T>(bool enabled) where T : GlobalScript
+    private static void SetGlobalSystemEnabled<T>(bool enabled) where T : GlobalSystem
     {
-        InternalCalls.Scene_SetGlobalScriptEnabled(typeof(T).Name, enabled);
+        InternalCalls.Scene_SetGlobalSystemEnabled(typeof(T).Name, enabled);
     }
 
     /// <summary>

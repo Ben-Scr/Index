@@ -15,6 +15,8 @@ public enum TextureFilter
     Bilinear = 1,
     Trilinear = 2,
     Anisotropic = 3,
+    // Sentinel: use the texture's own (import) filter instead of overriding it.
+    Default = 4,
 }
 
 // Order MUST match Index-Engine/src/Graphics/DefaultTexture.hpp; adding an entry requires 4 sync sites.

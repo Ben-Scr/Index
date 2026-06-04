@@ -964,7 +964,7 @@ namespace Index {
 			DuplicateSelectedEntity(shortcutScene);
 		}
 		if (input.GetKeyDown(KeyCode::Delete) || input.GetKeyDown(KeyCode::KpDecimal)) {
-			DeleteSelectedEntity(shortcutScene);
+			RequestDeleteSelectedEntity(shortcutScene);
 		}
 		if (input.GetKeyDown(KeyCode::F2)) {
 			BeginRenameSelectedEntity(shortcutScene);
@@ -1248,7 +1248,7 @@ namespace Index {
 		// Reset Time.TimeSinceStartup / Time.RealtimeSinceStartup so each
 		// play session starts at t=0 from a script's perspective.
 		ApplicationEditorAccess::MarkGameStart();
-		scene.StartManagedSceneScriptsForPlayMode();
+		scene.StartManagedSceneSystemsForPlayMode();
 		// Reset Box2D sleep timers so bodies that sat through editor
 		// idle don't immediately freeze on the first physics step.
 		if (PhysicsSystem2D::IsInitialized()) {
@@ -2025,6 +2025,36 @@ namespace Index {
 		}
 		ClearEntitySelection();
 		m_EntityOrder.clear(); m_EntityOrderDirty = true;
+	}
+
+	void ImGuiEditorLayer::RequestDeleteSelectedEntity(Scene& scene) {
+		const std::vector<EntityHandle> selectedEntities = GetSelectedEntities(scene);
+		if (selectedEntities.empty()) {
+			return;
+		}
+
+		// Confirmation disabled in preferences: delete straight away.
+		if (!EditorPreferences::GetConfirmOnDelete()) {
+			DeleteSelectedEntity(scene);
+			return;
+		}
+
+		// Capture the scene id + a label for the modal. The modal blocks
+		// interaction, so the selection DeleteSelectedEntity re-reads on
+		// confirm stays frozen between now and then.
+		m_PendingEntityDeleteSceneId = static_cast<uint64_t>(scene.GetSceneId());
+		m_PendingEntityDeleteCount = selectedEntities.size();
+		m_PendingEntityDeleteLabel.clear();
+		if (selectedEntities.size() == 1) {
+			const EntityHandle handle = selectedEntities.front();
+			if (scene.HasComponent<NameComponent>(handle)) {
+				m_PendingEntityDeleteLabel = scene.GetComponent<NameComponent>(handle).Name;
+			}
+			if (m_PendingEntityDeleteLabel.empty()) {
+				m_PendingEntityDeleteLabel = "Entity";
+			}
+		}
+		m_ShowEntityDeleteConfirm = true;
 	}
 
 	void ImGuiEditorLayer::BeginRenameSelectedEntity(Scene& scene) {
@@ -3571,7 +3601,7 @@ namespace Index {
 								EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 								bool scriptAttached = false;
 								for (const auto& scriptEntry : droppedScripts) {
-									if (scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
+									if (scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 										continue;
 									}
 									if (scriptEntry.IsManagedComponent) {
@@ -3612,7 +3642,7 @@ namespace Index {
 
 						if (ImGui::MenuItem("Delete", "Del"))
 						{
-							DeleteSelectedEntity(scene);
+							RequestDeleteSelectedEntity(scene);
 						}
 
 						if (ImGui::MenuItem("Cut", "Ctrl + X"))
@@ -3814,21 +3844,21 @@ namespace Index {
 		ImGui::Text("Scene: %s", scene.GetName().c_str());
 		ImGui::SeparatorText("Systems");
 
-		auto acceptDroppedSceneScripts = [&]() {
+		auto acceptDroppedSceneSystems = [&]() {
 			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
 				// 1-arg form: 2-arg would embed trailing '\0' and break extension matching in CollectScriptFile.
 				std::string droppedPath(static_cast<const char*>(payload->Data));
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 				for (const auto& scriptEntry : droppedScripts) {
-					if (scriptEntry.IsSceneScript) {
-						scene.AddSceneScript(scriptEntry.ClassName);
+					if (scriptEntry.IsSceneSystem) {
+						scene.AddSceneSystem(scriptEntry.ClassName);
 					}
 				}
 			}
 		};
 
-		const auto& systems = scene.GetSceneScriptClassNames();
+		const auto& systems = scene.GetSceneSystemClassNames();
 		for (size_t i = 0; i < systems.size(); ++i) {
 			ImGui::PushID(static_cast<int>(i));
 			const std::string& className = systems[i];
@@ -3843,38 +3873,38 @@ namespace Index {
 			const float stripW = btnW * 4.0f + spacing * 3.0f;
 			ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - stripW);
 
-			bool enabled = scene.IsSceneScriptEnabled(className);
+			bool enabled = scene.IsSceneSystemEnabled(className);
 			if (ImGui::Checkbox("##enabled", &enabled)) {
-				scene.SetSceneScriptEnabled(className, enabled);
+				scene.SetSceneSystemEnabled(className, enabled);
 			}
 			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("%s", enabled ? "Disable SceneScript" : "Enable SceneScript");
+				ImGui::SetTooltip("%s", enabled ? "Disable SceneSystem" : "Enable SceneSystem");
 			}
 
 			ImGui::SameLine(0, spacing);
 			if (ImGui::ArrowButton("##move_up", ImGuiDir_Up) && i > 0) {
-				scene.MoveSceneScript(i, i - 1);
+				scene.MoveSceneSystem(i, i - 1);
 			}
 
 			ImGui::SameLine(0, spacing);
 			if (ImGui::ArrowButton("##move_down", ImGuiDir_Down) && i + 1 < systems.size()) {
-				scene.MoveSceneScript(i, i + 1);
+				scene.MoveSceneSystem(i, i + 1);
 			}
 
 			ImGui::SameLine(0, spacing);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.35f, 0.35f, 1.0f));
 			const bool remove = ImGui::Button("X", ImVec2(btnW, btnW));
 			ImGui::PopStyleColor();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove SceneScript");
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove SceneSystem");
 			if (remove) {
-				scene.RemoveSceneScript(i);
+				scene.RemoveSceneSystem(i);
 				ImGui::PopID();
 				break;
 			}
 
 			if (open) {
 				ImGui::Indent(8.0f);
-				DrawSceneScriptFields(scene, className);
+				DrawSceneSystemFields(scene, className);
 				ImGui::Unindent(8.0f);
 			}
 
@@ -3887,7 +3917,7 @@ namespace Index {
 		EditorScriptDiscovery::CollectProjectScriptEntries(scriptEntries);
 		size_t availableSystemCount = 0;
 		for (const auto& entry : scriptEntries) {
-			if (entry.IsSceneScript && !scene.HasSceneScript(entry.ClassName)) {
+			if (entry.IsSceneSystem && !scene.HasSceneSystem(entry.ClassName)) {
 				++availableSystemCount;
 			}
 		}
@@ -3903,14 +3933,14 @@ namespace Index {
 		// dropped scripts. Previously the whole inspector InnerRect was a
 		// drop zone which was confusing.
 		if (ImGui::BeginDragDropTarget()) {
-			acceptDroppedSceneScripts();
+			acceptDroppedSceneSystems();
 			ImGui::EndDragDropTarget();
 		}
 		if (!hasAvailableSystem) {
 			ImGui::EndDisabled();
 			// AllowWhenDisabled so hover still fires after BeginDisabled.
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-				ImGui::SetTooltip("No game systems available.\nCreate one via Asset Browser > Create > Scripting > SceneScript (C#).");
+				ImGui::SetTooltip("No game systems available.\nCreate one via Asset Browser > Create > Scripting > SceneSystem (C#).");
 			}
 		}
 
@@ -3925,7 +3955,7 @@ namespace Index {
 			std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
 
 			for (const auto& scriptEntry : scriptEntries) {
-				if (!scriptEntry.IsSceneScript || scene.HasSceneScript(scriptEntry.ClassName)) {
+				if (!scriptEntry.IsSceneSystem || scene.HasSceneSystem(scriptEntry.ClassName)) {
 					continue;
 				}
 
@@ -3941,7 +3971,7 @@ namespace Index {
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
 				const std::string path = scriptEntry.Path.string();
 				if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
-					scene.AddSceneScript(scriptEntry.ClassName);
+					scene.AddSceneSystem(scriptEntry.ClassName);
 					ImGui::CloseCurrentPopup();
 				}
 			}
@@ -4485,7 +4515,7 @@ namespace Index {
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 				for (const auto& scriptEntry : droppedScripts) {
-					if (scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
+					if (scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 						continue;
 					}
 					for (const Entity& e : selectedEntities) {

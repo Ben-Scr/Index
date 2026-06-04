@@ -2,18 +2,18 @@ using Index.Interop;
 
 namespace Index;
 
-public abstract class SceneScript
+public abstract class SceneSystem
 {
     public Scene Scene { get; private set; } = new();
 
     public bool Enabled
     {
         get => !string.IsNullOrEmpty(Scene.Name)
-            && InternalCalls.Scene_IsSceneScriptEnabled(Scene.Name, GetType().Name);
+            && InternalCalls.Scene_IsSceneSystemEnabled(Scene.Name, GetType().Name);
         set
         {
             if (!string.IsNullOrEmpty(Scene.Name))
-                InternalCalls.Scene_SetSceneScriptEnabled(Scene.Name, GetType().Name, value);
+                InternalCalls.Scene_SetSceneSystemEnabled(Scene.Name, GetType().Name, value);
         }
     }
     protected void Print(object? obj) => Log.Print(obj);

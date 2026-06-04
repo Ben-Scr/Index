@@ -523,7 +523,7 @@ namespace Index {
 
 	void AudioManager::SetMasterVolume(float volume) {
 		IDX_CORE_ASSERT(Application::IsMainThread(), IndexErrorCode::Undefined, "AudioManager::SetMasterVolume must be called on the main thread");
-		s_masterVolume = Max(0.0f, volume);
+		s_masterVolume = Max(0.0f, Min(1.0f, volume));
 
 		if (s_IsInitialized && s_Backend) {
 			s_Backend->SetMasterVolume(s_masterVolume);

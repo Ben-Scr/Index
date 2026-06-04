@@ -572,7 +572,7 @@ namespace Index {
 			scriptComp.PendingDynamicComponentValues.erase(className);
 		}
 
-		std::vector<std::string> GetActiveGlobalScriptClassNames()
+		std::vector<std::string> GetActiveGlobalSystemClassNames()
 		{
 			std::vector<std::string> classNames;
 			IndexProject* project = ProjectManager::GetCurrentProject();
@@ -580,7 +580,7 @@ namespace Index {
 				return classNames;
 			}
 
-			for (const auto& registration : project->GlobalScripts) {
+			for (const auto& registration : project->GlobalSystems) {
 				if (registration.Active && !registration.ClassName.empty()) {
 					classNames.push_back(registration.ClassName);
 				}
@@ -588,9 +588,9 @@ namespace Index {
 			return classNames;
 		}
 
-		void InitializeRegisteredGlobalScripts()
+		void InitializeRegisteredGlobalSystems()
 		{
-			ScriptEngine::InitializeGlobalScripts(GetActiveGlobalScriptClassNames());
+			ScriptEngine::InitializeGlobalSystems(GetActiveGlobalSystemClassNames());
 		}
 
 		struct ScriptSceneScope {
@@ -1058,7 +1058,7 @@ namespace Index {
 		if (!ScriptEngine::HasUserAssembly() && !m_UserAssemblyPath.empty() && std::filesystem::exists(m_UserAssemblyPath)) {
 			ScriptEngine::LoadUserAssembly(m_UserAssemblyPath);
 		}
-		InitializeRegisteredGlobalScripts();
+		InitializeRegisteredGlobalSystems();
 
 		// Script/native hot-reload (filesystem watch + auto-rebuild on edit) is an
 		// editor-only convenience that needs the dotnet/cmake toolchain. It runs only
@@ -1647,7 +1647,7 @@ namespace Index {
 				else {
 					ScriptEngine::ReloadAssemblies();
 				}
-				InitializeRegisteredGlobalScripts();
+				InitializeRegisteredGlobalSystems();
 				// Invalidate baked prefab templates: managed reload can shift component layouts (sizeof changes) that would corrupt cached emplaceFromBytes payloads.
 				PrefabTemplateCache::Get().InvalidateAll();
 				IDX_INFO_TAG("ScriptSystem", "C# scripts rebuilt and reloaded");

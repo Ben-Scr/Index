@@ -113,8 +113,8 @@ internal static class ScriptInstanceManager
     private static readonly ConcurrentDictionary<int, ScriptInstanceData> s_Instances = new();
     // (entityID, Type) -> handle secondary index for O(1) per-frame GetComponent<TScript> lookups.
     private static readonly ConcurrentDictionary<(ulong EntityID, Type Type), int> s_InstancesByType = new();
-    private static readonly ConcurrentDictionary<int, SceneScript> s_SceneScripts = new();
-    private static readonly ConcurrentDictionary<int, GlobalScript> s_GlobalScripts = new();
+    private static readonly ConcurrentDictionary<int, SceneSystem> s_SceneSystems = new();
+    private static readonly ConcurrentDictionary<int, GlobalSystem> s_GlobalSystems = new();
     // Incremented from any thread that creates an instance; ++ on a plain int is
     // a read-modify-write race that can hand the same handle to two threads.
     private static int s_NextHandle = 0;
@@ -133,15 +133,15 @@ internal static class ScriptInstanceManager
         public bool HasAwoken;
     }
 
-    private static readonly ConcurrentDictionary<int, byte> s_SceneScriptAwoken = new();
+    private static readonly ConcurrentDictionary<int, byte> s_SceneSystemAwoken = new();
 
     private class ScriptClassInfo
     {
         public Type Type = null!;
         public bool IsScript;
         public bool IsComponent;
-        public bool IsSceneScript;
-        public bool IsGlobalScript;
+        public bool IsSceneSystem;
+        public bool IsGlobalSystem;
         public MethodInfo? StartMethod;
         public MethodInfo? UpdateMethod;
 
@@ -251,18 +251,18 @@ internal static class ScriptInstanceManager
         }
     }
 
-    private static void DispatchToSceneScripts(Action<SceneScript> invoke, string eventName)
+    private static void DispatchToSceneSystems(Action<SceneSystem> invoke, string eventName)
     {
-        foreach (var system in new List<SceneScript>(s_SceneScripts.Values))
+        foreach (var system in new List<SceneSystem>(s_SceneSystems.Values))
         {
             try { invoke(system); }
             catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
         }
     }
 
-    private static void DispatchToGlobalScripts(Action<GlobalScript> invoke, string eventName)
+    private static void DispatchToGlobalSystems(Action<GlobalSystem> invoke, string eventName)
     {
-        foreach (var system in new List<GlobalScript>(s_GlobalScripts.Values))
+        foreach (var system in new List<GlobalSystem>(s_GlobalSystems.Values))
         {
             try { invoke(system); }
             catch (Exception ex) { Console.Error.WriteLine($"Exception in {eventName}: {ex}"); }
@@ -289,8 +289,8 @@ internal static class ScriptInstanceManager
     {
         Application.RaiseApplicationPaused();
         DispatchToScripts(script => script.OnApplicationPaused(), nameof(EntityScript.OnApplicationPaused));
-        DispatchToSceneScripts(system => system.OnApplicationPaused(), nameof(SceneScript.OnApplicationPaused));
-        DispatchToGlobalScripts(system => system.OnApplicationPaused(), nameof(GlobalScript.OnApplicationPaused));
+        DispatchToSceneSystems(system => system.OnApplicationPaused(), nameof(SceneSystem.OnApplicationPaused));
+        DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
     }
 
     [UnmanagedCallersOnly]
@@ -298,8 +298,8 @@ internal static class ScriptInstanceManager
     {
         Application.RaiseApplicationQuit();
         DispatchToScripts(script => script.OnApplicationQuit(), nameof(EntityScript.OnApplicationQuit));
-        DispatchToSceneScripts(system => system.OnApplicationQuit(), nameof(SceneScript.OnApplicationQuit));
-        DispatchToGlobalScripts(system => system.OnApplicationQuit(), nameof(GlobalScript.OnApplicationQuit));
+        DispatchToSceneSystems(system => system.OnApplicationQuit(), nameof(SceneSystem.OnApplicationQuit));
+        DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
     }
 
     [UnmanagedCallersOnly]
@@ -308,8 +308,8 @@ internal static class ScriptInstanceManager
         bool isFocused = focused != 0;
         Window.RaiseFocusChanged(isFocused);
         DispatchToScripts(script => script.OnFocusChanged(isFocused), nameof(EntityScript.OnFocusChanged));
-        DispatchToSceneScripts(system => system.OnFocusChanged(isFocused), nameof(SceneScript.OnFocusChanged));
-        DispatchToGlobalScripts(system => system.OnFocusChanged(isFocused), nameof(GlobalScript.OnFocusChanged));
+        DispatchToSceneSystems(system => system.OnFocusChanged(isFocused), nameof(SceneSystem.OnFocusChanged));
+        DispatchToGlobalSystems(system => system.OnFocusChanged(isFocused), nameof(GlobalSystem.OnFocusChanged));
     }
 
     [UnmanagedCallersOnly]
@@ -394,7 +394,7 @@ internal static class ScriptInstanceManager
             Log.Warn("[ScriptLoader] User assembly load context is still alive after unload; lingering references may delay full cleanup.");
     }
 
-    // Called after the editor reloads the pre-play snapshot; GlobalScript subscriptions are preserved because they survive play mode.
+    // Called after the editor reloads the pre-play snapshot; GlobalSystem subscriptions are preserved because they survive play mode.
     [UnmanagedCallersOnly]
     public static void OnPlayModeExited()
     {
@@ -405,7 +405,7 @@ internal static class ScriptInstanceManager
         }
     }
 
-    // AssemblyUnload: strip all user-assembly handlers. PlayModeExit: strip only EntityScript/SceneScript handlers; GlobalScript subscriptions remain valid.
+    // AssemblyUnload: strip all user-assembly handlers. PlayModeExit: strip only EntityScript/SceneSystem handlers; GlobalSystem subscriptions remain valid.
     private enum SweepScope
     {
         AssemblyUnload,
@@ -424,7 +424,7 @@ internal static class ScriptInstanceManager
         if (scope == SweepScope.PlayModeExit && s_CoreAssembly != null)
         {
             entityScriptBase = s_CoreAssembly.GetType("Index.EntityScript");
-            gameSystemBase = s_CoreAssembly.GetType("Index.SceneScript");
+            gameSystemBase = s_CoreAssembly.GetType("Index.SceneSystem");
         }
 
         int totalRemoved = 0;
@@ -733,172 +733,172 @@ internal static class ScriptInstanceManager
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe int CreateSceneScriptInstance(byte* classNamePtr, byte* sceneNamePtr)
+    public static unsafe int CreateSceneSystemInstance(byte* classNamePtr, byte* sceneNamePtr)
     {
         try
         {
             string className = PtrToString(classNamePtr);
             string sceneName = PtrToString(sceneNamePtr);
             var classInfo = GetOrCacheClass(className);
-            if (classInfo == null || !classInfo.IsSceneScript) return 0;
+            if (classInfo == null || !classInfo.IsSceneSystem) return 0;
 
-            var instance = (SceneScript)Activator.CreateInstance(classInfo.Type)!;
+            var instance = (SceneSystem)Activator.CreateInstance(classInfo.Type)!;
             instance._SetSceneName(sceneName);
 
             int handle = Interlocked.Increment(ref s_NextHandle);
-            s_SceneScripts[handle] = instance;
+            s_SceneSystems[handle] = instance;
             return handle;
         }
         catch (Exception ex)
         {
-            Log.Error($"CreateSceneScriptInstance failed: {ex}");
+            Log.Error($"CreateSceneSystemInstance failed: {ex}");
             return 0;
         }
     }
 
     [UnmanagedCallersOnly]
-    public static void DestroySceneScriptInstance(int handle)
+    public static void DestroySceneSystemInstance(int handle)
     {
-        s_SceneScripts.TryRemove(handle, out _);
-        s_SceneScriptAwoken.TryRemove(handle, out _);
+        s_SceneSystems.TryRemove(handle, out _);
+        s_SceneSystemAwoken.TryRemove(handle, out _);
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptStart(int handle)
+    public static void InvokeSceneSystemStart(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnStart(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnStart(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnStart(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptAwake(int handle)
+    public static void InvokeSceneSystemAwake(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
-        if (!s_SceneScriptAwoken.TryAdd(handle, 0)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystemAwoken.TryAdd(handle, 0)) return;
         try { system.OnAwake(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in SceneScript.OnAwake(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnAwake(): {ex}"); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in SceneSystem.OnAwake(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnAwake(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptUpdate(int handle)
+    public static void InvokeSceneSystemUpdate(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnUpdate(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnUpdate(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnUpdate(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptFixedUpdate(int handle)
+    public static void InvokeSceneSystemFixedUpdate(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnFixedUpdate(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in SceneScript.OnFixedUpdate(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnFixedUpdate(): {ex}"); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in SceneSystem.OnFixedUpdate(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnFixedUpdate(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptEnable(int handle)
+    public static void InvokeSceneSystemEnable(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnEnable(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnEnable(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnEnable(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptDisable(int handle)
+    public static void InvokeSceneSystemDisable(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDisable(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnDisable(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnDisable(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeSceneScriptDestroy(int handle)
+    public static void InvokeSceneSystemDestroy(int handle)
     {
-        if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+        if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDestroy(); }
-        catch (Exception ex) { Log.Error($"Exception in SceneScript.OnDestroy(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in SceneSystem.OnDestroy(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe int SceneScriptClassExists(byte* classNamePtr)
+    public static unsafe int SceneSystemClassExists(byte* classNamePtr)
     {
         string className = PtrToString(classNamePtr);
-        return GetOrCacheClass(className)?.IsSceneScript == true ? 1 : 0;
+        return GetOrCacheClass(className)?.IsSceneSystem == true ? 1 : 0;
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe int CreateGlobalScriptInstance(byte* classNamePtr)
+    public static unsafe int CreateGlobalSystemInstance(byte* classNamePtr)
     {
         try
         {
             string className = PtrToString(classNamePtr);
             var classInfo = GetOrCacheClass(className);
-            if (classInfo == null || !classInfo.IsGlobalScript) return 0;
+            if (classInfo == null || !classInfo.IsGlobalSystem) return 0;
 
-            var instance = (GlobalScript)Activator.CreateInstance(classInfo.Type)!;
+            var instance = (GlobalSystem)Activator.CreateInstance(classInfo.Type)!;
             int handle = Interlocked.Increment(ref s_NextHandle);
-            s_GlobalScripts[handle] = instance;
+            s_GlobalSystems[handle] = instance;
             return handle;
         }
         catch (Exception ex)
         {
-            Log.Error($"CreateGlobalScriptInstance failed: {ex}");
+            Log.Error($"CreateGlobalSystemInstance failed: {ex}");
             return 0;
         }
     }
 
     [UnmanagedCallersOnly]
-    public static void DestroyGlobalScriptInstance(int handle) => s_GlobalScripts.TryRemove(handle, out _);
+    public static void DestroyGlobalSystemInstance(int handle) => s_GlobalSystems.TryRemove(handle, out _);
 
     [UnmanagedCallersOnly]
-    public static void InvokeGlobalScriptInitialize(int handle)
+    public static void InvokeGlobalSystemInitialize(int handle)
     {
-        if (!s_GlobalScripts.TryGetValue(handle, out var system)) return;
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnInitialize(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalScript.OnInitialize(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnInitialize(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeGlobalScriptUpdate(int handle)
+    public static void InvokeGlobalSystemUpdate(int handle)
     {
-        if (!s_GlobalScripts.TryGetValue(handle, out var system)) return;
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnUpdate(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalScript.OnUpdate(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnUpdate(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeGlobalScriptFixedUpdate(int handle)
+    public static void InvokeGlobalSystemFixedUpdate(int handle)
     {
-        if (!s_GlobalScripts.TryGetValue(handle, out var system)) return;
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnFixedUpdate(); }
-        catch (TargetInvocationException ex) { Log.Error($"Exception in GlobalScript.OnFixedUpdate(): {ex.InnerException}"); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalScript.OnFixedUpdate(): {ex}"); }
+        catch (TargetInvocationException ex) { Log.Error($"Exception in GlobalSystem.OnFixedUpdate(): {ex.InnerException}"); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnFixedUpdate(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeGlobalScriptEnable(int handle)
+    public static void InvokeGlobalSystemEnable(int handle)
     {
-        if (!s_GlobalScripts.TryGetValue(handle, out var system)) return;
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnEnable(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalScript.OnEnable(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnEnable(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void InvokeGlobalScriptDisable(int handle)
+    public static void InvokeGlobalSystemDisable(int handle)
     {
-        if (!s_GlobalScripts.TryGetValue(handle, out var system)) return;
+        if (!s_GlobalSystems.TryGetValue(handle, out var system)) return;
         try { system.OnDisable(); }
-        catch (Exception ex) { Log.Error($"Exception in GlobalScript.OnDisable(): {ex}"); }
+        catch (Exception ex) { Log.Error($"Exception in GlobalSystem.OnDisable(): {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe int GlobalScriptClassExists(byte* classNamePtr)
+    public static unsafe int GlobalSystemClassExists(byte* classNamePtr)
     {
         string className = PtrToString(classNamePtr);
-        return GetOrCacheClass(className)?.IsGlobalScript == true ? 1 : 0;
+        return GetOrCacheClass(className)?.IsGlobalSystem == true ? 1 : 0;
     }
 
     [UnmanagedCallersOnly]
@@ -918,9 +918,9 @@ internal static class ScriptInstanceManager
                 CancelAllInstanceCoroutines();
                 s_Instances.Clear();
                 s_InstancesByType.Clear();
-                s_SceneScripts.Clear();
-                s_SceneScriptAwoken.Clear();
-                s_GlobalScripts.Clear();
+                s_SceneSystems.Clear();
+                s_SceneSystemAwoken.Clear();
+                s_GlobalSystems.Clear();
                 s_ClassCache.Clear();
                 UnloadCurrentUserAssemblyContext();
             }
@@ -976,9 +976,9 @@ internal static class ScriptInstanceManager
         CancelAllInstanceCoroutines();
         s_Instances.Clear();
         s_InstancesByType.Clear();
-        s_SceneScripts.Clear();
-        s_SceneScriptAwoken.Clear();
-        s_GlobalScripts.Clear();
+        s_SceneSystems.Clear();
+        s_SceneSystemAwoken.Clear();
+        s_GlobalSystems.Clear();
         s_ClassCache.Clear();
         ReleaseFieldJsonBuffer();
 
@@ -1068,33 +1068,33 @@ internal static class ScriptInstanceManager
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe byte* GetSceneScriptFields(int handle)
+    public static unsafe byte* GetSceneSystemFields(int handle)
     {
         try
         {
-            if (!s_SceneScripts.TryGetValue(handle, out var system))
+            if (!s_SceneSystems.TryGetValue(handle, out var system))
                 return NullTerminated("[]");
 
-            return SerializeInstanceFields(system, typeof(SceneScript));
+            return SerializeInstanceFields(system, typeof(SceneSystem));
         }
         catch (Exception ex)
         {
-            Log.Error($"GetSceneScriptFields failed: {ex.Message}");
+            Log.Error($"GetSceneSystemFields failed: {ex.Message}");
             return NullTerminated("[]");
         }
     }
 
     [UnmanagedCallersOnly]
-    public static unsafe void SetSceneScriptField(int handle, byte* fieldNamePtr, byte* valuePtr)
+    public static unsafe void SetSceneSystemField(int handle, byte* fieldNamePtr, byte* valuePtr)
     {
         try
         {
-            if (!s_SceneScripts.TryGetValue(handle, out var system)) return;
+            if (!s_SceneSystems.TryGetValue(handle, out var system)) return;
             ApplyFieldEdit(system, fieldNamePtr, valuePtr);
         }
         catch (Exception ex)
         {
-            Log.Error($"SetSceneScriptField failed: {ex.Message}");
+            Log.Error($"SetSceneSystemField failed: {ex.Message}");
         }
     }
 
@@ -1760,8 +1760,8 @@ internal static class ScriptInstanceManager
             {
                 if (member.DeclaringType == typeof(EntityScript)) continue;
                 if (member.DeclaringType == typeof(Component)) continue;
-                if (member.DeclaringType == typeof(SceneScript)) continue;
-                if (member.DeclaringType == typeof(GlobalScript)) continue;
+                if (member.DeclaringType == typeof(SceneSystem)) continue;
+                if (member.DeclaringType == typeof(GlobalSystem)) continue;
                 if (!IsMemberEditorVisible(member)) continue;
 
                 string fieldType = MapFieldType(member.ValueType);
@@ -1790,8 +1790,8 @@ internal static class ScriptInstanceManager
         typeof(object),
         typeof(EntityScript),
         typeof(Component),
-        typeof(SceneScript),
-        typeof(GlobalScript),
+        typeof(SceneSystem),
+        typeof(GlobalSystem),
     };
 
     private static void EnsureInvokableMethods(ScriptClassInfo info)
@@ -2074,9 +2074,9 @@ internal static class ScriptInstanceManager
         bool isComponent = type != null
             && ((type.IsSubclassOf(typeof(Component)) && !Entity.TryGetNativeComponentName(type, out _))
                 || (type.IsValueType && typeof(Index.Components.IComponent).IsAssignableFrom(type)));
-        bool isSceneScript = type != null && type.IsSubclassOf(typeof(SceneScript));
-        bool isGlobalScript = type != null && type.IsSubclassOf(typeof(GlobalScript));
-        if (type == null || (!isScript && !isComponent && !isSceneScript && !isGlobalScript))
+        bool isSceneSystem = type != null && type.IsSubclassOf(typeof(SceneSystem));
+        bool isGlobalSystem = type != null && type.IsSubclassOf(typeof(GlobalSystem));
+        if (type == null || (!isScript && !isComponent && !isSceneSystem && !isGlobalSystem))
         {
             s_ClassCache[className] = null;
             return null;
@@ -2087,8 +2087,8 @@ internal static class ScriptInstanceManager
             Type = type,
             IsScript = isScript,
             IsComponent = isComponent,
-            IsSceneScript = isSceneScript,
-            IsGlobalScript = isGlobalScript,
+            IsSceneSystem = isSceneSystem,
+            IsGlobalSystem = isGlobalSystem,
             StartMethod = isScript ? type.GetMethod("Start", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
             UpdateMethod = isScript ? type.GetMethod("Update", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
         };

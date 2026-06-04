@@ -64,39 +64,39 @@ namespace Index {
 		// Strips static-event subscribers from the user assembly; safe to call from runtime (no-op when uninitialized).
 		static void OnPlayModeExited();
 
-		static uint32_t CreateSceneScriptInstance(const std::string& className, const std::string& sceneName);
-		static void DestroySceneScriptInstance(uint32_t handle);
-		static void InvokeSceneScriptStart(uint32_t handle);
-		static void InvokeSceneScriptUpdate(uint32_t handle);
-		static void InvokeSceneScriptEnable(uint32_t handle);
-		static void InvokeSceneScriptDisable(uint32_t handle);
-		static void InvokeSceneScriptDestroy(uint32_t handle);
-		static bool SceneScriptClassExists(const std::string& className);
+		static uint32_t CreateSceneSystemInstance(const std::string& className, const std::string& sceneName);
+		static void DestroySceneSystemInstance(uint32_t handle);
+		static void InvokeSceneSystemStart(uint32_t handle);
+		static void InvokeSceneSystemUpdate(uint32_t handle);
+		static void InvokeSceneSystemEnable(uint32_t handle);
+		static void InvokeSceneSystemDisable(uint32_t handle);
+		static void InvokeSceneSystemDestroy(uint32_t handle);
+		static bool SceneSystemClassExists(const std::string& className);
 
-		static void InitializeGlobalScripts(const std::vector<std::string>& classNames);
-		static void UpdateGlobalScripts();
-		static void FixedUpdateGlobalScripts();
-		static void ShutdownGlobalScripts();
-		static void SetGlobalScriptEnabled(const std::string& className, bool enabled);
-		static bool GlobalScriptClassExists(const std::string& className);
+		static void InitializeGlobalSystems(const std::vector<std::string>& classNames);
+		static void UpdateGlobalSystems();
+		static void FixedUpdateGlobalSystems();
+		static void ShutdownGlobalSystems();
+		static void SetGlobalSystemEnabled(const std::string& className, bool enabled);
+		static bool GlobalSystemClassExists(const std::string& className);
 
 		// ── New lifecycle thunks (appended for binary compat) ──
 		static void InvokeAwake(uint32_t handle);
 		static void InvokeFixedUpdate(uint32_t handle);
-		static void InvokeSceneScriptAwake(uint32_t handle);
-		static void InvokeSceneScriptFixedUpdate(uint32_t handle);
-		static void InvokeGlobalScriptFixedUpdate(uint32_t handle);
+		static void InvokeSceneSystemAwake(uint32_t handle);
+		static void InvokeSceneSystemFixedUpdate(uint32_t handle);
+		static void InvokeGlobalSystemFixedUpdate(uint32_t handle);
 
 		// Returns JSON array of [ShowInEditor] fields; pointer valid until the next field accessor call.
-		static const char* GetSceneScriptFields(uint32_t handle);
-		static void SetSceneScriptField(uint32_t handle, const char* fieldName, const char* value);
+		static const char* GetSceneSystemFields(uint32_t handle);
+		static void SetSceneSystemField(uint32_t handle, const char* fieldName, const char* value);
 
 		static void PumpCoroutinesUpdate(float deltaTime);
 		static void PumpCoroutinesFixedUpdate();
 
 		static const ManagedCallbacks& GetCallbacks() { return s_Callbacks; }
 
-		struct GlobalScriptInstance {
+		struct GlobalSystemInstance {
 			std::string ClassName;
 			uint32_t Handle = 0;
 			bool Enabled = true;
@@ -108,7 +108,7 @@ namespace Index {
 		static std::string s_CoreAssemblyPath;
 		static std::string s_UserAssemblyPath;
 		static bool s_HasUserAssembly;
-		static std::vector<GlobalScriptInstance> s_GlobalScripts;
+		static std::vector<GlobalSystemInstance> s_GlobalSystems;
 
 		static DotNetHost s_Host;
 		static ManagedCallbacks s_Callbacks;

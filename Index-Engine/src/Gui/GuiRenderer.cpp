@@ -20,6 +20,7 @@
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/Instance44.hpp"
 #include "Graphics/SpriteResources.hpp"
+#include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
@@ -148,12 +149,61 @@ namespace Index {
 			return out;
 		}
 
-		bool ResolveClipForEntity(entt::registry& registry, EntityHandle entity,
-			Vec2& outMin, Vec2& outMax)
+		struct UIMaskClip {
+			bool HasClip = false;
+			Vec2 ClipMin{};
+			Vec2 ClipMax{};
+			bool HasTextureMask = false;
+			TextureHandle MaskTextureHandle{};
+			SpriteUVRect MaskUvRect{};
+			Vec2 MaskRectMin{};
+			Vec2 MaskRectMax{};
+			Vec2 MaskPivot{};
+			float MaskRotation = 0.0f;
+		};
+
+		void ApplyMaskClipToInstance(const UIMaskClip& clip, Instance44& inst)
 		{
-			bool found = false;
-			Vec2 clipMin{ 0.0f, 0.0f };
-			Vec2 clipMax{ 0.0f, 0.0f };
+			inst.HasClip = clip.HasClip;
+			inst.ClipMin = clip.ClipMin;
+			inst.ClipMax = clip.ClipMax;
+			inst.HasTextureMask = clip.HasTextureMask;
+			inst.MaskTextureHandle = clip.MaskTextureHandle;
+			inst.MaskUvRect = clip.MaskUvRect;
+			inst.MaskRectMin = clip.MaskRectMin;
+			inst.MaskRectMax = clip.MaskRectMax;
+			inst.MaskPivot = clip.MaskPivot;
+			inst.MaskRotation = clip.MaskRotation;
+		}
+
+		void ApplyMaskClipToText(const UIMaskClip& clip, TextDrawCmd& cmd)
+		{
+			cmd.HasClip = clip.HasClip;
+			cmd.ClipMin = clip.ClipMin;
+			cmd.ClipMax = clip.ClipMax;
+			cmd.HasTextureMask = clip.HasTextureMask;
+			cmd.MaskTextureHandle = clip.MaskTextureHandle;
+			cmd.MaskUvRect = clip.MaskUvRect;
+			cmd.MaskRectMin = clip.MaskRectMin;
+			cmd.MaskRectMax = clip.MaskRectMax;
+			cmd.MaskPivot = clip.MaskPivot;
+			cmd.MaskRotation = clip.MaskRotation;
+		}
+
+		void ApplyImageSliceToInstance(Instance44& inst, const ImageComponent& image)
+		{
+			if (image.SpriteName.empty()) return;
+			Texture2D* tex = TextureManager::GetTexture(image.TextureHandle);
+			if (!tex) return;
+			inst.UvRect = ResolveSpriteUVRect(image.TextureAssetId,
+				image.SpriteName,
+				static_cast<int>(tex->GetWidth()),
+				static_cast<int>(tex->GetHeight()));
+		}
+
+		UIMaskClip ResolveClipForEntity(entt::registry& registry, EntityHandle entity)
+		{
+			UIMaskClip result{};
 
 			EntityHandle current = entity;
 			while (true) {
@@ -167,23 +217,38 @@ namespace Index {
 				const Vec2 bl = rect.GetBottomLeft();
 				const Vec2 tr = rect.GetTopRight();
 
-				if (!found) {
-					clipMin = bl;
-					clipMax = tr;
-					found = true;
+				if (!result.HasClip) {
+					result.ClipMin = bl;
+					result.ClipMax = tr;
+					result.HasClip = true;
 				}
 				else {
-					clipMin.x = std::max(clipMin.x, bl.x);
-					clipMin.y = std::max(clipMin.y, bl.y);
-					clipMax.x = std::min(clipMax.x, tr.x);
-					clipMax.y = std::min(clipMax.y, tr.y);
+					result.ClipMin.x = std::max(result.ClipMin.x, bl.x);
+					result.ClipMin.y = std::max(result.ClipMin.y, bl.y);
+					result.ClipMax.x = std::min(result.ClipMax.x, tr.x);
+					result.ClipMax.y = std::min(result.ClipMax.y, tr.y);
+				}
+
+				if (!result.HasTextureMask) {
+					if (const auto* image = registry.try_get<ImageComponent>(current)) {
+						Texture2D* tex = TextureManager::GetTexture(image->TextureHandle);
+						if (tex && tex->IsValid()) {
+							result.HasTextureMask = true;
+							result.MaskTextureHandle = image->TextureHandle;
+							result.MaskUvRect = ResolveSpriteUVRect(image->TextureAssetId,
+								image->SpriteName,
+								static_cast<int>(tex->GetWidth()),
+								static_cast<int>(tex->GetHeight()));
+							result.MaskRectMin = bl;
+							result.MaskRectMax = tr;
+							result.MaskPivot = rect.ResolvedPivot;
+							result.MaskRotation = rect.Rotation;
+						}
+					}
 				}
 			}
 
-			if (!found) return false;
-			outMin = clipMin;
-			outMax = clipMax;
-			return true;
+			return result;
 		}
 
 		bool ResolveUICanvasSize(int& outW, int& outH) {
@@ -209,12 +274,34 @@ namespace Index {
 			uint32_t     InstanceBufferCapacity = 0;
 			wgpu::Buffer UniformBuffer;
 			// Stores Sampler+View so a mid-frame Texture2D::SetFilter (which rebuilds the GPU sampler) invalidates the cached bind group.
+			struct BindGroupKey {
+				uint64_t TexturePoolId = 0;
+				uint64_t MaskPoolId = 0;
+
+				bool operator==(const BindGroupKey& other) const {
+					return TexturePoolId == other.TexturePoolId
+						&& MaskPoolId == other.MaskPoolId;
+				}
+			};
+
+			struct BindGroupKeyHash {
+				size_t operator()(const BindGroupKey& key) const noexcept {
+					const uint64_t mixed = key.TexturePoolId
+						^ (key.MaskPoolId + 0x9e3779b97f4a7c15ull
+							+ (key.TexturePoolId << 6)
+							+ (key.TexturePoolId >> 2));
+					return static_cast<size_t>(mixed);
+				}
+			};
+
 			struct CachedBindGroup {
 				wgpu::BindGroup   Group;
 				wgpu::Sampler     Sampler;
 				wgpu::TextureView View;
+				wgpu::Sampler     MaskSampler;
+				wgpu::TextureView MaskView;
 			};
-			std::unordered_map<uint64_t, CachedBindGroup> BindGroupsThisFrame;
+			std::unordered_map<BindGroupKey, CachedBindGroup, BindGroupKeyHash> BindGroupsThisFrame;
 			uint64_t LastClearFrameCount = static_cast<uint64_t>(-1);
 			std::vector<WebGPUSpriteResources::SpriteInstance> EncodedScratch;
 		};
@@ -258,26 +345,34 @@ namespace Index {
 		}
 
 		wgpu::BindGroup ResolveBindGroup(wgpu::Device device, GuiRendererWebGPUState& state,
-			TextureHandle handle)
+			TextureHandle handle,
+			TextureHandle maskHandle)
 		{
 			Texture2D* tex = TextureManager::GetTexture(handle);
-			if (!tex || !tex->IsValid()) return nullptr;
+			Texture2D* maskTex = TextureManager::GetTexture(maskHandle);
+			if (!tex || !tex->IsValid() || !maskTex || !maskTex->IsValid()) return nullptr;
 			const uint64_t poolId = tex->GetHandle();
+			const uint64_t maskPoolId = maskTex->GetHandle();
 
 			const auto lookup = WebGPUBackend::LookupTexture2D(poolId);
-			if (!lookup.Valid || !lookup.View || !lookup.Sampler) return nullptr;
+			const auto maskLookup = WebGPUBackend::LookupTexture2D(maskPoolId);
+			if (!lookup.Valid || !lookup.View || !lookup.Sampler
+				|| !maskLookup.Valid || !maskLookup.View || !maskLookup.Sampler) return nullptr;
 
-			auto cacheIt = state.BindGroupsThisFrame.find(poolId);
+			const GuiRendererWebGPUState::BindGroupKey key{ poolId, maskPoolId };
+			auto cacheIt = state.BindGroupsThisFrame.find(key);
 			if (cacheIt != state.BindGroupsThisFrame.end()) {
 				const auto& cached = cacheIt->second;
 				if (cached.Sampler.Get() == lookup.Sampler.Get()
-					&& cached.View.Get() == lookup.View.Get()) {
+					&& cached.View.Get() == lookup.View.Get()
+					&& cached.MaskSampler.Get() == maskLookup.Sampler.Get()
+					&& cached.MaskView.Get() == maskLookup.View.Get()) {
 					return cached.Group;
 				}
 				state.BindGroupsThisFrame.erase(cacheIt);
 			}
 
-			wgpu::BindGroupEntry entries[3] = {};
+			wgpu::BindGroupEntry entries[5] = {};
 			entries[0].binding = 0;
 			entries[0].buffer  = state.UniformBuffer;
 			entries[0].offset  = 0;
@@ -286,17 +381,22 @@ namespace Index {
 			entries[1].textureView = lookup.View;
 			entries[2].binding = 2;
 			entries[2].sampler = lookup.Sampler;
+			entries[3].binding     = 3;
+			entries[3].textureView = maskLookup.View;
+			entries[4].binding = 4;
+			entries[4].sampler = maskLookup.Sampler;
 
 			wgpu::BindGroupDescriptor desc{};
 			desc.layout     = WebGPUSpriteResources::GetBindGroupLayout();
-			desc.entryCount = 3;
+			desc.entryCount = 5;
 			desc.entries    = entries;
 			desc.label      = "guirenderer-ui-bindgroup";
 
 			wgpu::BindGroup bg = device.CreateBindGroup(&desc);
 			if (!bg) return nullptr;
-			state.BindGroupsThisFrame.emplace(poolId,
-				GuiRendererWebGPUState::CachedBindGroup{ bg, lookup.Sampler, lookup.View });
+			state.BindGroupsThisFrame.emplace(key,
+				GuiRendererWebGPUState::CachedBindGroup{
+					bg, lookup.Sampler, lookup.View, maskLookup.Sampler, maskLookup.View });
 			return bg;
 		}
 
@@ -500,7 +600,8 @@ namespace Index {
 				image.SortingOrder,
 				image.SortingLayer,
 				static_cast<std::uint32_t>(drawIndex));
-			inst.HasClip = ResolveClipForEntity(registry, entity, inst.ClipMin, inst.ClipMax);
+			ApplyImageSliceToInstance(inst, image);
+			ApplyMaskClipToInstance(ResolveClipForEntity(registry, entity), inst);
 			m_InstancesScratch.push_back(inst);
 		}
 
@@ -513,7 +614,7 @@ namespace Index {
 			const Color& color, float startRad, float sweepRad,
 			float outerRadius, int segments,
 			std::uint32_t drawIndex, std::int16_t sortOrder, std::uint8_t sortLayer,
-			bool hasClip, const Vec2& clipMin, const Vec2& clipMax)
+			const UIMaskClip& clip)
 		{
 			if (segments < 2) segments = 2;
 			if (outerRadius <= 0.0f) return;
@@ -538,9 +639,7 @@ namespace Index {
 					sortLayer,
 					drawIndex);
 				inst.Rotation = midAngle + 1.5707963267948966f;
-				inst.HasClip = hasClip;
-				inst.ClipMin = clipMin;
-				inst.ClipMax = clipMax;
+				ApplyMaskClipToInstance(clip, inst);
 				m_InstancesScratch.push_back(inst);
 			}
 		};
@@ -567,8 +666,7 @@ namespace Index {
 				? std::clamp((cs.Value - cs.MinValue) / range, 0.0f, 1.0f)
 				: 0.0f;
 
-			Vec2 clipMin{}, clipMax{};
-			const bool hasClip = ResolveClipForEntity(registry, entity, clipMin, clipMax);
+			const UIMaskClip clip = ResolveClipForEntity(registry, entity);
 
 			{
 				Instance44 bg(
@@ -579,9 +677,7 @@ namespace Index {
 					bgTexture,
 					0, 0,
 					static_cast<std::uint32_t>(drawIndex));
-				bg.HasClip = hasClip;
-				bg.ClipMin = clipMin;
-				bg.ClipMax = clipMax;
+				ApplyMaskClipToInstance(clip, bg);
 				m_InstancesScratch.push_back(bg);
 			}
 
@@ -593,7 +689,7 @@ namespace Index {
 					startRad, sweepRad * t, outerRadius, fillSegments,
 					static_cast<std::uint32_t>(drawIndex) + 1u,
 					/*sortOrder*/ 1, /*sortLayer*/ 0,
-					hasClip, clipMin, clipMax);
+					clip);
 			}
 		}
 
@@ -665,7 +761,7 @@ namespace Index {
 			cmd.SortingOrder = text.SortingOrder;
 			cmd.SortingLayer = text.SortingLayer;
 			cmd.DrawIndex = static_cast<std::uint32_t>(drawIndex);
-			cmd.HasClip = ResolveClipForEntity(registry, entity, cmd.ClipMin, cmd.ClipMax);
+			ApplyMaskClipToText(ResolveClipForEntity(registry, entity), cmd);
 			cmd.Rotation = rect.Rotation;
 			cmd.Pivot = rect.ResolvedPivot;
 			m_TextScratch.push_back(cmd);
@@ -790,9 +886,7 @@ namespace Index {
 			const std::uint32_t fieldDI = fieldIt->second;
 			const std::uint32_t textDI = textIt->second;
 
-			Vec2 fieldClipMin{};
-			Vec2 fieldClipMax{};
-			const bool fieldHasClip = ResolveClipForEntity(registry, entity, fieldClipMin, fieldClipMax);
+			const UIMaskClip fieldClip = ResolveClipForEntity(registry, entity);
 
 			const auto& tc = registry.get<TextRendererComponent>(field.TextEntity);
 			std::string secretMaskBuffer;
@@ -855,9 +949,7 @@ namespace Index {
 						TextureHandle{},
 						0, 0,
 						fieldDI + 1u);
-					selInst.HasClip = fieldHasClip;
-					selInst.ClipMin = fieldClipMin;
-					selInst.ClipMax = fieldClipMax;
+					ApplyMaskClipToInstance(fieldClip, selInst);
 					m_InstancesScratch.push_back(selInst);
 				}
 			}
@@ -876,9 +968,7 @@ namespace Index {
 					TextureHandle{},
 					0, 0,
 					textDI + 1u);
-				caretInst.HasClip = fieldHasClip;
-				caretInst.ClipMin = fieldClipMin;
-				caretInst.ClipMax = fieldClipMax;
+				ApplyMaskClipToInstance(fieldClip, caretInst);
 				m_InstancesScratch.push_back(caretInst);
 			}
 			(void)tc;
@@ -952,6 +1042,11 @@ namespace Index {
 		auto resolveHandle = [&](TextureHandle h) {
 			return TextureManager::IsValid(h) ? h : defaultTexture;
 		};
+		auto resolveMaskHandle = [&](const Instance44& inst) {
+			return inst.HasTextureMask && TextureManager::IsValid(inst.MaskTextureHandle)
+				? inst.MaskTextureHandle
+				: defaultTexture;
+		};
 
 		auto submitImagePhase = [&](size_t start, size_t end) {
 			if (!pipeline || start >= end) return;
@@ -993,6 +1088,7 @@ namespace Index {
 			size_t i = start;
 			while (i < end) {
 				const TextureHandle runHandle = resolveHandle(m_InstancesScratch[i].TextureHandle);
+				const TextureHandle runMaskHandle = resolveMaskHandle(m_InstancesScratch[i]);
 				const bool runHasClip = m_InstancesScratch[i].HasClip;
 				const Vec2 runClipMin = m_InstancesScratch[i].ClipMin;
 				const Vec2 runClipMax = m_InstancesScratch[i].ClipMax;
@@ -1001,6 +1097,8 @@ namespace Index {
 				while (runEnd < end) {
 					const TextureHandle h = resolveHandle(m_InstancesScratch[runEnd].TextureHandle);
 					if (!(h.index == runHandle.index && h.generation == runHandle.generation)) break;
+					const TextureHandle maskH = resolveMaskHandle(m_InstancesScratch[runEnd]);
+					if (!(maskH.index == runMaskHandle.index && maskH.generation == runMaskHandle.generation)) break;
 					if (!ClipsEqual(runHasClip, runClipMin, runClipMax,
 						m_InstancesScratch[runEnd].HasClip,
 						m_InstancesScratch[runEnd].ClipMin,
@@ -1009,7 +1107,7 @@ namespace Index {
 				}
 				const uint32_t count = static_cast<uint32_t>(runEnd - i);
 
-				wgpu::BindGroup bg = ResolveBindGroup(device, state, runHandle);
+				wgpu::BindGroup bg = ResolveBindGroup(device, state, runHandle, runMaskHandle);
 				if (!bg) {
 					i = runEnd;
 					continue;

@@ -9,6 +9,8 @@
 #include "Graphics/Shader.hpp"
 #include "Graphics/Text/Font.hpp"
 #include "Graphics/Text/FontManager.hpp"
+#include "Graphics/Texture2D.hpp"
+#include "Graphics/TextureManager.hpp"
 #include "Project/IndexProject.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/Scene.hpp"
@@ -99,7 +101,7 @@ namespace Index {
 		}
 
 		wgpu::BindGroupLayout BuildBindGroupLayout(wgpu::Device device) {
-			wgpu::BindGroupLayoutEntry entries[3] = {};
+			wgpu::BindGroupLayoutEntry entries[5] = {};
 
 			entries[0].binding    = 0;
 			entries[0].visibility = wgpu::ShaderStage::Vertex;
@@ -117,8 +119,18 @@ namespace Index {
 			entries[2].visibility = wgpu::ShaderStage::Fragment;
 			entries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
 
+			entries[3].binding    = 3;
+			entries[3].visibility = wgpu::ShaderStage::Fragment;
+			entries[3].texture.sampleType    = wgpu::TextureSampleType::Float;
+			entries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+			entries[3].texture.multisampled  = false;
+
+			entries[4].binding    = 4;
+			entries[4].visibility = wgpu::ShaderStage::Fragment;
+			entries[4].sampler.type = wgpu::SamplerBindingType::Filtering;
+
 			wgpu::BindGroupLayoutDescriptor desc{};
-			desc.entryCount = 3;
+			desc.entryCount = 5;
 			desc.entries    = entries;
 			desc.label      = "text-bindgroup-layout";
 			return device.CreateBindGroupLayout(&desc);
@@ -151,7 +163,7 @@ namespace Index {
 			wgpu::TextureFormat colorFormat, bool hasDepth)
 		{
 			// Vertex layout: 1 buffer × 3 attributes (per-vertex).
-			wgpu::VertexAttribute attrs[3] = {};
+			wgpu::VertexAttribute attrs[6] = {};
 			attrs[0].format         = wgpu::VertexFormat::Float32x2;
 			attrs[0].offset         = offsetof(TextVertex, X);
 			attrs[0].shaderLocation = 0;
@@ -161,11 +173,20 @@ namespace Index {
 			attrs[2].format         = wgpu::VertexFormat::Float32x4;
 			attrs[2].offset         = offsetof(TextVertex, R);
 			attrs[2].shaderLocation = 2;
+			attrs[3].format         = wgpu::VertexFormat::Float32x4;
+			attrs[3].offset         = offsetof(TextVertex, MaskRect);
+			attrs[3].shaderLocation = 3;
+			attrs[4].format         = wgpu::VertexFormat::Float32x4;
+			attrs[4].offset         = offsetof(TextVertex, MaskRot);
+			attrs[4].shaderLocation = 4;
+			attrs[5].format         = wgpu::VertexFormat::Float32x4;
+			attrs[5].offset         = offsetof(TextVertex, MaskUv);
+			attrs[5].shaderLocation = 5;
 
 			wgpu::VertexBufferLayout vbl{};
 			vbl.arrayStride    = sizeof(TextVertex);
 			vbl.stepMode       = wgpu::VertexStepMode::Vertex;
-			vbl.attributeCount = 3;
+			vbl.attributeCount = 6;
 			vbl.attributes     = attrs;
 
 			wgpu::BlendState blend{};
@@ -299,10 +320,30 @@ namespace Index {
 
 		// ── Per-TextRenderer instance state ─────────────────────────────────
 		struct PerInstance {
+			struct BindGroupKey {
+				unsigned AtlasId = 0;
+				uint64_t MaskPoolId = 0;
+
+				bool operator==(const BindGroupKey& other) const {
+					return AtlasId == other.AtlasId
+						&& MaskPoolId == other.MaskPoolId;
+				}
+			};
+
+			struct BindGroupKeyHash {
+				size_t operator()(const BindGroupKey& key) const noexcept {
+					const uint64_t mixed = static_cast<uint64_t>(key.AtlasId)
+						^ (key.MaskPoolId + 0x9e3779b97f4a7c15ull
+							+ (static_cast<uint64_t>(key.AtlasId) << 6)
+							+ (static_cast<uint64_t>(key.AtlasId) >> 2));
+					return static_cast<size_t>(mixed);
+				}
+			};
+
 			wgpu::Buffer VertexBuffer;
 			uint32_t     VertexBufferCapacityBytes = 0;
 			wgpu::Buffer UniformBuffer;
-			std::unordered_map<unsigned, wgpu::BindGroup> BindGroupsThisCall;
+			std::unordered_map<BindGroupKey, wgpu::BindGroup, BindGroupKeyHash> BindGroupsThisCall;
 		};
 		std::unordered_map<const TextRenderer*, PerInstance> g_PerInstance;
 
@@ -339,16 +380,24 @@ namespace Index {
 		}
 
 		wgpu::BindGroup ResolveAtlasBindGroup(wgpu::Device device, PerInstance& inst,
-			unsigned atlasId)
+			unsigned atlasId,
+			TextureHandle maskHandle)
 		{
-			auto it = inst.BindGroupsThisCall.find(atlasId);
+			Texture2D* maskTex = TextureManager::GetTexture(maskHandle);
+			if (!maskTex || !maskTex->IsValid()) return nullptr;
+			const uint64_t maskPoolId = maskTex->GetHandle();
+			const PerInstance::BindGroupKey key{ atlasId, maskPoolId };
+
+			auto it = inst.BindGroupsThisCall.find(key);
 			if (it != inst.BindGroupsThisCall.end()) return it->second;
 
 			wgpu::TextureView view = WebGPUBackend::LookupFontAtlas(atlasId);
 			if (!view) return nullptr;
+			const auto maskLookup = WebGPUBackend::LookupTexture2D(maskPoolId);
+			if (!maskLookup.Valid || !maskLookup.View || !maskLookup.Sampler) return nullptr;
 
 			GlobalTextState& g = Globals();
-			wgpu::BindGroupEntry entries[3] = {};
+			wgpu::BindGroupEntry entries[5] = {};
 			entries[0].binding = 0;
 			entries[0].buffer  = inst.UniformBuffer;
 			entries[0].offset  = 0;
@@ -357,15 +406,19 @@ namespace Index {
 			entries[1].textureView = view;
 			entries[2].binding = 2;
 			entries[2].sampler = g.AtlasSampler;
+			entries[3].binding     = 3;
+			entries[3].textureView = maskLookup.View;
+			entries[4].binding = 4;
+			entries[4].sampler = maskLookup.Sampler;
 
 			wgpu::BindGroupDescriptor desc{};
 			desc.layout     = g.BindGroupLayout;
-			desc.entryCount = 3;
+			desc.entryCount = 5;
 			desc.entries    = entries;
 			desc.label      = "text-atlas-bindgroup";
 			wgpu::BindGroup bg = device.CreateBindGroup(&desc);
 			if (!bg) return nullptr;
-			inst.BindGroupsThisCall.emplace(atlasId, bg);
+			inst.BindGroupsThisCall.emplace(key, bg);
 			return bg;
 		}
 
@@ -550,11 +603,35 @@ namespace Index {
 		float scale, const Color& color,
 		TextAlignment alignment, float letterSpacing,
 		TextWrapMode wrapMode, float wrapWidthPixels,
-		float rotation, Vec2 pivot)
+		float rotation, Vec2 pivot,
+		bool hasTextureMask,
+		TextureHandle /*maskTextureHandle*/,
+		SpriteUVRect maskUvRect,
+		Vec2 maskRectMin,
+		Vec2 maskRectMax,
+		Vec2 maskPivot,
+		float maskRotation)
 	{
 		const bool applyRotation = rotation != 0.0f;
 		const float rotC = applyRotation ? std::cos(rotation) : 1.0f;
 		const float rotS = applyRotation ? std::sin(rotation) : 0.0f;
+		float maskRect[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
+		float maskRot[4]{ 0.0f, 0.0f, 1.0f, 0.0f };
+		float maskUv[4]{ maskUvRect.U0, maskUvRect.V0, maskUvRect.U1, maskUvRect.V1 };
+		if (hasTextureMask) {
+			const float maskW = maskRectMax.x - maskRectMin.x;
+			const float maskH = maskRectMax.y - maskRectMin.y;
+			if (maskW > 0.0f && maskH > 0.0f) {
+				maskRect[0] = maskRectMin.x;
+				maskRect[1] = maskRectMin.y;
+				maskRect[2] = 1.0f / maskW;
+				maskRect[3] = 1.0f / maskH;
+				maskRot[0] = maskPivot.x;
+				maskRot[1] = maskPivot.y;
+				maskRot[2] = std::cos(-maskRotation);
+				maskRot[3] = std::sin(-maskRotation);
+			}
+		}
 		auto rot = [&](float x, float y) -> std::pair<float, float> {
 			if (!applyRotation) return { x, y };
 			const float dx = x - pivot.x;
@@ -685,10 +762,18 @@ namespace Index {
 					auto [brX, brY] = rot(x1, y1);
 					auto [blX, blY] = rot(x0, y1);
 
-					TextVertex vTL{ tlX, tlY, g->U0, g->V0, color.r, color.g, color.b, color.a };
-					TextVertex vTR{ trX, trY, g->U1, g->V0, color.r, color.g, color.b, color.a };
-					TextVertex vBR{ brX, brY, g->U1, g->V1, color.r, color.g, color.b, color.a };
-					TextVertex vBL{ blX, blY, g->U0, g->V1, color.r, color.g, color.b, color.a };
+					auto makeVertex = [&](float x, float y, float u, float v) {
+						TextVertex vertex{ x, y, u, v, color.r, color.g, color.b, color.a };
+						std::memcpy(vertex.MaskRect, maskRect, sizeof(maskRect));
+						std::memcpy(vertex.MaskRot, maskRot, sizeof(maskRot));
+						std::memcpy(vertex.MaskUv, maskUv, sizeof(maskUv));
+						return vertex;
+					};
+
+					TextVertex vTL = makeVertex(tlX, tlY, g->U0, g->V0);
+					TextVertex vTR = makeVertex(trX, trY, g->U1, g->V0);
+					TextVertex vBR = makeVertex(brX, brY, g->U1, g->V1);
+					TextVertex vBL = makeVertex(blX, blY, g->U0, g->V1);
 
 					m_Vertices.push_back(vBL);
 					m_Vertices.push_back(vBR);
@@ -752,6 +837,7 @@ namespace Index {
 
 		struct Run {
 			unsigned AtlasId = 0;
+			TextureHandle MaskTextureHandle{};
 			int      SortingLayer = 0;
 			int16_t  SortingOrder = 0;
 			bool     HasClip = false;
@@ -762,11 +848,18 @@ namespace Index {
 		};
 		std::vector<Run> runs;
 		runs.reserve(16);
+		const TextureHandle defaultMaskTexture = TextureManager::GetDefaultTexture(DefaultTexture::Square);
+		auto resolveMaskHandle = [&](const TextDrawCmd& cmd) {
+			return cmd.HasTextureMask && TextureManager::IsValid(cmd.MaskTextureHandle)
+				? cmd.MaskTextureHandle
+				: defaultMaskTexture;
+		};
 
 		for (size_t i = 0; i < m_Order.size(); ) {
 			const TextDrawCmd& head = commands[m_Order[i]];
 			Run r;
 			r.AtlasId      = head.FontPtr->GetAtlasTexture();
+			r.MaskTextureHandle = resolveMaskHandle(head);
 			r.SortingLayer = head.SortingLayer;
 			r.SortingOrder = head.SortingOrder;
 			r.HasClip      = head.HasClip;
@@ -778,6 +871,7 @@ namespace Index {
 			while (j < m_Order.size()) {
 				const TextDrawCmd& cmd = commands[m_Order[j]];
 				if (cmd.FontPtr->GetAtlasTexture() != r.AtlasId
+					|| resolveMaskHandle(cmd) != r.MaskTextureHandle
 					|| cmd.SortingLayer != r.SortingLayer
 					|| cmd.SortingOrder != r.SortingOrder)
 					break;
@@ -788,7 +882,10 @@ namespace Index {
 				EmitText(*cmd.FontPtr, cmd.Text, cmd.X, cmd.Y, cmd.Scale,
 					cmd.Tint, cmd.Align, cmd.LetterSpacing,
 					cmd.Wrap, cmd.WrapWidthPixels,
-					cmd.Rotation, cmd.Pivot);
+					cmd.Rotation, cmd.Pivot,
+					cmd.HasTextureMask, cmd.MaskTextureHandle, cmd.MaskUvRect,
+					cmd.MaskRectMin, cmd.MaskRectMax, cmd.MaskPivot,
+					cmd.MaskRotation);
 				++j;
 			}
 			r.VertexCount = m_Vertices.size() - r.VertexStart;
@@ -834,7 +931,8 @@ namespace Index {
 
 		bool scissorIsFull = true;
 		for (const Run& r : runs) {
-			wgpu::BindGroup bg = ResolveAtlasBindGroup(device, inst, r.AtlasId);
+			wgpu::BindGroup bg = ResolveAtlasBindGroup(device, inst,
+				r.AtlasId, r.MaskTextureHandle);
 			if (!bg) continue;  // atlas missing (Font destroyed mid-frame)
 
 			if (r.HasClip) {

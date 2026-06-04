@@ -2,7 +2,8 @@
 
 namespace Index {
 
-	// Clips descendants to this entity's rect. Axis-aligned scissor only — rotated masks use the AABB, so some content outside the rotated shape may still render.
+	// Clips descendants to this entity's rect and, when an Image is present,
+	// to the Image texture's alpha so transparent/clear pixels do not pass.
 	struct MaskComponent {
 		bool ShowMaskGraphic = true;
 	};

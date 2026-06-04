@@ -41,32 +41,32 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<byte*, void> RaiseSceneLoaded;
     public delegate* unmanaged<byte*, void> RaiseBeforeSceneUnloaded;
     public delegate* unmanaged<byte*, void> RaiseSceneUnloaded;
-    public delegate* unmanaged<byte*, byte*, int> CreateSceneScriptInstance;
-    public delegate* unmanaged<int, void> DestroySceneScriptInstance;
-    public delegate* unmanaged<int, void> InvokeSceneScriptStart;
-    public delegate* unmanaged<int, void> InvokeSceneScriptUpdate;
-    public delegate* unmanaged<int, void> InvokeSceneScriptEnable;
-    public delegate* unmanaged<int, void> InvokeSceneScriptDisable;
-    public delegate* unmanaged<int, void> InvokeSceneScriptDestroy;
-    public delegate* unmanaged<byte*, int> SceneScriptClassExists;
-    public delegate* unmanaged<byte*, int> CreateGlobalScriptInstance;
-    public delegate* unmanaged<int, void> DestroyGlobalScriptInstance;
-    public delegate* unmanaged<int, void> InvokeGlobalScriptInitialize;
-    public delegate* unmanaged<int, void> InvokeGlobalScriptUpdate;
-    public delegate* unmanaged<int, void> InvokeGlobalScriptEnable;
-    public delegate* unmanaged<int, void> InvokeGlobalScriptDisable;
-    public delegate* unmanaged<byte*, int> GlobalScriptClassExists;
+    public delegate* unmanaged<byte*, byte*, int> CreateSceneSystemInstance;
+    public delegate* unmanaged<int, void> DestroySceneSystemInstance;
+    public delegate* unmanaged<int, void> InvokeSceneSystemStart;
+    public delegate* unmanaged<int, void> InvokeSceneSystemUpdate;
+    public delegate* unmanaged<int, void> InvokeSceneSystemEnable;
+    public delegate* unmanaged<int, void> InvokeSceneSystemDisable;
+    public delegate* unmanaged<int, void> InvokeSceneSystemDestroy;
+    public delegate* unmanaged<byte*, int> SceneSystemClassExists;
+    public delegate* unmanaged<byte*, int> CreateGlobalSystemInstance;
+    public delegate* unmanaged<int, void> DestroyGlobalSystemInstance;
+    public delegate* unmanaged<int, void> InvokeGlobalSystemInitialize;
+    public delegate* unmanaged<int, void> InvokeGlobalSystemUpdate;
+    public delegate* unmanaged<int, void> InvokeGlobalSystemEnable;
+    public delegate* unmanaged<int, void> InvokeGlobalSystemDisable;
+    public delegate* unmanaged<byte*, int> GlobalSystemClassExists;
 
     // ── New lifecycle slots (appended for binary compat) ──
     public delegate* unmanaged<int, void> InvokeAwake;
     public delegate* unmanaged<int, void> InvokeFixedUpdate;
-    public delegate* unmanaged<int, void> InvokeSceneScriptAwake;
-    public delegate* unmanaged<int, void> InvokeSceneScriptFixedUpdate;
-    public delegate* unmanaged<int, void> InvokeGlobalScriptFixedUpdate;
+    public delegate* unmanaged<int, void> InvokeSceneSystemAwake;
+    public delegate* unmanaged<int, void> InvokeSceneSystemFixedUpdate;
+    public delegate* unmanaged<int, void> InvokeGlobalSystemFixedUpdate;
 
-    // ── SceneScript field reflection (appended for binary compat) ──
-    public delegate* unmanaged<int, byte*> GetSceneScriptFields;
-    public delegate* unmanaged<int, byte*, byte*, void> SetSceneScriptField;
+    // ── SceneSystem field reflection (appended for binary compat) ──
+    public delegate* unmanaged<int, byte*> GetSceneSystemFields;
+    public delegate* unmanaged<int, byte*, byte*, void> SetSceneSystemField;
 
     public delegate* unmanaged<void> RaiseUiEventDispatch;
 
@@ -134,32 +134,32 @@ internal static class ScriptHostBridge
             managedCallbacks->RaiseSceneLoaded = &ScriptInstanceManager.RaiseSceneLoaded;
             managedCallbacks->RaiseBeforeSceneUnloaded = &ScriptInstanceManager.RaiseBeforeSceneUnloaded;
             managedCallbacks->RaiseSceneUnloaded = &ScriptInstanceManager.RaiseSceneUnloaded;
-            managedCallbacks->CreateSceneScriptInstance = &ScriptInstanceManager.CreateSceneScriptInstance;
-            managedCallbacks->DestroySceneScriptInstance = &ScriptInstanceManager.DestroySceneScriptInstance;
-            managedCallbacks->InvokeSceneScriptStart = &ScriptInstanceManager.InvokeSceneScriptStart;
-            managedCallbacks->InvokeSceneScriptUpdate = &ScriptInstanceManager.InvokeSceneScriptUpdate;
-            managedCallbacks->InvokeSceneScriptEnable = &ScriptInstanceManager.InvokeSceneScriptEnable;
-            managedCallbacks->InvokeSceneScriptDisable = &ScriptInstanceManager.InvokeSceneScriptDisable;
-            managedCallbacks->InvokeSceneScriptDestroy = &ScriptInstanceManager.InvokeSceneScriptDestroy;
-            managedCallbacks->SceneScriptClassExists = &ScriptInstanceManager.SceneScriptClassExists;
-            managedCallbacks->CreateGlobalScriptInstance = &ScriptInstanceManager.CreateGlobalScriptInstance;
-            managedCallbacks->DestroyGlobalScriptInstance = &ScriptInstanceManager.DestroyGlobalScriptInstance;
-            managedCallbacks->InvokeGlobalScriptInitialize = &ScriptInstanceManager.InvokeGlobalScriptInitialize;
-            managedCallbacks->InvokeGlobalScriptUpdate = &ScriptInstanceManager.InvokeGlobalScriptUpdate;
-            managedCallbacks->InvokeGlobalScriptEnable = &ScriptInstanceManager.InvokeGlobalScriptEnable;
-            managedCallbacks->InvokeGlobalScriptDisable = &ScriptInstanceManager.InvokeGlobalScriptDisable;
-            managedCallbacks->GlobalScriptClassExists = &ScriptInstanceManager.GlobalScriptClassExists;
+            managedCallbacks->CreateSceneSystemInstance = &ScriptInstanceManager.CreateSceneSystemInstance;
+            managedCallbacks->DestroySceneSystemInstance = &ScriptInstanceManager.DestroySceneSystemInstance;
+            managedCallbacks->InvokeSceneSystemStart = &ScriptInstanceManager.InvokeSceneSystemStart;
+            managedCallbacks->InvokeSceneSystemUpdate = &ScriptInstanceManager.InvokeSceneSystemUpdate;
+            managedCallbacks->InvokeSceneSystemEnable = &ScriptInstanceManager.InvokeSceneSystemEnable;
+            managedCallbacks->InvokeSceneSystemDisable = &ScriptInstanceManager.InvokeSceneSystemDisable;
+            managedCallbacks->InvokeSceneSystemDestroy = &ScriptInstanceManager.InvokeSceneSystemDestroy;
+            managedCallbacks->SceneSystemClassExists = &ScriptInstanceManager.SceneSystemClassExists;
+            managedCallbacks->CreateGlobalSystemInstance = &ScriptInstanceManager.CreateGlobalSystemInstance;
+            managedCallbacks->DestroyGlobalSystemInstance = &ScriptInstanceManager.DestroyGlobalSystemInstance;
+            managedCallbacks->InvokeGlobalSystemInitialize = &ScriptInstanceManager.InvokeGlobalSystemInitialize;
+            managedCallbacks->InvokeGlobalSystemUpdate = &ScriptInstanceManager.InvokeGlobalSystemUpdate;
+            managedCallbacks->InvokeGlobalSystemEnable = &ScriptInstanceManager.InvokeGlobalSystemEnable;
+            managedCallbacks->InvokeGlobalSystemDisable = &ScriptInstanceManager.InvokeGlobalSystemDisable;
+            managedCallbacks->GlobalSystemClassExists = &ScriptInstanceManager.GlobalSystemClassExists;
 
             // ── New lifecycle slots (appended for binary compat) ──
             managedCallbacks->InvokeAwake = &ScriptInstanceManager.InvokeAwake;
             managedCallbacks->InvokeFixedUpdate = &ScriptInstanceManager.InvokeFixedUpdate;
-            managedCallbacks->InvokeSceneScriptAwake = &ScriptInstanceManager.InvokeSceneScriptAwake;
-            managedCallbacks->InvokeSceneScriptFixedUpdate = &ScriptInstanceManager.InvokeSceneScriptFixedUpdate;
-            managedCallbacks->InvokeGlobalScriptFixedUpdate = &ScriptInstanceManager.InvokeGlobalScriptFixedUpdate;
+            managedCallbacks->InvokeSceneSystemAwake = &ScriptInstanceManager.InvokeSceneSystemAwake;
+            managedCallbacks->InvokeSceneSystemFixedUpdate = &ScriptInstanceManager.InvokeSceneSystemFixedUpdate;
+            managedCallbacks->InvokeGlobalSystemFixedUpdate = &ScriptInstanceManager.InvokeGlobalSystemFixedUpdate;
 
-            // ── SceneScript field reflection (appended for binary compat) ──
-            managedCallbacks->GetSceneScriptFields = &ScriptInstanceManager.GetSceneScriptFields;
-            managedCallbacks->SetSceneScriptField = &ScriptInstanceManager.SetSceneScriptField;
+            // ── SceneSystem field reflection (appended for binary compat) ──
+            managedCallbacks->GetSceneSystemFields = &ScriptInstanceManager.GetSceneSystemFields;
+            managedCallbacks->SetSceneSystemField = &ScriptInstanceManager.SetSceneSystemField;
 
             // ── UI event dispatch (appended for binary compat) ──
             managedCallbacks->RaiseUiEventDispatch = &ScriptInstanceManager.RaiseUiEventDispatch;

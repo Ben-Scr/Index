@@ -802,8 +802,8 @@ namespace Index {
 		if (const Value* systemsValue = GetArrayMember(root, "systems")) {
 			for (const Value& systemValue : systemsValue->GetArray()) {
 				// Two accepted shapes for forward / backward compatibility:
-				//   1. "MySceneScript"                                        (legacy / no overrides)
-				//   2. {"className": "MySceneScript", "enabled": false,
+				//   1. "MySceneSystem"                                        (legacy / no overrides)
+				//   2. {"className": "MySceneSystem", "enabled": false,
 				//      "fields": { ... }}                                    (with authored state)
 				std::string className;
 				bool enabled = true;
@@ -823,12 +823,12 @@ namespace Index {
 				}
 
 				if (className.empty()) continue;
-				scene.AddSceneScript(className);
-				scene.SetSceneScriptEnabled(className, enabled);
+				scene.AddSceneSystem(className);
+				scene.SetSceneSystemEnabled(className, enabled);
 
 				if (fieldsValue && fieldsValue->IsObject()) {
 					for (const auto& [fieldName, fieldValueNode] : fieldsValue->GetObject()) {
-						scene.SetSceneScriptFieldValue(className, fieldName, fieldValueNode.AsStringOr());
+						scene.SetSceneSystemFieldValue(className, fieldName, fieldValueNode.AsStringOr());
 					}
 				}
 			}
@@ -1035,8 +1035,10 @@ namespace Index {
 				wrapU,
 				wrapV,
 				&spriteRenderer.TextureAssetId);
-			if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
-				tex->SetFilter(spriteRenderer.FilterMode);
+			if (spriteRenderer.FilterMode != Filter::Default) {
+				if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
+					tex->SetFilter(spriteRenderer.FilterMode);
+				}
 			}
 			// SpriteName key is optional. Empty/missing = full texture (the
 			// default behaviour every pre-Phase-D scene relied on).
@@ -1342,8 +1344,10 @@ namespace Index {
 				Wrap::Clamp,
 				Wrap::Clamp,
 				&image.TextureAssetId);
-			if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
-				tex->SetFilter(image.FilterMode);
+			if (image.FilterMode != Filter::Default) {
+				if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
+					tex->SetFilter(image.FilterMode);
+				}
 			}
 			image.SpriteName = GetStringMember(*imageValue, "spriteName", std::string{});
 		}
@@ -1662,8 +1666,10 @@ namespace Index {
 				wrapU,
 				wrapV,
 				&spriteRenderer.TextureAssetId);
-			if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
-				tex->SetFilter(spriteRenderer.FilterMode);
+			if (spriteRenderer.FilterMode != Filter::Default) {
+				if (auto* tex = TextureManager::GetTexture(spriteRenderer.TextureHandle); tex) {
+					tex->SetFilter(spriteRenderer.FilterMode);
+				}
 			}
 			spriteRenderer.SpriteName = GetStringMember(componentValue, "spriteName", std::string{});
 			return true;
@@ -2001,8 +2007,10 @@ namespace Index {
 				Wrap::Clamp,
 				Wrap::Clamp,
 				&image.TextureAssetId);
-			if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
-				tex->SetFilter(image.FilterMode);
+			if (image.FilterMode != Filter::Default) {
+				if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
+					tex->SetFilter(image.FilterMode);
+				}
 			}
 			image.SpriteName = GetStringMember(componentValue, "spriteName", std::string{});
 			return true;

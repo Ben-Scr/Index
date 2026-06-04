@@ -170,6 +170,11 @@ namespace Index {
 			s_FreeIndices.pop();
 		}
 		else {
+			// TextureHandle::index is uint16_t — refuse rather than truncate and corrupt a live slot.
+			if (s_Textures.size() >= 0xFFFFu) {
+				IDX_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot load '{}'", pathStr);
+				return TextureHandle{};
+			}
 			idx = static_cast<uint16_t>(s_Textures.size());
 			s_Textures.emplace_back();
 		}
@@ -410,6 +415,11 @@ namespace Index {
 			s_FreeIndices.pop();
 		}
 		else {
+			// TextureHandle::index is uint16_t — refuse rather than truncate and corrupt a live slot.
+			if (s_Textures.size() >= 0xFFFFu) {
+				IDX_CORE_ERROR_TAG("TextureManager", "Texture slot capacity exceeded (>= 65535); cannot create runtime texture");
+				return 0;
+			}
 			idx = static_cast<uint16_t>(s_Textures.size());
 			s_Textures.emplace_back();
 		}

@@ -285,21 +285,21 @@ namespace Index {
 		// do (the one-shot start passes only see entities that exist when play begins).
 		void PlayOnAwakeSubtree(EntityHandle root);
 
-		const std::vector<std::string>& GetSceneScriptClassNames() const { return m_SceneScriptClassNames; }
-		bool HasSceneScript(const std::string& className) const;
-		bool AddSceneScript(const std::string& className);
-		bool RemoveSceneScript(size_t index);
-		bool MoveSceneScript(size_t fromIndex, size_t toIndex);
-		void ClearSceneScripts();
-		bool IsSceneScriptEnabled(const std::string& className) const;
-		bool SetSceneScriptEnabled(const std::string& className, bool enabled);
-		void StartManagedSceneScriptsForPlayMode();
+		const std::vector<std::string>& GetSceneSystemClassNames() const { return m_SceneSystemClassNames; }
+		bool HasSceneSystem(const std::string& className) const;
+		bool AddSceneSystem(const std::string& className);
+		bool RemoveSceneSystem(size_t index);
+		bool MoveSceneSystem(size_t fromIndex, size_t toIndex);
+		void ClearSceneSystems();
+		bool IsSceneSystemEnabled(const std::string& className) const;
+		bool SetSceneSystemEnabled(const std::string& className, bool enabled);
+		void StartManagedSceneSystemsForPlayMode();
 
-		uint32_t GetSceneScriptHandle(const std::string& className) const;
-		void SetSceneScriptFieldValue(const std::string& className, const std::string& fieldName, const std::string& value);
-		const std::unordered_map<std::string, std::string>* GetSceneScriptFieldValues(const std::string& className) const;
-		const std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& GetAllSceneScriptFieldOverrides() const { return m_SceneScriptFieldOverrides; }
-		void ClearSceneScriptFieldOverrides(const std::string& className);
+		uint32_t GetSceneSystemHandle(const std::string& className) const;
+		void SetSceneSystemFieldValue(const std::string& className, const std::string& fieldName, const std::string& value);
+		const std::unordered_map<std::string, std::string>* GetSceneSystemFieldValues(const std::string& className) const;
+		const std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& GetAllSceneSystemFieldOverrides() const { return m_SceneSystemFieldOverrides; }
+		void ClearSceneSystemFieldOverrides(const std::string& className);
 
 		void SetEntityMetaData(
 			EntityHandle entity,
@@ -386,8 +386,8 @@ namespace Index {
 
 		entt::registry m_Registry;
 		std::vector<std::unique_ptr<ISystem>> m_Systems;
-		std::vector<std::string> m_SceneScriptClassNames;
-		std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_SceneScriptFieldOverrides;
+		std::vector<std::string> m_SceneSystemClassNames;
+		std::unordered_map<std::string, std::unordered_map<std::string, std::string>> m_SceneSystemFieldOverrides;
 		std::vector<ISystem*> m_AwakenedSystems; // in awakening order; DestroyScene walks in reverse for rollback
 
 

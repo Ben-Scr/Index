@@ -82,6 +82,12 @@ namespace Index {
 
 		static bool GetAutoSavePrefabs();
 		static void SetAutoSavePrefabs(bool value);
+
+		// ── Editing ───────────────────────────────────────────────
+		// When true (default), deleting an asset (Project panel) or an entity
+		// (Entities hierarchy) raises a confirmation dialog first.
+		static bool GetConfirmOnDelete();
+		static void SetConfirmOnDelete(bool value);
 	};
 
 }

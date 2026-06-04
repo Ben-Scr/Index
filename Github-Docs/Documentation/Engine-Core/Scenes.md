@@ -44,7 +44,7 @@ A **system** is a piece of C++ code that lives in a scene and runs over its enti
 
 Systems are **owned by the scene** — each scene has its own set, created when it loads and destroyed when it unloads. They can be enabled or disabled at runtime.
 
-> Systems are the C++ way to run scene logic. The C# equivalent is a **SceneScript** — see [Scripting](../Scripting/Scripting.md). They share the same `Awake`/`Start`/`Update` rhythm.
+> Systems are the C++ way to run scene logic. The C# equivalent is a **SceneSystem** — see [Scripting](../Scripting/Scripting.md). They share the same `Awake`/`Start`/`Update` rhythm.
 
 ---
 
@@ -143,7 +143,7 @@ At startup the engine loads the **startup scene**. A scene definition is marked 
 ## Summary
 
 - A scene is a **definition** (blueprint) that becomes a live **instance** when loaded.
-- **Systems** (C++) and **SceneScripts** (C#) run a scene's logic with `Awake` → `Start` → `Update`.
+- **Systems** (C++) and **SceneSystems** (C#) run a scene's logic with `Awake` → `Start` → `Update`.
 - The Scene Manager keeps **one active scene** but can hold several loaded at once; scenes can be **persistent**.
 - Scenes save to **`.scene` files** that round-trip entities, components, and hierarchy; **prefabs** are reusable saved entities.
 - In the editor, scripts run only in **Play mode**, and stopping restores the scene from disk.
@@ -152,5 +152,5 @@ At startup the engine loads the **startup scene**. A scene definition is marked 
 
 - [ECS](ECS.md) — the entities and components a scene contains.
 - [Startup Processes](Startup-Processes.md) — when and how the startup scene loads.
-- [Scripting](../Scripting/Scripting.md) — SceneScripts and switching scenes from code.
+- [Scripting](../Scripting/Scripting.md) — SceneSystems and switching scenes from code.
 - [Editor](../Editor/Editor.md) — building scenes visually, prefabs, and Play mode.

@@ -321,13 +321,13 @@ namespace Index {
 			const bool isCSharp = m_PendingScriptType == PendingScriptType::CSharp
 				|| m_PendingScriptType == PendingScriptType::CSharpComponent
 				|| m_PendingScriptType == PendingScriptType::CSharpNativeComponent
-				|| m_PendingScriptType == PendingScriptType::CSharpSceneScript
-				|| m_PendingScriptType == PendingScriptType::CSharpGlobalScript;
+				|| m_PendingScriptType == PendingScriptType::CSharpSceneSystem
+				|| m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
 
 			const bool isComponent = m_PendingScriptType == PendingScriptType::CSharpComponent;
 			const bool isNativeComponent = m_PendingScriptType == PendingScriptType::CSharpNativeComponent;
-			const bool isSceneScript = m_PendingScriptType == PendingScriptType::CSharpSceneScript;
-			const bool isGlobalScript = m_PendingScriptType == PendingScriptType::CSharpGlobalScript;
+			const bool isSceneSystem = m_PendingScriptType == PendingScriptType::CSharpSceneSystem;
+			const bool isGlobalSystem = m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
 			std::string ext = isCSharp ? ".cs" : (isComponent ? ".hpp" : ".cpp");
 
 			if (!className.empty() && className.find('.') == std::string::npos) {
@@ -341,8 +341,8 @@ namespace Index {
 
 			const std::string classNameFallback = isComponent       ? "NewComponent"
 			                                    : isNativeComponent ? "NewNativeComponent"
-			                                    : isSceneScript      ? "NewSceneScript"
-			                                    : isGlobalScript    ? "NewGlobalScript"
+			                                    : isSceneSystem      ? "NewSceneSystem"
+			                                    : isGlobalSystem    ? "NewGlobalSystem"
 			                                                        : "NewScript";
 			className = EditorScriptDiscovery::SanitizeIdentifier(className, classNameFallback);
 
@@ -379,11 +379,11 @@ namespace Index {
 						"    public " + className + "() { }\n"
 						"}\n";
 				}
-				else if (isSceneScript) {
+				else if (isSceneSystem) {
 					boilerplate =
 						"using Index;\n"
 						"\n"
-						"public class " + className + " : SceneScript\n"
+						"public class " + className + " : SceneSystem\n"
 						"{\n"
 						"    public override void OnStart()\n"
 						"    {\n"
@@ -398,11 +398,11 @@ namespace Index {
 						"    }\n"
 						"}\n";
 				}
-				else if (isGlobalScript) {
+				else if (isGlobalSystem) {
 					boilerplate =
 						"using Index;\n"
 						"\n"
-						"public class " + className + " : GlobalScript\n"
+						"public class " + className + " : GlobalSystem\n"
 						"{\n"
 						"    public static " + className + " Instance { get; private set; } = null!;\n"
 						"\n"
@@ -798,6 +798,73 @@ namespace Index {
 		}
 	}
 
+	void AssetBrowser::RequestDeleteSelectedAssets() {
+		const std::vector<std::string> paths = GetSelectedPaths();
+		if (paths.empty()) {
+			return;
+		}
+
+		// Confirmation disabled in preferences: delete straight away.
+		if (!EditorPreferences::GetConfirmOnDelete()) {
+			DeleteSelectedAssets();
+			return;
+		}
+
+		m_PendingDeletePaths = paths;
+		m_OpenDeletePromptThisFrame = true;
+	}
+
+	void AssetBrowser::RenderDeleteConfirmationPrompt() {
+		constexpr const char* k_DeleteId = "Delete Asset###AssetBrowserDelete";
+
+		if (m_OpenDeletePromptThisFrame) {
+			ImGui::OpenPopup(k_DeleteId);
+			m_OpenDeletePromptThisFrame = false;
+		}
+
+		if (m_PendingDeletePaths.empty()) return;
+
+		// Same native-dialog centering as RenderCreationCollisionPrompt so the
+		// prompt isn't trapped inside the editor window.
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+
+		if (ImGui::BeginPopupModal(k_DeleteId, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			if (m_PendingDeletePaths.size() == 1) {
+				const std::string name = std::filesystem::path(m_PendingDeletePaths.front()).filename().string();
+				ImGui::TextWrapped("Delete \"%s\"?", name.c_str());
+			}
+			else {
+				ImGui::TextWrapped("Delete %zu selected items?", m_PendingDeletePaths.size());
+			}
+			ImGui::Spacing();
+			ImGui::TextDisabled("This cannot be undone.");
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			bool decided = false;
+			if (ImGui::Button("Delete", ImVec2(120, 0))) {
+				for (const std::string& path : m_PendingDeletePaths) {
+					DeleteEntry(path);
+				}
+				decided = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+				decided = true;
+			}
+
+			if (decided) {
+				m_PendingDeletePaths.clear();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+
 	void AssetBrowser::CreateFolder(const std::string& parentDir) {
 		std::string baseName = "New Folder";
 		std::string folderPath = (std::filesystem::path(parentDir) / baseName).string();
@@ -856,11 +923,11 @@ namespace Index {
 			});
 	}
 
-	void AssetBrowser::CreateSceneScript(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewSceneScript.cs";
+	void AssetBrowser::CreateSceneSystem(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewSceneSystem.cs";
 		CreateAssetWithCollisionCheck(preferred,
 			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpSceneScript;
+				m_PendingScriptType = PendingScriptType::CSharpSceneSystem;
 				m_PendingScriptDir = parentDir;
 				m_NeedsRefresh = true;
 				Refresh();
@@ -869,11 +936,11 @@ namespace Index {
 			});
 	}
 
-	void AssetBrowser::CreateGlobalScript(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGlobalScript.cs";
+	void AssetBrowser::CreateGlobalSystem(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGlobalSystem.cs";
 		CreateAssetWithCollisionCheck(preferred,
 			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpGlobalScript;
+				m_PendingScriptType = PendingScriptType::CSharpGlobalSystem;
 				m_PendingScriptDir = parentDir;
 				m_NeedsRefresh = true;
 				Refresh();

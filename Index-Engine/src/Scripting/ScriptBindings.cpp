@@ -789,20 +789,20 @@ namespace Index {
 		return result.lock() ? 1 : 0;
 	}
 
-	static int Index_Scene_SetSceneScriptEnabled(const char* sceneName, const char* className, int enabled) {
+	static int Index_Scene_SetSceneSystemEnabled(const char* sceneName, const char* className, int enabled) {
 		if (!sceneName || !className || sceneName[0] == '\0' || className[0] == '\0') return 0;
 		auto scene = SceneManager::Get().GetLoadedScene(sceneName).lock();
-		return scene && scene->SetSceneScriptEnabled(className, enabled != 0) ? 1 : 0;
+		return scene && scene->SetSceneSystemEnabled(className, enabled != 0) ? 1 : 0;
 	}
 
-	static int Index_Scene_IsSceneScriptEnabled(const char* sceneName, const char* className) {
+	static int Index_Scene_IsSceneSystemEnabled(const char* sceneName, const char* className) {
 		if (!sceneName || !className || sceneName[0] == '\0' || className[0] == '\0') return 0;
 		auto scene = SceneManager::Get().GetLoadedScene(sceneName).lock();
-		return scene && scene->IsSceneScriptEnabled(className) ? 1 : 0;
+		return scene && scene->IsSceneSystemEnabled(className) ? 1 : 0;
 	}
 
-	static void Index_Scene_SetGlobalScriptEnabled(const char* className, int enabled) {
-		ScriptEngine::SetGlobalScriptEnabled(className ? className : "", enabled != 0);
+	static void Index_Scene_SetGlobalSystemEnabled(const char* className, int enabled) {
+		ScriptEngine::SetGlobalSystemEnabled(className ? className : "", enabled != 0);
 	}
 
 	static int Index_Scene_DoesSceneExist(const char* sceneName) {
@@ -3681,9 +3681,9 @@ namespace Index {
 		b.Scene_Unload = &Index_Scene_Unload;
 		b.Scene_SetActive = &Index_Scene_SetActive;
 		b.Scene_Reload = &Index_Scene_Reload;
-		b.Scene_SetSceneScriptEnabled = &Index_Scene_SetSceneScriptEnabled;
-		b.Scene_IsSceneScriptEnabled = &Index_Scene_IsSceneScriptEnabled;
-		b.Scene_SetGlobalScriptEnabled = &Index_Scene_SetGlobalScriptEnabled;
+		b.Scene_SetSceneSystemEnabled = &Index_Scene_SetSceneSystemEnabled;
+		b.Scene_IsSceneSystemEnabled = &Index_Scene_IsSceneSystemEnabled;
+		b.Scene_SetGlobalSystemEnabled = &Index_Scene_SetGlobalSystemEnabled;
 		b.Scene_DoesSceneExist = &Index_Scene_DoesSceneExist;
 		b.Scene_GetLoadedCount = &Index_Scene_GetLoadedCount;
 		b.Scene_GetLoadedSceneNameAtBuffer = &Index_Scene_GetLoadedSceneNameAtBuffer;

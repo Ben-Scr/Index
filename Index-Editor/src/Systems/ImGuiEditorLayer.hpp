@@ -110,7 +110,7 @@ namespace Index {
 		void RenderSettings_Branding(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Build(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Editor(IndexProject& project, bool& changed, const std::string& filterLower);
-		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalScriptsChanged, const std::string& filterLower);
+		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalSystemsChanged, const std::string& filterLower);
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
 		void ExecuteBuild();
@@ -143,6 +143,9 @@ namespace Index {
 		bool TryBuildEntityAABB(Scene& scene, EntityHandle entity, bool includeChildren, AABB& outAABB);
 		void FocusSelectedEntity(Scene& scene);
 		void DuplicateSelectedEntity(Scene& scene);
+		// User-facing delete entry point: opens the confirmation dialog when
+		// enabled in preferences, otherwise deletes immediately.
+		void RequestDeleteSelectedEntity(Scene& scene);
 		void DeleteSelectedEntity(Scene& scene);
 		void BeginRenameSelectedEntity(Scene& scene);
 		void UnpackSelectedPrefabs(Scene& scene);
@@ -328,9 +331,17 @@ namespace Index {
 		std::string m_PendingSceneSwitch;
 		std::string m_ConfirmDialogPendingPath;
 		bool m_ShowSaveConfirmDialog = false;
+
+		// Entity-deletion confirmation (see RequestDeleteSelectedEntity and the
+		// modal in ImGuiEditorLayerChrome). Scene is re-resolved by id at
+		// confirm time so an unloaded scene can't leave a dangling pointer.
+		bool m_ShowEntityDeleteConfirm = false;
+		uint64_t m_PendingEntityDeleteSceneId = 0;
+		size_t m_PendingEntityDeleteCount = 0;
+		std::string m_PendingEntityDeleteLabel;
 		char m_ComponentSearchBuffer[128]{};
 		char m_SystemSearchBuffer[128]{};
-		char m_GlobalScriptSearchBuffer[128]{};
+		char m_GlobalSystemSearchBuffer[128]{};
 		char m_ProjectSettingsSearchBuffer[256]{};
 		std::string m_SelectedAssetPath;
 		std::string m_ComponentClipboardJson;

@@ -13,11 +13,11 @@ using Index.Native;
 // parent ECB merges every worker's sub-buffer into a single
 // Scene::CreateEntitiesBulk on the native side.
 //
-// Drop this SceneScript on any scene; it self-runs on Start, logs PASS/FAIL
+// Drop this SceneSystem on any scene; it self-runs on Start, logs PASS/FAIL
 // per case, then deletes the entities it spawned so the scene is left as
 // it was found. The sample doubles as a regression test for the
 // entityIndex-remap step in the merged-playback path.
-public class CreateEntityJobSample : SceneScript
+public class CreateEntityJobSample : SceneSystem
 {
     [ShowInEditor("Entities Per Pass")] public int EntitiesPerPass = 10_000;
     [ShowInEditor("Reuse Iterations")]  public int ReuseIterations = 4;

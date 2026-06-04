@@ -24,9 +24,9 @@ namespace Index {
 
         // Optional texture-backed UI mask. The scissor rect above still
         // limits raster work; these fields let the sprite shader reject
-        // transparent pixels inside the mask texture.
-        bool HasTextureMask{ false };
-        TextureHandle MaskTextureHandle{};
+		// transparent pixels inside the mask texture.
+		bool HasTextureMask{ false };
+		Index::TextureHandle MaskTextureHandle{};
         SpriteUVRect MaskUvRect{};
         Vec2 MaskRectMin{};
         Vec2 MaskRectMax{};

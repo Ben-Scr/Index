@@ -301,8 +301,11 @@ namespace Index {
 						s.TextureHandle = h;
 						s.TextureAssetId = assetId;
 						s.SpriteName = sliceName;
-						if (auto* tex = TextureManager::GetTexture(h); tex) {
-							tex->SetFilter(s.FilterMode);
+						// Default leaves the texture's own (.meta) filter untouched.
+						if (s.FilterMode != Filter::Default) {
+							if (auto* tex = TextureManager::GetTexture(h); tex) {
+								tex->SetFilter(s.FilterMode);
+							}
 						}
 					}),
 				Properties::MakeWith<Filter>("FilterMode", "Filter Mode",
@@ -310,7 +313,12 @@ namespace Index {
 					[](Entity& e, Filter v) {
 						auto& sprite = e.GetComponent<SpriteRendererComponent>();
 						sprite.FilterMode = v;
-						if (auto* tex = TextureManager::GetTexture(sprite.TextureHandle); tex) {
+						if (v == Filter::Default) {
+							// Revert to the texture's own (.meta/import) filter.
+							TextureManager::ApplyMetaSamplerToLoaded(
+								TextureManager::GetTextureName(sprite.TextureHandle));
+						}
+						else if (auto* tex = TextureManager::GetTexture(sprite.TextureHandle); tex) {
 							tex->SetFilter(v);
 						}
 					}),
@@ -346,8 +354,11 @@ namespace Index {
 						i.TextureHandle = h;
 						i.TextureAssetId = assetId;
 						i.SpriteName = sliceName;
-						if (auto* tex = TextureManager::GetTexture(h); tex) {
-							tex->SetFilter(i.FilterMode);
+						// Default leaves the texture's own (.meta) filter untouched.
+						if (i.FilterMode != Filter::Default) {
+							if (auto* tex = TextureManager::GetTexture(h); tex) {
+								tex->SetFilter(i.FilterMode);
+							}
 						}
 					}),
 				Properties::MakeWith<Filter>("FilterMode", "Filter Mode",
@@ -355,7 +366,11 @@ namespace Index {
 					[](Entity& e, Filter v) {
 						auto& image = e.GetComponent<ImageComponent>();
 						image.FilterMode = v;
-						if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
+						if (v == Filter::Default) {
+							TextureManager::ApplyMetaSamplerToLoaded(
+								TextureManager::GetTextureName(image.TextureHandle));
+						}
+						else if (auto* tex = TextureManager::GetTexture(image.TextureHandle); tex) {
 							tex->SetFilter(v);
 						}
 					}),

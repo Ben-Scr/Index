@@ -247,9 +247,9 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<byte*, void> Scene_Unload;
     public delegate* unmanaged<byte*, int> Scene_SetActive;
     public delegate* unmanaged<byte*, int> Scene_Reload;
-    public delegate* unmanaged<byte*, byte*, int, int> Scene_SetSceneScriptEnabled;
-    public delegate* unmanaged<byte*, byte*, int> Scene_IsSceneScriptEnabled;
-    public delegate* unmanaged<byte*, int, void> Scene_SetGlobalScriptEnabled;
+    public delegate* unmanaged<byte*, byte*, int, int> Scene_SetSceneSystemEnabled;
+    public delegate* unmanaged<byte*, byte*, int> Scene_IsSceneSystemEnabled;
+    public delegate* unmanaged<byte*, int, void> Scene_SetGlobalSystemEnabled;
     public delegate* unmanaged<byte*, int> Scene_DoesSceneExist;
     public delegate* unmanaged<int> Scene_GetLoadedCount;
     public delegate* unmanaged<int, byte*, int, int> Scene_GetLoadedSceneNameAtBuffer;

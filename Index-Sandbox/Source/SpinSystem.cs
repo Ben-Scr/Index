@@ -10,10 +10,10 @@ using Index.Native;
 // hot loops in this system.
 
 // Demonstrates the ECS ref-API query system. Inactive until the user adds it
-// to a scene via the editor's SceneScript inspector. Shows the two iteration
+// to a scene via the editor's SceneSystem inspector. Shows the two iteration
 // shapes for multi-component rows; either compiles to direct pool writes with
 // one P/Invoke per OnUpdate.
-public class SpinSystem : SceneScript
+public class SpinSystem : SceneSystem
 {
     [ShowInEditor("Spin Speed (rad/s)")] public float SpinSpeed = 1.0f;
 

@@ -166,12 +166,12 @@
     <Compile Include="Source\Index\Scene\EntityPicker.cs" />
     <Compile Include="Source\Index\Scene\EntityRef.cs" />
     <Compile Include="Source\Index\Scene\EntityScript.cs" />
-    <Compile Include="Source\Index\Scene\GlobalScript.cs" />
+    <Compile Include="Source\Index\Scene\GlobalSystem.cs" />
     <Compile Include="Source\Index\Scene\QueryRef.cs" />
     <Compile Include="Source\Index\Scene\QueryRefWithEntity.cs" />
     <Compile Include="Source\Index\Scene\SceneManager.cs" />
     <Compile Include="Source\Index\Scene\SceneQuery.cs" />
-    <Compile Include="Source\Index\Scene\SceneScript.cs" />
+    <Compile Include="Source\Index\Scene\SceneSystem.cs" />
     <Compile Include="Source\Index\UI\UIComponents.cs" />
     <Compile Include="Source\Index\UI\UIEnums.cs" />
     <Compile Include="Source\Index\UI\UIEventDispatcher.cs" />

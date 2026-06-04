@@ -286,7 +286,7 @@ namespace Index {
 			});
 
 			for (const auto& scriptEntry : scriptEntries) {
-				if (scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
+				if (scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 					continue;
 				}
 				if (scriptEntry.IsNativeComponent) {
@@ -404,7 +404,7 @@ namespace Index {
 
 			bool hasManagedComponents = false;
 			for (const auto& scriptEntry : scriptEntries) {
-				if (scriptEntry.IsManagedComponent && !scriptEntry.IsSceneScript && !scriptEntry.IsGlobalScript) {
+				if (scriptEntry.IsManagedComponent && !scriptEntry.IsSceneSystem && !scriptEntry.IsGlobalSystem) {
 					hasManagedComponents = true;
 					break;
 				}
@@ -412,7 +412,7 @@ namespace Index {
 			if (hasManagedComponents) {
 				if (ImGui::TreeNode("Components (C#)")) {
 					for (const auto& scriptEntry : scriptEntries) {
-						if (!scriptEntry.IsManagedComponent || scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
+						if (!scriptEntry.IsManagedComponent || scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 							continue;
 						}
 						bool missingFromAny = false;
@@ -443,7 +443,7 @@ namespace Index {
 				if (ImGui::TreeNode("Scripts")) {
 					for (const auto& scriptEntry : scriptEntries) {
 						if (scriptEntry.IsManagedComponent || scriptEntry.IsNativeComponent
-							|| scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
+							|| scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 							continue;
 						}
 						const std::string label = BuildScriptMenuLabel(scriptEntry);

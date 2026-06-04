@@ -407,6 +407,47 @@ namespace Index {
 			ImGui::EndPopup();
 		}
 
+		// Entity-deletion confirmation (hierarchy Delete key / context menu).
+		// RequestDeleteSelectedEntity only raises this when the preference is on.
+		if (m_ShowEntityDeleteConfirm) {
+			ImGui::OpenPopup("Delete Entity?");
+			m_ShowEntityDeleteConfirm = false;
+		}
+		ImGuiUtils::CenterNextModal();
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		if (ImGui::BeginPopupModal("Delete Entity?", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+			if (m_PendingEntityDeleteCount == 1) {
+				ImGui::Text("Delete \"%s\"?", m_PendingEntityDeleteLabel.c_str());
+			}
+			else {
+				ImGui::Text("Delete %zu selected entities?", m_PendingEntityDeleteCount);
+			}
+			ImGui::Spacing();
+			ImGui::TextDisabled("This cannot be undone.");
+			ImGui::Spacing();
+
+			if (ImGui::Button("Delete", ImVec2(100, 0))) {
+				// Re-resolve by id: the scene could have unloaded since the
+				// request (matches the AssetBrowser prefab-drop resolution).
+				Scene* target = nullptr;
+				SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+					if (!target && static_cast<uint64_t>(s.GetSceneId()) == m_PendingEntityDeleteSceneId) {
+						target = &s;
+					}
+				});
+				if (target) {
+					DeleteSelectedEntity(*target);
+				}
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(100, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+
 		// Prefab save/discard modal — fired when the user picks a different
 		// asset while a dirty prefab is open in the inspector.
 		if (m_ShowPrefabSavePrompt) {

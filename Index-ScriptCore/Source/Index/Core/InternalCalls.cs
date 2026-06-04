@@ -266,31 +266,31 @@ internal static unsafe class InternalCalls
         fixed (byte* ptr = buf) return NativeCallbacks.Bindings.Scene_Reload(ptr) != 0;
     }
 
-    internal static void Scene_SetGlobalScriptEnabled(string className, bool enabled)
+    internal static void Scene_SetGlobalSystemEnabled(string className, bool enabled)
     {
         byte[] buf = EncodeUtf8Z(className);
-        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Scene_SetGlobalScriptEnabled(ptr, enabled ? 1 : 0);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Scene_SetGlobalSystemEnabled(ptr, enabled ? 1 : 0);
     }
 
-    internal static bool Scene_SetSceneScriptEnabled(string sceneName, string className, bool enabled)
+    internal static bool Scene_SetSceneSystemEnabled(string sceneName, string className, bool enabled)
     {
         byte[] sceneBuffer = EncodeUtf8Z(sceneName);
         byte[] classBuffer = EncodeUtf8Z(className);
         fixed (byte* scenePtr = sceneBuffer)
         fixed (byte* classPtr = classBuffer)
         {
-            return NativeCallbacks.Bindings.Scene_SetSceneScriptEnabled(scenePtr, classPtr, enabled ? 1 : 0) != 0;
+            return NativeCallbacks.Bindings.Scene_SetSceneSystemEnabled(scenePtr, classPtr, enabled ? 1 : 0) != 0;
         }
     }
 
-    internal static bool Scene_IsSceneScriptEnabled(string sceneName, string className)
+    internal static bool Scene_IsSceneSystemEnabled(string sceneName, string className)
     {
         byte[] sceneBuffer = EncodeUtf8Z(sceneName);
         byte[] classBuffer = EncodeUtf8Z(className);
         fixed (byte* scenePtr = sceneBuffer)
         fixed (byte* classPtr = classBuffer)
         {
-            return NativeCallbacks.Bindings.Scene_IsSceneScriptEnabled(scenePtr, classPtr) != 0;
+            return NativeCallbacks.Bindings.Scene_IsSceneSystemEnabled(scenePtr, classPtr) != 0;
         }
     }
 

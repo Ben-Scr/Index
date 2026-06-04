@@ -28,8 +28,8 @@ namespace Index::EditorScriptDiscovery {
 		bool IsManagedComponent = false;
 		bool IsNativeComponent = false;
 		std::string NativeName;
-		bool IsSceneScript = false;
-		bool IsGlobalScript = false;
+		bool IsSceneSystem = false;
+		bool IsGlobalSystem = false;
 	};
 
 	inline std::string ToLowerCopy(std::string value)
@@ -127,8 +127,8 @@ namespace Index::EditorScriptDiscovery {
 		bool isManagedComponent = false,
 		bool isNativeComponent = false,
 		std::string nativeName = {},
-		bool isSceneScript = false,
-		bool isGlobalScript = false)
+		bool isSceneSystem = false,
+		bool isGlobalSystem = false)
 	{
 		if (className.empty() || type == ScriptType::Unknown || ContainsScriptEntry(entries, className, type)) {
 			return;
@@ -142,8 +142,8 @@ namespace Index::EditorScriptDiscovery {
 		entry.IsManagedComponent = isManagedComponent;
 		entry.IsNativeComponent = isNativeComponent;
 		entry.NativeName = std::move(nativeName);
-		entry.IsSceneScript = isSceneScript;
-		entry.IsGlobalScript = isGlobalScript;
+		entry.IsSceneSystem = isSceneSystem;
+		entry.IsGlobalSystem = isGlobalSystem;
 		entries.push_back(std::move(entry));
 	}
 
@@ -278,11 +278,11 @@ namespace Index::EditorScriptDiscovery {
 					nativeName = filePath.stem().string();
 				}
 			}
-			const bool isSceneScript = SourceHasBaseClass(compactSource, "SceneScript");
-			const bool isGlobalScript = SourceHasBaseClass(compactSource, "GlobalScript");
+			const bool isSceneSystem = SourceHasBaseClass(compactSource, "SceneSystem");
+			const bool isGlobalSystem = SourceHasBaseClass(compactSource, "GlobalSystem");
 			AppendScriptEntry(entries, filePath.stem().string(), filePath, extension, ScriptType::Managed,
 				isManagedComponent, isNativeComponent, std::move(nativeName),
-				isSceneScript, isGlobalScript);
+				isSceneSystem, isGlobalSystem);
 			return;
 		}
 

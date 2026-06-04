@@ -22,6 +22,9 @@ namespace Index::WebGPUSpriteResources {
 		float Color[4];      // matches i_data1
 		float Rot[4];        // matches i_data2 = (rotation, 0, 0, 0)
 		float Uv[4];         // matches i_data3 = (u0, v0, u1, v1) — sprite slice rect
+		float MaskRect[4];   // matches i_data4 = (minX, minY, invW, invH)
+		float MaskRot[4];    // matches i_data5 = (pivotX, pivotY, cos(-rot), sin(-rot))
+		float MaskUv[4];     // matches i_data6 = (u0, v0, u1, v1)
 	};
 
 	INDEX_API bool Acquire();

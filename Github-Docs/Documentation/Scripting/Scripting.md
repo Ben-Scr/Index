@@ -13,10 +13,10 @@ Index has three script base classes, each with a different **scope**:
 |Base class|Scope|Use it for|
 |-|-|-|
 |**EntityScript**|One entity|Behavior for a specific object — a player, an enemy, a pickup.|
-|**SceneScript**|One scene|Logic over a whole scene — spawning waves, scoring, scene-wide rules.|
-|**GlobalScript**|The whole app|State that survives scene changes — a game manager, audio settings, save data.|
+|**SceneSystem**|One scene|Logic over a whole scene — spawning waves, scoring, scene-wide rules.|
+|**GlobalSystem**|The whole app|State that survives scene changes — a game manager, audio settings, save data.|
 
-Pick the smallest scope that fits. Most gameplay is `EntityScript`; reach for `SceneScript` when you need to work with *many* entities at once, and `GlobalScript` for things that must persist between scenes.
+Pick the smallest scope that fits. Most gameplay is `EntityScript`; reach for `SceneSystem` when you need to work with *many* entities at once, and `GlobalSystem` for things that must persist between scenes.
 
 \---
 
@@ -85,9 +85,9 @@ public override void OnCollisionStay2D(Collision2D c) { }
 public override void OnCollisionExit2D(Collision2D c) { }
 ```
 
-**SceneScript** (per scene) has the same `OnAwake` / `OnStart` / `OnUpdate` / `OnFixedUpdate` / `OnDestroy` / `OnEnable` / `OnDisable`, plus a `Scene` property for querying entities — but no collision callbacks.
+**SceneSystem** (per scene) has the same `OnAwake` / `OnStart` / `OnUpdate` / `OnFixedUpdate` / `OnDestroy` / `OnEnable` / `OnDisable`, plus a `Scene` property for querying entities — but no collision callbacks.
 
-**GlobalScript** (whole app) starts with `OnInitialize()` instead of Awake/Start, then `OnUpdate` / `OnFixedUpdate`. It is created at startup and persists across scene loads.
+**GlobalSystem** (whole app) starts with `OnInitialize()` instead of Awake/Start, then `OnUpdate` / `OnFixedUpdate`. It is created at startup and persists across scene loads.
 
 All three also receive application events like `OnApplicationPaused`, `OnApplicationQuit`, and `OnFocusChanged(bool focused)`.
 
@@ -195,7 +195,7 @@ Log.Warn("Careful");
 Log.Error("Something broke");
 ```
 
-**Scene queries** — process many entities at once (great in a `SceneScript`):
+**Scene queries** — process many entities at once (great in a `SceneSystem`):
 
 ```csharp
 foreach (ref var t in Scene.QueryRef<NativeTransform2D>())
@@ -210,13 +210,13 @@ For heavy parallel work over many entities, combine queries with the [Job System
 
 ## A scene-wide script
 
-When you need to operate on lots of entities, a `SceneScript` with a query is the natural tool:
+When you need to operate on lots of entities, a `SceneSystem` with a query is the natural tool:
 
 ```csharp
 using Index;
 using Index.Native;
 
-public class SpinSystem : SceneScript
+public class SpinSystem : SceneSystem
 {
     \[ShowInEditor("Spin Speed")] public float SpinSpeed = 1.0f;
 
@@ -278,7 +278,7 @@ You don't need this to write scripts, but it helps to know the shape:
 
 ## Summary
 
-* Write game logic in **C#**: `EntityScript` (per entity), `SceneScript` (per scene), or `GlobalScript` (whole app).
+* Write game logic in **C#**: `EntityScript` (per entity), `SceneSystem` (per scene), or `GlobalSystem` (whole app).
 * Override lifecycle methods (`OnStart`, `OnUpdate`, `OnFixedUpdate`, …); attach scripts via a `ScriptComponent`.
 * Expose fields to the Inspector with attributes like `\[ShowInEditor]` and `\[ClampValue]`.
 * Use the rich API — `Input`, `Time`, `Physics2D`, `Audio`, `Log`, scene queries, math.
@@ -288,7 +288,7 @@ You don't need this to write scripts, but it helps to know the shape:
 ## Related pages
 
 * [ECS](../Engine-Core/ECS.md) — entities and components your scripts work with.
-* [Scenes](../Engine-Core/Scenes.md) — SceneScripts and the play-mode lifecycle.
+* [Scenes](../Engine-Core/Scenes.md) — SceneSystems and the play-mode lifecycle.
 * [Assets](../Assets/Assets.md) — referencing textures, audio, and fonts from scripts.
 * [Job System](../Engine-Core/Job-System.md) — parallelizing heavy script work.
 

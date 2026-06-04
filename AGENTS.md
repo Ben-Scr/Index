@@ -1,6 +1,6 @@
 # Index Engine
 
-2D game engine in C++20 with C# scripting. OpenGL rendering, EnTT ECS, ImGui editor, Box2D physics, miniaudio audio.
+2D game engine in C++20 with C# scripting. WebGPU rendering (via Dawn), EnTT ECS, ImGui editor, Box2D physics, miniaudio audio.
 
 ## Build
 

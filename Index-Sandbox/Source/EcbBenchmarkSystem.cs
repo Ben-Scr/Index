@@ -4,7 +4,7 @@ using Index.Components;
 using Index.Native;
 
 // Single-shot benchmark + smoke test for EntityCommandBuffer. Add this
-// SceneScript to a scene via the editor's SceneScript inspector; press Play
+// SceneSystem to a scene via the editor's SceneSystem inspector; press Play
 // once and read the timing block from the log. Self-destructs after the
 // first run so re-entering Play doesn't spam the log or stack thousands of
 // entities every press.
@@ -17,7 +17,7 @@ using Index.Native;
 //   A: ~30–120 ms
 //   B: ~0.3–2 ms
 //   speedup ≈ 50–100×
-public class EcbBenchmarkSystem : SceneScript
+public class EcbBenchmarkSystem : SceneSystem
 {
     [ShowInEditor("Entities Per Pass")] public int EntitiesPerPass = 10_000;
     [ShowInEditor("Run On Start")]      public bool RunOnStart = true;

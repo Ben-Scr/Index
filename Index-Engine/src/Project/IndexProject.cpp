@@ -744,7 +744,7 @@ endforeach()
 		root.AddMember("buildScenes", std::move(buildScenes));
 
 		Json::Value globalSystems = Json::Value::MakeArray();
-		for (const auto& registration : project.GlobalScripts) {
+		for (const auto& registration : project.GlobalSystems) {
 			if (registration.ClassName.empty()) {
 				continue;
 			}
@@ -1413,7 +1413,7 @@ endforeach()
 					}
 				}
 				if (const Json::Value* globalSystemsValue = root.FindMember("globalSystems")) {
-					project.GlobalScripts.clear();
+					project.GlobalSystems.clear();
 					if (!globalSystemsValue->IsArray()) {
 						IDX_CORE_WARN_TAG("IndexProject",
 							"Project '{}': 'globalSystems' field is not a JSON array; ignoring.", configPath);
@@ -1422,7 +1422,7 @@ endforeach()
 						if (systemValue.IsString()) {
 							const std::string className = systemValue.AsStringOr();
 							if (!className.empty()) {
-								project.GlobalScripts.push_back({ className, true });
+								project.GlobalSystems.push_back({ className, true });
 							}
 							continue;
 						}
@@ -1438,7 +1438,7 @@ endforeach()
 						}
 
 						const Json::Value* activeValue = systemValue.FindMember("active");
-						project.GlobalScripts.push_back({ className, activeValue ? activeValue->AsBoolOr(true) : true });
+						project.GlobalSystems.push_back({ className, activeValue ? activeValue->AsBoolOr(true) : true });
 					}
 				}
 				if (const Json::Value* packagesValue = root.FindMember("packages")) {

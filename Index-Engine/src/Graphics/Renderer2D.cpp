@@ -88,12 +88,34 @@ namespace Index {
 		wgpu::Buffer g_UniformBuffer;
 
 		// Bind groups are immutable in WebGPU — cache sampler+view alongside the group so SetFilter/hot-reload can detect staleness and rebuild.
+		struct BindGroupKey {
+			uint64_t TexturePoolId = 0;
+			uint64_t MaskPoolId = 0;
+
+			bool operator==(const BindGroupKey& other) const {
+				return TexturePoolId == other.TexturePoolId
+					&& MaskPoolId == other.MaskPoolId;
+			}
+		};
+
+		struct BindGroupKeyHash {
+			size_t operator()(const BindGroupKey& key) const noexcept {
+				const uint64_t mixed = key.TexturePoolId
+					^ (key.MaskPoolId + 0x9e3779b97f4a7c15ull
+						+ (key.TexturePoolId << 6)
+						+ (key.TexturePoolId >> 2));
+				return static_cast<size_t>(mixed);
+			}
+		};
+
 		struct CachedBindGroup {
 			wgpu::BindGroup     Group;
 			wgpu::Sampler       Sampler;
 			wgpu::TextureView   View;
+			wgpu::Sampler       MaskSampler;
+			wgpu::TextureView   MaskView;
 		};
-		std::unordered_map<uint64_t, CachedBindGroup> g_BindGroupCache;
+		std::unordered_map<BindGroupKey, CachedBindGroup, BindGroupKeyHash> g_BindGroupCache;
 
 		// Token returned from TextureManager::AddDestroyListener so
 		// Shutdown can unregister cleanly. 0 = no listener installed.
@@ -713,21 +735,31 @@ namespace Index {
 			return true;
 		}
 
-		wgpu::BindGroup ResolveBindGroup(wgpu::Device device, TextureHandle handle) {
+		wgpu::BindGroup ResolveBindGroup(wgpu::Device device,
+			TextureHandle handle,
+			TextureHandle maskHandle)
+		{
 			Texture2D* tex = TextureManager::GetTexture(handle);
-			if (!tex || !tex->IsValid()) return nullptr;
+			Texture2D* maskTex = TextureManager::GetTexture(maskHandle);
+			if (!tex || !tex->IsValid() || !maskTex || !maskTex->IsValid()) return nullptr;
 			const uint64_t poolId = tex->GetHandle();
+			const uint64_t maskPoolId = maskTex->GetHandle();
 
 			const auto lookup = WebGPUBackend::LookupTexture2D(poolId);
-			if (!lookup.Valid || !lookup.View || !lookup.Sampler) {
+			const auto maskLookup = WebGPUBackend::LookupTexture2D(maskPoolId);
+			if (!lookup.Valid || !lookup.View || !lookup.Sampler
+				|| !maskLookup.Valid || !maskLookup.View || !maskLookup.Sampler) {
 				return nullptr;
 			}
 
-			auto cacheIt = g_BindGroupCache.find(poolId);
+			const BindGroupKey key{ poolId, maskPoolId };
+			auto cacheIt = g_BindGroupCache.find(key);
 			if (cacheIt != g_BindGroupCache.end()) {
 				const CachedBindGroup& cached = cacheIt->second;
 				if (cached.Sampler.Get() == lookup.Sampler.Get()
-					&& cached.View.Get() == lookup.View.Get()) {
+					&& cached.View.Get() == lookup.View.Get()
+					&& cached.MaskSampler.Get() == maskLookup.Sampler.Get()
+					&& cached.MaskView.Get() == maskLookup.View.Get()) {
 					return cached.Group;
 				}
 				// Sampler or view rebuilt under us (filter change, hot
@@ -736,7 +768,7 @@ namespace Index {
 				g_BindGroupCache.erase(cacheIt);
 			}
 
-			wgpu::BindGroupEntry entries[3] = {};
+			wgpu::BindGroupEntry entries[5] = {};
 			entries[0].binding = 0;
 			entries[0].buffer  = g_UniformBuffer;
 			entries[0].offset  = 0;
@@ -745,16 +777,21 @@ namespace Index {
 			entries[1].textureView = lookup.View;
 			entries[2].binding = 2;
 			entries[2].sampler = lookup.Sampler;
+			entries[3].binding     = 3;
+			entries[3].textureView = maskLookup.View;
+			entries[4].binding = 4;
+			entries[4].sampler = maskLookup.Sampler;
 
 			wgpu::BindGroupDescriptor desc{};
 			desc.layout     = WebGPUSpriteResources::GetBindGroupLayout();
-			desc.entryCount = 3;
+			desc.entryCount = 5;
 			desc.entries    = entries;
 			desc.label      = "renderer2d-sprite-bindgroup";
 
 			wgpu::BindGroup bg = device.CreateBindGroup(&desc);
 			if (!bg) return nullptr;
-			g_BindGroupCache.emplace(poolId, CachedBindGroup{ bg, lookup.Sampler, lookup.View });
+			g_BindGroupCache.emplace(key, CachedBindGroup{
+				bg, lookup.Sampler, lookup.View, maskLookup.Sampler, maskLookup.View });
 			return bg;
 		}
 	}
@@ -772,7 +809,7 @@ namespace Index {
 				[](TextureHandle handle) {
 					Texture2D* tex = TextureManager::GetTexture(handle);
 					if (!tex) return;
-					g_BindGroupCache.erase(tex->GetHandle());
+					g_BindGroupCache.clear();
 				});
 		}
 
@@ -1085,21 +1122,29 @@ namespace Index {
 			auto resolveHandle = [&](TextureHandle h) {
 				return TextureManager::IsValid(h) ? h : defaultTexture;
 			};
+			auto resolveMaskHandle = [&](const Instance44& inst) {
+				return inst.HasTextureMask && TextureManager::IsValid(inst.MaskTextureHandle)
+					? inst.MaskTextureHandle
+					: defaultTexture;
+			};
 			const std::uint32_t indexCount = WebGPUSpriteResources::GetQuadIndexCount(pipelineMode);
 
 			size_t i = 0;
 			while (i < n) {
 				const TextureHandle runHandle = resolveHandle(g_TexturesScratch[i]);
+				const TextureHandle runMaskHandle = resolveMaskHandle(g_InstancesScratch[i]);
 				size_t runEnd = i + 1;
 				while (runEnd < n
 					&& resolveHandle(g_TexturesScratch[runEnd]).index == runHandle.index
-					&& resolveHandle(g_TexturesScratch[runEnd]).generation == runHandle.generation)
+					&& resolveHandle(g_TexturesScratch[runEnd]).generation == runHandle.generation
+					&& resolveMaskHandle(g_InstancesScratch[runEnd]).index == runMaskHandle.index
+					&& resolveMaskHandle(g_InstancesScratch[runEnd]).generation == runMaskHandle.generation)
 				{
 					++runEnd;
 				}
 				const uint32_t count = static_cast<uint32_t>(runEnd - i);
 
-				wgpu::BindGroup bg = ResolveBindGroup(device, runHandle);
+				wgpu::BindGroup bg = ResolveBindGroup(device, runHandle, runMaskHandle);
 				if (!bg) {
 					i = runEnd;
 					continue;

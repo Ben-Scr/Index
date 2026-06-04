@@ -9,7 +9,7 @@ using Index.Jobs;
 // runs on OnStart, exercises sequential and parallel schedules, atomics,
 // reducers, dependencies, and cancellation, and logs PASS/FAIL per case
 // followed by a summary line.
-public class JobSystemQuickTest : SceneScript
+public class JobSystemQuickTest : SceneSystem
 {
     [ShowInEditor("Run on Start")] public bool RunOnStart = true;
 

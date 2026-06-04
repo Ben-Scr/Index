@@ -464,7 +464,8 @@ namespace Index {
 		const bool showApplication = PreferenceSectionVisible("Application", "behavior run in background window focus pause editor");
 		const bool showAssetBrowser = PreferenceSectionVisible("Asset Browser", "behavior asset browser file extensions extension rename");
 		const bool showAutoSave = PreferenceSectionVisible("Auto-Save", "behavior auto save autosave scene prefab interval");
-		if (!showApplication && !showAssetBrowser && !showAutoSave) return;
+		const bool showEditing = PreferenceSectionVisible("Editing", "behavior editing delete deletion confirm confirmation prompt ask dialog warn entity asset safety");
+		if (!showApplication && !showAssetBrowser && !showAutoSave && !showEditing) return;
 
 		if (showApplication) {
 			ImGui::TextUnformatted("Application");
@@ -473,6 +474,25 @@ namespace Index {
 			bool runInBackground = EditorPreferences::GetRunInBackground();
 			if (ImGui::Checkbox("Run in background", &runInBackground)) {
 				EditorPreferences::SetRunInBackground(runInBackground);
+			}
+
+			ImGui::Spacing();
+		}
+
+		// ── Editing ───────────────────────────────────────────────
+		if (showEditing) {
+			ImGui::TextUnformatted("Editing");
+			ImGui::Separator();
+
+			bool confirmOnDelete = EditorPreferences::GetConfirmOnDelete();
+			if (ImGui::Checkbox("Confirm before deleting", &confirmOnDelete)) {
+				EditorPreferences::SetConfirmOnDelete(confirmOnDelete);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Ask for confirmation before deleting an asset in the\n"
+					"Project panel or an entity in the Entities hierarchy.\n"
+					"Turn off to delete immediately without a prompt.");
 			}
 
 			ImGui::Spacing();

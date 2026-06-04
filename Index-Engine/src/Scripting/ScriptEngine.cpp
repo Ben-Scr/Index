@@ -20,7 +20,7 @@ namespace Index {
 	std::string ScriptEngine::s_CoreAssemblyPath;
 	std::string ScriptEngine::s_UserAssemblyPath;
 	bool        ScriptEngine::s_HasUserAssembly = false;
-	std::vector<ScriptEngine::GlobalScriptInstance> ScriptEngine::s_GlobalScripts;
+	std::vector<ScriptEngine::GlobalSystemInstance> ScriptEngine::s_GlobalSystems;
 
 	DotNetHost       ScriptEngine::s_Host;
 	ManagedCallbacks ScriptEngine::s_Callbacks{};
@@ -39,18 +39,18 @@ namespace Index {
 		s_Initialized = false;
 		s_HasUserAssembly = false;
 
-		// Move out first: reentrant SetGlobalScriptEnabled calls during OnDestroy must see an empty container.
-		auto local = std::move(s_GlobalScripts);
-		s_GlobalScripts.clear();
+		// Move out first: reentrant SetGlobalSystemEnabled calls during OnDestroy must see an empty container.
+		auto local = std::move(s_GlobalSystems);
+		s_GlobalSystems.clear();
 
-		if (s_Callbacks.DestroyGlobalScriptInstance) {
+		if (s_Callbacks.DestroyGlobalSystemInstance) {
 			for (auto& instance : local)
 			{
 				if (instance.Handle != 0) {
-					if (s_Callbacks.InvokeGlobalScriptDisable) {
-						s_Callbacks.InvokeGlobalScriptDisable(static_cast<int32_t>(instance.Handle));
+					if (s_Callbacks.InvokeGlobalSystemDisable) {
+						s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(instance.Handle));
 					}
-					s_Callbacks.DestroyGlobalScriptInstance(static_cast<int32_t>(instance.Handle));
+					s_Callbacks.DestroyGlobalSystemInstance(static_cast<int32_t>(instance.Handle));
 				}
 			}
 		}
@@ -157,7 +157,7 @@ namespace Index {
 
 		if (s_Callbacks.LoadUserAssembly)
 		{
-			ShutdownGlobalScripts();
+			ShutdownGlobalSystems();
 			InspectorEvents::ResetMissingMethodLog();
 			int ok = s_Callbacks.LoadUserAssembly(s_UserAssemblyPath.c_str());
 			IDX_CORE_INFO_TAG("ScriptEngine", "LoadUserAssembly callback returned: {}", ok);
@@ -195,7 +195,7 @@ namespace Index {
 	{
 		IDX_CORE_INFO_TAG("ScriptEngine", "Reloading assemblies...");
 
-		ShutdownGlobalScripts();
+		ShutdownGlobalSystems();
 
 		if (s_Callbacks.UnloadUserAssembly)
 			s_Callbacks.UnloadUserAssembly();
@@ -453,57 +453,57 @@ namespace Index {
 		if (s_Initialized && s_Callbacks.OnPlayModeExited) s_Callbacks.OnPlayModeExited();
 	}
 
-	uint32_t ScriptEngine::CreateSceneScriptInstance(const std::string& className, const std::string& sceneName)
+	uint32_t ScriptEngine::CreateSceneSystemInstance(const std::string& className, const std::string& sceneName)
 	{
-		if (!s_Initialized || !s_Callbacks.CreateSceneScriptInstance) return 0;
-		return static_cast<uint32_t>(s_Callbacks.CreateSceneScriptInstance(className.c_str(), sceneName.c_str()));
+		if (!s_Initialized || !s_Callbacks.CreateSceneSystemInstance) return 0;
+		return static_cast<uint32_t>(s_Callbacks.CreateSceneSystemInstance(className.c_str(), sceneName.c_str()));
 	}
 
-	void ScriptEngine::DestroySceneScriptInstance(uint32_t handle)
+	void ScriptEngine::DestroySceneSystemInstance(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.DestroySceneScriptInstance) return;
-		s_Callbacks.DestroySceneScriptInstance(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.DestroySceneSystemInstance) return;
+		s_Callbacks.DestroySceneSystemInstance(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptStart(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemStart(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptStart) return;
-		s_Callbacks.InvokeSceneScriptStart(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemStart) return;
+		s_Callbacks.InvokeSceneSystemStart(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptUpdate(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemUpdate(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptUpdate) return;
-		s_Callbacks.InvokeSceneScriptUpdate(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemUpdate) return;
+		s_Callbacks.InvokeSceneSystemUpdate(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptEnable(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemEnable(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptEnable) return;
-		s_Callbacks.InvokeSceneScriptEnable(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemEnable) return;
+		s_Callbacks.InvokeSceneSystemEnable(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptDisable(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemDisable(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptDisable) return;
-		s_Callbacks.InvokeSceneScriptDisable(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemDisable) return;
+		s_Callbacks.InvokeSceneSystemDisable(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptDestroy(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemDestroy(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptDestroy) return;
-		s_Callbacks.InvokeSceneScriptDestroy(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemDestroy) return;
+		s_Callbacks.InvokeSceneSystemDestroy(static_cast<int32_t>(handle));
 	}
 
-	bool ScriptEngine::SceneScriptClassExists(const std::string& className)
+	bool ScriptEngine::SceneSystemClassExists(const std::string& className)
 	{
-		if (!s_Initialized || !s_Callbacks.SceneScriptClassExists) return false;
-		return s_Callbacks.SceneScriptClassExists(className.c_str()) != 0;
+		if (!s_Initialized || !s_Callbacks.SceneSystemClassExists) return false;
+		return s_Callbacks.SceneSystemClassExists(className.c_str()) != 0;
 	}
 
-	void ScriptEngine::InitializeGlobalScripts(const std::vector<std::string>& classNames)
+	void ScriptEngine::InitializeGlobalSystems(const std::vector<std::string>& classNames)
 	{
-		if (!s_Initialized || !s_HasUserAssembly || !s_Callbacks.CreateGlobalScriptInstance) return;
+		if (!s_Initialized || !s_HasUserAssembly || !s_Callbacks.CreateGlobalSystemInstance) return;
 
 		for (const std::string& className : classNames)
 		{
@@ -511,85 +511,85 @@ namespace Index {
 				continue;
 			}
 
-			const auto existing = std::find_if(s_GlobalScripts.begin(), s_GlobalScripts.end(),
-				[&className](const GlobalScriptInstance& instance) { return instance.ClassName == className; });
-			if (existing != s_GlobalScripts.end()) {
+			const auto existing = std::find_if(s_GlobalSystems.begin(), s_GlobalSystems.end(),
+				[&className](const GlobalSystemInstance& instance) { return instance.ClassName == className; });
+			if (existing != s_GlobalSystems.end()) {
 				continue;
 			}
 
-			if (!GlobalScriptClassExists(className)) {
-				IDX_CORE_WARN_TAG("ScriptEngine", "GlobalScript '{}' was registered but no matching class was found", className);
+			if (!GlobalSystemClassExists(className)) {
+				IDX_CORE_WARN_TAG("ScriptEngine", "GlobalSystem '{}' was registered but no matching class was found", className);
 				continue;
 			}
 
-			uint32_t handle = static_cast<uint32_t>(s_Callbacks.CreateGlobalScriptInstance(className.c_str()));
+			uint32_t handle = static_cast<uint32_t>(s_Callbacks.CreateGlobalSystemInstance(className.c_str()));
 			if (handle == 0) {
-				IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to create GlobalScript '{}'", className);
+				IDX_CORE_ERROR_TAG("ScriptEngine", "Failed to create GlobalSystem '{}'", className);
 				continue;
 			}
 
-			s_GlobalScripts.push_back({ className, handle, true });
-			if (s_Callbacks.InvokeGlobalScriptEnable) {
-				s_Callbacks.InvokeGlobalScriptEnable(static_cast<int32_t>(handle));
+			s_GlobalSystems.push_back({ className, handle, true });
+			if (s_Callbacks.InvokeGlobalSystemEnable) {
+				s_Callbacks.InvokeGlobalSystemEnable(static_cast<int32_t>(handle));
 			}
-			if (s_Callbacks.InvokeGlobalScriptInitialize) {
-				s_Callbacks.InvokeGlobalScriptInitialize(static_cast<int32_t>(handle));
+			if (s_Callbacks.InvokeGlobalSystemInitialize) {
+				s_Callbacks.InvokeGlobalSystemInitialize(static_cast<int32_t>(handle));
 			}
 		}
 	}
 
-	void ScriptEngine::UpdateGlobalScripts()
+	void ScriptEngine::UpdateGlobalSystems()
 	{
-		if (!s_Initialized || !s_Callbacks.InvokeGlobalScriptUpdate) return;
-		for (const auto& instance : s_GlobalScripts)
+		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemUpdate) return;
+		for (const auto& instance : s_GlobalSystems)
 		{
 			if (instance.Handle != 0 && instance.Enabled) {
-				s_Callbacks.InvokeGlobalScriptUpdate(static_cast<int32_t>(instance.Handle));
+				s_Callbacks.InvokeGlobalSystemUpdate(static_cast<int32_t>(instance.Handle));
 			}
 		}
 	}
 
-	void ScriptEngine::ShutdownGlobalScripts()
+	void ScriptEngine::ShutdownGlobalSystems()
 	{
-		if (s_Callbacks.DestroyGlobalScriptInstance) {
-			for (auto& instance : s_GlobalScripts)
+		if (s_Callbacks.DestroyGlobalSystemInstance) {
+			for (auto& instance : s_GlobalSystems)
 			{
 				if (instance.Handle != 0) {
-					if (s_Callbacks.InvokeGlobalScriptDisable) {
-						s_Callbacks.InvokeGlobalScriptDisable(static_cast<int32_t>(instance.Handle));
+					if (s_Callbacks.InvokeGlobalSystemDisable) {
+						s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(instance.Handle));
 					}
-					s_Callbacks.DestroyGlobalScriptInstance(static_cast<int32_t>(instance.Handle));
+					s_Callbacks.DestroyGlobalSystemInstance(static_cast<int32_t>(instance.Handle));
 				}
 			}
 		}
-		s_GlobalScripts.clear();
+		s_GlobalSystems.clear();
 	}
 
-	void ScriptEngine::SetGlobalScriptEnabled(const std::string& className, bool enabled)
+	void ScriptEngine::SetGlobalSystemEnabled(const std::string& className, bool enabled)
 	{
 		if (!s_Initialized) return;
 
-		auto it = std::find_if(s_GlobalScripts.begin(), s_GlobalScripts.end(),
-			[&className](const GlobalScriptInstance& instance) { return instance.ClassName == className; });
-		if (it == s_GlobalScripts.end() || it->Handle == 0) return;
+		auto it = std::find_if(s_GlobalSystems.begin(), s_GlobalSystems.end(),
+			[&className](const GlobalSystemInstance& instance) { return instance.ClassName == className; });
+		if (it == s_GlobalSystems.end() || it->Handle == 0) return;
 		if (it->Enabled == enabled) return;
 
 		it->Enabled = enabled;
 
 		if (enabled) {
-			if (s_Callbacks.InvokeGlobalScriptEnable) {
-				s_Callbacks.InvokeGlobalScriptEnable(static_cast<int32_t>(it->Handle));
+			if (s_Callbacks.InvokeGlobalSystemEnable) {
+				s_Callbacks.InvokeGlobalSystemEnable(static_cast<int32_t>(it->Handle));
 			}
 		}
-		else if (s_Callbacks.InvokeGlobalScriptDisable) {
-			s_Callbacks.InvokeGlobalScriptDisable(static_cast<int32_t>(it->Handle));
+		else if (s_Callbacks.InvokeGlobalSystemDisable) {
+			s_Callbacks.InvokeGlobalSystemDisable(static_cast<int32_t>(it->Handle));
 		}
 	}
 
-	bool ScriptEngine::GlobalScriptClassExists(const std::string& className)
+	bool ScriptEngine::GlobalSystemClassExists(const std::string& className)
 	{
-		if (!s_Initialized || !s_Callbacks.GlobalScriptClassExists) return false;
-		return s_Callbacks.GlobalScriptClassExists(className.c_str()) != 0;
+		if (!s_Initialized || !s_Callbacks.GlobalSystemClassExists) return false;
+		return s_Callbacks.GlobalSystemClassExists(className.c_str()) != 0;
 	}
 
 	void ScriptEngine::InvokeAwake(uint32_t handle)
@@ -604,45 +604,45 @@ namespace Index {
 		s_Callbacks.InvokeFixedUpdate(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptAwake(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemAwake(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptAwake) return;
-		s_Callbacks.InvokeSceneScriptAwake(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemAwake) return;
+		s_Callbacks.InvokeSceneSystemAwake(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeSceneScriptFixedUpdate(uint32_t handle)
+	void ScriptEngine::InvokeSceneSystemFixedUpdate(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeSceneScriptFixedUpdate) return;
-		s_Callbacks.InvokeSceneScriptFixedUpdate(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeSceneSystemFixedUpdate) return;
+		s_Callbacks.InvokeSceneSystemFixedUpdate(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::InvokeGlobalScriptFixedUpdate(uint32_t handle)
+	void ScriptEngine::InvokeGlobalSystemFixedUpdate(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.InvokeGlobalScriptFixedUpdate) return;
-		s_Callbacks.InvokeGlobalScriptFixedUpdate(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.InvokeGlobalSystemFixedUpdate) return;
+		s_Callbacks.InvokeGlobalSystemFixedUpdate(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::FixedUpdateGlobalScripts()
+	void ScriptEngine::FixedUpdateGlobalSystems()
 	{
-		if (!s_Initialized || !s_Callbacks.InvokeGlobalScriptFixedUpdate) return;
-		for (const auto& instance : s_GlobalScripts)
+		if (!s_Initialized || !s_Callbacks.InvokeGlobalSystemFixedUpdate) return;
+		for (const auto& instance : s_GlobalSystems)
 		{
 			if (instance.Handle != 0 && instance.Enabled) {
-				s_Callbacks.InvokeGlobalScriptFixedUpdate(static_cast<int32_t>(instance.Handle));
+				s_Callbacks.InvokeGlobalSystemFixedUpdate(static_cast<int32_t>(instance.Handle));
 			}
 		}
 	}
 
-	const char* ScriptEngine::GetSceneScriptFields(uint32_t handle)
+	const char* ScriptEngine::GetSceneSystemFields(uint32_t handle)
 	{
-		if (handle == 0 || !s_Callbacks.GetSceneScriptFields) return "[]";
-		return s_Callbacks.GetSceneScriptFields(static_cast<int32_t>(handle));
+		if (handle == 0 || !s_Callbacks.GetSceneSystemFields) return "[]";
+		return s_Callbacks.GetSceneSystemFields(static_cast<int32_t>(handle));
 	}
 
-	void ScriptEngine::SetSceneScriptField(uint32_t handle, const char* fieldName, const char* value)
+	void ScriptEngine::SetSceneSystemField(uint32_t handle, const char* fieldName, const char* value)
 	{
-		if (handle == 0 || !s_Callbacks.SetSceneScriptField) return;
-		s_Callbacks.SetSceneScriptField(static_cast<int32_t>(handle), fieldName, value);
+		if (handle == 0 || !s_Callbacks.SetSceneSystemField) return;
+		s_Callbacks.SetSceneSystemField(static_cast<int32_t>(handle), fieldName, value);
 	}
 
 	void ScriptEngine::PumpCoroutinesUpdate(float deltaTime)

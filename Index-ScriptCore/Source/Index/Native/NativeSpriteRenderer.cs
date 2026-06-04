@@ -20,12 +20,12 @@ public struct NativeSpriteRenderer : IComponent
     // matches the C++ default so freshly-created sprites are white-tinted
     // rather than transparent black.
     public Color         Color = new(1f, 1f, 1f, 1f);
-    // Mirror of SpriteRendererComponent.hpp `FilterMode{ Filter::Bilinear }`.
+    // Mirror of SpriteRendererComponent.hpp `FilterMode{ Filter::Default }`.
+    // Default = use the texture's own (import) filter rather than overriding it.
     // Writing this field directly only mutates the per-entity setting; to
     // actually rebuild the texture sampler use the managed SpriteRenderer
-    // wrapper's FilterMode property (which routes through the inspector
-    // setter so Texture2D::SetFilter is called).
-    public TextureFilter FilterMode = TextureFilter.Bilinear;
+    // wrapper's FilterMode property (which routes through the inspector setter).
+    public TextureFilter FilterMode = TextureFilter.Default;
 
     internal const string NativeName = "Sprite Renderer";
 }

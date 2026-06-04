@@ -828,7 +828,7 @@ namespace Index {
 		if (!io.KeyCtrl && !io.KeyShift && !io.KeyAlt && !io.KeySuper
 			&& (ImGui::IsKeyPressed(ImGuiKey_Delete, false)
 				|| ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false))) {
-			DeleteSelectedAssets();
+			RequestDeleteSelectedAssets();
 			return;
 		}
 
@@ -1058,6 +1058,7 @@ namespace Index {
 		RenderGrid();
 
 		RenderCreationCollisionPrompt();
+		RenderDeleteConfirmationPrompt();
 
 		ImGui::End();
 	}
@@ -1730,11 +1731,11 @@ namespace Index {
 				if (ImGui::MenuItem("Native Component")) {
 					CreateNativeCSharpComponent(m_CurrentDirectory);
 				}
-				if (ImGui::MenuItem("SceneScript")) {
-					CreateSceneScript(m_CurrentDirectory);
+				if (ImGui::MenuItem("SceneSystem")) {
+					CreateSceneSystem(m_CurrentDirectory);
 				}
-				if (ImGui::MenuItem("GlobalScript")) {
-					CreateGlobalScript(m_CurrentDirectory);
+				if (ImGui::MenuItem("GlobalSystem")) {
+					CreateGlobalSystem(m_CurrentDirectory);
 				}
 				ImGui::EndMenu();
 			}
@@ -1796,7 +1797,7 @@ namespace Index {
 			ImGui::Separator();
 
 			if (ImGui::MenuItem("Delete", "Del")) {
-				DeleteSelectedAssets();
+				RequestDeleteSelectedAssets();
 				ImGui::EndPopup();
 				return;
 			}

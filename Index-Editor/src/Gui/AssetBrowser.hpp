@@ -87,6 +87,10 @@ namespace Index {
 
 		void RenderCreationCollisionPrompt();
 
+		// Confirmation dialog before deleting selected assets, gated by
+		// EditorPreferences::GetConfirmOnDelete().
+		void RenderDeleteConfirmationPrompt();
+
 		// .scene files embed their displayed name; a byte-copy via Duplicate /
 		// Paste leaves it stale and the hierarchy keeps showing the source name.
 		void SyncSceneEmbeddedNameIfNeeded(const std::filesystem::path& copiedPath);
@@ -107,6 +111,9 @@ namespace Index {
 		void CopySelectedAssets(bool cut);
 		void PasteAssets();
 		void DuplicateSelectedAssets();
+		// User-facing delete entry point: opens the confirmation dialog when
+		// enabled in preferences, otherwise deletes immediately.
+		void RequestDeleteSelectedAssets();
 		void DeleteSelectedAssets();
 
 		void DeleteEntry(const std::string& path);
@@ -116,8 +123,8 @@ namespace Index {
 		void CreateScript(const std::string& parentDir);
 		void CreateManagedCSharpComponent(const std::string& parentDir);
 		void CreateNativeCSharpComponent(const std::string& parentDir);
-		void CreateSceneScript(const std::string& parentDir);
-		void CreateGlobalScript(const std::string& parentDir);
+		void CreateSceneSystem(const std::string& parentDir);
+		void CreateGlobalSystem(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
 		void CreateDefaultTexture(const std::string& parentDir,
@@ -159,7 +166,7 @@ namespace Index {
 		bool m_AssetClipboardCut = false;
 
 		// Deferred script creation - boilerplate/project script is written after rename is committed.
-		enum class PendingScriptType { None, CSharp, CSharpComponent, CSharpNativeComponent, CSharpSceneScript, CSharpGlobalScript, EntityPrefab };
+		enum class PendingScriptType { None, CSharp, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, EntityPrefab };
 		PendingScriptType m_PendingScriptType = PendingScriptType::None;
 		std::string m_PendingScriptDir;  // parent directory for the new script
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;
@@ -179,6 +186,12 @@ namespace Index {
 		// request; drained on the next RenderCreationCollisionPrompt frame
 		// to call ImGui::OpenPopup exactly once.
 		bool m_OpenCreationPromptThisFrame = false;
+
+		// Pending asset-deletion confirmation. Paths are captured when the
+		// user requests a delete; the prompt opens once and deletes them on
+		// confirm. Drained by RenderDeleteConfirmationPrompt.
+		std::vector<std::string> m_PendingDeletePaths;
+		bool m_OpenDeletePromptThisFrame = false;
 
 		// Paths whose thumbnails need invalidating. Filled by DeleteEntry,
 		// drained at the top of the NEXT frame's Render(). Destroying a

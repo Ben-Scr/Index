@@ -13,7 +13,7 @@ namespace Index {
 	struct INDEX_API IndexProject {
 		using CreateProgressCallback = std::function<void(float progress, std::string_view stage)>;
 
-		struct GlobalScriptRegistration {
+		struct GlobalSystemRegistration {
 			std::string ClassName;
 			bool Active = true;
 		};
@@ -63,7 +63,7 @@ namespace Index {
 		float UIScaleMatch = 0.5f;
 		std::string AppIconPath;
 		std::vector<std::string> BuildSceneList;
-		std::vector<GlobalScriptRegistration> GlobalScripts;
+		std::vector<GlobalSystemRegistration> GlobalSystems;
 
 		// Empty == legacy "scan everything" mode.
 		std::vector<std::string> Packages;

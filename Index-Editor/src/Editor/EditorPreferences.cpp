@@ -47,6 +47,7 @@ namespace Index {
 			bool AutoSaveScenes = false;
 			float AutoSaveIntervalSeconds = 120.0f;
 			bool AutoSavePrefabs = true;
+			bool ConfirmOnDelete = true;
 
 			bool Loaded = false;
 			bool FreshlyCreated = false;
@@ -254,6 +255,9 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("AutoSavePrefabs")) {
 			s.AutoSavePrefabs = v->AsBoolOr(true);
 		}
+		if (const Json::Value* v = root.FindMember("ConfirmOnDelete")) {
+			s.ConfirmOnDelete = v->AsBoolOr(true);
+		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
 			ImGuiStyle tempStyle;
@@ -299,6 +303,7 @@ namespace Index {
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
 		root.AddMember("AutoSavePrefabs", Json::Value(s.AutoSavePrefabs));
+		root.AddMember("ConfirmOnDelete", Json::Value(s.ConfirmOnDelete));
 
 		// Always serialize CustomColors once seeded — the user can return
 		// to the saved set after experimenting with Dark/Light/System.
@@ -501,6 +506,16 @@ namespace Index {
 	void EditorPreferences::SetAutoSavePrefabs(bool value) {
 		if (S().AutoSavePrefabs == value) return;
 		S().AutoSavePrefabs = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetConfirmOnDelete() {
+		return S().ConfirmOnDelete;
+	}
+
+	void EditorPreferences::SetConfirmOnDelete(bool value) {
+		if (S().ConfirmOnDelete == value) return;
+		S().ConfirmOnDelete = value;
 		Save();
 	}
 

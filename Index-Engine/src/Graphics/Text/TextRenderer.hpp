@@ -4,7 +4,9 @@
 #include "Collections/Vec2.hpp"
 #include "Components/Graphics/TextRendererComponent.hpp"
 #include "Core/Export.hpp"
+#include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Text/FontHandle.hpp"
+#include "Graphics/TextureHandle.hpp"
 
 #include <cstdint>
 #include <glm/mat4x4.hpp>

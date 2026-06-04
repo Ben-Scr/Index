@@ -172,26 +172,26 @@ public class Scene
         return true;
     }
 
-    public bool EnableSystem<T>() where T : SceneScript
+    public bool EnableSystem<T>() where T : SceneSystem
         => SetSystemEnabled<T>(true);
 
-    public bool DisableSystem<T>() where T : SceneScript
+    public bool DisableSystem<T>() where T : SceneSystem
         => SetSystemEnabled<T>(false);
 
-    public bool IsSystemEnabled<T>() where T : SceneScript
+    public bool IsSystemEnabled<T>() where T : SceneSystem
     {
         if (string.IsNullOrEmpty(Name))
             return false;
 
-        return InternalCalls.Scene_IsSceneScriptEnabled(Name, typeof(T).Name);
+        return InternalCalls.Scene_IsSceneSystemEnabled(Name, typeof(T).Name);
     }
 
-    private bool SetSystemEnabled<T>(bool enabled) where T : SceneScript
+    private bool SetSystemEnabled<T>(bool enabled) where T : SceneSystem
     {
         if (string.IsNullOrEmpty(Name))
             return false;
 
-        return InternalCalls.Scene_SetSceneScriptEnabled(Name, typeof(T).Name, enabled);
+        return InternalCalls.Scene_SetSceneSystemEnabled(Name, typeof(T).Name, enabled);
     }
 
     // ── Internal helpers (static) ──────────────────────────────

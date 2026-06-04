@@ -1402,14 +1402,14 @@ namespace Index {
 		root.AddMember("sceneId", Value(std::to_string(static_cast<uint64_t>(scene.GetSceneId()))));
 
 		Value systemsValue = Value::MakeArray();
-		for (const std::string& className : scene.GetSceneScriptClassNames()) {
+		for (const std::string& className : scene.GetSceneSystemClassNames()) {
 			if (className.empty()) continue;
-			const bool enabled = scene.IsSceneScriptEnabled(className);
+			const bool enabled = scene.IsSceneSystemEnabled(className);
 
 			// Compact form: classes without authored field values stay as a
 			// bare string while enabled so existing scenes round-trip cleanly.
 			// Disabled systems or authored fields use the object form.
-			const auto* overrides = scene.GetSceneScriptFieldValues(className);
+			const auto* overrides = scene.GetSceneSystemFieldValues(className);
 			if (enabled && (!overrides || overrides->empty())) {
 				systemsValue.Append(Value(className));
 				continue;

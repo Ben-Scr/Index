@@ -436,8 +436,8 @@ namespace Index {
 			ImGui::Unindent(8.0f);
 		}
 
-		// SceneScript fields are scene-scoped: Set writes through SetSceneScriptFieldValue + SetSceneScriptField, ignoring the entity argument.
-		PropertyDescriptor BuildSceneScriptFieldDescriptor(EditorFieldRecord rec,
+		// SceneSystem fields are scene-scoped: Set writes through SetSceneSystemFieldValue + SetSceneSystemField, ignoring the entity argument.
+		PropertyDescriptor BuildSceneSystemFieldDescriptor(EditorFieldRecord rec,
 			Scene* scene, const std::string& className)
 		{
 			PropertyDescriptor d;
@@ -463,10 +463,10 @@ namespace Index {
 			d.Set = [scene, className, fieldName = rec.Name](Entity&, const PropertyValue& v) {
 				if (!scene) return;
 				const std::string newValueStr = v.ToString();
-				scene->SetSceneScriptFieldValue(className, fieldName, newValueStr);
-				uint32_t handle = scene->GetSceneScriptHandle(className);
+				scene->SetSceneSystemFieldValue(className, fieldName, newValueStr);
+				uint32_t handle = scene->GetSceneSystemHandle(className);
 				if (handle != 0) {
-					ScriptEngine::SetSceneScriptField(handle, fieldName.c_str(), newValueStr.c_str());
+					ScriptEngine::SetSceneSystemField(handle, fieldName.c_str(), newValueStr.c_str());
 				}
 			};
 			return d;
@@ -745,12 +745,12 @@ namespace Index {
 		// NOTE: ReferencePicker::RenderPopup() intentionally NOT called here — the outer loop already renders it once; calling it again duplicates IDs and triggers ImGui's conflicting-ID assertion.
 	}
 
-	void DrawSceneScriptFields(Scene& scene, const std::string& className)
+	void DrawSceneSystemFields(Scene& scene, const std::string& className)
 	{
 		// Render unconditionally so it's visible even when the system has no fields or the engine isn't initialised.
 		DrawOpenScriptButton(className,
 			[](const EditorScriptDiscovery::ScriptEntry& e) {
-				return e.IsSceneScript;
+				return e.IsSceneSystem;
 			},
 			className);
 
@@ -760,13 +760,13 @@ namespace Index {
 		}
 
 		auto& callbacks = ScriptEngine::GetCallbacks();
-		const uint32_t handle = scene.GetSceneScriptHandle(className);
+		const uint32_t handle = scene.GetSceneSystemHandle(className);
 		const bool hasLiveInstance = (handle != 0);
 
 		// Live instance: read actual managed state. Edit mode: class defaults patched with authored values below.
 		const char* json = nullptr;
 		if (hasLiveInstance) {
-			json = ScriptEngine::GetSceneScriptFields(handle);
+			json = ScriptEngine::GetSceneSystemFields(handle);
 		}
 		else if (callbacks.GetClassFieldDefs) {
 			json = callbacks.GetClassFieldDefs(className.c_str());
@@ -778,7 +778,7 @@ namespace Index {
 
 		// In edit mode: overlay scene's authored values over class defaults so the inspector reflects what will be flushed at Awake.
 		if (!hasLiveInstance) {
-			if (const auto* overrides = scene.GetSceneScriptFieldValues(className)) {
+			if (const auto* overrides = scene.GetSceneSystemFieldValues(className)) {
 				for (auto& rec : records) {
 					auto it = overrides->find(rec.Name);
 					if (it != overrides->end()) rec.Value = it->second;
@@ -792,7 +792,7 @@ namespace Index {
 
 		for (auto& rec : records) {
 			const std::string fieldKey = "gamesystem:" + className + "." + rec.Name;
-			PropertyDescriptor descriptor = BuildSceneScriptFieldDescriptor(std::move(rec), &scene, className);
+			PropertyDescriptor descriptor = BuildSceneSystemFieldDescriptor(std::move(rec), &scene, className);
 			PropertyDrawer::Draw(entitySpan, descriptor, fieldKey);
 		}
 	}

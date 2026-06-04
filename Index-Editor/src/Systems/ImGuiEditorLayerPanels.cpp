@@ -841,7 +841,7 @@ namespace Index {
 			{ ImGuiEditorLayer::SettingsCategory::Editor,   "Scripting",       "scripting scripts recompile auto build play mode dotnet csharp c#" },
 
 			// Systems (RenderSettings_Systems)
-			{ ImGuiEditorLayer::SettingsCategory::Systems,  "Global Scripts",  "global scripts globalscript scene script registration project scope" },
+			{ ImGuiEditorLayer::SettingsCategory::Systems,  "Global Systems",  "global systems globalsystem scene system registration project scope" },
 		};
 
 		constexpr const char* k_SettingsCategoryNamesLower[] = {
@@ -1932,14 +1932,14 @@ namespace Index {
 		if (changed) {
 			project->Save();
 			if (globalSystemsChanged) {
-				std::vector<std::string> activeGlobalScripts;
-				for (const auto& registration : project->GlobalScripts) {
+				std::vector<std::string> activeGlobalSystems;
+				for (const auto& registration : project->GlobalSystems) {
 					if (registration.Active && !registration.ClassName.empty()) {
-						activeGlobalScripts.push_back(registration.ClassName);
+						activeGlobalSystems.push_back(registration.ClassName);
 					}
 				}
-				ScriptEngine::ShutdownGlobalScripts();
-				ScriptEngine::InitializeGlobalScripts(activeGlobalScripts);
+				ScriptEngine::ShutdownGlobalSystems();
+				ScriptEngine::InitializeGlobalSystems(activeGlobalSystems);
 			}
 		}
 
@@ -3008,29 +3008,29 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::RenderSettings_Systems(IndexProject& project, bool& changed,
-		bool& outGlobalScriptsChanged, const std::string& filterLower)
+		bool& outGlobalSystemsChanged, const std::string& filterLower)
 	{
-		if (SectionVisible(SettingsCategory::Systems, "Global Scripts", filterLower)) {
+		if (SectionVisible(SettingsCategory::Systems, "Global Systems", filterLower)) {
 		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
-		if (ImGui::CollapsingHeader("Global Scripts", ImGuiTreeNodeFlags_DefaultOpen)) {
+		if (ImGui::CollapsingHeader("Global Systems", ImGuiTreeNodeFlags_DefaultOpen)) {
 			ImGui::Indent(8);
 			ImGui::SetNextItemWidth(-1);
-			ImGui::InputTextWithHint("##GlobalScriptSearch", "Search global systems...",
-				m_GlobalScriptSearchBuffer, sizeof(m_GlobalScriptSearchBuffer));
+			ImGui::InputTextWithHint("##GlobalSystemSearch", "Search global systems...",
+				m_GlobalSystemSearchBuffer, sizeof(m_GlobalSystemSearchBuffer));
 
-			std::string filter(m_GlobalScriptSearchBuffer);
+			std::string filter(m_GlobalSystemSearchBuffer);
 			std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
 
 			std::vector<EditorScriptDiscovery::ScriptEntry> scriptEntries;
 			EditorScriptDiscovery::CollectProjectScriptEntries(scriptEntries);
 
-			std::unordered_set<std::string> discoveredGlobalScripts;
+			std::unordered_set<std::string> discoveredGlobalSystems;
 			for (const auto& scriptEntry : scriptEntries) {
-				if (!scriptEntry.IsGlobalScript) {
+				if (!scriptEntry.IsGlobalSystem) {
 					continue;
 				}
 
-				discoveredGlobalScripts.insert(scriptEntry.ClassName);
+				discoveredGlobalSystems.insert(scriptEntry.ClassName);
 				if (!filter.empty()) {
 					std::string lowerClassName = EditorScriptDiscovery::ToLowerCopy(scriptEntry.ClassName);
 					std::string lowerPath = EditorScriptDiscovery::ToLowerCopy(scriptEntry.Path.string());
@@ -3040,25 +3040,25 @@ namespace Index {
 					}
 				}
 
-				auto it = std::find_if(project.GlobalScripts.begin(), project.GlobalScripts.end(),
-					[&](const IndexProject::GlobalScriptRegistration& registration) {
+				auto it = std::find_if(project.GlobalSystems.begin(), project.GlobalSystems.end(),
+					[&](const IndexProject::GlobalSystemRegistration& registration) {
 						return registration.ClassName == scriptEntry.ClassName;
 					});
-				bool active = it != project.GlobalScripts.end() ? it->Active : false;
+				bool active = it != project.GlobalSystems.end() ? it->Active : false;
 				if (ImGui::Checkbox(scriptEntry.ClassName.c_str(), &active)) {
-					if (it == project.GlobalScripts.end()) {
-						project.GlobalScripts.push_back({ scriptEntry.ClassName, active });
+					if (it == project.GlobalSystems.end()) {
+						project.GlobalSystems.push_back({ scriptEntry.ClassName, active });
 					}
 					else {
 						it->Active = active;
 					}
 					changed = true;
-					outGlobalScriptsChanged = true;
+					outGlobalSystemsChanged = true;
 				}
 			}
 
-			for (auto& registration : project.GlobalScripts) {
-				if (discoveredGlobalScripts.contains(registration.ClassName)) {
+			for (auto& registration : project.GlobalSystems) {
+				if (discoveredGlobalSystems.contains(registration.ClassName)) {
 					continue;
 				}
 				bool active = registration.Active;
@@ -3066,13 +3066,13 @@ namespace Index {
 				if (ImGui::Checkbox(label.c_str(), &active)) {
 					registration.Active = active;
 					changed = true;
-					outGlobalScriptsChanged = true;
+					outGlobalSystemsChanged = true;
 				}
 			}
 
 			ImGui::Unindent(8);
 		}
-		}  // end SectionVisible("Global Scripts")
+		}  // end SectionVisible("Global Systems")
 	}
 
 	void ImGuiEditorLayer::TickSplashPreview() {

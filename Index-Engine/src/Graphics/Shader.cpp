@@ -27,6 +27,8 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var t_albedo: texture_2d<f32>;
 @group(0) @binding(2) var s_albedo: sampler;
+@group(0) @binding(3) var t_mask: texture_2d<f32>;
+@group(0) @binding(4) var s_mask: sampler;
 
 struct VertexInput {
 	@location(0) position: vec3<f32>,
@@ -34,12 +36,19 @@ struct VertexInput {
 	@location(2) i_data1: vec4<f32>,  // Color RGBA
 	@location(3) i_data2: vec4<f32>,  // rotation (radians), _, _, _
 	@location(4) i_data3: vec4<f32>,  // Sprite slice UV rect: (u0, v0, u1, v1)
+	@location(5) i_data4: vec4<f32>,  // Mask rect: (minX, minY, invW, invH), zero inv disables
+	@location(6) i_data5: vec4<f32>,  // Mask inverse rotation: (pivotX, pivotY, cos, sin)
+	@location(7) i_data6: vec4<f32>,  // Mask UV rect: (u0, v0, u1, v1)
 };
 
 struct VertexOutput {
 	@builtin(position) clip_position: vec4<f32>,
 	@location(0) color: vec4<f32>,
 	@location(1) uv: vec2<f32>,
+	@location(2) world: vec2<f32>,
+	@location(3) maskRect: vec4<f32>,
+	@location(4) maskRot: vec4<f32>,
+	@location(5) maskUv: vec4<f32>,
 };
 
 @vertex
@@ -61,6 +70,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	var out: VertexOutput;
 	out.clip_position = u.viewProj * vec4<f32>(world, 0.0, 1.0);
 	out.color = in.i_data1;
+	out.world = world;
+	out.maskRect = in.i_data4;
+	out.maskRot = in.i_data5;
+	out.maskUv = in.i_data6;
 	// Unit-quad UV: [-0.5, 0.5] -> [0, 1] on X, Y flipped so texture top-left
 	// shows at the quad's visual top (engine has Y-up world space; textures
 	// are top-left origin per stb's load).
@@ -78,7 +91,35 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	let texel = textureSample(t_albedo, s_albedo, in.uv);
-	return texel * in.color;
+	var color = texel * in.color;
+
+	if (in.maskRect.z != 0.0 && in.maskRect.w != 0.0) {
+		let delta = in.world - in.maskRot.xy;
+		let local = vec2<f32>(
+			delta.x * in.maskRot.z - delta.y * in.maskRot.w,
+			delta.x * in.maskRot.w + delta.y * in.maskRot.z
+		) + in.maskRot.xy;
+
+		let mask01 = vec2<f32>(
+			(local.x - in.maskRect.x) * in.maskRect.z,
+			(local.y - in.maskRect.y) * in.maskRect.w
+		);
+		if (mask01.x < 0.0 || mask01.x > 1.0 || mask01.y < 0.0 || mask01.y > 1.0) {
+			discard;
+		}
+
+		let maskSampleUv = vec2<f32>(
+			mix(in.maskUv.x, in.maskUv.z, mask01.x),
+			mix(in.maskUv.y, in.maskUv.w, 1.0 - mask01.y)
+		);
+		let maskAlpha = textureSampleLevel(t_mask, s_mask, maskSampleUv, 0.0).a;
+		if (maskAlpha <= 0.001) {
+			discard;
+		}
+		color.a = color.a * maskAlpha;
+	}
+
+	return color;
 }
 
 // Wireframe-debug fragment entry point. Used by the Wireframe sprite
@@ -101,17 +142,26 @@ struct Uniforms {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var t_atlas: texture_2d<f32>;
 @group(0) @binding(2) var s_atlas: sampler;
+@group(0) @binding(3) var t_text_mask: texture_2d<f32>;
+@group(0) @binding(4) var s_text_mask: sampler;
 
 struct VertexInput {
 	@location(0) position: vec2<f32>,
 	@location(1) uv:       vec2<f32>,
 	@location(2) color:    vec4<f32>,
+	@location(3) maskRect: vec4<f32>,
+	@location(4) maskRot:  vec4<f32>,
+	@location(5) maskUv:   vec4<f32>,
 };
 
 struct VertexOutput {
 	@builtin(position) clip_position: vec4<f32>,
 	@location(0) color: vec4<f32>,
 	@location(1) uv:    vec2<f32>,
+	@location(2) world: vec2<f32>,
+	@location(3) maskRect: vec4<f32>,
+	@location(4) maskRot: vec4<f32>,
+	@location(5) maskUv: vec4<f32>,
 };
 
 @vertex
@@ -120,13 +170,45 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 	out.clip_position = u.viewProj * vec4<f32>(in.position, 0.0, 1.0);
 	out.color = in.color;
 	out.uv = in.uv;
+	out.world = in.position;
+	out.maskRect = in.maskRect;
+	out.maskRot = in.maskRot;
+	out.maskUv = in.maskUv;
 	return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 	let alpha = textureSample(t_atlas, s_atlas, in.uv).r;
-	return vec4<f32>(in.color.rgb, in.color.a * alpha);
+	var outAlpha = in.color.a * alpha;
+
+	if (in.maskRect.z != 0.0 && in.maskRect.w != 0.0) {
+		let delta = in.world - in.maskRot.xy;
+		let local = vec2<f32>(
+			delta.x * in.maskRot.z - delta.y * in.maskRot.w,
+			delta.x * in.maskRot.w + delta.y * in.maskRot.z
+		) + in.maskRot.xy;
+
+		let mask01 = vec2<f32>(
+			(local.x - in.maskRect.x) * in.maskRect.z,
+			(local.y - in.maskRect.y) * in.maskRect.w
+		);
+		if (mask01.x < 0.0 || mask01.x > 1.0 || mask01.y < 0.0 || mask01.y > 1.0) {
+			discard;
+		}
+
+		let maskSampleUv = vec2<f32>(
+			mix(in.maskUv.x, in.maskUv.z, mask01.x),
+			mix(in.maskUv.y, in.maskUv.w, 1.0 - mask01.y)
+		);
+		let maskAlpha = textureSampleLevel(t_text_mask, s_text_mask, maskSampleUv, 0.0).a;
+		if (maskAlpha <= 0.001) {
+			discard;
+		}
+		outAlpha = outAlpha * maskAlpha;
+	}
+
+	return vec4<f32>(in.color.rgb, outAlpha);
 }
 )WGSL";
 

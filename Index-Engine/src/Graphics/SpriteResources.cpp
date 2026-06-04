@@ -82,7 +82,7 @@ namespace Index::WebGPUSpriteResources {
 		}
 
 		wgpu::BindGroupLayout CreateSpriteBindGroupLayout(wgpu::Device device) {
-			wgpu::BindGroupLayoutEntry entries[3] = {};
+			wgpu::BindGroupLayoutEntry entries[5] = {};
 
 			// Binding 0: viewProj uniform (mat4x4<f32>).
 			entries[0].binding    = 0;
@@ -103,8 +103,20 @@ namespace Index::WebGPUSpriteResources {
 			entries[2].visibility = wgpu::ShaderStage::Fragment;
 			entries[2].sampler.type = wgpu::SamplerBindingType::Filtering;
 
+			// Binding 3/4: optional UI mask texture. Unmasked draws bind the
+			// default white texture and keep the per-instance mask flag off.
+			entries[3].binding    = 3;
+			entries[3].visibility = wgpu::ShaderStage::Fragment;
+			entries[3].texture.sampleType    = wgpu::TextureSampleType::Float;
+			entries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
+			entries[3].texture.multisampled  = false;
+
+			entries[4].binding    = 4;
+			entries[4].visibility = wgpu::ShaderStage::Fragment;
+			entries[4].sampler.type = wgpu::SamplerBindingType::Filtering;
+
 			wgpu::BindGroupLayoutDescriptor desc{};
-			desc.entryCount = 3;
+			desc.entryCount = 5;
 			desc.entries    = entries;
 			desc.label      = "sprite-bindgroup-layout";
 			return device.CreateBindGroupLayout(&desc);
@@ -130,7 +142,7 @@ namespace Index::WebGPUSpriteResources {
 			vertexAttrs[0].offset         = 0;
 			vertexAttrs[0].shaderLocation = 0;
 
-			wgpu::VertexAttribute instanceAttrs[4] = {};
+			wgpu::VertexAttribute instanceAttrs[7] = {};
 			instanceAttrs[0].format         = wgpu::VertexFormat::Float32x4;
 			instanceAttrs[0].offset         = 0;
 			instanceAttrs[0].shaderLocation = 1;
@@ -143,6 +155,15 @@ namespace Index::WebGPUSpriteResources {
 			instanceAttrs[3].format         = wgpu::VertexFormat::Float32x4;
 			instanceAttrs[3].offset         = 48;
 			instanceAttrs[3].shaderLocation = 4;
+			instanceAttrs[4].format         = wgpu::VertexFormat::Float32x4;
+			instanceAttrs[4].offset         = 64;
+			instanceAttrs[4].shaderLocation = 5;
+			instanceAttrs[5].format         = wgpu::VertexFormat::Float32x4;
+			instanceAttrs[5].offset         = 80;
+			instanceAttrs[5].shaderLocation = 6;
+			instanceAttrs[6].format         = wgpu::VertexFormat::Float32x4;
+			instanceAttrs[6].offset         = 96;
+			instanceAttrs[6].shaderLocation = 7;
 
 			wgpu::VertexBufferLayout buffers[2] = {};
 			buffers[0].arrayStride    = sizeof(QuadVertex);
@@ -152,7 +173,7 @@ namespace Index::WebGPUSpriteResources {
 
 			buffers[1].arrayStride    = sizeof(SpriteInstance);
 			buffers[1].stepMode       = wgpu::VertexStepMode::Instance;
-			buffers[1].attributeCount = 4;
+			buffers[1].attributeCount = 7;
 			buffers[1].attributes     = instanceAttrs;
 
 			// Alpha-blended colour target — engine default for sprites and UI.
@@ -366,6 +387,40 @@ namespace Index::WebGPUSpriteResources {
 		dst.Uv[1] = src.UvRect.V0;
 		dst.Uv[2] = src.UvRect.U1;
 		dst.Uv[3] = src.UvRect.V1;
+		if (src.HasTextureMask) {
+			const float maskWidth = src.MaskRectMax.x - src.MaskRectMin.x;
+			const float maskHeight = src.MaskRectMax.y - src.MaskRectMin.y;
+			if (maskWidth > 0.0f && maskHeight > 0.0f) {
+				dst.MaskRect[0] = src.MaskRectMin.x;
+				dst.MaskRect[1] = src.MaskRectMin.y;
+				dst.MaskRect[2] = 1.0f / maskWidth;
+				dst.MaskRect[3] = 1.0f / maskHeight;
+				const float c = std::cos(-src.MaskRotation);
+				const float s = std::sin(-src.MaskRotation);
+				dst.MaskRot[0] = src.MaskPivot.x;
+				dst.MaskRot[1] = src.MaskPivot.y;
+				dst.MaskRot[2] = c;
+				dst.MaskRot[3] = s;
+				dst.MaskUv[0] = src.MaskUvRect.U0;
+				dst.MaskUv[1] = src.MaskUvRect.V0;
+				dst.MaskUv[2] = src.MaskUvRect.U1;
+				dst.MaskUv[3] = src.MaskUvRect.V1;
+				return;
+			}
+		}
+
+		dst.MaskRect[0] = 0.0f;
+		dst.MaskRect[1] = 0.0f;
+		dst.MaskRect[2] = 0.0f;
+		dst.MaskRect[3] = 0.0f;
+		dst.MaskRot[0] = 0.0f;
+		dst.MaskRot[1] = 0.0f;
+		dst.MaskRot[2] = 1.0f;
+		dst.MaskRot[3] = 0.0f;
+		dst.MaskUv[0] = 0.0f;
+		dst.MaskUv[1] = 0.0f;
+		dst.MaskUv[2] = 1.0f;
+		dst.MaskUv[3] = 1.0f;
 	}
 
 }  // namespace Index::WebGPUSpriteResources
