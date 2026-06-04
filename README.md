@@ -2,7 +2,7 @@
  <img src="Docs/logo.png" width="15%" alt="Index Logo">
 <p align="left">
 
-Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
+Index is a lightweight C++20 2D game engine focused on performance and modularity.
 
 ## Preview
 
@@ -20,132 +20,64 @@ Index is a lightweight C++20 2D game engine mainly focused on performance and mo
   <img src="Docs/Preview/Launcher2.png" width="48%" alt="Launcher Preview">
 </p>
 
-## External Libraries / APIs
-- [WebGPU via Dawn](https://dawn.googlesource.com/dawn) - Rendering API (Dawn picks D3D12/Vulkan/Metal at adapter request time)
-- [STB](https://github.com/nothings/stb) - Graphics image library
-- [GLM](https://github.com/g-truc/glm) - Graphics math library
-- [GLFW](https://github.com/glfw/glfw) - Windowing/input library
-- [Box2D](https://github.com/erincatto/box2d) - 2D physics library
-- [Index-Physics](https://github.com/Ben-Scr/Index-Physics) - Lightweight 2D physics library
-- [ENTT](https://github.com/skypjack/entt) - ECS library
-- [Miniaudio](https://github.com/mackron/miniaudio) - Multiplatform audio library
-- [Tracy](https://github.com/wolfpld/tracy) - Profiler (optional, gated by `--no-profiler`)
-- [.NET 9 / hostfxr](https://dotnet.microsoft.com/) - C# scripting host
+## Getting Started
 
-## Prerequisites
-- Git with submodule support.
-- Python 3.10 or newer. `scripts/Setup.py` enforces this version.
-- Premake 5. Windows expects `vendor/bin/premake5.exe`; Linux expects `vendor/bin/premake5` or a `premake5` executable on `PATH`.
-- Windows: Visual Studio 2022 with the MSVC v143 C++ toolset, Windows SDK, and .NET 9 SDK/runtime for scripting projects and native hosting files.
-- Linux: a C++20 compiler (GCC builds the engine; Dawn's bundled source build additionally requires Clang), GNU Make, Python 3.10+, and native packages for GLFW and Dawn's X11 backend.
-
-- GPU backend: the engine renders through Dawn (WebGPU). Dawn is pre-built and linked via `scripts/dawn/SetupDawn.bat` — re-run that script if `External/dawn/build/` is missing or out of date. Dawn picks the underlying runtime API (D3D12 / Vulkan / Metal) at adapter-request time; you do not select it at build time.
-
-The repository currently has no Git LFS patterns in `.gitattributes`. Setup skips `git lfs pull` unless LFS attributes are added later. Use `--skip-lfs` to force a skip or `--require-lfs` to fail if declared LFS assets cannot be pulled.
-
-## Clean Checkout Setup
-Clone with submodules, or initialize them immediately after cloning:
+Clone with submodules:
 
 ```bash
 git clone --recurse https://github.com/Ben-Scr/Index.git
 cd Index
 ```
 
-All submodule status lines should start with a space. A leading `-`, `+`, or `U` means the submodule is missing, at a different commit, or conflicted.
+Then follow the steps for your platform. Re-run setup after pulling changes that touch dependencies, submodules, Premake files, or C# projects.
 
-## Generate Build Files
-Re-run setup after pulling changes that update dependencies, `.gitmodules`, Premake files, or C# projects.
+<details>
+<summary><b>Windows (Visual Studio 2022)</b></summary>
 
-### Windows (Visual Studio 2022)
+**Prerequisites:** Visual Studio 2022 (MSVC v143 toolset + Windows SDK), .NET 9 SDK, Python 3.10+, and Git.
+
+Generate the project files:
 
 ```bat
 scripts\Setup.bat
 ```
 
-This prefers the Windows `py` launcher when available, validates Python 3.10+, syncs and updates submodules, copies .NET hosting files from the installed .NET 9 host pack when needed, and generates Visual Studio 2022 projects with Premake.
+Open `Index.sln` and build the configuration you want, or build from a Developer PowerShell:
 
-Optional direct invocation:
-
-```bat
-py -3 scripts\Setup.py --generator vs2022
+```powershell
+msbuild Index.sln /m /p:Configuration=Release /p:Platform=x64
 ```
 
-### Linux (GNU Make)
+</details>
+
+<details>
+<summary><b>Linux (GNU Make)</b></summary>
+
+**Prerequisites:** a C++20 compiler (GCC; Dawn's source build also needs Clang), GNU Make, Python 3.10+, Git, and the GLFW + X11 development packages.
+
+Generate the makefiles:
 
 ```bash
 chmod +x scripts/Setup.sh
 ./scripts/Setup.sh
 ```
 
-This validates prerequisites, syncs and updates submodules, and generates `gmake2` makefiles. If neither `vendor/bin/premake5` nor `premake5` on `PATH` exists, setup fails with an explicit Premake error.
-
-Optional direct invocation:
+Build:
 
 ```bash
-python3 scripts/Setup.py --generator gmake2
-```
-
-### Standalone Core Profile
-
-For a lightweight library build without the runtime application/editor stack:
-
-```bash
-python3 scripts/Setup.py --generator gmake2 --module-profile core --skip-lfs
-make config=debug -j"$(nproc)" Index-Engine
-```
-
-On Windows:
-
-```bat
-py -3 scripts\Setup.py --generator vs2022 --module-profile core --skip-lfs
-```
-
-Core consumers should include `Index/Core.hpp` or the legacy lean `Index.hpp`. A minimal consumer source is available at `Docs/Samples/CoreConsumer/main.cpp`. `Index/App.hpp`, `Core/Application.hpp`, and `EntryPoint.hpp` are full-runtime APIs and require the application module profile. Setup forwards Premake module flags such as `--module-profile custom --with-render --with-audio` for advanced builds, but the current editor/application surface expects the full runtime stack.
-
-### Scaffolding a new package
-
-```bash
-python scripts/packages/NewPackage.py <PackageName>
-```
-
-Creates `packages/<PackageName>/` with a starter `index-package.lua` manifest. Re-run premake afterward to pick it up.
-
-## Build
-
-### Windows
-
-Open `Index.sln` in Visual Studio 2022 and build the desired configuration/platform, or build from a Developer PowerShell:
-
-```powershell
-msbuild Index.sln /m /p:Configuration=Release /p:Platform=x64
-```
-
-### Linux
-
-```bash
-make config=debug -j"$(nproc)" Index-Engine
-make config=debug -j"$(nproc)" Index-Runtime
-make config=debug -j"$(nproc)" Index-Editor
-```
-
-## Validation Commands
-After setup on a clean checkout:
-
-```bash
-git status --short
-git submodule status --recursive
-python3 scripts/Setup.py --generator gmake2 --skip-lfs
 make config=release -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
-python3 scripts/ci/runtime_smoke_test.py
 ```
 
-On Windows, use:
+</details>
 
-```bat
-git status --short
-git submodule status --recursive
-py -3 scripts\Setup.py --generator vs2022 --skip-lfs
-dotnet restore Index.sln
-```
+## Built With
+
+- [WebGPU via Dawn](https://dawn.googlesource.com/dawn) — rendering (picks D3D12 / Vulkan / Metal at runtime)
+- [GLFW](https://github.com/glfw/glfw) — windowing & input
+- [Box2D](https://github.com/erincatto/box2d) / [Index-Physics](https://github.com/Ben-Scr/Index-Physics) — 2D physics
+- [EnTT](https://github.com/skypjack/entt) — ECS
+- [Miniaudio](https://github.com/mackron/miniaudio) — audio
+- [GLM](https://github.com/g-truc/glm) / [STB](https://github.com/nothings/stb) — math & image loading
+- [.NET 9 / hostfxr](https://dotnet.microsoft.com/) — C# scripting host
 
 ![Views](https://komarev.com/ghpvc/?username=ben-scr-repo-name&label=Repo%20views&color=218a45&style=flat)

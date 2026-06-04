@@ -137,6 +137,7 @@
     <Compile Include="Source\Index\Jobs\ParallelReducer.cs" />
     <Compile Include="Source\Index\Jobs\ReadOnlyAttribute.cs" />
     <Compile Include="Source\Index\Jobs\WriteOnlyAttribute.cs" />
+    <Compile Include="Source\Index\Math\AABB.cs" />
     <Compile Include="Source\Index\Math\Color.cs" />
     <Compile Include="Source\Index\Math\Mathf.cs" />
     <Compile Include="Source\Index\Math\ParallelRandom.cs" />

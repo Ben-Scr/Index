@@ -592,6 +592,7 @@ internal static unsafe class InternalCalls
     internal static float Camera2D_GetViewportWidth(ulong id) => NativeCallbacks.Bindings.Camera2D_GetViewportWidth(id);
     internal static float Camera2D_GetViewportHeight(ulong id) => NativeCallbacks.Bindings.Camera2D_GetViewportHeight(id);
     internal static ulong Camera2D_GetMainEntity() => NativeCallbacks.Bindings.Camera2D_GetMainEntity();
+    internal static void Camera2D_GetFrustum(ulong id, out float minX, out float minY, out float maxX, out float maxY) { float a, b, c, d; NativeCallbacks.Bindings.Camera2D_GetFrustum(id, &a, &b, &c, &d); minX = a; minY = b; maxX = c; maxY = d; }
 
     // ── Rigidbody2D ─────────────────────────────────────────────────
 

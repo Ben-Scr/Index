@@ -58,7 +58,7 @@ satisfies the attribution requirement transitively.
 
 | Path | License | Notes |
 |---|---|---|
-| `External/cereal/` | BSD 3-clause | Cereal proper is **not linked** into any shipped binary — only one rapidxml header is included from `CsprojParser.cpp`. Listed for completeness. |
+| `External/rapidxml/` | Boost-1.0 / MIT (dual) | Single vendored header (RapidXML 1.13, by Marcin Kalicinski). Used only by `CsprojParser.cpp` for .csproj/.props XML parsing. |
 | `External/doctest/` | MIT | Test-only dependency. Not in shipped binaries. |
 | `External/tracy/profiler/` | Various (3-clause BSD / MIT / Zlib / Apache 2.0 for transitive deps) | Tracy's standalone *viewer*. Not shipped with the engine; built separately by developers. |
 

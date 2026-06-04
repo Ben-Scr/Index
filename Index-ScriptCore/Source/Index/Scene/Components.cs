@@ -350,6 +350,18 @@ public class Camera2D : Component
     public float ViewportWidth => InternalCalls.Camera2D_GetViewportWidth(RequireComponent<Camera2D>());
     public float ViewportHeight => InternalCalls.Camera2D_GetViewportHeight(RequireComponent<Camera2D>());
 
+    // World-space axis-aligned bounds the camera currently sees (refreshed on read).
+    public AABB Frustum
+    {
+        get
+        {
+            InternalCalls.Camera2D_GetFrustum(RequireComponent<Camera2D>(), out float minX, out float minY, out float maxX, out float maxY);
+            return new AABB(new Vector2(minX, minY), new Vector2(maxX, maxY));
+        }
+    }
+
+    public Vector2 FrustumSize => Frustum.Size;
+
     private void GetViewportSize(out float viewportWidth, out float viewportHeight)
     {
         ulong entityId = RequireComponent<Camera2D>();

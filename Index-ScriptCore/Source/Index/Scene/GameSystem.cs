@@ -16,6 +16,7 @@ public abstract class GameSystem
                 InternalCalls.Scene_SetGameSystemEnabled(Scene.Name, GetType().Name, value);
         }
     }
+    protected void Print(object? obj) => Log.Print(obj);
 
     internal void _SetSceneName(string sceneName)
     {

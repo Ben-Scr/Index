@@ -57,7 +57,7 @@
 - `Scene::CreateDetachedScene` / `Scene::IsDetached` (renamed from `CreateDetachedEditorScene` / `IsEditorPreview`) are still in the core surface — kept engine-neutral so the editor *uses* them but the engine doesn't *know* about the editor.
 - Editor-only Application state (`m_IsGameplayPaused`, `m_IsScriptInputEnabled`, `m_EditorStopPlayRequested`) is mutated through `ApplicationEditorAccess` (Index-Editor side, friend class). The single exception is `Application::RequestEditorStopPlay()`, which Core exposes for the engine-side script bindings (`ScriptBindingsScene.cpp`); it's a no-op outside the editor.
 - Texture / audio lifecycle is managed via `TextureManager::PurgeUnreferenced` and `AudioManager::PurgeUnreferenced`, called from `SceneManager::LoadScene` / `UnloadAllScenes` (SceneManager.cpp:362, 485). The bare `UnloadTexture` / `UnloadAudio` entry points are not the primary cleanup path; non-ECS holders opt in via the `ReferenceProvider` hook.
-- `Cereal` is in the dependency list but has zero callers — `Serialization/Cereal.hpp` is dead code (only `CsprojParser.cpp` uses one rapidxml header from inside the Cereal repo).
+- `RapidXML` (vendored single header at `External/rapidxml/`) is used only by `CsprojParser.cpp` for .csproj/.props XML parsing.
 
 ## File structure (engine)
 
@@ -81,9 +81,9 @@ Index-Engine/src/
   Debugging/    Logger (dead code)
 ```
 
-## External dependencies (all in External/ as git submodules)
+## External dependencies (in External/; git submodules except the vendored RapidXML header)
 
-GLFW, Glad, ImGui (docking), EnTT, GLM, Box2D, Index-Physics, spdlog, miniaudio, STB, magic_enum, Cereal (rapidxml header only — Cereal proper is unused), .NET SDK, Tracy (profiler client + viewer)
+GLFW, Glad, ImGui (docking), EnTT, GLM, Box2D, Index-Physics, spdlog, miniaudio, STB, magic_enum, RapidXML (vendored single header), .NET SDK, Tracy (profiler client + viewer)
 
 ## Profiling
 

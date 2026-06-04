@@ -551,7 +551,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${INDEX_DIR}/External/entt/src"
     "${INDEX_DIR}/External/stb"
     "${INDEX_DIR}/External/magic_enum/include"
-    "${INDEX_DIR}/External/cereal/include"
+    "${INDEX_DIR}/External/rapidxml"
     "${INDEX_DIR}/External/glfw/include"
     "${INDEX_DIR}/External/glad/include"
     "${INDEX_DIR}/External/miniaudio"

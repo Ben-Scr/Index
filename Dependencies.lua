@@ -11,7 +11,7 @@ IncludeDir["STB"] = "External/stb"
 IncludeDir["MagicEnum"] = "External/magic_enum/include"
 IncludeDir["MiniAudio"] = "External/miniaudio"
 IncludeDir["ConcurrentQueue"] = "External/concurrentqueue"
-IncludeDir["Cereal"] = "External/cereal/include"
+IncludeDir["RapidXml"] = "External/rapidxml"
 IncludeDir["Glad"] = "External/glad/include"
 IncludeDir["DotNet"] = "External/dotnet"
 IncludeDir["IndexEngine"] = "Index-Engine/src"
@@ -133,7 +133,7 @@ Dependency["ExternalIncludes"] =
         "%{IncludeDir.STB}",
         "%{IncludeDir.MagicEnum}",
         "%{IncludeDir.MiniAudio}",
-        "%{IncludeDir.Cereal}",
+        "%{IncludeDir.RapidXml}",
         "%{IncludeDir.IndexPhysics}"
     }
 }
@@ -154,19 +154,16 @@ Dependency["EngineCore"] =
         "%{IncludeDir.EnTT}",
         "%{IncludeDir.STB}",
         "%{IncludeDir.MagicEnum}",
-        -- Cereal: the wrapper Serialization/Cereal.hpp was removed (audit E5)
-        -- because it had zero callers. The include path stays available for
-        -- Packages/CsprojParser.cpp which still needs cereal/external/rapidxml
-        -- for .csproj XML parsing. We tried scoping this with a per-file
-        -- premake filter but it doesn't reliably emit per-file
-        -- AdditionalIncludeDirectories on vcxproj — keeping it global is the
-        -- pragmatic fix; it's a one-line cost for a header path that only
-        -- one .cpp actually consumes.
-        "%{IncludeDir.Cereal}",
+        -- RapidXML (vendored single header at External/rapidxml) — consumed
+        -- only by Packages/CsprojParser.cpp for .csproj/.props XML parsing.
+        -- Kept global because per-file premake filters don't reliably emit
+        -- AdditionalIncludeDirectories on vcxproj; it's a one-line cost for a
+        -- header path that only one .cpp consumes.
+        "%{IncludeDir.RapidXml}",
         -- moodycamel::ConcurrentQueue — header-only, BSD-2-Clause / Boost
         -- dual-licensed. Consumed only by Jobs/JobSystem.cpp as a lock-free
         -- MPMC replacement for the prior std::mutex + std::deque queue.
-        -- Added globally for the same reason Cereal is (per-file scoping
+        -- Added globally for the same reason RapidXML is (per-file scoping
         -- doesn't emit on vcxproj reliably).
         "%{IncludeDir.ConcurrentQueue}"
     },

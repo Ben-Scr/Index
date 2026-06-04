@@ -40,10 +40,8 @@ public abstract class EntityScript : Component
     protected Entity Instantiate(Entity prefabOrSource) => Entity.Instantiate(prefabOrSource);
     protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Transform2D? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
 
-    protected void Print(object? obj)
-    {
-        Log.Info(obj?.ToString() ?? "null");
-    }
+    protected void Print(object? obj) => Log.Print(obj);
+    
 
     /// <summary>Token cancelled before OnDestroy(); pass to external async work for automatic teardown.</summary>
     protected CancellationToken DestroyToken

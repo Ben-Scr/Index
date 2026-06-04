@@ -18,6 +18,8 @@ public static class Log
         RaiseLogMessage(message);
     }
 
+    internal static void Print(object? obj) => Log.Info(obj?.ToString() ?? "null");
+
     public static void Trace(string message) => Write(message, InternalCalls.Log_Trace);
     public static void Trace(object obj) => Trace(obj?.ToString() ?? "null");
 

@@ -1,16 +1,13 @@
 #include "pch.hpp"
 #include "Packages/CsprojParser.hpp"
 
-#include <cereal/macros.hpp>
-#include <cereal/external/rapidxml/rapidxml.hpp>
+#include <rapidxml.hpp>
 
 #include <fstream>
 
 namespace Index {
 
 	namespace {
-		namespace rapidxml = cereal::rapidxml;
-
 		struct XmlDocument {
 			std::string Buffer;
 			rapidxml::xml_document<> Document;

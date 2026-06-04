@@ -52,7 +52,7 @@ call :CopyExternalDir stb
 if errorlevel 1 goto :robofail
 call :CopyExternalDir magic_enum\include
 if errorlevel 1 goto :robofail
-call :CopyExternalDir cereal\include
+call :CopyExternalDir rapidxml
 if errorlevel 1 goto :robofail
 call :CopyExternalDir glfw\include
 if errorlevel 1 goto :robofail

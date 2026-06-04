@@ -176,6 +176,8 @@ namespace Index {
 		// Returns the entity ID of the active scene's main camera (0 if none).
 		// Backs C# `Camera2DComponent.Main`.
 		uint64_t (*Camera2D_GetMainEntity)();
+		// World-space axis-aligned view bounds (min/max corners). Backs C# `Camera2D.Frustum`.
+		void  (*Camera2D_GetFrustum)(uint64_t entityID, float* minX, float* minY, float* maxX, float* maxY);
 
 		// ── Rigidbody2D ──────────────────────────────────────────────
 		void  (*Rigidbody2D_ApplyForce)(uint64_t entityID, float forceX, float forceY, int wake);

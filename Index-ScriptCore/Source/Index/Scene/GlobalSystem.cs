@@ -2,6 +2,8 @@ namespace Index;
 
 public abstract class GlobalSystem
 {
+    protected void Print(object? obj) => Log.Print(obj);
+
     public virtual void OnInitialize() { }
     public virtual void OnUpdate() { }
     public virtual void OnFixedUpdate() { }

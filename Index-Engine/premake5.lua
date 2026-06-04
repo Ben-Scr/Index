@@ -270,9 +270,9 @@ project "Index-Engine"
 
     filter {}
 
-    -- (Cereal include is provided globally via Dependency.EngineCore — the
+    -- (RapidXML include is provided globally via Dependency.EngineCore — the
     -- per-file scoping attempt didn't reliably propagate to vcxproj; see
-    -- the commentary in Dependencies.lua next to %{IncludeDir.Cereal}.)
+    -- the commentary in Dependencies.lua next to %{IncludeDir.RapidXml}.)
 
     filter "files:**/glad.c"
         flags { "NoPCH" }

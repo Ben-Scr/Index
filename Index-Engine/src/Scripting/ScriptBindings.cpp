@@ -2083,6 +2083,15 @@ namespace Index {
 		return GetEntityScriptId(*scene, handle);
 	}
 
+	static void Index_Camera2D_GetFrustum(uint64_t entityID, float* minX, float* minY, float* maxX, float* maxY)
+	{
+		GET_COMPONENT(Camera2DComponent, entityID, (void)(*minX = 0, *minY = 0, *maxX = 0, *maxY = 0));
+		// Rebuild from the live transform first: the renderer refreshes this cache after scripts run, so a camera moved this frame would otherwise report last frame's bounds.
+		comp.UpdateViewport();
+		const AABB box = comp.GetViewportAABB();
+		*minX = box.Min.x; *minY = box.Min.y; *maxX = box.Max.x; *maxY = box.Max.y;
+	}
+
 	// ── Rigidbody2D ─────────────────────────────────────────────────────
 
 	static void Index_Rigidbody2D_ApplyForce(uint64_t entityID, float forceX, float forceY, int wake)
@@ -3577,6 +3586,7 @@ namespace Index {
 		b.Camera2D_GetViewportWidth = &Index_Camera2D_GetViewportWidth;
 		b.Camera2D_GetViewportHeight = &Index_Camera2D_GetViewportHeight;
 		b.Camera2D_GetMainEntity = &Index_Camera2D_GetMainEntity;
+		b.Camera2D_GetFrustum = &Index_Camera2D_GetFrustum;
 
 		b.Rigidbody2D_ApplyForce = &Index_Rigidbody2D_ApplyForce;
 		b.Rigidbody2D_ApplyImpulse = &Index_Rigidbody2D_ApplyImpulse;

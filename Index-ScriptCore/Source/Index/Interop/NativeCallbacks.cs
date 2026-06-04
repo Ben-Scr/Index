@@ -169,6 +169,7 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float> Camera2D_GetViewportWidth;
     public delegate* unmanaged<ulong, float> Camera2D_GetViewportHeight;
     public delegate* unmanaged<ulong> Camera2D_GetMainEntity;
+    public delegate* unmanaged<ulong, float*, float*, float*, float*, void> Camera2D_GetFrustum;
 
     // ── Rigidbody2D ──────────────────────────────────────────────
     public delegate* unmanaged<ulong, float, float, int, void> Rigidbody2D_ApplyForce;
