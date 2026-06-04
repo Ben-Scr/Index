@@ -1,5 +1,5 @@
 <p align="left">
- <img src="Docs/logo.png" width="25%" alt="Index Logo">
+ <img src="Docs/logo.png" width="15%" alt="Index Logo">
 <p align="left">
 
 # Index
