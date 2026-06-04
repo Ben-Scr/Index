@@ -24,7 +24,7 @@ namespace Index::Win32BuildProgressWindow {
         constexpr COLORREF k_ColBackground = RGB(28, 28, 28);
         constexpr COLORREF k_ColStage      = RGB(150, 150, 150);
         constexpr COLORREF k_ColBarTrack   = RGB(45, 45, 45);
-        constexpr COLORREF k_ColBarFill    = RGB(232, 188, 32); // amber, matches editor theme accent
+        constexpr COLORREF k_ColBarFill    = RGB(64, 192, 87); // green
 
         const wchar_t* const k_ClassName = L"Index.BuildProgressWindow";
 

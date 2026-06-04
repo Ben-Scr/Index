@@ -111,8 +111,8 @@ namespace Index {
 		void CreateScript(const std::string& parentDir);
 		void CreateManagedCSharpComponent(const std::string& parentDir);
 		void CreateNativeCSharpComponent(const std::string& parentDir);
-		void CreateGameSystem(const std::string& parentDir);
-		void CreateGlobalSystem(const std::string& parentDir);
+		void CreateSceneScript(const std::string& parentDir);
+		void CreateGlobalScript(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
 		void CreateDefaultTexture(const std::string& parentDir,
@@ -151,7 +151,7 @@ namespace Index {
 		bool m_AssetClipboardCut = false;
 
 		// Deferred script creation - boilerplate/project script is written after rename is committed.
-		enum class PendingScriptType { None, CSharp, CSharpComponent, CSharpNativeComponent, CSharpGameSystem, CSharpGlobalSystem, EntityPrefab };
+		enum class PendingScriptType { None, CSharp, CSharpComponent, CSharpNativeComponent, CSharpSceneScript, CSharpGlobalScript, EntityPrefab };
 		PendingScriptType m_PendingScriptType = PendingScriptType::None;
 		std::string m_PendingScriptDir;  // parent directory for the new script
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;

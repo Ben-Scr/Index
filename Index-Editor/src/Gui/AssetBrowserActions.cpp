@@ -321,13 +321,13 @@ namespace Index {
 			const bool isCSharp = m_PendingScriptType == PendingScriptType::CSharp
 				|| m_PendingScriptType == PendingScriptType::CSharpComponent
 				|| m_PendingScriptType == PendingScriptType::CSharpNativeComponent
-				|| m_PendingScriptType == PendingScriptType::CSharpGameSystem
-				|| m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
+				|| m_PendingScriptType == PendingScriptType::CSharpSceneScript
+				|| m_PendingScriptType == PendingScriptType::CSharpGlobalScript;
 
 			const bool isComponent = m_PendingScriptType == PendingScriptType::CSharpComponent;
 			const bool isNativeComponent = m_PendingScriptType == PendingScriptType::CSharpNativeComponent;
-			const bool isGameSystem = m_PendingScriptType == PendingScriptType::CSharpGameSystem;
-			const bool isGlobalSystem = m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
+			const bool isSceneScript = m_PendingScriptType == PendingScriptType::CSharpSceneScript;
+			const bool isGlobalScript = m_PendingScriptType == PendingScriptType::CSharpGlobalScript;
 			std::string ext = isCSharp ? ".cs" : (isComponent ? ".hpp" : ".cpp");
 
 			if (!className.empty() && className.find('.') == std::string::npos) {
@@ -341,8 +341,8 @@ namespace Index {
 
 			const std::string classNameFallback = isComponent       ? "NewComponent"
 			                                    : isNativeComponent ? "NewNativeComponent"
-			                                    : isGameSystem      ? "NewGameSystem"
-			                                    : isGlobalSystem    ? "NewGlobalSystem"
+			                                    : isSceneScript      ? "NewSceneScript"
+			                                    : isGlobalScript    ? "NewGlobalScript"
 			                                                        : "NewScript";
 			className = EditorScriptDiscovery::SanitizeIdentifier(className, classNameFallback);
 
@@ -379,11 +379,11 @@ namespace Index {
 						"    public " + className + "() { }\n"
 						"}\n";
 				}
-				else if (isGameSystem) {
+				else if (isSceneScript) {
 					boilerplate =
 						"using Index;\n"
 						"\n"
-						"public class " + className + " : GameSystem\n"
+						"public class " + className + " : SceneScript\n"
 						"{\n"
 						"    public override void OnStart()\n"
 						"    {\n"
@@ -398,11 +398,11 @@ namespace Index {
 						"    }\n"
 						"}\n";
 				}
-				else if (isGlobalSystem) {
+				else if (isGlobalScript) {
 					boilerplate =
 						"using Index;\n"
 						"\n"
-						"public class " + className + " : GlobalSystem\n"
+						"public class " + className + " : GlobalScript\n"
 						"{\n"
 						"    public static " + className + " Instance { get; private set; } = null!;\n"
 						"\n"
@@ -856,11 +856,11 @@ namespace Index {
 			});
 	}
 
-	void AssetBrowser::CreateGameSystem(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGameSystem.cs";
+	void AssetBrowser::CreateSceneScript(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewSceneScript.cs";
 		CreateAssetWithCollisionCheck(preferred,
 			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpGameSystem;
+				m_PendingScriptType = PendingScriptType::CSharpSceneScript;
 				m_PendingScriptDir = parentDir;
 				m_NeedsRefresh = true;
 				Refresh();
@@ -869,11 +869,11 @@ namespace Index {
 			});
 	}
 
-	void AssetBrowser::CreateGlobalSystem(const std::string& parentDir) {
-		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGlobalSystem.cs";
+	void AssetBrowser::CreateGlobalScript(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewGlobalScript.cs";
 		CreateAssetWithCollisionCheck(preferred,
 			[this, parentDir](const std::filesystem::path& finalPath) {
-				m_PendingScriptType = PendingScriptType::CSharpGlobalSystem;
+				m_PendingScriptType = PendingScriptType::CSharpGlobalScript;
 				m_PendingScriptDir = parentDir;
 				m_NeedsRefresh = true;
 				Refresh();

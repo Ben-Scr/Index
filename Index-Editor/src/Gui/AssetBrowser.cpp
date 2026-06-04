@@ -200,6 +200,7 @@ namespace Index {
 		if (ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp")    return "file_fallback";
 		if (ext == ".scene" || ext == ".index")                               return "file_scene";
 		if (ext == ".prefab")                                                return "file_prefab";
+		if (ext == ".anim")                                                  return "file_anim";
 		if (ext == ".shader")                                                return "file_shader";
 		if (ext == ".json")                                                  return "file_json";
 		if (ext == ".xml")                                                   return "file_xml";
@@ -1300,11 +1301,11 @@ namespace Index {
 				if (ImGui::MenuItem("Native Component")) {
 					CreateNativeCSharpComponent(m_CurrentDirectory);
 				}
-				if (ImGui::MenuItem("GameSystem")) {
-					CreateGameSystem(m_CurrentDirectory);
+				if (ImGui::MenuItem("SceneScript")) {
+					CreateSceneScript(m_CurrentDirectory);
 				}
-				if (ImGui::MenuItem("GlobalSystem")) {
-					CreateGlobalSystem(m_CurrentDirectory);
+				if (ImGui::MenuItem("GlobalScript")) {
+					CreateGlobalScript(m_CurrentDirectory);
 				}
 				ImGui::EndMenu();
 			}

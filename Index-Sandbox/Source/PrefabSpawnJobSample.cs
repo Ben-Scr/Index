@@ -10,7 +10,7 @@ using Index.Native;
 //      into the same wire stream as AddComponent).
 //   3. JobContext (carries the parallel writer + frame snapshot into the job).
 //
-// Drop this GameSystem on any scene, wire `BulletPrefab` to a prefab asset
+// Drop this SceneScript on any scene, wire `BulletPrefab` to a prefab asset
 // in the inspector, and toggle RunOnStart. The system self-runs once, logs
 // PASS / FAIL per case, then destroys the spawned entities so the scene is
 // left as it was found.
@@ -20,7 +20,7 @@ using Index.Native;
 // and at least one component survived end-to-end. The remaining cases
 // cover error paths (zero GUID → exception, non-prefab → exception) and
 // the single-threaded ECB path so future regressions in either are caught.
-public class PrefabSpawnJobSample : GameSystem
+public class PrefabSpawnJobSample : SceneScript
 {
     [ShowInEditor("Bullet Prefab")]     public Entity BulletPrefab = Entity.Invalid;
     [ShowInEditor("Entities Per Pass")] public int EntitiesPerPass = 10_000;

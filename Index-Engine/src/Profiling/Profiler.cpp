@@ -166,7 +166,7 @@ namespace Index {
 			"UIEvent.Update",
 			"ParticleUpdate",
 			"UIFocus",
-			"ManagedGameSystem",
+			"ManagedSceneScript",
 
 			"UIEvent.RefResolve",
 			"UIEvent.HitTest",

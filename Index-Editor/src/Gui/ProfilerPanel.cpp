@@ -150,7 +150,7 @@ namespace Index {
 						{ "UIEvent.Update",          "UI Event Update",          "ms" },
 						{ "ParticleUpdate",          "Particle Update",          "ms" },
 						{ "UIFocus",                 "UI Focus",                 "ms" },
-						{ "ManagedGameSystem",       "Managed GameSystem",       "ms" },
+						{ "ManagedSceneScript",       "Managed SceneScript",       "ms" },
 						{ "UIEvent.RefResolve",      "  UIEvent: RefResolve",    "ms" },
 						{ "UIEvent.HitTest",         "  UIEvent: HitTest",       "ms" },
 						{ "UIEvent.Visuals",         "  UIEvent: Visuals",       "ms" },

@@ -155,7 +155,7 @@ namespace Index {
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 				for (const auto& scriptEntry : droppedScripts) {
-					if (scriptEntry.IsGameSystem || scriptEntry.IsGlobalSystem) {
+					if (scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
 						continue;
 					}
 					if (scriptEntry.ClassName.empty() || scriptEntry.Type == ScriptType::Unknown) {

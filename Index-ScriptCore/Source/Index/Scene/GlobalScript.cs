@@ -1,6 +1,6 @@
 namespace Index;
 
-public abstract class GlobalSystem
+public abstract class GlobalScript
 {
     protected void Print(object? obj) => Log.Print(obj);
 

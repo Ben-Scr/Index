@@ -40,6 +40,8 @@ namespace Index::ReferencePicker {
 			std::string PendingFieldKey;
 			std::string PendingValue;
 			Style Style = Style::Plain;
+			bool UseEntityTabs = false;
+			EntryGroup ActiveEntityTab = EntryGroup::Scene;
 
 			bool IncludeBuiltIns = true;
 
@@ -194,9 +196,11 @@ namespace Index::ReferencePicker {
 		return entries;
 	}
 
-	std::vector<Entry> CollectEntities() {
+	std::vector<Entry> CollectEntities(bool includePrefabAssets) {
 		std::vector<Entry> entries;
 		entries.push_back({ k_NoneLabel, "", "(none)", "0", "__none__" });
+		std::vector<Entry> sceneEntries;
+		std::vector<Entry> assetEntries;
 
 		SceneManager::Get().ForeachLoadedScene([&](const Scene& scene) {
 			const std::string scenePrefix =
@@ -210,29 +214,37 @@ namespace Index::ReferencePicker {
 				Entry entry;
 				entry.Label = GetEntityName(scene, handle, entityId);
 				entry.Secondary = scene.GetName();
-				entry.SearchKey = ToLowerCopy(entry.Label);
+				entry.SearchKey = ToLowerCopy(entry.Label + " " + entry.Secondary);
 				entry.Value = std::to_string(entityId);
 				entry.UniqueId = scenePrefix + entry.Value;
-				entries.push_back(std::move(entry));
+				entry.Group = EntryGroup::Scene;
+				sceneEntries.push_back(std::move(entry));
 			}
 		});
 
-		AssetRegistry::MarkDirty();
-		AssetRegistry::Sync();
-		for (const AssetRegistry::Record& record : AssetRegistry::GetAssetsByKind(AssetKind::Prefab)) {
-			Entry entry;
-			entry.Label = std::filesystem::path(record.Path).filename().string();
-			entry.Secondary = record.Path;
-			entry.SearchKey = ToLowerCopy(entry.Label + " prefab " + entry.Secondary);
-			entry.Value = "prefab:" + std::to_string(record.Id);
-			entry.UniqueId = entry.Value;
-			entries.push_back(std::move(entry));
+		if (includePrefabAssets) {
+			AssetRegistry::MarkDirty();
+			AssetRegistry::Sync();
+			for (const AssetRegistry::Record& record : AssetRegistry::GetAssetsByKind(AssetKind::Prefab)) {
+				Entry entry;
+				entry.Label = std::filesystem::path(record.Path).filename().string();
+				entry.Secondary = record.Path;
+				entry.SearchKey = ToLowerCopy(entry.Label + " prefab " + entry.Secondary);
+				entry.Value = "prefab:" + std::to_string(record.Id);
+				entry.UniqueId = entry.Value;
+				entry.Group = EntryGroup::Assets;
+				assetEntries.push_back(std::move(entry));
+			}
 		}
 
-		std::sort(entries.begin() + 1, entries.end(), [](const Entry& a, const Entry& b) {
+		auto sortByDisplay = [](const Entry& a, const Entry& b) {
 			if (a.Label == b.Label) return a.Secondary < b.Secondary;
 			return a.Label < b.Label;
-		});
+		};
+		std::sort(sceneEntries.begin(), sceneEntries.end(), sortByDisplay);
+		std::sort(assetEntries.begin(), assetEntries.end(), sortByDisplay);
+		entries.insert(entries.end(), sceneEntries.begin(), sceneEntries.end());
+		entries.insert(entries.end(), assetEntries.begin(), assetEntries.end());
 		return entries;
 	}
 
@@ -272,7 +284,7 @@ namespace Index::ReferencePicker {
 	}
 
 	void OpenForFieldKey(const std::string& fieldKey, const std::string& title,
-		std::vector<Entry> entries, Style style)
+		std::vector<Entry> entries, Style style, bool useEntityTabs)
 	{
 		s_State.RequestOpen = true;
 		s_State.IsOpen = true;
@@ -281,6 +293,8 @@ namespace Index::ReferencePicker {
 		s_State.Entries = std::move(entries);
 		s_State.Search[0] = '\0';
 		s_State.Style = style;
+		s_State.UseEntityTabs = useEntityTabs;
+		s_State.ActiveEntityTab = EntryGroup::Scene;
 		if (style == Style::Thumbnails) {
 			EnsureThumbnailCacheInitialized();
 			s_State.DiscardPending = true;
@@ -375,12 +389,30 @@ namespace Index::ReferencePicker {
 				: "Built-in (engine-shipped) assets are hidden.\nClick to show them.");
 		}
 		ImGui::Separator();
+		if (s_State.UseEntityTabs) {
+			if (ImGui::BeginTabBar("##EntityReferenceTabs")) {
+				if (ImGui::BeginTabItem("Scene")) {
+					s_State.ActiveEntityTab = EntryGroup::Scene;
+					ImGui::EndTabItem();
+				}
+				if (ImGui::BeginTabItem("Assets")) {
+					s_State.ActiveEntityTab = EntryGroup::Assets;
+					ImGui::EndTabItem();
+				}
+				ImGui::EndTabBar();
+			}
+		}
 
 		const std::string filter = ToLowerCopy(std::string(s_State.Search));
 
 		std::vector<const Entry*> visible;
 		visible.reserve(s_State.Entries.size());
 		for (const Entry& entry : s_State.Entries) {
+			if (s_State.UseEntityTabs
+				&& entry.Group != EntryGroup::Any
+				&& entry.Group != s_State.ActiveEntityTab) {
+				continue;
+			}
 			if (!s_State.IncludeBuiltIns && entry.IsBuiltIn) continue;
 			if (!filter.empty() && entry.SearchKey.find(filter) == std::string::npos) continue;
 			visible.push_back(&entry);

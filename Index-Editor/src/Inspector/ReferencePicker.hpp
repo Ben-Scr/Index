@@ -14,6 +14,12 @@ namespace Index {
 
 	namespace ReferencePicker {
 
+		enum class EntryGroup {
+			Any,
+			Scene,
+			Assets,
+		};
+
 		// IsSlice/SliceX/Y/W/H: for sprite-sheet sub-entries; crop the thumbnail preview to the slice rect instead of the full sheet.
 		struct Entry {
 			std::string Label;
@@ -27,10 +33,11 @@ namespace Index {
 			int SliceY = 0;
 			int SliceW = 0;
 			int SliceH = 0;
+			EntryGroup Group = EntryGroup::Any;
 		};
 
 		std::vector<Entry> CollectAssetsByKind(AssetKind kind);
-		std::vector<Entry> CollectEntities();          // every loaded scene + Prefab assets
+		std::vector<Entry> CollectEntities(bool includePrefabAssets = true); // loaded scene entities, optionally Prefab assets
 		std::vector<Entry> CollectComponentTargets(const std::string& componentDisplayName);
 
 		enum class Style { Plain, Thumbnails };
@@ -38,7 +45,7 @@ namespace Index {
 		// Request that the picker window open this frame for `fieldKey`.
 		// `entries` are owned by the picker until the window closes.
 		void OpenForFieldKey(const std::string& fieldKey, const std::string& title,
-			std::vector<Entry> entries, Style style = Style::Plain);
+			std::vector<Entry> entries, Style style = Style::Plain, bool useEntityTabs = false);
 
 		// Safe to call exactly once per frame; idempotent for multiple requestors.
 		void RenderPopup();

@@ -110,7 +110,7 @@ namespace Index {
 		void RenderSettings_Branding(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Build(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Editor(IndexProject& project, bool& changed, const std::string& filterLower);
-		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalSystemsChanged, const std::string& filterLower);
+		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalScriptsChanged, const std::string& filterLower);
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
 		void ExecuteBuild();
@@ -330,7 +330,7 @@ namespace Index {
 		bool m_ShowSaveConfirmDialog = false;
 		char m_ComponentSearchBuffer[128]{};
 		char m_SystemSearchBuffer[128]{};
-		char m_GlobalSystemSearchBuffer[128]{};
+		char m_GlobalScriptSearchBuffer[128]{};
 		char m_ProjectSettingsSearchBuffer[256]{};
 		std::string m_SelectedAssetPath;
 		std::string m_ComponentClipboardJson;

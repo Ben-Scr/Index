@@ -11,7 +11,7 @@ using Index.Native;
 // filters / signature validation, and logs PASS/FAIL per case followed
 // by a summary line. Tests undo their writes so the scene is left as it
 // was found.
-public class IJobQueryQuickTest : GameSystem
+public class IJobQueryQuickTest : SceneScript
 {
     [ShowInEditor("Run on Start")] public bool RunOnStart = true;
 

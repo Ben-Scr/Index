@@ -583,7 +583,9 @@ namespace Index {
 
 		if (wasUsingDefault) {
 			m_Cursor = m_DefaultCursor;
-			glfwSetCursor(m_GLFWwindow, m_DefaultCursor);
+			// Track the cursor but only push it to the OS when enabled — the
+			// editor keeps it off so the game cursor doesn't leak outside the Game View.
+			if (m_GameCursorEnabled) glfwSetCursor(m_GLFWwindow, m_DefaultCursor);
 		}
 	}
 
@@ -599,7 +601,7 @@ namespace Index {
 
 		if (wasUsingUI) {
 			m_Cursor = m_UICursor;
-			glfwSetCursor(m_GLFWwindow, m_UICursor);
+			if (m_GameCursorEnabled) glfwSetCursor(m_GLFWwindow, m_UICursor);
 		}
 	}
 
@@ -610,7 +612,18 @@ namespace Index {
 		GLFWcursor* desired = overUI && m_UICursor ? m_UICursor : m_DefaultCursor;
 		if (desired == m_Cursor) return;
 		m_Cursor = desired;
-		glfwSetCursor(m_GLFWwindow, desired);
+		if (m_GameCursorEnabled) glfwSetCursor(m_GLFWwindow, desired);
+	}
+
+	void Window::SetGameCursorEnabled(bool enabled) {
+		if (enabled == m_GameCursorEnabled) return;
+		m_GameCursorEnabled = enabled;
+		// On enable, re-assert the game's current cursor (the editor pairs this
+		// with ImGui's NoMouseCursorChange so ImGui doesn't overwrite it). On
+		// disable, leave the OS cursor and let the caller hand control back to ImGui.
+		if (enabled) {
+			glfwSetCursor(m_GLFWwindow, m_Cursor);
+		}
 	}
 
 	void Window::SetWindowIcon(const Texture2D* tex2D) {

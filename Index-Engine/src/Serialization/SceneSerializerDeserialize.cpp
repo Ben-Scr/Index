@@ -802,8 +802,8 @@ namespace Index {
 		if (const Value* systemsValue = GetArrayMember(root, "systems")) {
 			for (const Value& systemValue : systemsValue->GetArray()) {
 				// Two accepted shapes for forward / backward compatibility:
-				//   1. "MyGameSystem"                                        (legacy / no overrides)
-				//   2. {"className": "MyGameSystem", "enabled": false,
+				//   1. "MySceneScript"                                        (legacy / no overrides)
+				//   2. {"className": "MySceneScript", "enabled": false,
 				//      "fields": { ... }}                                    (with authored state)
 				std::string className;
 				bool enabled = true;
@@ -823,12 +823,12 @@ namespace Index {
 				}
 
 				if (className.empty()) continue;
-				scene.AddGameSystem(className);
-				scene.SetGameSystemEnabled(className, enabled);
+				scene.AddSceneScript(className);
+				scene.SetSceneScriptEnabled(className, enabled);
 
 				if (fieldsValue && fieldsValue->IsObject()) {
 					for (const auto& [fieldName, fieldValueNode] : fieldsValue->GetObject()) {
-						scene.SetGameSystemFieldValue(className, fieldName, fieldValueNode.AsStringOr());
+						scene.SetSceneScriptFieldValue(className, fieldName, fieldValueNode.AsStringOr());
 					}
 				}
 			}

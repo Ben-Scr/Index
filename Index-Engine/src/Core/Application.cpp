@@ -531,7 +531,7 @@ namespace Index {
 				AudioManager::Update();
 
 			if (gameplayActive)
-				ScriptEngine::UpdateGlobalSystems();
+				ScriptEngine::UpdateGlobalScripts();
 
 			Update();
 
@@ -702,7 +702,7 @@ namespace Index {
 		// times this fires per real second via the accumulator above.
 		if (m_PhysicsSystem2D) m_PhysicsSystem2D->FixedUpdate(m_Time.GetUnscaledFixedDeltaTime());
 		// Runs after physics so global systems observe transforms synced from the physics step.
-		ScriptEngine::FixedUpdateGlobalSystems();
+		ScriptEngine::FixedUpdateGlobalScripts();
 	}
 
 	void Application::EndFixedFrame() { }

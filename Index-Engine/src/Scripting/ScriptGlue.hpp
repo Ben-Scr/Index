@@ -259,9 +259,9 @@ namespace Index {
 		void        (*Scene_Unload)(const char* sceneName);
 		int         (*Scene_SetActive)(const char* sceneName);
 		int         (*Scene_Reload)(const char* sceneName);
-		int         (*Scene_SetGameSystemEnabled)(const char* sceneName, const char* className, int enabled);
-		int         (*Scene_IsGameSystemEnabled)(const char* sceneName, const char* className);
-		void        (*Scene_SetGlobalSystemEnabled)(const char* className, int enabled);
+		int         (*Scene_SetSceneScriptEnabled)(const char* sceneName, const char* className, int enabled);
+		int         (*Scene_IsSceneScriptEnabled)(const char* sceneName, const char* className);
+		void        (*Scene_SetGlobalScriptEnabled)(const char* className, int enabled);
 		int         (*Scene_DoesSceneExist)(const char* sceneName);
 		int         (*Scene_GetLoadedCount)();
 		int         (*Scene_GetLoadedSceneNameAtBuffer)(int index, char* outBuffer, int capacity);
@@ -996,32 +996,32 @@ namespace Index {
 		void    (*RaiseSceneLoaded)(const char* sceneName);
 		void    (*RaiseBeforeSceneUnloaded)(const char* sceneName);
 		void    (*RaiseSceneUnloaded)(const char* sceneName);
-		int32_t (*CreateGameSystemInstance)(const char* className, const char* sceneName);
-		void    (*DestroyGameSystemInstance)(int32_t handle);
-		void    (*InvokeGameSystemStart)(int32_t handle);
-		void    (*InvokeGameSystemUpdate)(int32_t handle);
-		void    (*InvokeGameSystemEnable)(int32_t handle);
-		void    (*InvokeGameSystemDisable)(int32_t handle);
-		void    (*InvokeGameSystemDestroy)(int32_t handle);
-		int     (*GameSystemClassExists)(const char* className);
-		int32_t (*CreateGlobalSystemInstance)(const char* className);
-		void    (*DestroyGlobalSystemInstance)(int32_t handle);
-		void    (*InvokeGlobalSystemInitialize)(int32_t handle);
-		void    (*InvokeGlobalSystemUpdate)(int32_t handle);
-		void    (*InvokeGlobalSystemEnable)(int32_t handle);
-		void    (*InvokeGlobalSystemDisable)(int32_t handle);
-		int     (*GlobalSystemClassExists)(const char* className);
+		int32_t (*CreateSceneScriptInstance)(const char* className, const char* sceneName);
+		void    (*DestroySceneScriptInstance)(int32_t handle);
+		void    (*InvokeSceneScriptStart)(int32_t handle);
+		void    (*InvokeSceneScriptUpdate)(int32_t handle);
+		void    (*InvokeSceneScriptEnable)(int32_t handle);
+		void    (*InvokeSceneScriptDisable)(int32_t handle);
+		void    (*InvokeSceneScriptDestroy)(int32_t handle);
+		int     (*SceneScriptClassExists)(const char* className);
+		int32_t (*CreateGlobalScriptInstance)(const char* className);
+		void    (*DestroyGlobalScriptInstance)(int32_t handle);
+		void    (*InvokeGlobalScriptInitialize)(int32_t handle);
+		void    (*InvokeGlobalScriptUpdate)(int32_t handle);
+		void    (*InvokeGlobalScriptEnable)(int32_t handle);
+		void    (*InvokeGlobalScriptDisable)(int32_t handle);
+		int     (*GlobalScriptClassExists)(const char* className);
 
 		// ── New lifecycle slots (appended for binary compat) ──
 		void    (*InvokeAwake)(int32_t handle);
 		void    (*InvokeFixedUpdate)(int32_t handle);
-		void    (*InvokeGameSystemAwake)(int32_t handle);
-		void    (*InvokeGameSystemFixedUpdate)(int32_t handle);
-		void    (*InvokeGlobalSystemFixedUpdate)(int32_t handle);
+		void    (*InvokeSceneScriptAwake)(int32_t handle);
+		void    (*InvokeSceneScriptFixedUpdate)(int32_t handle);
+		void    (*InvokeGlobalScriptFixedUpdate)(int32_t handle);
 
-		// ── GameSystem field reflection (appended for binary compat) ──
-		const char* (*GetGameSystemFields)(int32_t handle);
-		void        (*SetGameSystemField)(int32_t handle, const char* fieldName, const char* value);
+		// ── SceneScript field reflection (appended for binary compat) ──
+		const char* (*GetSceneScriptFields)(int32_t handle);
+		void        (*SetSceneScriptField)(int32_t handle, const char* fieldName, const char* value);
 
 		// ── UI event dispatch (appended for binary compat) ──
 		void        (*RaiseUiEventDispatch)();

@@ -840,7 +840,9 @@ namespace Index::PropertyDrawer {
 				},
 				[](const std::string& key) {
 					ReferencePicker::OpenForFieldKey(key, "Select Entity",
-						ReferencePicker::CollectEntities());
+						ReferencePicker::CollectEntities(),
+						ReferencePicker::Style::Plain,
+						/*useEntityTabs=*/true);
 				},
 				[](PropertyValue& outValue) {
 					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {

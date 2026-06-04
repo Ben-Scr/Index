@@ -629,6 +629,13 @@ namespace Index {
 		m_Splash.Begin();
 		Application::SetIsPlaying(false);
 		ApplicationEditorAccess::SetGameInputEnabled(false);
+		// Scope the project's custom game cursor to the Game View: disable engine
+		// cursor application now (before Application applies the project cursor in
+		// Initialize) so it never goes editor-wide. OnUpdate re-enables it only
+		// while the Game View is hovered/focused.
+		if (Window* w = app.GetWindow()) {
+			w->SetGameCursorEnabled(false);
+		}
 		Gizmo::SetShowInRuntime(false);
 		if (app.GetRenderer2D()) {
 			app.GetRenderer2D()->SetSkipBeginFrameRender(true);
@@ -774,6 +781,23 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::OnUpdate(Application& app, float dt) {
+		// Scope the project's custom game cursor to the Game View. The engine
+		// cursor gate keeps it off elsewhere; NoMouseCursorChange lets ImGui own
+		// the cursor over the rest of the editor and reassert cleanly on exit.
+		// Uses last frame's hover/focus — a 1-frame settle is imperceptible.
+		if (Window* win = app.GetWindow(); win && win->HasGameCursor()) {
+			ImGuiIO& io = ImGui::GetIO();
+			const bool overGameView = m_IsGameViewHovered || m_IsGameViewFocused;
+			if (overGameView) {
+				io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+				win->SetGameCursorEnabled(true);
+			}
+			else {
+				io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+				win->SetGameCursorEnabled(false);
+			}
+		}
+
 		DrainPendingLogEntries();
 		RunAutoSaveTick(app, dt);
 		// MUST precede RunPrefabAutoSaveTick: if the prefab file was deleted, exit edit mode first so auto-save doesn't recreate it at a stale path.
@@ -1224,7 +1248,7 @@ namespace Index {
 		// Reset Time.TimeSinceStartup / Time.RealtimeSinceStartup so each
 		// play session starts at t=0 from a script's perspective.
 		ApplicationEditorAccess::MarkGameStart();
-		scene.StartManagedGameSystemsForPlayMode();
+		scene.StartManagedSceneScriptsForPlayMode();
 		// Reset Box2D sleep timers so bodies that sat through editor
 		// idle don't immediately freeze on the first physics step.
 		if (PhysicsSystem2D::IsInitialized()) {
@@ -3547,7 +3571,7 @@ namespace Index {
 								EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 								bool scriptAttached = false;
 								for (const auto& scriptEntry : droppedScripts) {
-									if (scriptEntry.IsGameSystem || scriptEntry.IsGlobalSystem) {
+									if (scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
 										continue;
 									}
 									if (scriptEntry.IsManagedComponent) {
@@ -3790,21 +3814,21 @@ namespace Index {
 		ImGui::Text("Scene: %s", scene.GetName().c_str());
 		ImGui::SeparatorText("Systems");
 
-		auto acceptDroppedGameSystems = [&]() {
+		auto acceptDroppedSceneScripts = [&]() {
 			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
 				// 1-arg form: 2-arg would embed trailing '\0' and break extension matching in CollectScriptFile.
 				std::string droppedPath(static_cast<const char*>(payload->Data));
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 				for (const auto& scriptEntry : droppedScripts) {
-					if (scriptEntry.IsGameSystem) {
-						scene.AddGameSystem(scriptEntry.ClassName);
+					if (scriptEntry.IsSceneScript) {
+						scene.AddSceneScript(scriptEntry.ClassName);
 					}
 				}
 			}
 		};
 
-		const auto& systems = scene.GetGameSystemClassNames();
+		const auto& systems = scene.GetSceneScriptClassNames();
 		for (size_t i = 0; i < systems.size(); ++i) {
 			ImGui::PushID(static_cast<int>(i));
 			const std::string& className = systems[i];
@@ -3819,38 +3843,38 @@ namespace Index {
 			const float stripW = btnW * 4.0f + spacing * 3.0f;
 			ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - stripW);
 
-			bool enabled = scene.IsGameSystemEnabled(className);
+			bool enabled = scene.IsSceneScriptEnabled(className);
 			if (ImGui::Checkbox("##enabled", &enabled)) {
-				scene.SetGameSystemEnabled(className, enabled);
+				scene.SetSceneScriptEnabled(className, enabled);
 			}
 			if (ImGui::IsItemHovered()) {
-				ImGui::SetTooltip("%s", enabled ? "Disable GameSystem" : "Enable GameSystem");
+				ImGui::SetTooltip("%s", enabled ? "Disable SceneScript" : "Enable SceneScript");
 			}
 
 			ImGui::SameLine(0, spacing);
 			if (ImGui::ArrowButton("##move_up", ImGuiDir_Up) && i > 0) {
-				scene.MoveGameSystem(i, i - 1);
+				scene.MoveSceneScript(i, i - 1);
 			}
 
 			ImGui::SameLine(0, spacing);
 			if (ImGui::ArrowButton("##move_down", ImGuiDir_Down) && i + 1 < systems.size()) {
-				scene.MoveGameSystem(i, i + 1);
+				scene.MoveSceneScript(i, i + 1);
 			}
 
 			ImGui::SameLine(0, spacing);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.35f, 0.35f, 1.0f));
 			const bool remove = ImGui::Button("X", ImVec2(btnW, btnW));
 			ImGui::PopStyleColor();
-			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove GameSystem");
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove SceneScript");
 			if (remove) {
-				scene.RemoveGameSystem(i);
+				scene.RemoveSceneScript(i);
 				ImGui::PopID();
 				break;
 			}
 
 			if (open) {
 				ImGui::Indent(8.0f);
-				DrawGameSystemFields(scene, className);
+				DrawSceneScriptFields(scene, className);
 				ImGui::Unindent(8.0f);
 			}
 
@@ -3863,7 +3887,7 @@ namespace Index {
 		EditorScriptDiscovery::CollectProjectScriptEntries(scriptEntries);
 		size_t availableSystemCount = 0;
 		for (const auto& entry : scriptEntries) {
-			if (entry.IsGameSystem && !scene.HasGameSystem(entry.ClassName)) {
+			if (entry.IsSceneScript && !scene.HasSceneScript(entry.ClassName)) {
 				++availableSystemCount;
 			}
 		}
@@ -3879,14 +3903,14 @@ namespace Index {
 		// dropped scripts. Previously the whole inspector InnerRect was a
 		// drop zone which was confusing.
 		if (ImGui::BeginDragDropTarget()) {
-			acceptDroppedGameSystems();
+			acceptDroppedSceneScripts();
 			ImGui::EndDragDropTarget();
 		}
 		if (!hasAvailableSystem) {
 			ImGui::EndDisabled();
 			// AllowWhenDisabled so hover still fires after BeginDisabled.
 			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-				ImGui::SetTooltip("No game systems available.\nCreate one via Asset Browser > Create > Scripting > GameSystem (C#).");
+				ImGui::SetTooltip("No game systems available.\nCreate one via Asset Browser > Create > Scripting > SceneScript (C#).");
 			}
 		}
 
@@ -3901,7 +3925,7 @@ namespace Index {
 			std::transform(filter.begin(), filter.end(), filter.begin(), ::tolower);
 
 			for (const auto& scriptEntry : scriptEntries) {
-				if (!scriptEntry.IsGameSystem || scene.HasGameSystem(scriptEntry.ClassName)) {
+				if (!scriptEntry.IsSceneScript || scene.HasSceneScript(scriptEntry.ClassName)) {
 					continue;
 				}
 
@@ -3917,7 +3941,7 @@ namespace Index {
 				const std::string label = BuildScriptMenuLabel(scriptEntry);
 				const std::string path = scriptEntry.Path.string();
 				if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
-					scene.AddGameSystem(scriptEntry.ClassName);
+					scene.AddSceneScript(scriptEntry.ClassName);
 					ImGui::CloseCurrentPopup();
 				}
 			}
@@ -4461,7 +4485,7 @@ namespace Index {
 				std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
 				EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
 				for (const auto& scriptEntry : droppedScripts) {
-					if (scriptEntry.IsGameSystem || scriptEntry.IsGlobalSystem) {
+					if (scriptEntry.IsSceneScript || scriptEntry.IsGlobalScript) {
 						continue;
 					}
 					for (const Entity& e : selectedEntities) {

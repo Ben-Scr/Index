@@ -45,9 +45,9 @@
 
 namespace Index {
 	namespace {
-		class ManagedGameSystem final : public ISystem {
+		class ManagedSceneScript final : public ISystem {
 		public:
-			explicit ManagedGameSystem(std::string className)
+			explicit ManagedSceneScript(std::string className)
 				: m_ClassName(std::move(className)) {}
 
 			const std::string& GetClassName() const { return m_ClassName; }
@@ -69,8 +69,8 @@ namespace Index {
 					return;
 				}
 				if (m_Handle != 0) {
-					INDEX_PROFILE_SCOPE("ManagedGameSystem");
-					ScriptEngine::InvokeGameSystemUpdate(m_Handle);
+					INDEX_PROFILE_SCOPE("ManagedSceneScript");
+					ScriptEngine::InvokeSceneScriptUpdate(m_Handle);
 				}
 			}
 
@@ -87,13 +87,13 @@ namespace Index {
 					return;
 				}
 				if (m_Handle != 0) {
-					ScriptEngine::InvokeGameSystemFixedUpdate(m_Handle);
+					ScriptEngine::InvokeSceneScriptFixedUpdate(m_Handle);
 				}
 			}
 
 			void OnEnable(Scene& scene) override
 			{
-				// If a GameSystem starts disabled, Awake/Start are skipped by the
+				// If a SceneScript starts disabled, Awake/Start are skipped by the
 				// scene lifecycle. Enabling it later from code should still bring
 				// the managed instance fully online before the next Update.
 				if (!EnsureInstance(scene, true)) return;
@@ -108,7 +108,7 @@ namespace Index {
 			{
 				if (m_Handle != 0 && m_EnableInvoked) {
 					m_EnableInvoked = false;
-					ScriptEngine::InvokeGameSystemDisable(m_Handle);
+					ScriptEngine::InvokeSceneScriptDisable(m_Handle);
 				}
 			}
 
@@ -119,11 +119,11 @@ namespace Index {
 				}
 
 				if (m_EnableInvoked) {
-					ScriptEngine::InvokeGameSystemDisable(m_Handle);
+					ScriptEngine::InvokeSceneScriptDisable(m_Handle);
 					m_EnableInvoked = false;
 				}
-				ScriptEngine::InvokeGameSystemDestroy(m_Handle);
-				ScriptEngine::DestroyGameSystemInstance(m_Handle);
+				ScriptEngine::InvokeSceneScriptDestroy(m_Handle);
+				ScriptEngine::DestroySceneScriptInstance(m_Handle);
 				m_Handle = 0;
 				m_StartInvoked = false;
 				m_AwakeInvoked = false;
@@ -145,14 +145,14 @@ namespace Index {
 					return true;
 				}
 
-				if (!ScriptEngine::GameSystemClassExists(m_ClassName)) {
+				if (!ScriptEngine::SceneScriptClassExists(m_ClassName)) {
 					if (warnIfMissing) {
-						IDX_CORE_WARN_TAG("Scene", "GameSystem '{}' was registered on scene '{}' but no matching class was found", m_ClassName, scene.GetName());
+						IDX_CORE_WARN_TAG("Scene", "SceneScript '{}' was registered on scene '{}' but no matching class was found", m_ClassName, scene.GetName());
 					}
 					return false;
 				}
 
-				m_Handle = ScriptEngine::CreateGameSystemInstance(m_ClassName, scene.GetName());
+				m_Handle = ScriptEngine::CreateSceneScriptInstance(m_ClassName, scene.GetName());
 				ApplyFieldOverrides(scene);
 				return m_Handle != 0;
 			}
@@ -160,7 +160,7 @@ namespace Index {
 			void InvokeAwakeIfNeeded()
 			{
 				if (m_Handle != 0 && !m_AwakeInvoked) {
-					ScriptEngine::InvokeGameSystemAwake(m_Handle);
+					ScriptEngine::InvokeSceneScriptAwake(m_Handle);
 					m_AwakeInvoked = true;
 				}
 			}
@@ -169,14 +169,14 @@ namespace Index {
 			{
 				if (m_Handle != 0 && !m_EnableInvoked) {
 					m_EnableInvoked = true;
-					ScriptEngine::InvokeGameSystemEnable(m_Handle);
+					ScriptEngine::InvokeSceneScriptEnable(m_Handle);
 				}
 			}
 
 			void InvokeStartIfNeeded()
 			{
 				if (m_Handle != 0 && !m_StartInvoked) {
-					ScriptEngine::InvokeGameSystemStart(m_Handle);
+					ScriptEngine::InvokeSceneScriptStart(m_Handle);
 					m_StartInvoked = true;
 				}
 			}
@@ -184,11 +184,11 @@ namespace Index {
 			void ApplyFieldOverrides(Scene& scene)
 			{
 				if (m_Handle == 0) return;
-				const auto* overrides = scene.GetGameSystemFieldValues(m_ClassName);
+				const auto* overrides = scene.GetSceneScriptFieldValues(m_ClassName);
 				if (!overrides) return;
 
 				for (const auto& [fieldName, value] : *overrides) {
-					ScriptEngine::SetGameSystemField(m_Handle, fieldName.c_str(), value.c_str());
+					ScriptEngine::SetSceneScriptField(m_Handle, fieldName.c_str(), value.c_str());
 				}
 			}
 
@@ -199,9 +199,9 @@ namespace Index {
 			bool m_StartInvoked = false;
 		};
 
-		bool IsManagedGameSystem(const std::unique_ptr<ISystem>& system)
+		bool IsManagedSceneScript(const std::unique_ptr<ISystem>& system)
 		{
-			return dynamic_cast<ManagedGameSystem*>(system.get()) != nullptr;
+			return dynamic_cast<ManagedSceneScript*>(system.get()) != nullptr;
 		}
 	}
 
@@ -650,7 +650,7 @@ namespace Index {
 		}
 
 		ClearEntities();
-		ClearGameSystems();
+		ClearSceneScripts();
 		return restartLifecycle;
 	}
 
@@ -680,26 +680,26 @@ namespace Index {
 		MarkStaticRenderDataDirty();
 	}
 
-	bool Scene::HasGameSystem(const std::string& className) const
+	bool Scene::HasSceneScript(const std::string& className) const
 	{
-		return std::find(m_GameSystemClassNames.begin(), m_GameSystemClassNames.end(), className) != m_GameSystemClassNames.end();
+		return std::find(m_SceneScriptClassNames.begin(), m_SceneScriptClassNames.end(), className) != m_SceneScriptClassNames.end();
 	}
 
-	bool Scene::AddGameSystem(const std::string& className)
+	bool Scene::AddSceneScript(const std::string& className)
 	{
-		if (className.empty() || HasGameSystem(className)) {
+		if (className.empty() || HasSceneScript(className)) {
 			return false;
 		}
 
-		auto managedSystem = std::make_unique<ManagedGameSystem>(className);
+		auto managedSystem = std::make_unique<ManagedSceneScript>(className);
 		ISystem* system = managedSystem.get();
-		m_GameSystemClassNames.push_back(className);
+		m_SceneScriptClassNames.push_back(className);
 		m_Systems.push_back(std::move(managedSystem));
 
 		if (m_IsLoaded && (!Application::IsEditor() || Application::GetIsPlaying())) {
 			system->Awake(*this);
 			system->Start(*this);
-			if (auto* gameSystem = dynamic_cast<ManagedGameSystem*>(system);
+			if (auto* gameSystem = dynamic_cast<ManagedSceneScript*>(system);
 				gameSystem && gameSystem->HasEnteredLifecycle()
 				&& std::find(m_AwakenedSystems.begin(), m_AwakenedSystems.end(), system) == m_AwakenedSystems.end()) {
 				m_AwakenedSystems.push_back(system);
@@ -710,15 +710,15 @@ namespace Index {
 		return true;
 	}
 
-	bool Scene::RemoveGameSystem(size_t index)
+	bool Scene::RemoveSceneScript(size_t index)
 	{
-		if (index >= m_GameSystemClassNames.size()) {
+		if (index >= m_SceneScriptClassNames.size()) {
 			return false;
 		}
 
-		const std::string className = m_GameSystemClassNames[index];
+		const std::string className = m_SceneScriptClassNames[index];
 		for (auto it = m_Systems.begin(); it != m_Systems.end(); ++it) {
-			if (auto* managedSystem = dynamic_cast<ManagedGameSystem*>(it->get());
+			if (auto* managedSystem = dynamic_cast<ManagedSceneScript*>(it->get());
 				managedSystem && managedSystem->GetClassName() == className) {
 				if (m_IsLoaded) {
 					managedSystem->OnDisable(*this);
@@ -730,43 +730,43 @@ namespace Index {
 			}
 		}
 
-		m_GameSystemClassNames.erase(m_GameSystemClassNames.begin() + static_cast<std::ptrdiff_t>(index));
-		m_GameSystemFieldOverrides.erase(className);
+		m_SceneScriptClassNames.erase(m_SceneScriptClassNames.begin() + static_cast<std::ptrdiff_t>(index));
+		m_SceneScriptFieldOverrides.erase(className);
 		MarkDirty();
 		return true;
 	}
 
-	bool Scene::MoveGameSystem(size_t fromIndex, size_t toIndex)
+	bool Scene::MoveSceneScript(size_t fromIndex, size_t toIndex)
 	{
-		if (fromIndex >= m_GameSystemClassNames.size() || toIndex >= m_GameSystemClassNames.size() || fromIndex == toIndex) {
+		if (fromIndex >= m_SceneScriptClassNames.size() || toIndex >= m_SceneScriptClassNames.size() || fromIndex == toIndex) {
 			return false;
 		}
 
 		// Reorder the names list.
-		const std::string movedClassName = m_GameSystemClassNames[fromIndex];
-		m_GameSystemClassNames.erase(m_GameSystemClassNames.begin() + static_cast<std::ptrdiff_t>(fromIndex));
-		m_GameSystemClassNames.insert(m_GameSystemClassNames.begin() + static_cast<std::ptrdiff_t>(toIndex), movedClassName);
+		const std::string movedClassName = m_SceneScriptClassNames[fromIndex];
+		m_SceneScriptClassNames.erase(m_SceneScriptClassNames.begin() + static_cast<std::ptrdiff_t>(fromIndex));
+		m_SceneScriptClassNames.insert(m_SceneScriptClassNames.begin() + static_cast<std::ptrdiff_t>(toIndex), movedClassName);
 
 		// Reorder managed systems to match new name order WITHOUT firing OnDisable/OnDestroy — drag-reorder must not trigger lifecycle callbacks.
 		std::vector<std::unique_ptr<ISystem>> managedExtracted;
 		std::vector<size_t> managedSlots;
-		managedExtracted.reserve(m_GameSystemClassNames.size());
-		managedSlots.reserve(m_GameSystemClassNames.size());
+		managedExtracted.reserve(m_SceneScriptClassNames.size());
+		managedSlots.reserve(m_SceneScriptClassNames.size());
 
 		for (size_t i = 0; i < m_Systems.size(); ++i) {
-			if (IsManagedGameSystem(m_Systems[i])) {
+			if (IsManagedSceneScript(m_Systems[i])) {
 				managedExtracted.push_back(std::move(m_Systems[i]));
 				managedSlots.push_back(i);
 			}
 		}
 
 		std::vector<std::unique_ptr<ISystem>> managedReordered;
-		managedReordered.reserve(m_GameSystemClassNames.size());
-		for (const std::string& className : m_GameSystemClassNames) {
+		managedReordered.reserve(m_SceneScriptClassNames.size());
+		for (const std::string& className : m_SceneScriptClassNames) {
 			bool placed = false;
 			for (auto it = managedExtracted.begin(); it != managedExtracted.end(); ++it) {
 				if (!*it) continue;
-				auto* mg = static_cast<ManagedGameSystem*>(it->get());
+				auto* mg = static_cast<ManagedSceneScript*>(it->get());
 				if (mg->GetClassName() == className) {
 					managedReordered.push_back(std::move(*it));
 					placed = true;
@@ -774,7 +774,7 @@ namespace Index {
 				}
 			}
 			if (!placed) {
-				managedReordered.push_back(std::make_unique<ManagedGameSystem>(className));
+				managedReordered.push_back(std::make_unique<ManagedSceneScript>(className));
 			}
 		}
 
@@ -799,10 +799,10 @@ namespace Index {
 		return true;
 	}
 
-	void Scene::ClearGameSystems()
+	void Scene::ClearSceneScripts()
 	{
 		for (auto it = m_Systems.begin(); it != m_Systems.end(); ) {
-			if (IsManagedGameSystem(*it)) {
+			if (IsManagedSceneScript(*it)) {
 				ISystem* system = it->get();
 				if (m_IsLoaded) {
 					system->OnDisable(*this);
@@ -815,14 +815,14 @@ namespace Index {
 				++it;
 			}
 		}
-		m_GameSystemClassNames.clear();
-		m_GameSystemFieldOverrides.clear();
+		m_SceneScriptClassNames.clear();
+		m_SceneScriptFieldOverrides.clear();
 	}
 
-	uint32_t Scene::GetGameSystemHandle(const std::string& className) const
+	uint32_t Scene::GetSceneScriptHandle(const std::string& className) const
 	{
 		for (const auto& sysPtr : m_Systems) {
-			const auto* managedSystem = dynamic_cast<const ManagedGameSystem*>(sysPtr.get());
+			const auto* managedSystem = dynamic_cast<const ManagedSceneScript*>(sysPtr.get());
 			if (managedSystem && managedSystem->GetClassName() == className) {
 				return managedSystem->GetHandle();
 			}
@@ -830,31 +830,31 @@ namespace Index {
 		return 0;
 	}
 
-	void Scene::SetGameSystemFieldValue(const std::string& className, const std::string& fieldName, const std::string& value)
+	void Scene::SetSceneScriptFieldValue(const std::string& className, const std::string& fieldName, const std::string& value)
 	{
-		m_GameSystemFieldOverrides[className][fieldName] = value;
+		m_SceneScriptFieldOverrides[className][fieldName] = value;
 	}
 
-	const std::unordered_map<std::string, std::string>* Scene::GetGameSystemFieldValues(const std::string& className) const
+	const std::unordered_map<std::string, std::string>* Scene::GetSceneScriptFieldValues(const std::string& className) const
 	{
-		auto it = m_GameSystemFieldOverrides.find(className);
-		if (it == m_GameSystemFieldOverrides.end()) return nullptr;
+		auto it = m_SceneScriptFieldOverrides.find(className);
+		if (it == m_SceneScriptFieldOverrides.end()) return nullptr;
 		return &it->second;
 	}
 
-	void Scene::ClearGameSystemFieldOverrides(const std::string& className)
+	void Scene::ClearSceneScriptFieldOverrides(const std::string& className)
 	{
-		m_GameSystemFieldOverrides.erase(className);
+		m_SceneScriptFieldOverrides.erase(className);
 	}
 
-	bool Scene::IsGameSystemEnabled(const std::string& className) const
+	bool Scene::IsSceneScriptEnabled(const std::string& className) const
 	{
 		if (className.empty()) {
 			return false;
 		}
 
 		for (const auto& system : m_Systems) {
-			const auto* managedSystem = dynamic_cast<const ManagedGameSystem*>(system.get());
+			const auto* managedSystem = dynamic_cast<const ManagedSceneScript*>(system.get());
 			if (managedSystem && managedSystem->GetClassName() == className) {
 				return managedSystem->IsEnabled();
 			}
@@ -863,14 +863,14 @@ namespace Index {
 		return false;
 	}
 
-	bool Scene::SetGameSystemEnabled(const std::string& className, bool enabled)
+	bool Scene::SetSceneScriptEnabled(const std::string& className, bool enabled)
 	{
 		if (className.empty()) {
 			return false;
 		}
 
 		for (auto& system : m_Systems) {
-			auto* managedSystem = dynamic_cast<ManagedGameSystem*>(system.get());
+			auto* managedSystem = dynamic_cast<ManagedSceneScript*>(system.get());
 			if (!managedSystem || managedSystem->GetClassName() != className) {
 				continue;
 			}
@@ -893,10 +893,10 @@ namespace Index {
 		return false;
 	}
 
-	void Scene::StartManagedGameSystemsForPlayMode()
+	void Scene::StartManagedSceneScriptsForPlayMode()
 	{
 		for (const auto& systemPointer : m_Systems) {
-			if (!systemPointer || !systemPointer->IsEnabled() || !IsManagedGameSystem(systemPointer)) {
+			if (!systemPointer || !systemPointer->IsEnabled() || !IsManagedSceneScript(systemPointer)) {
 				continue;
 			}
 
@@ -1137,7 +1137,7 @@ namespace Index {
 		std::vector<ISystem*> systemsToDestroy;
 		systemsToDestroy.reserve(m_Systems.size());
 
-		// Walk m_Systems (superset): systems added after AwakeSystems (AddGameSystem mid-play) are in m_Systems but not m_AwakenedSystems.
+		// Walk m_Systems (superset): systems added after AwakeSystems (AddSceneScript mid-play) are in m_Systems but not m_AwakenedSystems.
 		std::unordered_set<ISystem*> alreadyQueued;
 		alreadyQueued.reserve(m_AwakenedSystems.size());
 
@@ -1155,7 +1155,7 @@ namespace Index {
 			if (alreadyQueued.contains(system)) {
 				continue;
 			}
-			const auto* managedSystem = dynamic_cast<const ManagedGameSystem*>(system);
+			const auto* managedSystem = dynamic_cast<const ManagedSceneScript*>(system);
 			if (!system->IsEnabled() && (!managedSystem || managedSystem->GetHandle() == 0)) {
 				continue;
 			}

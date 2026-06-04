@@ -964,7 +964,7 @@ namespace Index {
 					fieldWidth - style.FramePadding.x * 2.0f, &truncatedTarget);
 				if (ImGui::Button((targetText + "##Target").c_str(), ImVec2(fieldWidth, 0.0f))) {
 					ReferencePicker::OpenForFieldKey(targetKey, "Select Entity",
-						ReferencePicker::CollectEntities());
+						ReferencePicker::CollectEntities(/*includePrefabAssets=*/false));
 				}
 				if (auto droppedUuid = AcceptEntityDrop()) {
 					mutate([i, uuid = *droppedUuid](InspectorEventList& list) {
@@ -1077,7 +1077,7 @@ namespace Index {
 						fieldWidth - style.FramePadding.x * 2.0f, &truncatedArg);
 					if (ImGui::Button((argText + "##ArgEntityPick").c_str(), ImVec2(fieldWidth, 0.0f))) {
 						ReferencePicker::OpenForFieldKey(argKey, "Select Entity",
-							ReferencePicker::CollectEntities());
+							ReferencePicker::CollectEntities(/*includePrefabAssets=*/false));
 					}
 					if (auto droppedUuid = AcceptEntityDrop()) {
 						mutate([i, uuid = *droppedUuid](InspectorEventList& list) {
