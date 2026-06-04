@@ -16,8 +16,9 @@ namespace Index {
 		TextureHandle TextureHandle;
 		UUID TextureAssetId{ 0 };
 		Color Color{ 1.0f, 1.0f, 1.0f, 1.0f };
-		// LEGACY: `.meta` import block wins over this field at texture load time; kept for back-compat.
-		Filter FilterMode{ Filter::Bilinear };
+		// Default = use the texture's own (.meta/import) filter; a concrete value
+		// overrides it. The texture's .meta still wins at load time regardless.
+		Filter FilterMode{ Filter::Default };
 
 		std::string SpriteName;
 	};

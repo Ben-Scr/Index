@@ -30,6 +30,9 @@ namespace Index {
         float G = 1.0f;
         float B = 1.0f;
         float A = 1.0f;
+        float MaskRect[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
+        float MaskRot[4]{ 0.0f, 0.0f, 1.0f, 0.0f };
+        float MaskUv[4]{ 0.0f, 0.0f, 1.0f, 1.0f };
     };
 
     // Scale = (FontSize / atlasBakedSize) / k_TextPixelsPerWorldUnit for entity text; (desiredPixelHeight / atlasBakedSize) for screen-space.
@@ -53,6 +56,14 @@ namespace Index {
         bool HasClip = false; // when true GuiRenderer applies glScissor for text under a UI Mask
         Vec2 ClipMin{};
         Vec2 ClipMax{};
+
+        bool HasTextureMask = false;
+        TextureHandle MaskTextureHandle{};
+        SpriteUVRect MaskUvRect{};
+        Vec2 MaskRectMin{};
+        Vec2 MaskRectMax{};
+        Vec2 MaskPivot{};
+        float MaskRotation = 0.0f;
 
         // EmitText short-circuits the rotation step when zero, keeping the common axis-aligned path fast.
         float Rotation = 0.0f;
@@ -112,7 +123,14 @@ namespace Index {
             TextAlignment alignment, float letterSpacing,
             TextWrapMode wrapMode = TextWrapMode::None,
             float wrapWidthPixels = 0.0f,
-            float rotation = 0.0f, Vec2 pivot = Vec2{ 0.0f, 0.0f });
+            float rotation = 0.0f, Vec2 pivot = Vec2{ 0.0f, 0.0f },
+            bool hasTextureMask = false,
+            TextureHandle maskTextureHandle = TextureHandle{},
+            SpriteUVRect maskUvRect = SpriteUVRect{},
+            Vec2 maskRectMin = Vec2{ 0.0f, 0.0f },
+            Vec2 maskRectMax = Vec2{ 0.0f, 0.0f },
+            Vec2 maskPivot = Vec2{ 0.0f, 0.0f },
+            float maskRotation = 0.0f);
 
         bool m_IsInitialized = false;
 

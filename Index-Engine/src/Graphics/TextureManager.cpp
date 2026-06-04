@@ -154,6 +154,11 @@ namespace Index {
 		if (!s_IsInitialized || path.empty()) return TextureHandle{};
 		const std::string pathStr(path);
 
+		// Filter::Default is a renderer-component sentinel ("use the texture's own
+		// filter"), not a real sampler value — resolve it here so the slot key and
+		// sampler stay concrete. (.meta still wins upstream in LoadTextureByUUID.)
+		if (filter == Filter::Default) filter = Filter::Bilinear;
+
 		TextureHandle existing = FindTextureByPath(pathStr, filter, u, v);
 		if (existing.index != 0 || (existing.generation != 0)) {
 			if (IsValid(existing)) return existing;

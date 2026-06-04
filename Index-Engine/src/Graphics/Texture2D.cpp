@@ -66,6 +66,7 @@ namespace Index {
 				case Filter::Bilinear:    return WB::Bilinear;
 				case Filter::Trilinear:   return WB::Trilinear;
 				case Filter::Anisotropic: return WB::Anisotropic;
+				case Filter::Default:     return WB::Bilinear;  // sentinel; normally resolved before sampler creation — safety net so it never yields a broken sampler
 			}
 			return WB::Point;
 		}

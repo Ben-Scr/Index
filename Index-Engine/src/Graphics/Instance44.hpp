@@ -22,6 +22,17 @@ namespace Index {
         Vec2 ClipMin{};
         Vec2 ClipMax{};
 
+        // Optional texture-backed UI mask. The scissor rect above still
+        // limits raster work; these fields let the sprite shader reject
+        // transparent pixels inside the mask texture.
+        bool HasTextureMask{ false };
+        TextureHandle MaskTextureHandle{};
+        SpriteUVRect MaskUvRect{};
+        Vec2 MaskRectMin{};
+        Vec2 MaskRectMax{};
+        Vec2 MaskPivot{};
+        float MaskRotation{ 0.0f };
+
         Instance44(Vec2 pos,
             Vec2 scale,
             float rotation,
