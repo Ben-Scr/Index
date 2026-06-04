@@ -804,6 +804,7 @@ artifacts/
 		RenderDuplicateProjectPopup();
 		RenderAssetLibraryDetailModal();
 		RenderAssetLibraryTrustModal();
+		RenderAssetLibraryDoneModal();
 
 		ImGui::End();
 
@@ -3597,6 +3598,39 @@ artifacts/
 
 		ImGui::SameLine();
 		if (ImGui::Button(IDX_TR("launcher.asset_library.close").c_str(), ImVec2(120, 0))) {
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::EndPopup();
+	}
+
+	void LauncherLayer::RenderAssetLibraryDoneModal() {
+		constexpr const char* k_DoneId = "###AssetLibraryDone";
+
+		if (m_OpenAssetLibraryDonePopup) {
+			ImGui::OpenPopup(k_DoneId);
+			m_OpenAssetLibraryDonePopup = false;
+		}
+
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		const std::string title = IDX_TR("launcher.asset_library.done.title") + k_DoneId;
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+
+		ImGui::TextWrapped("%s", IDX_TR("launcher.asset_library.done.body").c_str());
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		// Centre the button so the dialog stays balanced (matches RenderErrorPopup).
+		const float buttonW = 100.0f;
+		ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonW) * 0.5f);
+		if (ImGui::Button(IDX_TR("launcher.asset_library.done.ok").c_str(), ImVec2(buttonW, 0))) {
 			ImGui::CloseCurrentPopup();
 		}
 
