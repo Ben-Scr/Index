@@ -19,7 +19,7 @@
 #include <Core/Window.hpp>
 
 using namespace Index;
- 
+  
 static std::string s_ProjectPath;
 
 

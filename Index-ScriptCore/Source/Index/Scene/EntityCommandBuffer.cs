@@ -85,6 +85,24 @@ public sealed partial class EntityCommandBuffer : IDisposable
         return r;
     }
 
+    /// <summary>Records entity destruction. ECB-local refs are destroyed at playback; live scene refs are resolved at playback.</summary>
+    public void Destroy(EntityRef entity)
+    {
+        if (entity.IsCommandBufferEntity && entity.Index >= m_EntityCount)
+        {
+            throw new ArgumentException(
+                $"EntityRef index {entity.Index} is out of range for this ECB (entityCount = {m_EntityCount}). " +
+                "Did you call Create on a different ECB?",
+                nameof(entity));
+        }
+
+        EcbWire.WriteDestroyEntityRecord(
+            ref m_Commands,
+            ref m_CommandsLen,
+            ref m_CommandCount,
+            entity);
+    }
+
     /// <summary>Records "attach component T with the given value to entity e"; bytes are copied immediately so the source struct can be reused.</summary>
     public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
     {
@@ -98,7 +116,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
                 $"Component '{typeof(T).Name}' sizeof = {payloadSize} exceeds the ECB's u16 payload limit.",
                 nameof(data));
         }
-        if (e.Index >= m_EntityCount)
+        if (!e.IsCommandBufferEntity || e.Index >= m_EntityCount)
         {
             throw new ArgumentException(
                 $"EntityRef index {e.Index} is out of range for this ECB (entityCount = {m_EntityCount}). " +
@@ -160,7 +178,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
 
     private void RecordDefaultConstruct<T>(EntityRef e) where T : unmanaged, IComponent
     {
-        if (e.Index >= m_EntityCount)
+        if (!e.IsCommandBufferEntity || e.Index >= m_EntityCount)
         {
             throw new ArgumentException(
                 $"EntityRef index {e.Index} is out of range for this ECB (entityCount = {m_EntityCount}). " +
@@ -474,7 +492,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
     public unsafe int Playback()
     {
         PlaybackTotals totals = ComputeTotals();
-        if (totals.EntityCount == 0)
+        if (totals.EntityCount == 0 && totals.CommandCount == 0)
         {
             m_CreatedCount = 0;
             return 0;
@@ -499,7 +517,7 @@ public sealed partial class EntityCommandBuffer : IDisposable
     public unsafe int PlaybackInto(Span<ulong> destination)
     {
         PlaybackTotals totals = ComputeTotals();
-        if (totals.EntityCount == 0)
+        if (totals.EntityCount == 0 && totals.CommandCount == 0)
         {
             return 0;
         }
@@ -799,6 +817,7 @@ internal static class EcbWire
     public const byte OP_INSTANTIATE_PREFAB = 3;
     // Payload-free opcode; native side calls defaultEmplace so C++ member-initializers (e.g. Transform2D Scale=(1,1)) fire instead of being overwritten by C#'s zero-init default(T).
     public const byte OP_DEFAULT_CONSTRUCT_COMPONENT = 4;
+    public const byte OP_DESTROY_ENTITY = 5;
 
     // Sentinel "no name" matching kEcbNoName on the native side.
     public const uint NO_NAME = 0xFFFFFFFFu;
@@ -807,6 +826,7 @@ internal static class EcbWire
     public const int COMMAND_PREFIX_BYTES = 11; // u8 opcode + u32 entityIndex + u32 typeId + u16 payloadSize
     // u64 prefabGuid — the only payload Ecb_InstantiatePrefab carries today.
     public const int INSTANTIATE_PREFAB_PAYLOAD_BYTES = 8;
+    public const int DESTROY_ENTITY_PAYLOAD_BYTES = 8;
 
     public static unsafe void WriteAddComponentRecord(
         ref byte[] commands,
@@ -893,6 +913,38 @@ internal static class EcbWire
         commandCount++;
     }
 
+    public static unsafe void WriteDestroyEntityRecord(
+        ref byte[] commands,
+        ref int commandsLen,
+        ref int commandCount,
+        EntityRef entity)
+    {
+        uint entityIndex = entity.IsSceneEntity ? NO_NAME : entity.Index;
+        ushort payloadSize = entity.IsSceneEntity
+            ? (ushort)DESTROY_ENTITY_PAYLOAD_BYTES
+            : (ushort)0;
+        int recordSize = COMMAND_PREFIX_BYTES + payloadSize;
+        EnsureCapacity(ref commands, commandsLen + recordSize);
+
+        fixed (byte* basePtr = commands)
+        {
+            byte* w = basePtr + commandsLen;
+            *w = OP_DESTROY_ENTITY; w += 1;
+            Unsafe.CopyBlockUnaligned(w, &entityIndex, 4); w += 4;
+            uint typeIdZero = 0;
+            Unsafe.CopyBlockUnaligned(w, &typeIdZero, 4); w += 4;
+            Unsafe.CopyBlockUnaligned(w, &payloadSize, 2); w += 2;
+            if (entity.IsSceneEntity)
+            {
+                ulong entityId = entity.ID;
+                Unsafe.CopyBlockUnaligned(w, &entityId, DESTROY_ENTITY_PAYLOAD_BYTES);
+            }
+        }
+
+        commandsLen += recordSize;
+        commandCount++;
+    }
+
     public static void EnsureCapacity(ref byte[] buf, int needed)
     {
         if (needed <= buf.Length) return;
@@ -927,7 +979,9 @@ internal static class EcbWire
                 Unsafe.CopyBlockUnaligned(&payloadSize, r + 9, 2);
                 int recordSize = COMMAND_PREFIX_BYTES + payloadSize;
 
-                uint remappedIndex = entityIndex + baseOffset;
+                uint remappedIndex = entityIndex == NO_NAME
+                    ? NO_NAME
+                    : entityIndex + baseOffset;
                 *w = op;
                 Unsafe.CopyBlockUnaligned(w + 1, &remappedIndex, 4);
                 Unsafe.CopyBlockUnaligned(w + 5, &typeId, 4);

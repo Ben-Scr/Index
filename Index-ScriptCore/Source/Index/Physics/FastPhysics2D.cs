@@ -14,7 +14,7 @@ public static class FastPhysics2D
         RaycastHit2D result = new();
 
         if (!IsValidDirection(direction) || !IsValidDistance(maxDistance))
-            return result;
+            return result; 
 
         bool hit = InternalCalls.FastPhysics2D_Raycast(
             origin.X, origin.Y,

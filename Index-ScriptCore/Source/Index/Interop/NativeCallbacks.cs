@@ -897,6 +897,9 @@ internal unsafe struct NativeBindingsStruct
 
     // ── Application data path (appended for binary compat) ──
     public delegate* unmanaged<byte*, int, int>     Application_GetDataPathBuffer;
+
+    // ECS ref-API entity rows (appended for binary compat).
+    public delegate* unmanaged<byte*, byte*, byte*, byte*, byte*, int, void**, ulong*, int, int> Scene_OpenQueryViewWithEntities;
 }
 
 internal static unsafe class NativeCallbacks

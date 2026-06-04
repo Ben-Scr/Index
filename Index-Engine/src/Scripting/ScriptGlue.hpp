@@ -947,6 +947,18 @@ namespace Index {
 		// ── Application data path (appended for binary compat) ──
 		// Current project's absolute Assets directory; empty if none. Backs Application.DataPath.
 		int (*Application_GetDataPathBuffer)(char* outBuffer, int capacity);
+
+		// ECS ref-API entity rows (appended for binary compat).
+		int (*Scene_OpenQueryViewWithEntities)(
+			const char* sceneName,
+			const char* writeNames,
+			const char* readonlyNames,
+			const char* mustHaveNames,
+			const char* withoutNames,
+			int enableFilter,
+			void** outPointers,
+			uint64_t* outEntityIDs,
+			int maxRows);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

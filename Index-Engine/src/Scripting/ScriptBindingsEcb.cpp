@@ -159,6 +159,19 @@ namespace Index {
 					prefabSpawns.push_back({ entityIndex, guid, /*childBaseIndex=*/0u, templ });
 					totalExtraChildren += static_cast<uint64_t>(templ->EntityCount() - 1u);
 				}
+				else if (opcode == Ecb_DestroyEntity) {
+					const bool destroysLiveEntity = entityIndex == kEcbNoName;
+					const bool validLiveDestroy = destroysLiveEntity && payloadSize == sizeof(uint64_t);
+					const bool validLocalDestroy = !destroysLiveEntity
+						&& entityIndex < header.entityCount
+						&& payloadSize == 0;
+					if (!validLiveDestroy && !validLocalDestroy) {
+						IDX_CORE_WARN_TAG("Ecb",
+							"Malformed Ecb_DestroyEntity at cmd {} (entityIndex={}, payloadSize={})",
+							cmdIdx, entityIndex, payloadSize);
+						return kEcbErrorTruncated;
+					}
+				}
 
 				cursor = payload + payloadSize;
 			}
@@ -205,6 +218,7 @@ namespace Index {
 		for (const PrefabSpawn& spawn : prefabSpawns) {
 			isPrefabRoot[spawn.rootEntityIndex] = 1;
 		}
+		std::vector<uint8_t> destroyedRoot(header.entityCount, 0);
 		for (uint32_t i = 0; i < header.entityCount; ++i) {
 			if (isPrefabRoot[i] == 0) {
 				scene->SetEntityMetaDataNoFlags(handles[i], EntityOrigin::Runtime);
@@ -244,12 +258,16 @@ namespace Index {
 			}
 			cursor = payload + payloadSize;
 
-			if (entityIndex >= header.entityCount) {
+			const bool targetsLocalRoot = opcode != Ecb_DestroyEntity || entityIndex != kEcbNoName;
+			if (targetsLocalRoot && entityIndex >= header.entityCount) {
 				IDX_CORE_WARN_TAG("Ecb", "Skipping command with out-of-range entityIndex {}", entityIndex);
 				continue;
 			}
 
 			if (opcode == Ecb_AddComponent || opcode == Ecb_SetComponent) {
+				if (destroyedRoot[entityIndex] != 0) {
+					continue;
+				}
 				const ComponentInfo* info = componentRegistry.GetByTypeId(typeId);
 				if (info == nullptr || info->emplaceFromBytes == nullptr) {
 					IDX_CORE_WARN_TAG("Ecb",
@@ -265,6 +283,9 @@ namespace Index {
 				seedScriptsEntryForDynamic(info, handles[entityIndex]);
 			}
 			else if (opcode == Ecb_DefaultConstructComponent) {
+				if (destroyedRoot[entityIndex] != 0) {
+					continue;
+				}
 				const ComponentInfo* info = componentRegistry.GetByTypeId(typeId);
 				if (info == nullptr || info->defaultEmplace == nullptr) {
 					IDX_CORE_WARN_TAG("Ecb",
@@ -286,6 +307,15 @@ namespace Index {
 				const PrefabSpawn& spawn = prefabSpawns[nextPrefabSpawn++];
 				const PrefabTemplate& templ = *spawn.templ;
 				const uint32_t childCount = templ.EntityCount();
+				if (destroyedRoot[spawn.rootEntityIndex] != 0) {
+					for (uint32_t k = 1; k < childCount; ++k) {
+						EntityHandle child = handles[spawn.childBaseIndex + k - 1u];
+						if (scene->IsValid(child)) {
+							scene->DestroyEntity(child);
+						}
+					}
+					continue;
+				}
 
 				prefabSlotScratch.resize(childCount);
 				prefabSlotScratch[0] = handles[spawn.rootEntityIndex];
@@ -296,13 +326,30 @@ namespace Index {
 				prefabCache.HydrateInto(spawn.prefabGuid, *scene,
 					std::span<const EntityHandle>(prefabSlotScratch));
 			}
+			else if (opcode == Ecb_DestroyEntity) {
+				if (entityIndex == kEcbNoName) {
+					const uint64_t entityId = EcbReadLE<uint64_t>(payload);
+					EntityHandle resolved = entt::null;
+					if (scene->TryResolveEntityRef(entityId, resolved)) {
+						scene->DestroyEntity(resolved);
+					}
+				}
+				else if (destroyedRoot[entityIndex] == 0) {
+					destroyedRoot[entityIndex] = 1;
+					if (scene->IsValid(handles[entityIndex])) {
+						scene->DestroyEntity(handles[entityIndex]);
+					}
+				}
+			}
 			// Unknown opcodes: skip (forwards-compat). We already advanced
 			// `cursor` past the record's payload, so the stream stays
 			// aligned for the next iteration.
 		}
 
 		for (uint32_t i = 0; i < header.entityCount; ++i) {
-			outRuntimeIds[i] = scene->GetEntityPersistentID(handles[i]);
+			outRuntimeIds[i] = destroyedRoot[i] != 0
+				? 0
+				: scene->GetEntityPersistentID(handles[i]);
 		}
 
 		// Pulse lives outside the guard scope so it isn't double-counted by a later MarkAllDirtyOnce().

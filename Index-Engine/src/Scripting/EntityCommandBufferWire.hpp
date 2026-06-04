@@ -24,6 +24,10 @@ namespace Index {
 
 		// No payload; fires C++ member-initializers via defaultEmplace (use instead of AddComponent to avoid zero-init overwriting engine defaults).
 		Ecb_DefaultConstructComponent = 4,
+
+		// Local ECB root: payloadSize 0 and entityIndex names the root slot.
+		// Live scene entity: entityIndex is kEcbNoName and payload is uint64 persistent id.
+		Ecb_DestroyEntity = 5,
 	};
 
 	// Sentinel "no name" in the entity table.

@@ -415,6 +415,33 @@ internal static unsafe class InternalCalls
         }
     }
 
+    internal static int Scene_OpenQueryViewWithEntities(
+        string? sceneName,
+        string? writeNames,
+        string? readonlyNames,
+        string? mustHaveNames,
+        string? withoutNames,
+        int enableFilter,
+        void** outPointers,
+        ulong* outEntityIds,
+        int maxRows)
+    {
+        byte[] sceneBuf = EncodeUtf8Z(sceneName ?? "");
+        byte[] writeBuf = EncodeUtf8Z(writeNames ?? "");
+        byte[] roBuf    = EncodeUtf8Z(readonlyNames ?? "");
+        byte[] mustBuf  = EncodeUtf8Z(mustHaveNames ?? "");
+        byte[] withoutBuf = EncodeUtf8Z(withoutNames ?? "");
+        fixed (byte* sc = sceneBuf)
+        fixed (byte* w  = writeBuf)
+        fixed (byte* ro = roBuf)
+        fixed (byte* mh = mustBuf)
+        fixed (byte* wo = withoutBuf)
+        {
+            return NativeCallbacks.Bindings.Scene_OpenQueryViewWithEntities(
+                sc, w, ro, mh, wo, enableFilter, outPointers, outEntityIds, maxRows);
+        }
+    }
+
     internal static string Entity_GetManagedComponentFields(ulong entityID, string componentName)
     {
         byte[] buf = EncodeUtf8Z(componentName);

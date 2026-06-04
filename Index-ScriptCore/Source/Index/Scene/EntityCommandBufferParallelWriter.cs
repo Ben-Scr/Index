@@ -25,6 +25,26 @@ public sealed partial class EntityCommandBuffer
             return new EntityRef(localIndex);
         }
 
+        /// <summary>Records entity destruction into this worker's sub-buffer.</summary>
+        public void Destroy(EntityRef entity)
+        {
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            if (entity.IsCommandBufferEntity && entity.Index >= slot.EntityCount)
+            {
+                throw new ArgumentException(
+                    $"EntityRef index {entity.Index} is out of range for this worker slot " +
+                    $"(thread {slot.ManagedThreadId} entityCount = {slot.EntityCount}). " +
+                    "Did you pass an EntityRef across worker threads, or call Create on a different ECB?",
+                    nameof(entity));
+            }
+
+            EcbWire.WriteDestroyEntityRecord(
+                ref slot.Commands,
+                ref slot.CommandsLen,
+                ref slot.CommandCount,
+                entity);
+        }
+
         /// <summary>Records a component add into this thread's sub-buffer. <paramref name="e"/> MUST originate from <see cref="Create"/> on this same thread; a cross-thread ref silently corrupts the batch.</summary>
         public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
         {
@@ -37,7 +57,7 @@ public sealed partial class EntityCommandBuffer
             }
 
             WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
-            if (e.Index >= slot.EntityCount)
+            if (!e.IsCommandBufferEntity || e.Index >= slot.EntityCount)
             {
                 // Catches the common cross-thread misuse: an EntityRef
                 // created on thread A is passed to thread B, whose slot
@@ -102,7 +122,7 @@ public sealed partial class EntityCommandBuffer
         private void RecordDefaultConstruct<T>(EntityRef e) where T : unmanaged, IComponent
         {
             WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
-            if (e.Index >= slot.EntityCount)
+            if (!e.IsCommandBufferEntity || e.Index >= slot.EntityCount)
             {
                 throw new ArgumentException(
                     $"EntityRef index {e.Index} is out of range for this worker slot " +

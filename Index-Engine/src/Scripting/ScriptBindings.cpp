@@ -1213,7 +1213,7 @@ namespace Index {
 	}
 
 	// Iterates the smallest AND-pool as driver; all other pools are probed via inline contains(). Cost scales with min(pool sizes) — O(matchingEntities) not O(totalEntities).
-	static int Index_Scene_OpenQueryView(
+	static int Index_Scene_OpenQueryViewImpl(
 		const char* sceneName,
 		const char* writeNames,
 		const char* readonlyNames,
@@ -1221,6 +1221,7 @@ namespace Index {
 		const char* withoutNames,
 		int enableFilter,
 		void** outPointers,
+		uint64_t* outEntityIDs,
 		int maxRows)
 	{
 		IDX_BINDING_TRY {
@@ -1241,7 +1242,8 @@ namespace Index {
 			const size_t poolCount = writeCount + roCount;
 			if (poolCount == 0) return 0;  // empty query is a no-op
 
-			if (writeCount == 1
+			if (!outEntityIDs
+				&& writeCount == 1
 				&& roCount == 0
 				&& withPools.empty()
 				&& withoutPools.empty()
@@ -1378,6 +1380,9 @@ namespace Index {
 							if (!matchesAllFilters(h)) continue;
 							if (mi < maxRows) {
 								fillRow(outPointers + static_cast<size_t>(mi) * poolCount, h);
+								if (outEntityIDs) {
+									outEntityIDs[mi] = GetEntityScriptId(*scene, h);
+								}
 							}
 							++mi;
 						}
@@ -1401,6 +1406,9 @@ namespace Index {
 						if (!matches[i - lo]) continue;
 						if (myIdx < maxRows) {
 							fillRow(outPointers + static_cast<size_t>(myIdx) * poolCount, drivePacked[i]);
+							if (outEntityIDs) {
+								outEntityIDs[myIdx] = GetEntityScriptId(*scene, drivePacked[i]);
+							}
 						}
 						++myIdx;
 					}
@@ -1425,6 +1433,9 @@ namespace Index {
 						if (!matchesAllFilters(h)) continue;
 						if (myIdx < maxRows) {
 							fillRow(outPointers + static_cast<size_t>(myIdx) * poolCount, h);
+							if (outEntityIDs) {
+								outEntityIDs[myIdx] = GetEntityScriptId(*scene, h);
+							}
 						}
 						++myIdx;
 					}
@@ -1440,11 +1451,45 @@ namespace Index {
 				if (!matchesAllFilters(h)) continue;
 				if (outPointers && rowIndex < maxRows) {
 					fillRow(outPointers + static_cast<size_t>(rowIndex) * poolCount, h);
+					if (outEntityIDs) {
+						outEntityIDs[rowIndex] = GetEntityScriptId(*scene, h);
+					}
 				}
 				++rowIndex;
 			}
 			return rowIndex;
 		} IDX_BINDING_CATCH(0);
+	}
+
+	static int Index_Scene_OpenQueryView(
+		const char* sceneName,
+		const char* writeNames,
+		const char* readonlyNames,
+		const char* mustHaveNames,
+		const char* withoutNames,
+		int enableFilter,
+		void** outPointers,
+		int maxRows)
+	{
+		return Index_Scene_OpenQueryViewImpl(
+			sceneName, writeNames, readonlyNames, mustHaveNames, withoutNames,
+			enableFilter, outPointers, nullptr, maxRows);
+	}
+
+	static int Index_Scene_OpenQueryViewWithEntities(
+		const char* sceneName,
+		const char* writeNames,
+		const char* readonlyNames,
+		const char* mustHaveNames,
+		const char* withoutNames,
+		int enableFilter,
+		void** outPointers,
+		uint64_t* outEntityIDs,
+		int maxRows)
+	{
+		return Index_Scene_OpenQueryViewImpl(
+			sceneName, writeNames, readonlyNames, mustHaveNames, withoutNames,
+			enableFilter, outPointers, outEntityIDs, maxRows);
 	}
 
 	static int Index_Scene_QueryEntitiesFilteredInScene(
@@ -4186,6 +4231,8 @@ namespace Index {
 
 		b.ParticleSystem2D_GetTexture = &Index_ParticleSystem2D_GetTexture;
 		b.ParticleSystem2D_SetTexture = &Index_ParticleSystem2D_SetTexture;
+
+		b.Scene_OpenQueryViewWithEntities = &Index_Scene_OpenQueryViewWithEntities;
 	}
 
 } // namespace Index

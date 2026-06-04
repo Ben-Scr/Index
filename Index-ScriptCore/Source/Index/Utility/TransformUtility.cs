@@ -6,17 +6,7 @@ public static class TransformUtility
     private const float FullCircleDegrees = 360.0f;
     private const float HalfCircleDegrees = 180.0f;
 
-    public static float LookAt2D(Vector2 origin, Vector2 target)
-    {
-        return LookAt2DRadians(origin, target) * Mathf.Rad2Deg;
-    }
-
-    public static float LookAt2D(Vector2 origin, Vector2 target, float lerp)
-    {
-        return LerpAngleDegrees(0.0f, LookAt2D(origin, target), lerp);
-    }
-
-    public static float LookAt2D(Transform2D origin, Vector2 target, float lerp = 1.0f)
+    public static float LookAt2D(Transform2D origin, Vector2 target, float lerp)
     {
         if (origin == null) throw new ArgumentNullException(nameof(origin));
 
@@ -26,17 +16,14 @@ public static class TransformUtility
         return LerpAngleDegrees(origin.RotationDegrees, targetRotation * Mathf.Rad2Deg, lerp);
     }
 
-    /// <summary>
-    /// Calculates the rotation angle (in radians) for <paramref name="origin"/>'s up axis to face <paramref name="target"/>.
-    /// </summary>
-    public static float LookAt2DRadians(Vector2 origin, Vector2 target)
+    public static float LookAt2D(Transform2D origin, Vector2 target)
     {
-        return TryLookAt2DRadians(origin, target, out float rotation) ? rotation : 0.0f;
-    }
+        if (origin == null) throw new ArgumentNullException(nameof(origin));
 
-    public static float LookAt2DRadians(Vector2 origin, Vector2 target, float lerp)
-    {
-        return LerpAngleRadians(0.0f, LookAt2DRadians(origin, target), lerp);
+        if (!TryLookAt2DRadians(origin.Position, target, out float targetRotation))
+            return origin.RotationDegrees;
+
+        return targetRotation * Mathf.Rad2Deg;
     }
 
     public static float LookAt2DRadians(Transform2D origin, Vector2 target, float lerp = 1.0f)
@@ -49,20 +36,7 @@ public static class TransformUtility
         return LerpAngleRadians(origin.Rotation * Mathf.Deg2Rad, targetRotation, lerp);
     }
 
-    public static float LookAtRight2D(Vector2 origin, Vector2 target)
-    {
-        return LookAtRight2DRadians(origin, target) * Mathf.Rad2Deg;
-    }
 
-    public static float LookAtRight2D(Transform2D origin, Vector2 target, float lerp = 1.0f)
-    {
-        if (origin == null) throw new ArgumentNullException(nameof(origin));
-
-        if (!TryLookAtRight2DRadians(origin.Position, target, out float targetRotation))
-            return origin.RotationDegrees;
-
-        return LerpAngleDegrees(origin.RotationDegrees, targetRotation * Mathf.Rad2Deg, lerp);
-    }
 
     /// <summary>
     /// Calculates the rotation angle (in radians) for <paramref name="origin"/>'s right axis to face <paramref name="target"/>.
@@ -79,15 +53,6 @@ public static class TransformUtility
     {
         if (origin == null) throw new ArgumentNullException(nameof(origin));
         origin.RotationDegrees = LookAt2D(origin, target, lerp);
-    }
-
-    /// <summary>
-    /// Rotates <paramref name="origin"/> so its right axis faces <paramref name="target"/>.
-    /// </summary>
-    public static void FaceRight2D(Transform2D origin, Vector2 target, float lerp = 1.0f)
-    {
-        if (origin == null) throw new ArgumentNullException(nameof(origin));
-        origin.RotationDegrees = LookAtRight2D(origin, target, lerp);
     }
 
     /// <summary>
@@ -157,38 +122,6 @@ public static class TransformUtility
         float delta = Repeat(target - current, Mathf.TwoPI);
         if (delta > Mathf.PI) delta -= Mathf.TwoPI;
         return delta;
-    }
-
-    /// <summary>
-    /// Calculates the XY-plane rotation angle (in degrees) from <paramref name="origin"/> to <paramref name="target"/>.
-    /// </summary>
-    public static float LookAt(Vector3 origin, Vector3 target, float lerp)
-    {
-        return LookAt2D(origin.XY, target.XY, lerp);
-    }
-
-    /// <summary>
-    /// Calculates the XY-plane rotation angle (in degrees) from <paramref name="origin"/> to <paramref name="target"/>.
-    /// </summary>
-    public static float LookAt(Vector3 origin, Vector3 target)
-    {
-        return LookAt2D(origin.XY, target.XY);
-    }
-
-    /// <summary>
-    /// Calculates the XY-plane rotation angle (in radians) from <paramref name="origin"/> to <paramref name="target"/>.
-    /// </summary>
-    public static float LookAtRadians(Vector3 origin, Vector3 target, float lerp)
-    {
-        return LookAt2DRadians(origin.XY, target.XY, lerp);
-    }
-
-    /// <summary>
-    /// Calculates the XY-plane rotation angle (in radians) from <paramref name="origin"/> to <paramref name="target"/>.
-    /// </summary>
-    public static float LookAtRadians(Vector3 origin, Vector3 target)
-    {
-        return LookAt2DRadians(origin.XY, target.XY);
     }
 
     // Origin's Up axis (-sin θ, cos θ) faces (dx, dy) when sin θ = -dx/|d|, cos θ = dy/|d|

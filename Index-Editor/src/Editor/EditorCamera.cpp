@@ -19,7 +19,7 @@ namespace Index {
 			float zoomDelta = -scroll * ZoomSpeed * 0.1f;
 			OrthographicSize = Clamp(OrthographicSize + zoomDelta * OrthographicSize,
 				k_MinOrthographicSize, k_MaxOrthographicSize);
-			UpdateProjection();
+			UpdateProjection(); 
 		}
 
 		if (mouseDelta.x != 0.0f || mouseDelta.y != 0.0f) {
