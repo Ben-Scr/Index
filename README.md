@@ -37,12 +37,7 @@ Index is a lightweight C++20 2D game engine mainly focused on performance and mo
 - Python 3.10 or newer. `scripts/Setup.py` enforces this version.
 - Premake 5. Windows expects `vendor/bin/premake5.exe`; Linux expects `vendor/bin/premake5` or a `premake5` executable on `PATH`.
 - Windows: Visual Studio 2022 with the MSVC v143 C++ toolset, Windows SDK, and .NET 9 SDK/runtime for scripting projects and native hosting files.
-- Linux: a C++20 compiler (GCC builds the engine; Dawn's bundled source build additionally requires Clang), GNU Make, Python 3.10+, and native packages for GLFW and Dawn's X11 backend. On Ubuntu:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential clang xorg-dev libx11-xcb-dev libglu1-mesa-dev pkg-config xvfb
-```
+- Linux: a C++20 compiler (GCC builds the engine; Dawn's bundled source build additionally requires Clang), GNU Make, Python 3.10+, and native packages for GLFW and Dawn's X11 backend.
 
 - GPU backend: the engine renders through Dawn (WebGPU). Dawn is pre-built and linked via `scripts/dawn/SetupDawn.bat` — re-run that script if `External/dawn/build/` is missing or out of date. Dawn picks the underlying runtime API (D3D12 / Vulkan / Metal) at adapter-request time; you do not select it at build time.
 
@@ -52,16 +47,8 @@ The repository currently has no Git LFS patterns in `.gitattributes`. Setup skip
 Clone with submodules, or initialize them immediately after cloning:
 
 ```bash
-git clone --recurse-submodules <repo-url> Index
+git clone --recurse https://github.com/Ben-Scr/Index.git
 cd Index
-```
-
-If the checkout already exists:
-
-```bash
-git submodule sync --recursive
-git submodule update --init --recursive --jobs 8
-git submodule status --recursive
 ```
 
 All submodule status lines should start with a space. A leading `-`, `+`, or `U` means the submodule is missing, at a different commit, or conflicted.
@@ -160,14 +147,5 @@ git submodule status --recursive
 py -3 scripts\Setup.py --generator vs2022 --skip-lfs
 dotnet restore Index.sln
 ```
-
-## Generated File Hygiene
-- Generated solution/project files, build folders, and local editor state are ignored. Source folders such as `Index-Engine/src/Debugging` and `Index-Engine/src/Packages` are intentionally trackable.
-- To audit ignored generated files without deleting anything, run `git clean -ndX -- . ':!External/'` from the repository root. Keep submodule cleanup separate from generated-file cleanup.
-- If a submodule looks dirty, inspect it first with `git submodule status --recursive` and `git -C External/<name> status --short`; do not remove submodule contents just to refresh generated files.
-
-## Notes
-- Runtime assets are copied to the runtime output directory after build (`{targetdir}/IndexAssets`).
-- Linux builds use GLFW's X11 backend via vendored GLFW sources.
 
 ![Views](https://komarev.com/ghpvc/?username=ben-scr-repo-name&label=Repo%20views&color=218a45&style=flat)
