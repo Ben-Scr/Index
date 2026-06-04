@@ -541,7 +541,18 @@ namespace Index {
 				if (active) {
 					ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 				}
-				if (ImGui::Button("Post Processing Effects##EditorView")) {
+				// Icon button; falls back to text if the asset can't be loaded. Image side == font size so the button matches the adjacent combo/Gizmos frame height.
+				const uint64_t ppIcon = EditorIcons::Get("post_processing", 16);
+				bool toggled;
+				if (ppIcon) {
+					const float side = ImGui::GetFontSize();
+					toggled = ImGui::ImageButton("##PostProcessingEditorView",
+						static_cast<ImTextureID>(static_cast<intptr_t>(ppIcon)),
+						ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
+				} else {
+					toggled = ImGui::Button("Post Processing Effects##EditorView");
+				}
+				if (toggled) {
 					m_ShowPostProcessing = !m_ShowPostProcessing;
 				}
 				if (active) {

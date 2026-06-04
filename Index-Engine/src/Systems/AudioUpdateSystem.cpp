@@ -14,9 +14,7 @@ namespace Index {
 	void AudioUpdateSystem::StartPlayOnAwake(Scene& scene) {
 		auto view = scene.GetRegistry().view<AudioSourceComponent>(entt::exclude<DisabledTag>);
 		for (auto [entity, audio] : view.each()) {
-			if (audio.GetPlayOnAwake() && audio.GetAudioHandle().IsValid()) {
-				audio.Play();
-			}
+			audio.PlayOnAwakeIfEnabled();
 		}
 	}
 }

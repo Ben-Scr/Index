@@ -3,6 +3,7 @@
 #include "Project/LauncherRegistry.hpp"
 #include "Project/IndexProject.hpp"
 #include "Core/Export.hpp"
+#include "Gui/SplashScreen.hpp"
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -29,6 +30,7 @@ namespace Index {
 
 		void OnAttach(Application& app) override;
 		void OnPreRender(Application& app) override;
+		void OnUpdate(Application& app, float dt) override;
 		void OnDetach(Application& app) override;
 
 		// Public so the anonymous-namespace helpers in LauncherLayer.cpp can
@@ -184,6 +186,7 @@ namespace Index {
 		void RenderAssetLibraryTab();
 		void RenderAssetLibraryDetailModal();
 		void RenderAssetLibraryTrustModal();
+		void RenderAssetLibraryDoneModal();
 		void RenderProjectList();
 		void RenderCreateProjectPopup();
 		void RenderDeleteProjectPopups();
@@ -295,6 +298,7 @@ namespace Index {
 		std::optional<AssetLibraryEntry> m_PendingTrustedDownload;
 		bool m_OpenAssetLibraryDetailPopup = false;
 		bool m_OpenAssetLibraryTrustPopup = false;
+		bool m_OpenAssetLibraryDonePopup = false;
 
 		std::optional<LauncherProjectEntry> m_PendingDeleteProject;
 		bool m_OpenDeleteConfirmPopup = false;
@@ -332,6 +336,11 @@ namespace Index {
 
 		std::string m_ErrorMessage;
 		bool m_OpenErrorPopup = false;
+
+		// Startup splash + deferred heavy startup (registry scan) that runs
+		// behind it, so the splash holds until the launcher is actually ready.
+		EditorRuntime::SplashScreen m_Splash;
+		bool m_StartupWorkDone = false;
 	};
 
 }

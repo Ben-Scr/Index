@@ -566,6 +566,19 @@ namespace Index {
 		return removedAny ? 1 : 0;
 	}
 
+	// True for the world/local Transform2DComponent. Handing a *writable* raw transform pointer
+	// to managed code (a QueryRef row or a single component ref) lets a script move an entity by
+	// writing pool memory directly — but a ref-write only flips the component's own m_Dirty bit;
+	// unlike the by-handle Transform2D_Set* path it can't reach back and call
+	// Scene::MarkTransformDirty. So we trip the hierarchy-dirty gate here, where the pointer is
+	// handed out, so TransformHierarchySystem re-derives child world transforms from any moved
+	// parent this frame. Without it, moving a parent from C# leaves its children behind.
+	static bool IsTransform2DComponentInfo(const ComponentInfo* info)
+	{
+		static const std::type_index kTransform2DType(typeid(Transform2DComponent));
+		return info && info->typeId == kTransform2DType;
+	}
+
 	// Validity contract: pointer is invalidated by any structural change to the pool; callers must refetch each frame.
 	static void* Index_Entity_GetComponentPtr(uint64_t entityID, const char* componentName)
 	{
@@ -576,7 +589,11 @@ namespace Index {
 		const ComponentInfo* info = FindComponentByName(componentName);
 		if (!info || !info->getRaw) return nullptr;
 
-		return info->getRaw(scene->GetEntity(handle));
+		void* raw = info->getRaw(scene->GetEntity(handle));
+		// entt::null marks the gate without adding a per-entity list entry — the hierarchy pass
+		// reprocesses every root regardless, so the flag alone is enough and stays allocation-free.
+		if (raw && IsTransform2DComponentInfo(info)) scene->MarkTransformDirty(entt::null);
+		return raw;
 	}
 
 	static int Index_Entity_GetComponentSize(const char* componentName)
@@ -1241,6 +1258,13 @@ namespace Index {
 			const size_t roCount = roPools.size();
 			const size_t poolCount = writeCount + roCount;
 			if (poolCount == 0) return 0;  // empty query is a no-op
+
+			// A writable Transform2D view lets the script move entities via ref-writes, which can't
+			// flag the scene themselves; trip the hierarchy gate so moved parents propagate to their
+			// children this frame. Placed before the single-pool fast path so that path is covered too.
+			for (const ResolvedQueryPool& wp : writePools) {
+				if (IsTransform2DComponentInfo(wp.Info)) { scene->MarkTransformDirty(entt::null); break; }
+			}
 
 			if (!outEntityIDs
 				&& writeCount == 1

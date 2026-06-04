@@ -11,6 +11,7 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Utils/ExpressionEvaluator.hpp"
 
 #include <imgui.h>
 
@@ -294,8 +295,48 @@ namespace Index::PropertyDrawer {
 			if (committed && buf[0] != '\0') {
 				PropertyValue out;
 				out.Type = d.Type;
-				if (d.Type == PropertyType::Int64) out.IntValue = std::strtoll(buf, nullptr, 10);
-				else out.UIntValue = std::strtoull(buf, nullptr, 10);
+				// Plain integers parse exactly via strto*; only inputs with operators
+				// fall through to the evaluator, which is double-based — so a 64-bit
+				// magnitude above 2^53 used *inside* an expression loses precision.
+				// Plain entry of any 64-bit value stays exact. (CharsDecimal limits
+				// typable operators to + - * / here; %, ^ and parens aren't reachable.)
+				char* parseEnd = nullptr;
+				if (d.Type == PropertyType::Int64) {
+					const long long exact = std::strtoll(buf, &parseEnd, 10);
+					while (*parseEnd == ' ') ++parseEnd;
+					if (parseEnd != buf && *parseEnd == '\0') {
+						out.IntValue = exact;
+					}
+					else {
+						double r = 0.0;
+						if (!ExpressionEvaluator::Evaluate(buf,
+								uniform ? static_cast<double>(v.IntValue) : 0.0, r)) {
+							return false;
+						}
+						r = std::round(r);
+						out.IntValue = r >= 9223372036854775808.0 ? INT64_MAX
+							: r <= -9223372036854775808.0 ? INT64_MIN
+							: static_cast<int64_t>(r);
+					}
+				}
+				else { // UInt64
+					const unsigned long long exact = std::strtoull(buf, &parseEnd, 10);
+					while (*parseEnd == ' ') ++parseEnd;
+					if (parseEnd != buf && *parseEnd == '\0') {
+						out.UIntValue = exact;
+					}
+					else {
+						double r = 0.0;
+						if (!ExpressionEvaluator::Evaluate(buf,
+								uniform ? static_cast<double>(v.UIntValue) : 0.0, r)) {
+							return false;
+						}
+						r = std::round(r);
+						out.UIntValue = r <= 0.0 ? 0ull
+							: r >= 18446744073709551616.0 ? UINT64_MAX
+							: static_cast<uint64_t>(r);
+					}
+				}
 				WriteAll(entities, d, out);
 				return true;
 			}

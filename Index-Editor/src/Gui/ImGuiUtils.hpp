@@ -142,6 +142,11 @@ namespace Index::ImGuiUtils {
 
 	void DrawTexturePreview(const Texture2D& tex, float previewSize = 96.0f);
 
+	// Empty-slot stand-in for a texture preview: checkerboard panel, border, and
+	// a centered "No Texture" label. Use wherever a preview would draw but no
+	// texture is assigned, so the slot is visible before one is applied.
+	void DrawTexturePlaceholder(float previewSize = 96.0f);
+
 	void CenterNextModal();
 	std::string Ellipsize(const std::string& text, float maxWidth, bool* outTruncated = nullptr);
 	void TextEllipsis(const std::string& text, float maxWidth = -1.0f);

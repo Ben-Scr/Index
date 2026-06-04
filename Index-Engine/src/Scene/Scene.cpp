@@ -582,6 +582,30 @@ namespace Index {
 		return clone;
 	}
 
+	namespace {
+		void PlayOnAwakeRecursive(entt::registry& registry, EntityHandle entity, int depth) {
+			// Cap depth so a malformed (cyclic) hierarchy can't infinite-recurse.
+			constexpr int kMaxDepth = 1024;
+			if (depth > kMaxDepth || !registry.valid(entity)) return;
+
+			// Disabled entities don't awaken — mirrors the scene-start passes' exclude<DisabledTag>.
+			if (!registry.any_of<DisabledTag>(entity)) {
+				if (auto* particles = registry.try_get<ParticleSystem2DComponent>(entity)) particles->PlayOnAwakeIfEnabled();
+				if (auto* audio = registry.try_get<AudioSourceComponent>(entity)) audio->PlayOnAwakeIfEnabled();
+			}
+
+			if (auto* hierarchy = registry.try_get<HierarchyComponent>(entity)) {
+				for (EntityHandle child : hierarchy->Children) {
+					PlayOnAwakeRecursive(registry, child, depth + 1);
+				}
+			}
+		}
+	}
+
+	void Scene::PlayOnAwakeSubtree(EntityHandle root) {
+		PlayOnAwakeRecursive(m_Registry, root, 0);
+	}
+
 	void Scene::ClearEntities() {
 		// Gate m_TearingDown so Camera2D destroy hooks don't re-enter RefreshMainCameraSelection mid-iteration.
 		m_MainCameraEntity = entt::null;

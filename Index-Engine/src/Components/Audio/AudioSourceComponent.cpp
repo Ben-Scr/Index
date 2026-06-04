@@ -130,4 +130,11 @@ namespace Index {
 	}
 
 	bool AudioSourceComponent::IsValid() const { return m_AudioHandle.IsValid(); }
+
+	void AudioSourceComponent::PlayOnAwakeIfEnabled() {
+		// Skip handle-less sources so PlayOnAwake-but-unassigned entities don't spam Play()'s invalid-handle warning.
+		if (m_PlayOnAwake && m_AudioHandle.IsValid()) {
+			Play();
+		}
+	}
 }

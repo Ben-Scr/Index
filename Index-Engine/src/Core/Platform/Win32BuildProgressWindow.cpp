@@ -16,14 +16,12 @@ namespace Index::Win32BuildProgressWindow {
 
     namespace {
 
-        // Logical (96-DPI) dimensions. The WndProc DPI-scales these per
-        // monitor so the popup stays crisp on hi-DPI displays.
+        // Logical (96-DPI) CLIENT size. The OS caption + border are added on
+        // top via AdjustWindowRectExForDpi; the WndProc DPI-scales the content.
         constexpr int k_LogicalWidth  = 360;
-        constexpr int k_LogicalHeight = 110;
+        constexpr int k_LogicalHeight = 70;
 
         constexpr COLORREF k_ColBackground = RGB(28, 28, 28);
-        constexpr COLORREF k_ColBorder     = RGB(60, 60, 60);
-        constexpr COLORREF k_ColTitle      = RGB(235, 235, 235);
         constexpr COLORREF k_ColStage      = RGB(150, 150, 150);
         constexpr COLORREF k_ColBarTrack   = RGB(45, 45, 45);
         constexpr COLORREF k_ColBarFill    = RGB(232, 188, 32); // amber, matches editor theme accent
@@ -61,6 +59,20 @@ namespace Index::Win32BuildProgressWindow {
             return MulDiv(logical, static_cast<int>(dpi), 96);
         }
 
+        // Grows a client RECT to the full window RECT for the given style, DPI-
+        // aware where available so the caption height is right on hi-DPI monitors.
+        void AdjustForDpi(RECT* rc, DWORD style, DWORD exStyle, UINT dpi) {
+            if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
+                using Fn = BOOL (WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+                if (auto fn = reinterpret_cast<Fn>(
+                        GetProcAddress(user32, "AdjustWindowRectExForDpi"))) {
+                    fn(rc, style, FALSE, exStyle, dpi);
+                    return;
+                }
+            }
+            AdjustWindowRectEx(rc, style, FALSE, exStyle);
+        }
+
         std::wstring Widen(const std::string& s) {
             if (s.empty()) return {};
             const int needed = MultiByteToWideChar(CP_UTF8, 0,
@@ -88,42 +100,24 @@ namespace Index::Win32BuildProgressWindow {
             HBITMAP memBmp = CreateCompatibleBitmap(hdc, w, h);
             HGDIOBJ oldBmp = SelectObject(memDc, memBmp);
 
-            // Background fill + 1px border.
+            // Client background only — the OS draws the caption + border now
+            // (this is a real secondary window, not a borderless popup).
             HBRUSH bgBrush = CreateSolidBrush(k_ColBackground);
             FillRect(memDc, &client, bgBrush);
             DeleteObject(bgBrush);
 
-            HBRUSH borderBrush = CreateSolidBrush(k_ColBorder);
-            FrameRect(memDc, &client, borderBrush);
-            DeleteObject(borderBrush);
-
             SetBkMode(memDc, TRANSPARENT);
 
             const int padX     = Scale(16, dpi);
-            const int padTop   = Scale(14, dpi);
-            const int gap      = Scale(8,  dpi);
-            const int barH     = Scale(8,  dpi);
-            const int titleH   = Scale(18, dpi);
+            const int padTop   = Scale(16, dpi);
+            const int gap      = Scale(10, dpi);
+            const int barH     = Scale(10, dpi);
             const int stageH   = Scale(16, dpi);
-            const int titleFs  = Scale(14, dpi);
             const int stageFs  = Scale(12, dpi);
-
-            // Title text ("Building Project...").
-            HFONT titleFont = CreateFontW(
-                -titleFs, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            HGDIOBJ oldFont = SelectObject(memDc, titleFont);
-            SetTextColor(memDc, k_ColTitle);
-            RECT titleRect{ padX, padTop, w - padX, padTop + titleH };
             const State& st = Get();
-            DrawTextW(memDc, st.Title.c_str(), -1, &titleRect,
-                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
-            SelectObject(memDc, oldFont);
-            DeleteObject(titleFont);
 
-            // Progress-bar track + fill.
-            const int barY = padTop + titleH + gap;
+            // Progress-bar track + fill. The title is shown in the OS caption.
+            const int barY = padTop;
             RECT barTrack{ padX, barY, w - padX, barY + barH };
             HBRUSH trackBrush = CreateSolidBrush(k_ColBarTrack);
             FillRect(memDc, &barTrack, trackBrush);
@@ -143,7 +137,7 @@ namespace Index::Win32BuildProgressWindow {
                 -stageFs, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            oldFont = SelectObject(memDc, stageFont);
+            HGDIOBJ oldFont = SelectObject(memDc, stageFont);
             SetTextColor(memDc, k_ColStage);
             RECT stageRect{ padX, barY + barH + gap, w - padX,
                             barY + barH + gap + stageH };
@@ -241,12 +235,8 @@ namespace Index::Win32BuildProgressWindow {
             return;
         }
 
-        UINT seedDpi = QueryDpi(nullptr);
-        int width  = Scale(k_LogicalWidth,  seedDpi);
-        int height = Scale(k_LogicalHeight, seedDpi);
-        int x, y;
-        ComputeCenteredRect(width, height, x, y);
-
+        // Owner = main GLFW window → behaves as a secondary window of the app
+        // (stays above its owner, no taskbar button) and hides with it.
         HWND parent = nullptr;
         if (Window* w = Window::GetActiveWindow()) {
             if (GLFWwindow* g = w->GetGLFWWindow()) {
@@ -254,13 +244,31 @@ namespace Index::Win32BuildProgressWindow {
             }
         }
 
+        // Standard OS chrome: caption + border, fixed size (no resize/min/max).
+        // No WS_SYSMENU → no dead close button on a build that can't be cancelled.
+        constexpr DWORD k_Style   = WS_CAPTION;
+        constexpr DWORD k_ExStyle = 0;
+
+        auto windowSize = [&](UINT dpi, int& outW, int& outH) {
+            RECT rc{ 0, 0, Scale(k_LogicalWidth, dpi), Scale(k_LogicalHeight, dpi) };
+            AdjustForDpi(&rc, k_Style, k_ExStyle, dpi);
+            outW = rc.right - rc.left;
+            outH = rc.bottom - rc.top;
+        };
+
+        const UINT seedDpi = QueryDpi(parent);
+        int width = 0, height = 0;
+        windowSize(seedDpi, width, height);
+        int x, y;
+        ComputeCenteredRect(width, height, x, y);
+
         st.Hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            k_ExStyle,
             k_ClassName,
             st.Title.c_str(),
-            WS_POPUP,
+            k_Style,
             x, y, width, height,
-            parent,                  // owner so the popup hides with the editor
+            parent,
             nullptr,
             GetModuleHandleW(nullptr),
             nullptr);
@@ -269,13 +277,12 @@ namespace Index::Win32BuildProgressWindow {
             return;
         }
 
-        // Resize once the real per-monitor DPI is known.
+        // Re-fit once the real per-monitor DPI is known (caption scales too).
         const UINT realDpi = QueryDpi(st.Hwnd);
         if (realDpi != seedDpi) {
-            width  = Scale(k_LogicalWidth,  realDpi);
-            height = Scale(k_LogicalHeight, realDpi);
+            windowSize(realDpi, width, height);
             ComputeCenteredRect(width, height, x, y);
-            SetWindowPos(st.Hwnd, HWND_TOPMOST, x, y, width, height,
+            SetWindowPos(st.Hwnd, HWND_TOP, x, y, width, height,
                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
 

@@ -152,6 +152,39 @@ namespace Index::ImGuiUtils {
 	}
 
 	namespace {
+		// Dark rounded panel + transparency checkerboard — shared by the texture
+		// preview and the empty "No Texture" placeholder so both read identically.
+		void DrawPreviewBackground(ImDrawList* drawList, const ImVec2& min, const ImVec2& max)
+		{
+			drawList->AddRectFilled(min, max, IM_COL32(35, 35, 35, 255), 6.0f);
+
+			const float checkerSize = 8.0f;
+			for (float y = min.y; y < max.y; y += checkerSize) {
+				for (float x = min.x; x < max.x; x += checkerSize) {
+					const int ix = static_cast<int>((x - min.x) / checkerSize);
+					const int iy = static_cast<int>((y - min.y) / checkerSize);
+					const bool even = ((ix + iy) % 2) == 0;
+
+					drawList->AddRectFilled(
+						ImVec2(x, y),
+						ImVec2(
+							(x + checkerSize < max.x) ? x + checkerSize : max.x,
+							(y + checkerSize < max.y) ? y + checkerSize : max.y
+						),
+						even ? IM_COL32(70, 70, 70, 255) : IM_COL32(100, 100, 100, 255)
+					);
+				}
+			}
+		}
+
+		// Square 1.5px frame around the preview box. Square (not rounded) so it
+		// traces the checkerboard's sharp corners exactly. Drawn on top of the
+		// content so it frames the placeholder and an assigned texture alike.
+		void DrawPreviewBorder(ImDrawList* drawList, const ImVec2& min, const ImVec2& max)
+		{
+			drawList->AddRect(min, max, IM_COL32(130, 130, 130, 220), 0.0f, 0, 1.5f);
+		}
+
 		void DrawTexturePreviewImpl(uint64_t rendererId, float texWidth, float texHeight,
 			float previewSize, bool flippedY)
 		{
@@ -160,25 +193,7 @@ namespace Index::ImGuiUtils {
 
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
 
-			drawList->AddRectFilled(previewMin, previewMax, IM_COL32(35, 35, 35, 255), 6.0f);
-
-			const float checkerSize = 8.0f;
-			for (float y = previewMin.y; y < previewMax.y; y += checkerSize) {
-				for (float x = previewMin.x; x < previewMax.x; x += checkerSize) {
-					const int ix = static_cast<int>((x - previewMin.x) / checkerSize);
-					const int iy = static_cast<int>((y - previewMin.y) / checkerSize);
-					const bool even = ((ix + iy) % 2) == 0;
-
-					drawList->AddRectFilled(
-						ImVec2(x, y),
-						ImVec2(
-							(x + checkerSize < previewMax.x) ? x + checkerSize : previewMax.x,
-							(y + checkerSize < previewMax.y) ? y + checkerSize : previewMax.y
-						),
-						even ? IM_COL32(70, 70, 70, 255) : IM_COL32(100, 100, 100, 255)
-					);
-				}
-			}
+			DrawPreviewBackground(drawList, previewMin, previewMax);
 
 			float drawWidth = previewSize;
 			float drawHeight = previewSize;
@@ -205,6 +220,8 @@ namespace Index::ImGuiUtils {
 			drawList->AddImage((ImTextureID)(intptr_t)rendererId,
 				imageMin, imageMax, uv0, uv1);
 
+			DrawPreviewBorder(drawList, previewMin, previewMax);
+
 			ImGui::Dummy(ImVec2(previewSize, previewSize));
 		}
 	}
@@ -221,6 +238,28 @@ namespace Index::ImGuiUtils {
 	{
 		DrawTexturePreviewImpl(tex.GetHandle(), tex.GetWidth(), tex.GetHeight(),
 			previewSize, tex.IsFlippedY());
+	}
+
+	void DrawTexturePlaceholder(float previewSize)
+	{
+		const ImVec2 previewMin = ImGui::GetCursorScreenPos();
+		const ImVec2 previewMax = ImVec2(previewMin.x + previewSize, previewMin.y + previewSize);
+
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		DrawPreviewBackground(drawList, previewMin, previewMax);
+		DrawPreviewBorder(drawList, previewMin, previewMax);
+
+		const char* label = "No Texture";
+		const ImVec2 textSize = ImGui::CalcTextSize(label);
+		const ImVec2 textPos(
+			previewMin.x + (previewSize - textSize.x) * 0.5f,
+			previewMin.y + (previewSize - textSize.y) * 0.5f
+		);
+		// Shadow first so the label stays legible over the checker pattern.
+		drawList->AddText(ImVec2(textPos.x + 1.0f, textPos.y + 1.0f), IM_COL32(0, 0, 0, 200), label);
+		drawList->AddText(textPos, IM_COL32(225, 225, 225, 255), label);
+
+		ImGui::Dummy(ImVec2(previewSize, previewSize));
 	}
 
 	void CenterNextModal() {

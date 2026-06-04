@@ -224,16 +224,19 @@ namespace Index {
 			}
 		}
 
-		if (textureUniform && firstHandle.IsValid()) {
-			if (Texture2D* texture = TextureManager::GetTexture(firstHandle)) {
-				const float texWidth = texture->GetWidth();
-				const float texHeight = texture->GetHeight();
-				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight);
-				ImGui::Text("%.0f x %.0f", texWidth, texHeight);
-			}
-		}
-		else if (!textureUniform) {
+		if (!textureUniform) {
 			ImGui::TextDisabled("Mixed texture - pick to apply to all");
+		}
+		else if (Texture2D* texture = firstHandle.IsValid()
+			? TextureManager::GetTexture(firstHandle) : nullptr)
+		{
+			const float texWidth = texture->GetWidth();
+			const float texHeight = texture->GetHeight();
+			ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight);
+			ImGui::Text("%.0f x %.0f", texWidth, texHeight);
+		}
+		else {
+			ImGuiUtils::DrawTexturePlaceholder();
 		}
 	}
 
@@ -309,11 +312,13 @@ namespace Index {
 			Entity entity = entities[0];
 			auto& ps = const_cast<Entity&>(entity).GetComponent<ParticleSystem2DComponent>();
 			TextureHandle previewHandle = ps.GetTextureHandle();
-			if (!previewHandle.IsValid()) {
-				previewHandle = TextureManager::GetDefaultTexture(DefaultTexture::Square);
-			}
-			if (Texture2D* texture = TextureManager::GetTexture(previewHandle)) {
+			Texture2D* texture = previewHandle.IsValid()
+				? TextureManager::GetTexture(previewHandle) : nullptr;
+			if (texture) {
 				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texture->GetWidth(), texture->GetHeight());
+			}
+			else {
+				ImGuiUtils::DrawTexturePlaceholder();
 			}
 
 			ImGui::Spacing();

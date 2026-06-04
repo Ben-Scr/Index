@@ -441,10 +441,8 @@ artifacts/
 		// MUST be true: background polling drives open/create progress; without it the progress overlay freezes while the launcher is unfocused.
 		Application::SetRunInBackground(true);
 
-		m_Registry.Load();
-		m_Registry.ValidateAll();
-		m_Registry.Save();
-
+		// Settings drive the splash theme + UI defaults, so load them now; the
+		// heavier registry scan is deferred to OnUpdate (runs behind the splash).
 		LoadLauncherSettings();
 		ApplyLauncherThemeIfNeeded();
 
@@ -458,21 +456,47 @@ artifacts/
 		std::snprintf(m_NewProjectLocation, sizeof(m_NewProjectLocation), "%s",
 			defaultLocation.c_str());
 
+		m_Splash.Begin();
+	}
+
+	void LauncherLayer::OnUpdate(Application& app, float dt) {
+		(void)app;
+		(void)dt;
+		// Heavy startup runs once, behind the visible splash. OnUpdate is NOT
+		// called during Initialize's pre-loop refresh passes, so by the time it
+		// fires the splash has already been presented. ValidateAll stats every
+		// project directory on disk — the bulk of launcher startup cost.
+		if (m_StartupWorkDone) {
+			return;
+		}
+		m_Registry.Load();
+		m_Registry.ValidateAll();
+		m_Registry.Save();
 		IDX_INFO_TAG("Launcher", "Index Launcher opened ({} project(s))", m_Registry.GetProjects().size());
+		m_StartupWorkDone = true;
 	}
 
 	void LauncherLayer::OnPreRender(Application& app) {
-		(void)app;
 		ApplyLauncherThemeIfNeeded();
 		// MUST precede Begin/Text calls: NewFrame already ran, so scale takes effect immediately for this frame's metrics.
 		ImGui::GetIO().FontGlobalScale = GetEffectiveFontScale();
+
+		// Splash holds (static) until the deferred startup work is done, then
+		// fades. While opaque, skip building the launcher UI (registry not loaded
+		// yet); the fade draws on top via the foreground draw list.
+		if (m_Splash.IsActive()) {
+			m_Splash.Render(app, m_StartupWorkDone);
+			if (m_Splash.IsCovering()) {
+				return;
+			}
+		}
+
 		Localization::Poll();
 		PollCreateProjectTask();
 		PollDuplicateProjectTask();
 		const std::string titlebarText = IDX_TR("launcher.title") + std::string(" ") + std::string(IDX_VERSION);
 		EditorRuntime::RenderTitlebar(EditorRuntime::TitlebarConfig{ titlebarText, /*Centered=*/false });
 		RenderLauncherPanel();
-
 		UpdateProgressPopup();
 	}
 
@@ -533,6 +557,7 @@ artifacts/
 		m_ProjectSizeTasks.clear();
 
 		// MUST precede renderer teardown: Texture2D destructors access the WebGPU device.
+		m_Splash.Shutdown();
 		Icons::Shutdown();
 	}
 
@@ -785,7 +810,8 @@ artifacts/
 		// Standalone overlay window: SetCursorScreenPos inside the panel left the hit rect shadowed by child windows, so the button wouldn't click.
 		{
 			const ImGuiViewport* vp = ImGui::GetMainViewport();
-			constexpr float k_GearSize = 32.0f;
+			constexpr float k_GearSize = 36.0f;
+			constexpr float k_GearIcon = 28.0f;
 			constexpr float k_Margin   = 12.0f;
 			ImGui::SetNextWindowPos(ImVec2(
 				vp->Pos.x + vp->Size.x - k_GearSize - k_Margin,
@@ -801,9 +827,9 @@ artifacts/
 				ImGuiWindowFlags_NoFocusOnAppearing |
 				ImGuiWindowFlags_NoBackground;
 			if (ImGui::Begin("##LauncherGearOverlay", nullptr, k_GearFlags)) {
-				if (Icons::IconButton("##LauncherSettingsGear",
+				if (Icons::IconButtonBorderless("##LauncherSettingsGear",
 					Icons::Type::Settings,
-					ImVec2(k_GearSize, k_GearSize)))
+					ImVec2(k_GearSize, k_GearSize), k_GearIcon))
 				{
 					m_OpenSettingsPopup = true;
 				}
@@ -3351,10 +3377,12 @@ artifacts/
 		}
 		if (finishedThisFrame && !targetPath.empty()) {
 			// Refresh the registry view so the new project shows up under
-			// My Projects without restarting. Don't auto-switch tabs — let
-			// the user see "Done" in the status overlay first.
+			// My Projects without restarting. Don't auto-switch tabs. Completion
+			// is surfaced via a modal (RenderAssetLibraryDoneModal), so this
+			// one-shot also raises its open flag.
 			RefreshProjectsList();
 			m_SelectedProjectPath = targetPath;
+			m_OpenAssetLibraryDonePopup = true;
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			m_AssetLibraryTask.TargetProjectPath.clear(); // one-shot
 		}
@@ -3459,9 +3487,9 @@ artifacts/
 
 		ImGui::EndChild();
 
-		// Bottom status: terminal outcomes only (error / done). In-flight
-		// download progress is surfaced via the shared OS-level popup
-		// (Win32BuildProgressWindow), driven from UpdateProgressPopup.
+		// Bottom status: error only. Success is surfaced via a modal
+		// (RenderAssetLibraryDoneModal); in-flight progress via the shared
+		// OS-level popup (Win32BuildProgressWindow) from UpdateProgressPopup.
 		AssetLibraryStage stage;
 		std::string taskError;
 		{
@@ -3469,14 +3497,9 @@ artifacts/
 			stage = m_AssetLibraryTask.Stage;
 			taskError = m_AssetLibraryTask.Error;
 		}
-		if (stage == AssetLibraryStage::Error || stage == AssetLibraryStage::Done) {
+		if (stage == AssetLibraryStage::Error) {
 			ImGui::Separator();
-			if (stage == AssetLibraryStage::Error) {
-				ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", taskError.c_str());
-			}
-			else {
-				ImGui::TextUnformatted(IDX_TR("launcher.asset_library.progress.done").c_str());
-			}
+			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", taskError.c_str());
 		}
 	}
 

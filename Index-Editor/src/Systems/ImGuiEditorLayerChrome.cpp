@@ -60,6 +60,19 @@ namespace Index {
 
 		EditorPreferences::ApplySystemThemeIfNeeded();
 
+		// Startup splash: holds (static) while the deferred startup load runs
+		// behind it — RequestStartupLoad makes the scene load happen now (not
+		// after detach), and it fades once IsStartupLoadComplete. While opaque we
+		// return early (the editor UI also can't build yet — no active scene, the
+		// check below would bail anyway).
+		if (m_Splash.IsActive()) {
+			Application::RequestStartupLoad();
+			m_Splash.Render(app, Application::IsStartupLoadComplete());
+			if (m_Splash.IsCovering()) {
+				return;
+			}
+		}
+
 		// MUST drain before the active-scene early-return: prefab-edit is valid with no active scene; gating it on the scene check silently no-ops double-click/right-click→Open in that case.
 		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0) {
 			std::string earlyPendingPrefabEdit = m_AssetBrowser.TakePendingPrefabEdit();

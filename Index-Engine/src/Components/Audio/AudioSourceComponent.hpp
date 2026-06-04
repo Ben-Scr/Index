@@ -17,6 +17,9 @@ namespace Index {
 		void Resume();
 		void Destroy();
 
+		// Single source of the "play on awake" rule, shared by scene-start (systems / editor) and runtime prefab spawns.
+		void PlayOnAwakeIfEnabled();
+
 
 		void SetVolume(float volume);
 		void SetPitch(float pitch);

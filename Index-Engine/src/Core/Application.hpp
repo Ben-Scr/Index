@@ -117,6 +117,17 @@ namespace Index {
 		static void SignalSplashDetached() {
 			if (s_Instance) s_Instance->m_SplashLayerActive = false;
 		}
+		// Editor/Launcher splash calls this once it has been presented, so the
+		// deferred startup load runs *behind* the still-visible splash instead of
+		// after it detaches (the runtime splash leaves this unset → legacy order).
+		static void RequestStartupLoad() {
+			if (s_Instance) s_Instance->m_StartupLoadRequested = true;
+		}
+		// True once the deferred startup load has finished (or there was nothing
+		// to defer). The splash polls this to start fading out.
+		static bool IsStartupLoadComplete() {
+			return s_Instance ? s_Instance->m_StartupLoadComplete : true;
+		}
 		static void Pause(bool paused) { if (s_Instance) s_Instance->m_IsPaused = paused; }
 		static void Reload() { if (s_Instance) { s_Instance->m_ShouldQuit = true; s_Instance->m_CanReload = true; } };
 		static bool IsPaused() { return s_Instance ? s_Instance->IsEnginePaused() : false; }
@@ -246,6 +257,9 @@ namespace Index {
 		// Set when splash is active; deferred startup-scene trio runs only once splash pops (deferred-load gate).
 		bool m_DeferredStartupScenes = false;
 		bool m_SplashLayerActive = false;
+		// Editor/Launcher splash opt-in: load behind the visible splash instead of after it detaches.
+		bool m_StartupLoadRequested = false;
+		bool m_StartupLoadComplete = false;
 		bool m_WasEnginePaused = false;
 		bool m_IsRenderingFrame = false;
 		bool m_IsRenderingRefresh = false;

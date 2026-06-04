@@ -84,21 +84,16 @@
 
 namespace Index {
 	namespace {
+		// Awakens entities that already exist when play begins; runtime-spawned ones are
+		// handled at instantiation (SceneSerializer::InstantiatePrefab). Both share the
+		// per-component PlayOnAwakeIfEnabled() rule.
 		void StartPlayOnAwakeComponents(Scene& scene)
 		{
-			auto audioView = scene.GetRegistry().view<AudioSourceComponent>(entt::exclude<DisabledTag>);
-			for (auto [ent, audio] : audioView.each()) {
-				if (audio.GetPlayOnAwake() && audio.GetAudioHandle().IsValid()) {
-					audio.Play();
-				}
-			}
+			for (auto [ent, audio] : scene.GetRegistry().view<AudioSourceComponent>(entt::exclude<DisabledTag>).each())
+				audio.PlayOnAwakeIfEnabled();
 
-			auto particleView = scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>);
-			for (auto [ent, particleSystem] : particleView.each()) {
-				if (particleSystem.PlayOnAwake) {
-					particleSystem.Play();
-				}
-			}
+			for (auto [ent, particleSystem] : scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>).each())
+				particleSystem.PlayOnAwakeIfEnabled();
 		}
 
 		bool HasSelectedAncestor(const Scene& scene, EntityHandle entity, const std::unordered_set<uint32_t>& selectedEntities)
@@ -628,6 +623,10 @@ namespace Index {
 	// ──────────────────────────────────────────────
 
 	void ImGuiEditorLayer::OnAttach(Application& app) {
+		// Start the splash first: SignalSplashAttached (inside Begin) must run
+		// before Application's deferred-scene check so the project scene load is
+		// held behind the splash.
+		m_Splash.Begin();
 		Application::SetIsPlaying(false);
 		ApplicationEditorAccess::SetGameInputEnabled(false);
 		Gizmo::SetShowInRuntime(false);
@@ -705,6 +704,8 @@ namespace Index {
 
 	void ImGuiEditorLayer::OnDetach(Application& app) {
 		(void)app;
+		// MUST precede WebGPU teardown: Texture2D destructor touches the device.
+		m_Splash.Shutdown();
 		m_ProfilerPanel.Shutdown();
 		m_SpriteEditorPanel.Shutdown();
 		m_EditorPreferencesPanel.Shutdown();

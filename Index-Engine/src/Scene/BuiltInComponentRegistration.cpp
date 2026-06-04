@@ -399,11 +399,6 @@ namespace Index {
 		std::vector<PropertyDescriptor> particleProperties;
 		particleProperties.push_back(Properties::Make("PlayOnAwake", "Play On Awake",
 			&PSC::PlayOnAwake));
-		particleProperties.push_back(MakeTextureRefDirect<PSC>("Texture", "Texture",
-			[](const PSC& ps) { return ps.GetTextureHandle(); },
-			[](PSC& ps, TextureHandle h, UUID assetId) {
-				ps.SetTexture(h, assetId);
-			}));
 		particleProperties.push_back(Properties::MakeWith<float>("LifeTime", "Life Time",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.LifeTime; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.LifeTime = v; },
@@ -505,6 +500,13 @@ namespace Index {
 		particleProperties.push_back(Properties::MakeWith<uint8_t>("SortingLayer", "Sorting Layer",
 			[](const Entity& e) { return e.GetComponent<PSC>().RenderingSettings.SortingLayer; },
 			[](Entity& e, uint8_t v) { e.GetComponent<PSC>().RenderingSettings.SortingLayer = v; }));
+		// Texture lives at the end of the Rendering group so the picker sits right
+		// above the preview the custom inspector draws after the property list.
+		particleProperties.push_back(MakeTextureRefDirect<PSC>("Texture", "Texture",
+			[](const PSC& ps) { return ps.GetTextureHandle(); },
+			[](PSC& ps, TextureHandle h, UUID assetId) {
+				ps.SetTexture(h, assetId);
+			}));
 
 		RegisterComponent<ParticleSystem2DComponent>(sceneManager, "Particle System 2D",
 			ComponentCategory::Component, "Rendering", "ParticleSystem2D",

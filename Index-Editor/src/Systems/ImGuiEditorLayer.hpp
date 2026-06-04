@@ -16,6 +16,7 @@
 #include "Gui/PrefabInspector.hpp"
 #include "Gui/ProfilerPanel.hpp"
 #include "Gui/SpriteEditorPanel.hpp"
+#include "Gui/SplashScreen.hpp"
 #include "Packages/PackageManager.hpp"
 #include "Editor/EditorCamera.hpp"
 #include "Graphics/Framebuffer.hpp"
@@ -370,6 +371,10 @@ namespace Index {
 		SettingsCategory m_SelectedSettingsCategory = SettingsCategory::Display;
 		bool m_ShowEditorPreferences = false;
 		EditorPreferencesPanel m_EditorPreferencesPanel;
+
+		// Startup splash: holds (static) while the deferred startup load runs
+		// behind it, then fades out. See EditorRuntime::SplashScreen.
+		EditorRuntime::SplashScreen m_Splash;
 		bool m_PackageManagerInitialized = false;
 		bool m_SplashPreviewRequest = false;
 		bool m_SplashPreviewActive = false;

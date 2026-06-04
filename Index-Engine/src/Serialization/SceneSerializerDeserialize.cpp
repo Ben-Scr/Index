@@ -2099,6 +2099,14 @@ namespace Index {
 			cache.CaptureFromLive(prefabGuid, scene, root, fixupsAdded);
 		}
 
+		// Awaken the freshly spawned subtree the way scene-start does, so a prefab instantiated at
+		// runtime auto-plays its PlayOnAwake particles/audio instead of waiting for a start pass that
+		// already ran. Only the slow path needs this: PlayOnAwake-bearing components aren't trivially
+		// copyable, so such a prefab is never bakeable and always lands here, not in cache.Hydrate().
+		if (root != entt::null && Application::GetIsPlaying()) {
+			scene.PlayOnAwakeSubtree(root);
+		}
+
 		return root;
 	}
 

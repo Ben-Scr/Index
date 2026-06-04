@@ -10,6 +10,7 @@
 #include "Gui/ImGuiContextSetup.hpp"
 #include "Gui/ImGuiFonts.hpp"
 #include "Serialization/Path.hpp"
+#include "Utils/ExpressionEvaluator.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <utility>
 
@@ -29,6 +32,74 @@ namespace Index {
 
 		// MUST be consumed at the start of OnPreRender BEFORE NewFrame: mid-frame ClearIniSettings+LoadIniSettingsFromDisk corrupts the dock context, leaving every dockable window floating.
 		std::string s_PendingLayoutReloadPath;
+
+		// ── Numeric expression input ─────────────────────────────────
+		// Bridges ImGui scalar text entry to the engine expression evaluator so
+		// typing "5/2" or "/2" into any Drag/Slider/Input numeric field evaluates.
+		// Installed once on the context (OnAttach) via the SetScalarExpressionHook
+		// patch in imgui_widgets.cpp; p_data arrives holding the current value.
+		double ReadScalarAsDouble(ImGuiDataType type, const void* p) {
+			switch (type) {
+			case ImGuiDataType_S8:     return static_cast<double>(*static_cast<const ImS8*>(p));
+			case ImGuiDataType_U8:     return static_cast<double>(*static_cast<const ImU8*>(p));
+			case ImGuiDataType_S16:    return static_cast<double>(*static_cast<const ImS16*>(p));
+			case ImGuiDataType_U16:    return static_cast<double>(*static_cast<const ImU16*>(p));
+			case ImGuiDataType_S32:    return static_cast<double>(*static_cast<const ImS32*>(p));
+			case ImGuiDataType_U32:    return static_cast<double>(*static_cast<const ImU32*>(p));
+			case ImGuiDataType_S64:    return static_cast<double>(*static_cast<const ImS64*>(p));
+			case ImGuiDataType_U64:    return static_cast<double>(*static_cast<const ImU64*>(p));
+			case ImGuiDataType_Float:  return static_cast<double>(*static_cast<const float*>(p));
+			case ImGuiDataType_Double: return *static_cast<const double*>(p);
+			default:                   return 0.0;
+			}
+		}
+
+		double RoundClamp(double v, double lo, double hi) {
+			v = std::round(v);
+			return v < lo ? lo : (v > hi ? hi : v);
+		}
+
+		bool WriteScalarFromDouble(ImGuiDataType type, void* p, double v) {
+			switch (type) {
+			case ImGuiDataType_Float:  *static_cast<float*>(p)  = static_cast<float>(v); return true;
+			case ImGuiDataType_Double: *static_cast<double*>(p) = v; return true;
+			case ImGuiDataType_S8:  *static_cast<ImS8*>(p)  = static_cast<ImS8>(RoundClamp(v, INT8_MIN, INT8_MAX));    return true;
+			case ImGuiDataType_U8:  *static_cast<ImU8*>(p)  = static_cast<ImU8>(RoundClamp(v, 0, UINT8_MAX));          return true;
+			case ImGuiDataType_S16: *static_cast<ImS16*>(p) = static_cast<ImS16>(RoundClamp(v, INT16_MIN, INT16_MAX)); return true;
+			case ImGuiDataType_U16: *static_cast<ImU16*>(p) = static_cast<ImU16>(RoundClamp(v, 0, UINT16_MAX));        return true;
+			case ImGuiDataType_S32: *static_cast<ImS32*>(p) = static_cast<ImS32>(RoundClamp(v, INT32_MIN, INT32_MAX)); return true;
+			case ImGuiDataType_U32: *static_cast<ImU32*>(p) = static_cast<ImU32>(RoundClamp(v, 0, UINT32_MAX));        return true;
+			case ImGuiDataType_S64: {
+				// INT64 range exceeds double's exact-integer range; clamp in double space
+				// and guard the cast so v == 2^63 (rounded INT64_MAX) can't trigger UB.
+				const double r = std::round(v);
+				ImS64 out;
+				if (r >= 9223372036854775808.0)       out = INT64_MAX;
+				else if (r <= -9223372036854775808.0) out = INT64_MIN;
+				else                                  out = static_cast<ImS64>(r);
+				*static_cast<ImS64*>(p) = out;
+				return true;
+			}
+			case ImGuiDataType_U64: {
+				const double r = std::round(v);
+				ImU64 out;
+				if (r <= 0.0)                         out = 0;
+				else if (r >= 18446744073709551616.0) out = UINT64_MAX;
+				else                                  out = static_cast<ImU64>(r);
+				*static_cast<ImU64*>(p) = out;
+				return true;
+			}
+			default: return false; // Bool/String/unknown — not a numeric scalar.
+			}
+		}
+
+		bool ScalarExpressionHook(const char* buf, ImGuiDataType type, void* p_data) {
+			double result = 0.0;
+			if (!ExpressionEvaluator::Evaluate(buf, ReadScalarAsDouble(type, p_data), result)) {
+				return false;
+			}
+			return WriteScalarFromDouble(type, p_data, result);
+		}
 
 		// ImGui can diverge window->DockId to 0 while window->DockNode stays live (observed for overlay-layer panels); WindowSettingsHandler_WriteAll reads DockId verbatim, serialising them as floating. Sync from the live pointer before every save.
 		void SyncDockIdsFromLiveNodes() {
@@ -134,6 +205,9 @@ namespace Index {
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
+
+		// Numeric fields accept arithmetic ("5/2", "/2", …) via this evaluator hook.
+		ImGui::SetScalarExpressionHook(&ScalarExpressionHook);
 
 		EditorRuntime::ImGuiContextSetup::PublishImGuiContextToPackages();
 

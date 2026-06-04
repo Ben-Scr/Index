@@ -280,6 +280,11 @@ namespace Index {
 		void MarkStaticRenderDataDirty();
 		uint64_t GetStaticRenderDataVersion() const { return m_StaticRenderDataVersion; }
 
+		// Plays the PlayOnAwake particle/audio of `root` and its descendants. Called after a
+		// runtime prefab spawn so freshly created entities awaken the same way scene-start ones
+		// do (the one-shot start passes only see entities that exist when play begins).
+		void PlayOnAwakeSubtree(EntityHandle root);
+
 		const std::vector<std::string>& GetGameSystemClassNames() const { return m_GameSystemClassNames; }
 		bool HasGameSystem(const std::string& className) const;
 		bool AddGameSystem(const std::string& className);

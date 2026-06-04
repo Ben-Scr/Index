@@ -281,6 +281,31 @@ namespace Index::Icons {
 		return clicked;
 	}
 
+	// Frameless IconButton: paints only the glyph (no button background), dimmed at rest and full-strength on hover so it still reads as clickable. iconSize <= 0 fills the hit box.
+	inline bool IconButtonBorderless(const char* id, Type type,
+		ImVec2 size = ImVec2(0, 0), float iconSize = 0.0f)
+	{
+		const float frameH = ImGui::GetFrameHeight();
+		if (size.x <= 0.0f) size.x = frameH;
+		if (size.y <= 0.0f) size.y = frameH;
+		if (iconSize <= 0.0f) iconSize = std::min(size.x, size.y);
+
+		const ImVec2 cursor = ImGui::GetCursorScreenPos();
+
+		std::string label = std::string("##") + (id ? id : "icon");
+		const bool clicked = ImGui::InvisibleButton(label.c_str(), size);
+
+		ImVec4 col = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+		if (!ImGui::IsItemHovered() && !ImGui::IsItemActive()) col.w *= 0.75f;
+
+		const ImVec2 iconPos(
+			cursor.x + (size.x - iconSize) * 0.5f,
+			cursor.y + (size.y - iconSize) * 0.5f);
+		Draw(ImGui::GetWindowDrawList(), type, iconPos, iconSize,
+			ImGui::GetColorU32(col));
+		return clicked;
+	}
+
 	inline bool ButtonWithIcon(Type type, const char* label,
 		ImVec2 size = ImVec2(0, 0),
 		bool centerContent = false)

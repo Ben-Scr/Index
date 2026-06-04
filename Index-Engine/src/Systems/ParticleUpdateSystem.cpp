@@ -17,8 +17,7 @@ namespace Index {
 		}
 
 		for (const auto& [ent, particleSystem] : scene.GetRegistry().view<ParticleSystem2DComponent>(entt::exclude<DisabledTag>).each())
-			if (particleSystem.PlayOnAwake)
-				particleSystem.Play();
+			particleSystem.PlayOnAwakeIfEnabled();
 	}
 
 	void ParticleUpdateSystem::Update(Scene& scene) {

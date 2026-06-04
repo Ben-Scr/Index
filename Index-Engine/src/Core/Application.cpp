@@ -481,25 +481,27 @@ namespace Index {
 
 		if (m_SplashLayerActive) {
 			m_DeferredStartupScenes = true;
-			IDX_INFO_TAG("Application", "Startup scene load deferred until splash completes.");
+			IDX_INFO_TAG("Application", "Startup scene load deferred behind splash.");
 		}
 		else {
 			m_SceneManager->InitializeStartupScenes();
 			ScriptEngine::RaiseApplicationStart();
 			m_Time.MarkGameStart();
+			m_StartupLoadComplete = true;
 		}
 	}
 
 	void Application::TickDeferredStartupScenes() {
-		// Splash hasn't fired yet — wait. The flag flips false in
-		// SignalSplashDetached, which the splash layer calls from its
-		// OnDetach (after RuntimeImGuiHost::Release).
-		if (!m_DeferredStartupScenes || m_SplashLayerActive) return;
+		if (!m_DeferredStartupScenes) return;
+		// Two triggers: legacy runtime splash loads once it detaches
+		// (m_SplashLayerActive flips false); editor/launcher splash opts in via
+		// RequestStartupLoad() so the load runs behind the still-visible splash.
+		if (m_SplashLayerActive && !m_StartupLoadRequested) return;
 
 		m_DeferredStartupScenes = false;
 
 		if (m_SceneManager) {
-			IDX_INFO_TAG("Application", "Splash complete — loading startup scenes...");
+			IDX_INFO_TAG("Application", "Loading startup scenes...");
 			m_SceneManager->InitializeStartupScenes();
 		}
 		ScriptEngine::RaiseApplicationStart();
@@ -507,6 +509,7 @@ namespace Index {
 		m_Time.MarkGameStart();
 		// Reset time points to avoid a multi-second dt spike on the first post-splash frame (would break Box2D and unscaled-dt animations).
 		ResetTimePoints();
+		m_StartupLoadComplete = true;
 	}
 
 	void Application::BeginFrame() {

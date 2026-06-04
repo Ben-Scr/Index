@@ -106,6 +106,9 @@ namespace Index {
 
 		void Restart() { ResetSimulation(); Play(); }
 
+		// Single source of the "play on awake" rule, shared by scene-start (systems / editor) and runtime prefab spawns.
+		void PlayOnAwakeIfEnabled() { if (PlayOnAwake) Play(); }
+
 		void SetIsSimulating(bool enabled) { m_IsSimulating = enabled; }
 		void SetIsEmitting(bool enabled) { m_IsEmitting = enabled; }
 
