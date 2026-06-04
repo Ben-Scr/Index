@@ -69,6 +69,11 @@ namespace Index {
 
 		void HandleDragSource(const DirectoryEntry& entry);
 		void HandleDropTarget(const DirectoryEntry& entry);
+#ifdef IDX_PLATFORM_WINDOWS
+		void PrepareExternalFileDrag(const DirectoryEntry& entry);
+		void ClearExternalFileDrag();
+		void MaybeStartExternalFileDrag();
+#endif
 
 		// Emits ASSET_SPRITE_SLICE drag payload (not a plain texture drag) so drop targets can distinguish slice vs full-texture drops.
 		void RenderSliceTile(const DirectoryEntry& parentEntry,
@@ -133,6 +138,9 @@ namespace Index {
 		std::vector<std::string> m_SelectedPaths;
 		int m_LastSelectionIndex = -1;
 		std::string m_PressedPath;
+#ifdef IDX_PLATFORM_WINDOWS
+		std::vector<std::string> m_ExternalDragPaths;
+#endif
 		bool m_SelectionActivated = false;
 		bool m_NeedsRefresh = true;
 

@@ -70,6 +70,10 @@ make config=release -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
 
 </details>
 
+## Documentation
+
+Guides for building games with Index live in **[`Github-Docs/Documentation`](Github-Docs/Documentation/README.md)**.
+
 ## Built With
 
 - [WebGPU via Dawn](https://dawn.googlesource.com/dawn) — rendering (picks D3D12 / Vulkan / Metal at runtime)

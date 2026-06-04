@@ -82,6 +82,7 @@ project "Index-Editor"
         buildoptions { "/utf-8", "/FS", "/Zm2000", "/Zc:preprocessor" }
         systemversion "latest"
         defines { "IDX_PLATFORM_WINDOWS" }
+        links { "Ole32" }
         postbuildcommands {
             '{COPYFILE} "' .. path.join(ROOT_DIR, "External/dotnet/lib/nethost.dll") .. '" "%{cfg.targetdir}/nethost.dll"'
         }
