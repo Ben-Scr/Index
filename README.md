@@ -1,3 +1,7 @@
+<p align="left">
+ <img src="Docs/logo.png" width="25%" alt="Index Logo">
+<p align="left">
+
 # Index
 Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
 
