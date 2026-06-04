@@ -1,5 +1,5 @@
 <p align="left">
- <img src="Github-Docs/logo3.gif" width="15%" alt="Demo">
+ <img src="Github-Docs/Logos/logo3.gif" width="15%" alt="Demo">
 <p align="left">
 
 Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
