@@ -101,6 +101,10 @@ jobs:
         shell: pwsh
         run: scripts/RunTests.bat --release
 
+      - name: C# ScriptCore Tests
+        shell: pwsh
+        run: dotnet test Tests/Index-ScriptCore-Tests/Index-ScriptCore-Tests.csproj -c Release --nologo
+
       - name: Windows Runtime Smoke Test
         shell: pwsh
         run: python scripts/ci/runtime_smoke_test.py --binary bin/Release-windows-x86_64/Index-Runtime/Index-Runtime.exe

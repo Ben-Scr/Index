@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <!-- Index-ScriptCore is x64-only; let the SDK negotiate the reference
+         platform so this test project can stay platform-neutral. -->
+    <EnableDynamicPlatformResolution>true</EnableDynamicPlatformResolution>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Project reference only — ScriptCore's C# assembly compiles independently
+         of the native engine (its [DllImport]s resolve at call time, not build
+         time), so these tests need no engine/GPU/native lib. -->
+    <ProjectReference Include="..\..\Index-ScriptCore\Index-ScriptCore.csproj" />
+  </ItemGroup>
+
+</Project>
