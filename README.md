@@ -1,23 +1,23 @@
 <p align="left">
- <img src="Docs/logo.png" width="15%" alt="Index Logo">
+ <img src="Github-Docs/logo3.gif" width="15%" alt="Demo">
 <p align="left">
 
-Index is a lightweight C++20 2D game engine focused on performance and modularity.
+Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
 
 ## Preview
 
 ### Editor
 
 <p align="center">
-  <img src="Docs/Preview/Editor.png" width="48%" alt="Editor Preview">
-  <img src="Docs/Preview/Editor2.png" width="48%" alt="Editor Preview">
+  <img src="Github-Docs/Preview/Editor.png" width="48%" alt="Editor Preview">
+  <img src="Github-Docs/Preview/Editor2.png" width="48%" alt="Editor Preview">
 </p>
 
 ### Launcher
 
 <p align="center">
-  <img src="Docs/Preview/Launcher.png" width="48%" alt="Launcher Preview">
-  <img src="Docs/Preview/Launcher2.png" width="48%" alt="Launcher Preview">
+  <img src="Github-Docs/Preview/Launcher.png" width="48%" alt="Launcher Preview">
+  <img src="Github-Docs/Preview/Launcher2.png" width="48%" alt="Launcher Preview">
 </p>
 
 ## Getting Started
