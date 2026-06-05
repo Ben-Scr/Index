@@ -1201,7 +1201,8 @@ namespace Index {
 				particleValue.AddMember("playOnAwake", Value(particleSystem.PlayOnAwake));
 				particleValue.AddMember("lifetime", Value(particleSystem.ParticleSettings.LifeTime));
 				particleValue.AddMember("speed", Value(particleSystem.ParticleSettings.Speed));
-				particleValue.AddMember("scale", Value(particleSystem.ParticleSettings.Scale));
+				particleValue.AddMember("scaleX", Value(particleSystem.ParticleSettings.Scale.x));
+				particleValue.AddMember("scaleY", Value(particleSystem.ParticleSettings.Scale.y));
 				particleValue.AddMember("gravityX", Value(particleSystem.ParticleSettings.Gravity.x));
 				particleValue.AddMember("gravityY", Value(particleSystem.ParticleSettings.Gravity.y));
 				particleValue.AddMember("useGravity", Value(particleSystem.ParticleSettings.UseGravity));

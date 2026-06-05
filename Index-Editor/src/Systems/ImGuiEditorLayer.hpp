@@ -358,6 +358,7 @@ namespace Index {
 		std::string m_AutoSaveLastScenePath;
 
 		bool m_ShowQuitSaveDialog = false;
+		bool m_QuitSaveDialogOpen = false;
 		bool m_ShowBuildPanel = false;
 		bool m_ShowBuildProfilesPanel = false;
 		BuildProfilesPanel m_BuildProfilesPanel;

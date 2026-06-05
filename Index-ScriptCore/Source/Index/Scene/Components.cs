@@ -704,10 +704,15 @@ public class ParticleSystem2D : Component
         set => InternalCalls.ParticleSystem2D_SetSpeed(RequireComponent<ParticleSystem2D>(), value);
     }
 
-    public float Scale
+    public Vector2 Scale
     {
-        get => InternalCalls.ParticleSystem2D_GetScale(RequireComponent<ParticleSystem2D>());
-        set => InternalCalls.ParticleSystem2D_SetScale(RequireComponent<ParticleSystem2D>(), value);
+        get
+        {
+            ulong entityId = RequireComponent<ParticleSystem2D>();
+            InternalCalls.ParticleSystem2D_GetScale(entityId, out float x, out float y);
+            return new Vector2(x, y);
+        }
+        set => InternalCalls.ParticleSystem2D_SetScale(RequireComponent<ParticleSystem2D>(), value.X, value.Y);
     }
 
     public int EmitOverTime

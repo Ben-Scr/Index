@@ -501,7 +501,27 @@ namespace Index {
 				return true;
 			}
 
+			HWND hoveredWindow = WindowFromPoint(point);
+			HWND hoveredRoot = hoveredWindow ? GetAncestor(hoveredWindow, GA_ROOT) : nullptr;
+			bool foundEditorWindow = false;
+
 			ImGuiPlatformIO& platformIo = ImGui::GetPlatformIO();
+			for (ImGuiViewport* viewport : platformIo.Viewports) {
+				if (!viewport) continue;
+				HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
+				if (!hwnd || !IsWindow(hwnd)) continue;
+				foundEditorWindow = true;
+
+				HWND editorRoot = GetAncestor(hwnd, GA_ROOT);
+				if (hoveredWindow == hwnd || hoveredRoot == hwnd || (editorRoot && hoveredRoot == editorRoot)) {
+					return true;
+				}
+			}
+
+			if (foundEditorWindow && hoveredWindow) {
+				return false;
+			}
+
 			for (ImGuiViewport* viewport : platformIo.Viewports) {
 				if (!viewport) continue;
 				HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
@@ -529,6 +549,39 @@ namespace Index {
 			return false;
 		}
 
+		HWND GetCurrentEditorViewportHwnd()
+		{
+			if (ImGuiViewport* viewport = ImGui::GetWindowViewport()) {
+				HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
+				if (hwnd && IsWindow(hwnd)) {
+					return hwnd;
+				}
+			}
+
+			if (ImGuiViewport* viewport = ImGui::GetMainViewport()) {
+				HWND hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
+				if (hwnd && IsWindow(hwnd)) {
+					return hwnd;
+				}
+			}
+
+			HWND hwnd = ::GetActiveWindow();
+			return hwnd && IsWindow(hwnd) ? hwnd : nullptr;
+		}
+
+		bool IsScreenDragPastThreshold(int startX, int startY)
+		{
+			POINT point{};
+			if (!GetCursorPos(&point)) {
+				return IsLeftMouseDragPastClickThreshold();
+			}
+
+			const float threshold = ImGui::GetIO().MouseDragThreshold;
+			const float dx = static_cast<float>(point.x - startX);
+			const float dy = static_cast<float>(point.y - startY);
+			return (dx * dx + dy * dy) > (threshold * threshold);
+		}
+
 		bool StartNativeFileDrag(const std::vector<std::string>& paths)
 		{
 			std::vector<std::wstring> widePaths;
@@ -552,11 +605,14 @@ namespace Index {
 			}
 
 			if (widePaths.empty()) {
+				IDX_CORE_WARN_TAG("AssetBrowser", "Native file drag skipped because none of the selected paths exist.");
 				return false;
 			}
 
 			const HRESULT oleResult = OleInitialize(nullptr);
 			if (FAILED(oleResult)) {
+				IDX_CORE_WARN_TAG("AssetBrowser", "OleInitialize failed for native file drag: HRESULT 0x{:08X}",
+					static_cast<unsigned int>(oleResult));
 				return false;
 			}
 
@@ -572,7 +628,12 @@ namespace Index {
 			dataObject->Release();
 			OleUninitialize();
 
-			return dragResult == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0;
+			const bool dropped = dragResult == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0;
+			if (FAILED(dragResult)) {
+				IDX_CORE_WARN_TAG("AssetBrowser", "DoDragDrop failed for native file drag: HRESULT 0x{:08X}",
+					static_cast<unsigned int>(dragResult));
+			}
+			return dropped;
 		}
 #endif
 	}
@@ -747,9 +808,33 @@ namespace Index {
 		m_ExternalDragPaths = IsPathSelected(entry.Path)
 			? GetSelectedPaths()
 			: std::vector<std::string>{ entry.Path };
+
+		POINT point{};
+		if (GetCursorPos(&point)) {
+			m_ExternalDragStartScreenX = point.x;
+			m_ExternalDragStartScreenY = point.y;
+		}
+		else {
+			const ImGuiIO& io = ImGui::GetIO();
+			m_ExternalDragStartScreenX = static_cast<int>(io.MousePos.x);
+			m_ExternalDragStartScreenY = static_cast<int>(io.MousePos.y);
+		}
+
+		HWND hwnd = GetCurrentEditorViewportHwnd();
+		if (hwnd) {
+			SetCapture(hwnd);
+			m_ExternalDragCaptureWindow = hwnd;
+		}
 	}
 
 	void AssetBrowser::ClearExternalFileDrag() {
+		if (m_ExternalDragCaptureWindow) {
+			HWND captured = static_cast<HWND>(m_ExternalDragCaptureWindow);
+			if (GetCapture() == captured) {
+				ReleaseCapture();
+			}
+			m_ExternalDragCaptureWindow = nullptr;
+		}
 		m_ExternalDragPaths.clear();
 	}
 
@@ -763,12 +848,20 @@ namespace Index {
 			return;
 		}
 
-		if (!IsLeftMouseDragPastClickThreshold() || IsCursorInsideAnyEditorWindow()) {
+		if (!IsScreenDragPastThreshold(m_ExternalDragStartScreenX, m_ExternalDragStartScreenY)
+			|| IsCursorInsideAnyEditorWindow()) {
 			return;
 		}
 
 		std::vector<std::string> paths = std::move(m_ExternalDragPaths);
 		m_ExternalDragPaths.clear();
+		if (m_ExternalDragCaptureWindow) {
+			HWND captured = static_cast<HWND>(m_ExternalDragCaptureWindow);
+			if (GetCapture() == captured) {
+				ReleaseCapture();
+			}
+			m_ExternalDragCaptureWindow = nullptr;
+		}
 		StartNativeFileDrag(paths);
 	}
 #endif

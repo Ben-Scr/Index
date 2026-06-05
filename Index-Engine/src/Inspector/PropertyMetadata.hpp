@@ -34,6 +34,9 @@ namespace Index {
 
 		bool HideStepperButtons = false;
 
+		// Vec*/IntVec* only: prefix each channel with an X/Y/Z/W axis label.
+		bool ShowAxisLabels = false;
+
 		bool MultiLine = false;
 		int MultiLineRows = 4;
 
@@ -75,6 +78,10 @@ namespace Index {
 		}
 		PropertyMetadata& WithHideStepperButtons(bool hide = true) {
 			HideStepperButtons = hide;
+			return *this;
+		}
+		PropertyMetadata& WithAxisLabels(bool show = true) {
+			ShowAxisLabels = show;
 			return *this;
 		}
 		PropertyMetadata& WithHeader(std::string content, int size = 5) {

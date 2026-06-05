@@ -2483,13 +2483,13 @@ namespace Index {
 		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
 		comp.ParticleSettings.Speed = speed;
 	}
-	static float Index_ParticleSystem2D_GetScale(uint64_t entityID) {
-		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0.0f);
-		return comp.ParticleSettings.Scale;
+	static void Index_ParticleSystem2D_GetScale(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(ParticleSystem2DComponent, entityID, (void)(*outX = 1, *outY = 1));
+		*outX = comp.ParticleSettings.Scale.x; *outY = comp.ParticleSettings.Scale.y;
 	}
-	static void Index_ParticleSystem2D_SetScale(uint64_t entityID, float scale) {
+	static void Index_ParticleSystem2D_SetScale(uint64_t entityID, float x, float y) {
 		GET_COMPONENT(ParticleSystem2DComponent, entityID, );
-		comp.ParticleSettings.Scale = scale;
+		comp.ParticleSettings.Scale = { x, y };
 	}
 	static int Index_ParticleSystem2D_GetEmitOverTime(uint64_t entityID) {
 		GET_COMPONENT(ParticleSystem2DComponent, entityID, 0);

@@ -1242,7 +1242,9 @@ namespace Index {
 			particleSystem.PlayOnAwake = GetBoolMember(*particleValue, "playOnAwake", true);
 			particleSystem.ParticleSettings.LifeTime = GetFloatMember(*particleValue, "lifetime", 1.0f);
 			particleSystem.ParticleSettings.Speed = GetFloatMember(*particleValue, "speed", 5.0f);
-			particleSystem.ParticleSettings.Scale = GetFloatMember(*particleValue, "scale", 1.0f);
+			const float legacyScale = GetFloatMember(*particleValue, "scale", 1.0f); // pre-Vec2 scenes stored one scalar
+			particleSystem.ParticleSettings.Scale.x = GetFloatMember(*particleValue, "scaleX", legacyScale);
+			particleSystem.ParticleSettings.Scale.y = GetFloatMember(*particleValue, "scaleY", legacyScale);
 			particleSystem.ParticleSettings.Gravity.x = GetFloatMember(*particleValue, "gravityX", 0.0f);
 			particleSystem.ParticleSettings.Gravity.y = GetFloatMember(*particleValue, "gravityY", 0.0f);
 			particleSystem.ParticleSettings.UseGravity = GetBoolMember(*particleValue, "useGravity", false);
@@ -1885,7 +1887,9 @@ namespace Index {
 			particleSystem.PlayOnAwake = GetBoolMember(componentValue, "playOnAwake", true);
 			particleSystem.ParticleSettings.LifeTime = GetFloatMember(componentValue, "lifetime", 1.0f);
 			particleSystem.ParticleSettings.Speed = GetFloatMember(componentValue, "speed", 5.0f);
-			particleSystem.ParticleSettings.Scale = GetFloatMember(componentValue, "scale", 1.0f);
+			const float legacyScale = GetFloatMember(componentValue, "scale", 1.0f); // pre-Vec2 scenes stored one scalar
+			particleSystem.ParticleSettings.Scale.x = GetFloatMember(componentValue, "scaleX", legacyScale);
+			particleSystem.ParticleSettings.Scale.y = GetFloatMember(componentValue, "scaleY", legacyScale);
 			particleSystem.ParticleSettings.Gravity.x = GetFloatMember(componentValue, "gravityX", 0.0f);
 			particleSystem.ParticleSettings.Gravity.y = GetFloatMember(componentValue, "gravityY", 0.0f);
 			particleSystem.ParticleSettings.UseGravity = GetBoolMember(componentValue, "useGravity", false);

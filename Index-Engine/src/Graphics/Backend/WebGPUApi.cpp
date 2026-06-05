@@ -113,26 +113,6 @@ namespace Index {
 			}
 		}
 
-		const char* PresentModeName(wgpu::PresentMode m) {
-			switch (m) {
-				case wgpu::PresentMode::Fifo:        return "Fifo";
-				case wgpu::PresentMode::FifoRelaxed: return "FifoRelaxed";
-				case wgpu::PresentMode::Immediate:   return "Immediate";
-				case wgpu::PresentMode::Mailbox:     return "Mailbox";
-				case wgpu::PresentMode::Undefined:   return "Undefined";
-				default:                             return "Unknown";
-			}
-		}
-
-		std::string JoinPresentModes(const wgpu::SurfaceCapabilities& caps) {
-			std::string out;
-			for (size_t i = 0; i < caps.presentModeCount; ++i) {
-				if (i > 0) out += ',';
-				out += PresentModeName(caps.presentModes[i]);
-			}
-			return out;
-		}
-
 		bool SupportsPresentMode(const wgpu::SurfaceCapabilities& caps, wgpu::PresentMode mode) {
 			for (size_t i = 0; i < caps.presentModeCount; ++i) {
 				if (caps.presentModes[i] == mode) return true;
@@ -352,11 +332,6 @@ namespace Index {
 			config.presentMode = ChoosePresentMode(caps);
 			config.alphaMode   = wgpu::CompositeAlphaMode::Opaque;
 			config.viewFormatCount = 0;
-
-			IDX_CORE_INFO_TAG("WebGPUApi",
-				"ConfigureSurface: {}x{}, vsync={}, advertised=[{}], chosen={}",
-				width, height, g_VsyncEnabled,
-				JoinPresentModes(caps), PresentModeName(config.presentMode));
 
 			g_Surface.Configure(&config);
 
@@ -613,11 +588,6 @@ namespace Index {
 				config.presentMode     = vs->PresentMode;
 				config.alphaMode       = vs->AlphaMode;
 				config.viewFormatCount = 0;
-
-				IDX_CORE_INFO_TAG("WebGPUApi",
-					"ConfigureSurface (viewport): {}x{}, vsync={}, advertised=[{}], chosen={}",
-					width, height, g_VsyncEnabled,
-					JoinPresentModes(caps), PresentModeName(config.presentMode));
 
 				vs->Surface.Configure(&config);
 				vs->Width  = width;

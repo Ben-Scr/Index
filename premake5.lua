@@ -300,6 +300,86 @@ end
 -- from C++ when only the bit count changes (avoiding the premake regen).
 WriteIndexEntityBitsConfigHeader()
 
+-- ── ImGui scalar-expression hook patch ───────────────────────────────────────
+-- The numeric-field expression feature ("5/2", "/2") needs a small hook inside
+-- ImGui's DataTypeApplyFromText(). External/imgui is a pinned upstream submodule,
+-- so the edit can't be committed there without a fork; instead it is re-applied
+-- here on every premake run. premake always runs before a build (incl. CI's
+-- Setup.py / Setup.sh), so fresh checkouts and CI get patched before ImGui is
+-- compiled. Idempotent (skips when the marker is already present). If an anchor
+-- stops matching after an ImGui bump this errors out — re-sync the text with the
+-- new source. See memory note: imgui-scalar-expression-patch.
+function EnsureImGuiScalarExpressionPatch()
+    local function readAll(p)
+        local f = io.open(p, "rb"); if not f then return nil end
+        local c = f:read("*all"); f:close(); return c
+    end
+    local function writeAll(p, c)
+        local f, err = io.open(p, "wb")
+        if not f then error("[imgui-patch] cannot write " .. p .. " (" .. tostring(err) .. ")") end
+        f:write(c); f:close()
+    end
+    local function insertAfter(content, anchor, text, file)
+        local s = content:find(anchor, 1, true)
+        if not s then
+            error("[imgui-patch] anchor not found in " .. file .. " -> '" .. anchor
+                .. "'. Re-sync the ImGui hook patch after the submodule bump.")
+        end
+        local nl = content:find("\n", s, true) or #content
+        return content:sub(1, nl) .. text .. content:sub(nl + 1)
+    end
+    local function insertBefore(content, anchor, text, file)
+        local s = content:find(anchor, 1, true)
+        if not s then
+            error("[imgui-patch] anchor not found in " .. file .. " -> '" .. anchor
+                .. "'. Re-sync the ImGui hook patch after the submodule bump.")
+        end
+        local ls = s
+        while ls > 1 and content:sub(ls - 1, ls - 1) ~= "\n" do ls = ls - 1 end
+        return content:sub(1, ls - 1) .. text .. content:sub(ls)
+    end
+
+    local headerPath = path.join(ROOT_DIR, "External/imgui/imgui.h")
+    local header = readAll(headerPath)
+    if header and not header:find("SetScalarExpressionHook", 1, true) then
+        header = insertAfter(header, "(*ImGuiMemFreeFunc)(void* ptr, void* user_data);",
+            "typedef bool    (*ImGuiScalarExpressionFn)(const char* buf, ImGuiDataType data_type, void* p_data); // [Index patch] Signature for ImGui::SetScalarExpressionHook()\n",
+            "imgui.h")
+        header = insertAfter(header, "IMGUI_API ImGuiStorage* GetStateStorage();",
+            "\n"
+            .. "    // [Index patch] Scalar expression hook - see DataTypeApplyFromText() in imgui_widgets.cpp.\n"
+            .. "    // If set, it is called with the typed text + current value (in *p_data) before the default\n"
+            .. "    // numeric parsing; return true (and write *p_data) to override parsing, false to fall back.\n"
+            .. "    // ImGuiScalarExpressionFn is declared at global scope alongside ImGuiMemAllocFunc.\n"
+            .. "    IMGUI_API void          SetScalarExpressionHook(ImGuiScalarExpressionFn fn);\n",
+            "imgui.h")
+        writeAll(headerPath, header)
+        print("[imgui-patch] applied scalar-expression hook to imgui.h")
+    end
+
+    local widgetsPath = path.join(ROOT_DIR, "External/imgui/imgui_widgets.cpp")
+    local widgets = readAll(widgetsPath)
+    if widgets and not widgets:find("GScalarExpressionHook", 1, true) then
+        widgets = insertBefore(widgets, "// User can input math operators",
+            "// [Index patch] Optional hook installed by the host (see ImGui::SetScalarExpressionHook).\n"
+            .. "// Lets the engine route numeric text through a full expression evaluator.\n"
+            .. "static ImGuiScalarExpressionFn GScalarExpressionHook = NULL;\n"
+            .. "void ImGui::SetScalarExpressionHook(ImGuiScalarExpressionFn fn) { GScalarExpressionHook = fn; }\n\n",
+            "imgui_widgets.cpp")
+        widgets = insertAfter(widgets, "memcpy(&data_backup, p_data, type_info->Size);",
+            "\n"
+            .. "    // [Index patch] Give the host expression evaluator first crack at the text; it trims\n"
+            .. "    // blanks and rejects empty/invalid input, so the default parsing below still runs for\n"
+            .. "    // non-expressions. p_data holds the current value here (used for \"/2\"-style edits).\n"
+            .. "    if (GScalarExpressionHook && GScalarExpressionHook(buf, data_type, p_data))\n"
+            .. "        return memcmp(&data_backup, p_data, type_info->Size) != 0;\n",
+            "imgui_widgets.cpp")
+        writeAll(widgetsPath, widgets)
+        print("[imgui-patch] applied scalar-expression hook to imgui_widgets.cpp")
+    end
+end
+EnsureImGuiScalarExpressionPatch()
+
 function GetIndexModuleDefines()
     local hasApplication = IndexModules.Render
         and IndexModules.Audio

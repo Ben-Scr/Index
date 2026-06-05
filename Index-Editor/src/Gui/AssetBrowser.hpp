@@ -147,6 +147,9 @@ namespace Index {
 		std::string m_PressedPath;
 #ifdef IDX_PLATFORM_WINDOWS
 		std::vector<std::string> m_ExternalDragPaths;
+		int m_ExternalDragStartScreenX = 0;
+		int m_ExternalDragStartScreenY = 0;
+		void* m_ExternalDragCaptureWindow = nullptr;
 #endif
 		bool m_SelectionActivated = false;
 		bool m_NeedsRefresh = true;

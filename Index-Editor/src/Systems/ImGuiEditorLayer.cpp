@@ -3823,6 +3823,41 @@ namespace Index {
 								dropScene->MarkDirty();
 							}
 						}
+						else {
+							// Script dropped on empty space → new root entity named after the script with the script attached. Scene/global systems aren't entity components (the Systems inspector handles those).
+							Scene* dropScene = GetContextScene();
+							if (dropScene) {
+								std::vector<EditorScriptDiscovery::ScriptEntry> droppedScripts;
+								EditorScriptDiscovery::CollectScriptFile(std::filesystem::path(droppedPath), droppedScripts);
+
+								Entity newEntity = Entity::Null;
+								bool created = false;
+								for (const auto& scriptEntry : droppedScripts) {
+									if (scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
+										continue;
+									}
+									if (!created) {
+										newEntity = dropScene->CreateEntity(scriptEntry.ClassName);
+										created = true;
+									}
+									if (scriptEntry.IsManagedComponent) {
+										AttachManagedComponentToEntity(newEntity, *dropScene, scriptEntry);
+									}
+									else {
+										AttachScriptToEntity(newEntity, *dropScene, scriptEntry);
+									}
+								}
+
+								if (created) {
+									EnsureEditorUniqueEntityNames(*dropScene, { newEntity.GetHandle() });
+									SelectEntity(newEntity.GetHandle());
+									dropScene->MarkDirty();
+									m_EntityOrder.clear();
+									m_EntityOrderDirty = true;
+									++m_SelectionVersion;
+								}
+							}
+						}
 					}
 					ImGui::EndDragDropTarget();
 				}

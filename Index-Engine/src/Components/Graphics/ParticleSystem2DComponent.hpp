@@ -51,7 +51,7 @@ namespace Index {
 			Vec2 Gravity{ 0.0f, -9.7f };
 			bool UseGravity{ false };
 			bool UseRandomColors{ false };
-			float Scale{ 1.f };
+			Vec2 Scale{ 1.f, 1.f };
 			Vec2 MoveDirection{ 0.f, 0.f };
 		};
 

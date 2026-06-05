@@ -465,10 +465,20 @@ namespace Index::PropertyDrawer {
 			const float buttonWidth = showSteppers
 				? std::min(22.0f, std::max(16.0f, componentWidth * 0.22f))
 				: 0.0f;
+			const bool showAxisLabels = d.Metadata.ShowAxisLabels;
+			static constexpr const char* axisLabels[4] = { "X", "Y", "Z", "W" };
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
+				float channelWidth = componentWidth;
+				if (showAxisLabels) {
+					ImGui::AlignTextToFramePadding();
+					ImGui::TextUnformatted(axisLabels[c]);
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+					channelWidth = std::max(1.0f, componentWidth
+						- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
+				}
 				const float pre = values[c];
 				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
@@ -481,8 +491,8 @@ namespace Index::PropertyDrawer {
 					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 				}
 				const float inputWidth = showSteppers
-					? std::max(1.0f, componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
-					: componentWidth;
+					? std::max(1.0f, channelWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
+					: channelWidth;
 				ImGui::SetNextItemWidth(inputWidth);
 				channelChanged |= ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
 				if (showSteppers) {
@@ -520,10 +530,20 @@ namespace Index::PropertyDrawer {
 			const float buttonWidth = showSteppers
 				? std::min(22.0f, std::max(16.0f, componentWidth * 0.22f))
 				: 0.0f;
+			const bool showAxisLabels = d.Metadata.ShowAxisLabels;
+			static constexpr const char* axisLabels[4] = { "X", "Y", "Z", "W" };
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
+				float channelWidth = componentWidth;
+				if (showAxisLabels) {
+					ImGui::AlignTextToFramePadding();
+					ImGui::TextUnformatted(axisLabels[c]);
+					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+					channelWidth = std::max(1.0f, componentWidth
+						- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
+				}
 				// C7: same per-channel delta gate as DrawFloatVec.
 				const int pre = values[c];
 				int channel = pre;
@@ -537,8 +557,8 @@ namespace Index::PropertyDrawer {
 					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
 				}
 				const float inputWidth = showSteppers
-					? std::max(1.0f, componentWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
-					: componentWidth;
+					? std::max(1.0f, channelWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
+					: channelWidth;
 				ImGui::SetNextItemWidth(inputWidth);
 				channelChanged |= ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
 				if (showSteppers) {

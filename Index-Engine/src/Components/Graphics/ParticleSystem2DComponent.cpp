@@ -109,7 +109,7 @@ namespace Index {
 			particle.LifeTime = ParticleSettings.LifeTime;
 
 			Vec2 position{ 0 };
-			Vec2 scale{ ParticleSettings.Scale, ParticleSettings.Scale };
+			Vec2 scale = ParticleSettings.Scale;
 			float rot{ 0.f };
 			Vec2 velocityDirection = DirectionOrUp(ParticleSettings.MoveDirection);
 			Vec2 velocity = velocityDirection * ParticleSettings.Speed;

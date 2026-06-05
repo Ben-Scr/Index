@@ -836,8 +836,8 @@ internal static unsafe class InternalCalls
     internal static void ParticleSystem2D_SetLifeTime(ulong id, float v) => NativeCallbacks.Bindings.ParticleSystem2D_SetLifeTime(id, v);
     internal static float ParticleSystem2D_GetSpeed(ulong id) => NativeCallbacks.Bindings.ParticleSystem2D_GetSpeed(id);
     internal static void ParticleSystem2D_SetSpeed(ulong id, float v) => NativeCallbacks.Bindings.ParticleSystem2D_SetSpeed(id, v);
-    internal static float ParticleSystem2D_GetScale(ulong id) => NativeCallbacks.Bindings.ParticleSystem2D_GetScale(id);
-    internal static void ParticleSystem2D_SetScale(ulong id, float v) => NativeCallbacks.Bindings.ParticleSystem2D_SetScale(id, v);
+    internal static void ParticleSystem2D_GetScale(ulong id, out float x, out float y) { float ox, oy; NativeCallbacks.Bindings.ParticleSystem2D_GetScale(id, &ox, &oy); x = ox; y = oy; }
+    internal static void ParticleSystem2D_SetScale(ulong id, float x, float y) => NativeCallbacks.Bindings.ParticleSystem2D_SetScale(id, x, y);
     internal static int ParticleSystem2D_GetEmitOverTime(ulong id) => NativeCallbacks.Bindings.ParticleSystem2D_GetEmitOverTime(id);
     internal static void ParticleSystem2D_SetEmitOverTime(ulong id, int v) => NativeCallbacks.Bindings.ParticleSystem2D_SetEmitOverTime(id, v);
     internal static void ParticleSystem2D_Emit(ulong id, int count) => NativeCallbacks.Bindings.ParticleSystem2D_Emit(id, count);

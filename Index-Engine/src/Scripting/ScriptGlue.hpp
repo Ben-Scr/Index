@@ -310,8 +310,8 @@ namespace Index {
 		void  (*ParticleSystem2D_SetLifeTime)(uint64_t entityID, float lifetime);
 		float (*ParticleSystem2D_GetSpeed)(uint64_t entityID);
 		void  (*ParticleSystem2D_SetSpeed)(uint64_t entityID, float speed);
-		float (*ParticleSystem2D_GetScale)(uint64_t entityID);
-		void  (*ParticleSystem2D_SetScale)(uint64_t entityID, float scale);
+		void  (*ParticleSystem2D_GetScale)(uint64_t entityID, float* outX, float* outY);
+		void  (*ParticleSystem2D_SetScale)(uint64_t entityID, float x, float y);
 		int   (*ParticleSystem2D_GetEmitOverTime)(uint64_t entityID);
 		void  (*ParticleSystem2D_SetEmitOverTime)(uint64_t entityID, int rate);
 		void  (*ParticleSystem2D_Emit)(uint64_t entityID, int count);

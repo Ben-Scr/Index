@@ -291,8 +291,8 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, void> ParticleSystem2D_SetLifeTime;
     public delegate* unmanaged<ulong, float> ParticleSystem2D_GetSpeed;
     public delegate* unmanaged<ulong, float, void> ParticleSystem2D_SetSpeed;
-    public delegate* unmanaged<ulong, float> ParticleSystem2D_GetScale;
-    public delegate* unmanaged<ulong, float, void> ParticleSystem2D_SetScale;
+    public delegate* unmanaged<ulong, float*, float*, void> ParticleSystem2D_GetScale;
+    public delegate* unmanaged<ulong, float, float, void> ParticleSystem2D_SetScale;
     public delegate* unmanaged<ulong, int> ParticleSystem2D_GetEmitOverTime;
     public delegate* unmanaged<ulong, int, void> ParticleSystem2D_SetEmitOverTime;
     public delegate* unmanaged<ulong, int, void> ParticleSystem2D_Emit;

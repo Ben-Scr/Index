@@ -294,20 +294,6 @@ namespace Index {
 					[](Entity& e, uint8_t v) {
 						e.GetComponent<SpriteRendererComponent>().SortingLayer = v;
 					}),
-				MakeTextureRefDirect<SpriteRendererComponent>("Texture", "Texture",
-					[](const SpriteRendererComponent& s) { return s.TextureHandle; },
-					// Slice-aware setter: set SpriteName atomically with the texture so the renderer clips to the correct rect on the first frame; clear it on plain texture drops to avoid dangling stale UV coords.
-					[](SpriteRendererComponent& s, TextureHandle h, UUID assetId, const std::string& sliceName) {
-						s.TextureHandle = h;
-						s.TextureAssetId = assetId;
-						s.SpriteName = sliceName;
-						// Default leaves the texture's own (.meta) filter untouched.
-						if (s.FilterMode != Filter::Default) {
-							if (auto* tex = TextureManager::GetTexture(h); tex) {
-								tex->SetFilter(s.FilterMode);
-							}
-						}
-					}),
 				Properties::MakeWith<Filter>("FilterMode", "Filter Mode",
 					[](const Entity& e) { return e.GetComponent<SpriteRendererComponent>().FilterMode; },
 					[](Entity& e, Filter v) {
@@ -320,6 +306,20 @@ namespace Index {
 						}
 						else if (auto* tex = TextureManager::GetTexture(sprite.TextureHandle); tex) {
 							tex->SetFilter(v);
+						}
+					}),
+				MakeTextureRefDirect<SpriteRendererComponent>("Texture", "Texture",
+					[](const SpriteRendererComponent& s) { return s.TextureHandle; },
+					// Slice-aware setter: set SpriteName atomically with the texture so the renderer clips to the correct rect on the first frame; clear it on plain texture drops to avoid dangling stale UV coords.
+					[](SpriteRendererComponent& s, TextureHandle h, UUID assetId, const std::string& sliceName) {
+						s.TextureHandle = h;
+						s.TextureAssetId = assetId;
+						s.SpriteName = sliceName;
+						// Default leaves the texture's own (.meta) filter untouched.
+						if (s.FilterMode != Filter::Default) {
+							if (auto* tex = TextureManager::GetTexture(h); tex) {
+								tex->SetFilter(s.FilterMode);
+							}
 						}
 					}),
 			});
@@ -418,10 +418,10 @@ namespace Index {
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.LifeTime; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.LifeTime = v; },
 			Properties::Meta::DragSpeed(0.05f)));
-		particleProperties.push_back(Properties::MakeWith<float>("Scale", "Scale",
+		particleProperties.push_back(Properties::MakeWith<Vec2>("Scale", "Scale",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.Scale; },
-			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.Scale = v; },
-			Properties::Meta::DragSpeed(0.05f)));
+			[](Entity& e, const Vec2& v) { e.GetComponent<PSC>().ParticleSettings.Scale = v; },
+			Properties::Meta::DragSpeed(0.05f).WithAxisLabels(true)));
 		particleProperties.push_back(Properties::MakeWith<float>("Speed", "Speed",
 			[](const Entity& e) { return e.GetComponent<PSC>().ParticleSettings.Speed; },
 			[](Entity& e, float v) { e.GetComponent<PSC>().ParticleSettings.Speed = v; },
@@ -522,6 +522,17 @@ namespace Index {
 			[](PSC& ps, TextureHandle h, UUID assetId) {
 				ps.SetTexture(h, assetId);
 			}));
+
+		// Particle inspector uses drag-only numeric fields (no +/- steppers), incl. nested shape-variant params.
+		std::function<void(std::vector<PropertyDescriptor>&)> hideParticleSteppers =
+			[&hideParticleSteppers](std::vector<PropertyDescriptor>& props) {
+				for (PropertyDescriptor& prop : props) {
+					prop.Metadata.HideStepperButtons = true;
+					for (PropertyDescriptor::Branch& branch : prop.VariantBranches)
+						hideParticleSteppers(branch.Properties);
+				}
+			};
+		hideParticleSteppers(particleProperties);
 
 		RegisterComponent<ParticleSystem2DComponent>(sceneManager, "Particle System 2D",
 			ComponentCategory::Component, "Rendering", "ParticleSystem2D",

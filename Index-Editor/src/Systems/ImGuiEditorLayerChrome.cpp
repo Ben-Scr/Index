@@ -46,6 +46,10 @@
 #include <unordered_set>
 
 namespace Index {
+	namespace {
+		constexpr const char* k_QuitSavePopupName = "Unsaved Scene";
+	}
+
 	void ImGuiEditorLayer::EnsureViewportFramebuffer(int width, int height) {
 		m_EditorViewFBO.Recreate(width, height);
 	}
@@ -312,7 +316,9 @@ namespace Index {
 
 				Scene* active = SceneManager::Get().GetActiveScene();
 				if (active && active->IsDirty()) {
-					m_ShowQuitSaveDialog = true;
+					if (!m_QuitSaveDialogOpen) {
+						m_ShowQuitSaveDialog = true;
+					}
 					Application::CancelQuit();
 				}
 			}
@@ -499,41 +505,61 @@ namespace Index {
 
 		// Quit confirmation modal dialog
 		if (m_ShowQuitSaveDialog) {
-			ImGui::OpenPopup("Save Before Quit?");
+			ImGui::OpenPopup(k_QuitSavePopupName);
+			m_QuitSaveDialogOpen = true;
 			m_ShowQuitSaveDialog = false;
 		}
 		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
-		if (ImGui::BeginPopupModal("Save Before Quit?", nullptr,
-			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+		bool quitDialogOpen = true;
+		if (ImGui::BeginPopupModal(k_QuitSavePopupName, &quitDialogOpen,
+			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking)) {
+			m_QuitSaveDialogOpen = true;
 			Scene* active = SceneManager::Get().GetActiveScene();
 			std::string activeName = active ? active->GetName() : "Scene";
-			ImGui::Text("Save changes to %s before closing?", activeName.c_str());
+			ImGui::Text("Save changes to %s before closing the editor?", activeName.c_str());
 			ImGui::Spacing();
 
+			auto closeQuitDialog = [&]() {
+				m_QuitSaveDialogOpen = false;
+				ImGui::CloseCurrentPopup();
+			};
+
 			if (ImGui::Button("Save", ImVec2(100, 0))) {
+				bool canQuit = true;
 				if (active) {
 					IndexProject* project = ProjectManager::GetCurrentProject();
 					if (project) {
 						std::string savePath = project->GetSceneFilePath(active->GetName());
-						SceneSerializer::SaveToFile(*active, savePath);
-						project->LastOpenedScene = active->GetName();
-						project->Save();
+						canQuit = SceneSerializer::SaveToFile(*active, savePath);
+						if (canQuit) {
+							project->LastOpenedScene = active->GetName();
+							project->Save();
+						}
+					}
+					else {
+						canQuit = false;
+						IDX_ERROR_TAG("Editor", "Cannot save scene before quit: no active project.");
 					}
 				}
-				ImGui::CloseCurrentPopup();
-				Application::ConfirmQuit();
+				if (canQuit) {
+					closeQuitDialog();
+					Application::ConfirmQuit();
+				}
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Don't Save", ImVec2(100, 0))) {
-				ImGui::CloseCurrentPopup();
+				closeQuitDialog();
 				Application::ConfirmQuit();
 			}
 			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(100, 0))) {
-				ImGui::CloseCurrentPopup();
+			if (ImGui::Button("Cancel", ImVec2(100, 0)) || !quitDialogOpen) {
+				closeQuitDialog();
 			}
 			ImGui::EndPopup();
+		}
+		else if (m_QuitSaveDialogOpen && !ImGui::IsPopupOpen(k_QuitSavePopupName)) {
+			m_QuitSaveDialogOpen = false;
 		}
 
 		// Suppress script recompilation while a script is being created/renamed
