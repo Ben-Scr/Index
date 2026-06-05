@@ -20,6 +20,7 @@ IncludeDir["IndexEditorRuntime"] = "Index-EditorRuntime/src"
 IncludeDir["Tracy"] = "External/tracy/public"
 
 local isWindowsTarget = os.target() == "windows"
+local isLinuxTarget = os.target() == "linux"
 
 local function AppendUnique(target, values)
     if not values then
@@ -304,6 +305,18 @@ else
     Dependency["Profiler"] = { IncludeDirs = {}, DependsOn = {}, Links = {}, Defines = {} }
 end
 
+-- Keep Linux system libraries at the end of the final engine link line. Both
+-- Dawn's external static archive and .NET's static libnethost can reference
+-- dl/pthread symbols, and static archive resolution is order-sensitive.
+Dependency["EngineCoreLinuxSystem"] =
+{
+    IncludeDirs = {},
+    LibDirs = {},
+    DependsOn = {},
+    Links = isLinuxTarget and { "pthread", "dl" } or {},
+    Defines = {}
+}
+
 Dependency["EngineCoreAllModules"] = MergeDependencies(
     Dependency["EngineCore"],
     Dependency["EngineCoreRender"],
@@ -311,7 +324,8 @@ Dependency["EngineCoreAllModules"] = MergeDependencies(
     Dependency["EngineCorePhysics"],
     Dependency["EngineCoreScripting"],
     Dependency["EngineCoreEditor"],
-    Dependency["Profiler"]
+    Dependency["Profiler"],
+    Dependency["EngineCoreLinuxSystem"]
 )
 
 -- Explicit legacy/full-module compatibility path for consumers that opt into INDEX_ALL_MODULES.

@@ -360,7 +360,7 @@ namespace Index {
 			ImGuiWindowFlags_AlwaysAutoResize)) {
 			ImGui::Text("Delete profile '%s'?",
 				hasSelection ? m_Profiles[m_SelectedIndex].Name.c_str() : "(none)");
-			ImGui::Text("This removes the .indexbuild file from disk.");
+			ImGui::Text("This removes the .build file from disk.");
 			ImGui::Spacing();
 			if (ImGui::Button("Delete", ImVec2(120, 0))) {
 				DeleteSelected();

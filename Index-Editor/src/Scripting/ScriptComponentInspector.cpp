@@ -18,6 +18,7 @@
 #include "Scripting/ScriptComponentInspector.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/DataAssetManager.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Serialization/Json.hpp"
 #include "Serialization/Path.hpp"
@@ -102,6 +103,7 @@ namespace Index {
 
 		PropertyType ResolveScriptFieldType(const EditorFieldRecord& rec) {
 			if (rec.TypeTag.rfind("component:", 0) == 0) return PropertyType::ComponentRef;
+			if (rec.TypeTag.rfind("dataasset:", 0) == 0) return PropertyType::AssetRef;
 			if (rec.TypeTag == "entity") return PropertyType::EntityRef;
 			return PropertyTypeFromString(rec.TypeTag);
 		}
@@ -307,6 +309,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
 				d.Metadata.EnabledIfFn = std::move(pred);
 			}
@@ -345,6 +348,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
 				d.Metadata.EnabledIfFn = std::move(pred);
 			}
@@ -364,6 +368,91 @@ namespace Index {
 			const std::string& fieldName)
 		{
 			return className + "#" + std::to_string(scriptIndex) + "." + fieldName;
+		}
+
+		// ── Nested struct/class grouping ─────────────────────────────
+		// C# flattens a plain struct/class field into dotted records
+		// ("P" -> "P.X", "P.Y"). Rebuild that shape as collapsible groups;
+		// leaves still draw through the normal PropertyDrawer path.
+		struct FieldTreeNode {
+			std::string Label;
+			int RecordIndex = -1;   // >= 0 => leaf record index
+			std::vector<FieldTreeNode> Children;
+
+			FieldTreeNode* FindGroupChild(const std::string& label) {
+				for (auto& c : Children) {
+					if (c.RecordIndex < 0 && c.Label == label) return &c;
+				}
+				return nullptr;
+			}
+		};
+
+		void InsertFieldPath(FieldTreeNode& root, const std::string& name, int recordIndex) {
+			FieldTreeNode* cur = &root;
+			std::size_t start = 0;
+			while (true) {
+				const std::size_t dot = name.find('.', start);
+				if (dot == std::string::npos) {
+					FieldTreeNode leaf;
+					leaf.Label = name.substr(start);
+					leaf.RecordIndex = recordIndex;
+					cur->Children.push_back(std::move(leaf));
+					return;
+				}
+				const std::string seg = name.substr(start, dot - start);
+				FieldTreeNode* child = cur->FindGroupChild(seg);
+				if (!child) {
+					FieldTreeNode group;
+					group.Label = seg;
+					cur->Children.push_back(std::move(group));
+					child = &cur->Children.back();
+				}
+				cur = child;
+				start = dot + 1;
+			}
+		}
+
+		template <typename DrawLeafFn>
+		void RenderFieldTree(const FieldTreeNode& node, const std::vector<EditorFieldRecord>& records,
+			const std::string& idPrefix, DrawLeafFn& drawLeaf)
+		{
+			for (const auto& child : node.Children) {
+				if (child.RecordIndex >= 0) {
+					drawLeaf(records[static_cast<std::size_t>(child.RecordIndex)]);
+					continue;
+				}
+				const std::string nodeId = idPrefix + "/" + child.Label;
+				const std::string label = child.Label + "##grp_" + nodeId;
+				// Framed so the fill goes through RenderFrame with the theme's
+				// FrameRounding (rounded corners), matching component-section bars;
+				// a plain TreeNode highlight is hardcoded to sharp corners.
+				if (ImGui::TreeNodeEx(label.c_str(),
+					ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth)) {
+					RenderFieldTree(child, records, nodeId, drawLeaf);
+					ImGui::TreePop();
+				}
+			}
+		}
+
+		// Draws records as a nested tree when any field name is dotted, else a
+		// flat list. drawLeaf renders one row via PropertyDrawer.
+		template <typename DrawLeafFn>
+		void RenderRecordsGrouped(const std::vector<EditorFieldRecord>& records,
+			const std::string& idPrefix, DrawLeafFn drawLeaf)
+		{
+			bool anyNested = false;
+			for (const auto& r : records) {
+				if (r.Name.find('.') != std::string::npos) { anyNested = true; break; }
+			}
+			if (!anyNested) {
+				for (const auto& rec : records) drawLeaf(rec);
+				return;
+			}
+			FieldTreeNode root;
+			for (int i = 0; i < static_cast<int>(records.size()); ++i) {
+				InsertFieldPath(root, records[static_cast<std::size_t>(i)].Name, i);
+			}
+			RenderFieldTree(root, records, idPrefix, drawLeaf);
 		}
 
 		void RenderScriptFieldsForInstance(ScriptComponent& sc,
@@ -427,12 +516,13 @@ namespace Index {
 			}
 
 			ImGui::Indent(8.0f);
-			for (auto& rec : records) {
-				const std::string fieldKey = MakeFieldKey(scriptIndex, className, rec.Name);
-				PropertyDescriptor descriptor = BuildScriptFieldDescriptor(
-					rec, className, scriptIndex, multiEditEnabled, isPlaying, perEntityValues, records);
-				PropertyDrawer::Draw(entities, descriptor, fieldKey);
-			}
+			RenderRecordsGrouped(records, MakeFieldKey(scriptIndex, className, ""),
+				[&](const EditorFieldRecord& rec) {
+					const std::string fieldKey = MakeFieldKey(scriptIndex, className, rec.Name);
+					PropertyDescriptor descriptor = BuildScriptFieldDescriptor(
+						rec, className, scriptIndex, multiEditEnabled, isPlaying, perEntityValues, records);
+					PropertyDrawer::Draw(entities, descriptor, fieldKey);
+				});
 			ImGui::Unindent(8.0f);
 		}
 
@@ -455,6 +545,7 @@ namespace Index {
 			d.Metadata.ClampMax = rec.ClampMax;
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
 
 			d.Get = [value = rec.Value, type = d.Type](const Entity&) -> PropertyValue {
 				return PropertyValue::FromString(type, value);
@@ -468,6 +559,40 @@ namespace Index {
 				if (handle != 0) {
 					ScriptEngine::SetSceneSystemField(handle, fieldName.c_str(), newValueStr.c_str());
 				}
+			};
+			return d;
+		}
+
+		// DataAsset fields target a standalone asset keyed by GUID: Get reads the
+		// record value, Set writes through DataAssetManager (live instance + file).
+		// The Entity argument is unused.
+		PropertyDescriptor BuildDataAssetFieldDescriptor(EditorFieldRecord rec, uint64_t guid)
+		{
+			PropertyDescriptor d;
+			d.Name = rec.Name;
+			d.DisplayName = rec.DisplayName;
+			d.Type = ResolveScriptFieldType(rec);
+			d.Metadata.ReadOnly = rec.ReadOnly;
+			d.Metadata.Tooltip = rec.Tooltip;
+			d.Metadata.HeaderContent = rec.HeaderContent;
+			d.Metadata.HeaderSize = rec.HeaderSize;
+			d.Metadata.HasSpace = rec.HasSpace;
+			d.Metadata.SpaceHeight = rec.SpaceHeight;
+			d.Metadata.HasClamp = rec.HasClamp;
+			d.Metadata.ClampMin = rec.ClampMin;
+			d.Metadata.ClampMax = rec.ClampMax;
+			d.Metadata.Enum = rec.Enum;
+			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
+			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+
+			d.Get = [value = rec.Value, type = d.Type](const Entity&) -> PropertyValue {
+				return PropertyValue::FromString(type, value);
+			};
+
+			d.Set = [guid, fieldName = rec.Name](Entity&, const PropertyValue& v) {
+				const std::string newValueStr = v.ToString();
+				DataAssetManager::SetField(guid, fieldName, newValueStr);
+				DataAssetManager::Save(guid);
 			};
 			return d;
 		}
@@ -510,11 +635,12 @@ namespace Index {
 			}
 
 			ImGui::Indent(8.0f);
-			for (auto& rec : records) {
-				const std::string fieldKey = className + "#component" + std::to_string(componentIndex) + "." + rec.Name;
+			const std::string idPrefix = className + "#component" + std::to_string(componentIndex);
+			RenderRecordsGrouped(records, idPrefix, [&](const EditorFieldRecord& rec) {
+				const std::string fieldKey = idPrefix + "." + rec.Name;
 				PropertyDescriptor descriptor = BuildManagedComponentFieldDescriptor(rec, className, perEntityValues, records);
 				PropertyDrawer::Draw(entities, descriptor, fieldKey);
-			}
+			});
 			ImGui::Unindent(8.0f);
 		}
 
@@ -790,11 +916,59 @@ namespace Index {
 		const Entity placeholder = Entity::MakeScenePlaceholder(scene);
 		const std::span<const Entity> entitySpan(&placeholder, 1);
 
-		for (auto& rec : records) {
-			const std::string fieldKey = "gamesystem:" + className + "." + rec.Name;
-			PropertyDescriptor descriptor = BuildSceneSystemFieldDescriptor(std::move(rec), &scene, className);
+		const std::string idPrefix = "gamesystem:" + className;
+		RenderRecordsGrouped(records, idPrefix, [&](const EditorFieldRecord& rec) {
+			const std::string fieldKey = idPrefix + "." + rec.Name;
+			PropertyDescriptor descriptor = BuildSceneSystemFieldDescriptor(rec, &scene, className);
 			PropertyDrawer::Draw(entitySpan, descriptor, fieldKey);
+		});
+	}
+
+	void DrawDataAssetFields(uint64_t assetGuid)
+	{
+		if (!ScriptEngine::IsInitialized()) {
+			ImGui::TextDisabled("Script engine not initialized");
+			return;
 		}
+		if (assetGuid == 0) {
+			ImGui::TextDisabled("Invalid data asset");
+			return;
+		}
+
+		// GetFields ensures the managed instance is loaded, then returns its serialized fields.
+		const char* json = DataAssetManager::GetFields(assetGuid);
+		const std::string typeName = DataAssetManager::GetTypeName(assetGuid);
+
+		if (!typeName.empty()) {
+			ImGui::TextDisabled("Type:");
+			ImGui::SameLine();
+			ImGui::TextUnformatted(typeName.c_str());
+			ImGui::Separator();
+		}
+
+		if (!json || !*json || (json[0] == '[' && json[1] == ']')) {
+			ImGui::TextDisabled(typeName.empty()
+				? "Data asset type not found (is the script assembly built?)"
+				: "No editable fields");
+			return;
+		}
+
+		auto records = ParseEditorFields(json);
+		if (records.empty()) {
+			ImGui::TextDisabled("No editable fields");
+			return;
+		}
+
+		// No entity backs a data asset; the descriptors ignore the entity argument.
+		const Entity placeholder = Entity::Null;
+		const std::span<const Entity> entitySpan(&placeholder, 1);
+
+		const std::string idPrefix = "dataasset:" + std::to_string(assetGuid);
+		RenderRecordsGrouped(records, idPrefix, [&](const EditorFieldRecord& rec) {
+			const std::string fieldKey = idPrefix + "." + rec.Name;
+			PropertyDescriptor descriptor = BuildDataAssetFieldDescriptor(rec, assetGuid);
+			PropertyDrawer::Draw(entitySpan, descriptor, fieldKey);
+		});
 	}
 
 	namespace ScriptComponentInspector {

@@ -961,6 +961,10 @@ namespace Index {
 			void** outPointers,
 			uint64_t* outEntityIDs,
 			int maxRows);
+
+		// ── DataAsset (appended for binary compat) ──
+		// Triggers DataAssetManager::Load; returns 1 if a managed instance now exists for the GUID.
+		int (*DataAsset_EnsureLoaded)(uint64_t guid);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1043,6 +1047,15 @@ namespace Index {
 		// ── Play-mode lifecycle (appended for binary compat) ──
 		// Called before scene snapshot restore; strips static-event subscribers that would otherwise keep firing in edit mode.
 		void        (*OnPlayModeExited)();
+
+		// ── DataAsset (appended for binary compat) ──
+		// Order must match C# ManagedCallbacksStruct exactly.
+		int32_t     (*CreateDataAssetInstance)(const char* typeName, uint64_t guid);
+		void        (*DestroyDataAssetInstance)(uint64_t guid);
+		const char* (*GetDataAssetFields)(uint64_t guid);
+		void        (*SetDataAssetField)(uint64_t guid, const char* fieldName, const char* value);
+		int         (*DataAssetClassExists)(const char* typeName);
+		int         (*GetDataAssetTypes)(char* outBuffer, int capacity);
 	};
 
 } // namespace Index

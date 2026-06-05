@@ -24,7 +24,7 @@ Usage examples
     # gameplay package — saves ~150 lines of boilerplate vs. writing it by hand.
     python scripts/packages/NewPackage.py Index.Foo --layers native+csharp --component Health
 
-    # Project-local package (auto-adds to index-project.json allow-list):
+    # Project-local package (auto-adds to project.json allow-list):
     python scripts/packages/NewPackage.py MyGame.Loot --layers native+csharp \\
         --project "C:/Users/me/Index/Projects/MyGame"
 
@@ -462,7 +462,7 @@ README_TEMPLATE = """\
 
 Engine-shipped packages live under `<repo>/packages/`. Project-local packages
 live under `<project>/Packages/` and must appear in the project's
-`index-project.json` allow-list:
+`project.json` allow-list:
 
 ```json
 {{
@@ -472,7 +472,7 @@ live under `<project>/Packages/` and must appear in the project's
 }}
 ```
 
-After editing `index-project.json`, regenerate project files:
+After editing `project.json`, regenerate project files:
 
 ```sh
 ./vendor/bin/premake5.exe vs2022     # Windows
@@ -739,7 +739,7 @@ def emit_readme(pkg_dir: Path, name: str, description: str, layers: set[str],
 
 
 def add_to_project_allow_list(project_root: Path, name: str) -> None:
-    """Insert `name` into <project>/index-project.json's `packages` array.
+    """Insert `name` into <project>/project.json's `packages` array.
 
     The project file uses hand-rolled JSON elsewhere in the engine; we do the
     same here. We use `json` for read/write because the file is well-formed
@@ -747,7 +747,7 @@ def add_to_project_allow_list(project_root: Path, name: str) -> None:
     by round-tripping with `sort_keys=False` and a 4-space indent. If the file
     has comments the user added, they'll be lost — flagged in the docs.
     """
-    project_file = project_root / "index-project.json"
+    project_file = project_root / "project.json"
     if not project_file.is_file():
         print(
             f"[NewPackage] WARNING: --project given but {project_file} not found. "
@@ -853,7 +853,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--project",
         default=None,
         help='Absolute path to an Index project. If set, the package is created under '
-        '<project>/Packages/<Name>/ and added to <project>/index-project.json. '
+        '<project>/Packages/<Name>/ and added to <project>/project.json. '
         'Otherwise, created under <repo>/packages/<Name>/.',
     )
     parser.add_argument(
@@ -953,12 +953,12 @@ def main(argv: Iterable[str] | None = None) -> int:
         # Heuristic: warn when the user runs this from inside a project
         # layout but didn't pass --project. The script is in <repo>/scripts/
         # so `cwd == REPO_ROOT` is the engine-developer case (silent). Any
-        # other CWD that has an index-project.json is almost certainly a
+        # other CWD that has an project.json is almost certainly a
         # project root the user meant to target.
         cwd = Path.cwd().resolve()
-        if cwd != REPO_ROOT and (cwd / "index-project.json").is_file():
+        if cwd != REPO_ROOT and (cwd / "project.json").is_file():
             print()
-            print(f"[NewPackage] HINT: cwd ({cwd}) contains index-project.json but you")
+            print(f"[NewPackage] HINT: cwd ({cwd}) contains project.json but you")
             print( "             did NOT pass --project. The package is being created as an")
             print( "             ENGINE-shipped package under <repo>/packages/ instead of")
             print( "             under your project. If you wanted a project-local package,")

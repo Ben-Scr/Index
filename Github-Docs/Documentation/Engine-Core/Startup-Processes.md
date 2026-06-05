@@ -54,7 +54,7 @@ Before the engine fully starts, the runtime decides **which project to run** (in
 - If you pass `--project="<path>"`, that folder is used.
 - Otherwise it looks **next to the `.exe`** for a project.
 
-It then reads your project's `index-project.json`. This file holds everything the game needs to know about itself: the window size, the splash screen, which scenes exist, and which scene to start with. If no project is found, the runtime logs a warning and falls back to a built-in sample scene so it still boots.
+It then reads your project's `project.json`. This file holds everything the game needs to know about itself: the window size, the splash screen, which scenes exist, and which scene to start with. If no project is found, the runtime logs a warning and falls back to a built-in sample scene so it still boots.
 
 ### Starting the subsystems
 
@@ -91,7 +91,7 @@ The runtime calls `ConfigureScenes()`, which:
 
 1. Puts the game into **play mode** immediately (a shipped game is always "playing").
 2. Decides the **startup scene** using this priority:
-   1. `StartupScene` from `index-project.json`, otherwise
+   1. `StartupScene` from `project.json`, otherwise
    2. the last opened scene, otherwise
    3. a scene literally named `"SampleScene"`.
 3. **Registers** every scene listed in the project's build scene list, and wires each one so that loading it reads the matching `.scene` file from disk.
@@ -161,7 +161,7 @@ When the loop ends, the engine tears everything down in a clean order: scenes ar
 ```
 Main()
  ├─ InitializeCore, Localization, parse command line
- ├─ CreateApplication()  → load index-project.json
+ ├─ CreateApplication()  → load project.json
  └─ Application::Run()
      ├─ Initialize()
      │   ├─ Profiler → JobSystem → FrameArenas

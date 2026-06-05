@@ -25,7 +25,7 @@ You create and open projects from the **Launcher**:
 - **New Project** — pick a name and location; the launcher copies a template, sets up the C# script project, and creates an empty starting scene.
 - **Open** — pick an existing project; the launcher prepares it and opens the editor.
 
-A project is a folder with an `index-project.json` (its settings: scenes, window size, packages, build options) plus folders for your `Assets`, scripts, and scenes.
+A project is a folder with an `project.json` (its settings: scenes, window size, packages, build options) plus folders for your `Assets`, scripts, and scenes.
 
 ---
 

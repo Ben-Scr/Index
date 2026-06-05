@@ -47,7 +47,7 @@
 - Component access: `scene.GetComponent<T>(entity)`, `entity.GetComponent<T>()`.
 - Events: `EventDispatcher(event).Dispatch<EventType>(handler)` and `Event<Args...>` pub/sub.
 - Serialization: Hand-written JSON (no library). `SceneSerializer::SaveToFile/LoadFromFile`.
-- Project config: `index-project.json` with hand-rolled JSON parsing.
+- Project config: `project.json` with hand-rolled JSON parsing.
 
 ## Known issues / tech debt
 

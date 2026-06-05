@@ -782,6 +782,8 @@ internal static unsafe class InternalCalls
 
     internal static int Asset_GetKind(ulong assetId) => NativeCallbacks.Bindings.Asset_GetKind(assetId);
 
+    internal static bool DataAsset_EnsureLoaded(ulong guid) => guid != 0 && NativeCallbacks.Bindings.DataAsset_EnsureLoaded(guid) != 0;
+
     internal static string Asset_FindAll(string pathPrefix, int kind)
     {
         byte[] buf = EncodeUtf8Z(pathPrefix);

@@ -322,9 +322,10 @@ namespace Index {
 		inline void ApplySpriteSliceTo(Instance44& dst,
 			const SpriteRendererComponent& sprite)
 		{
-			if (sprite.SpriteName.empty()) return;
 			Texture2D* tex = TextureManager::GetTexture(sprite.TextureHandle);
 			if (!tex) return;
+			// Resolve even when the name is empty: the texture may carry a
+			// per-texture crop that applies to the whole "single sprite".
 			dst.UvRect = ResolveSpriteUVRect(sprite.TextureAssetId,
 				sprite.SpriteName,
 				static_cast<int>(tex->GetWidth()),

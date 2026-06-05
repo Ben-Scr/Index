@@ -115,6 +115,8 @@ internal static class ScriptInstanceManager
     private static readonly ConcurrentDictionary<(ulong EntityID, Type Type), int> s_InstancesByType = new();
     private static readonly ConcurrentDictionary<int, SceneSystem> s_SceneSystems = new();
     private static readonly ConcurrentDictionary<int, GlobalSystem> s_GlobalSystems = new();
+    // DataAsset instances are keyed by their asset GUID (their stable identity), not a minted handle.
+    private static readonly ConcurrentDictionary<ulong, object> s_DataAssets = new();
     // Incremented from any thread that creates an instance; ++ on a plain int is
     // a read-modify-write race that can hand the same handle to two threads.
     private static int s_NextHandle = 0;
@@ -142,6 +144,7 @@ internal static class ScriptInstanceManager
         public bool IsComponent;
         public bool IsSceneSystem;
         public bool IsGlobalSystem;
+        public bool IsDataAsset;
         public MethodInfo? StartMethod;
         public MethodInfo? UpdateMethod;
 
@@ -901,6 +904,124 @@ internal static class ScriptInstanceManager
         return GetOrCacheClass(className)?.IsGlobalSystem == true ? 1 : 0;
     }
 
+    // ── DataAsset (appended for binary compat) ──
+    // Standalone instances keyed by asset GUID. The native DataAssetManager
+    // drives create + field replay and owns the loaded set; these only touch
+    // the managed-side instance table.
+
+    [UnmanagedCallersOnly]
+    public static unsafe int CreateDataAssetInstance(byte* typeNamePtr, ulong guid)
+    {
+        try
+        {
+            string typeName = PtrToString(typeNamePtr);
+            var classInfo = GetOrCacheClass(typeName);
+            if (classInfo == null || !classInfo.IsDataAsset) return 0;
+
+            var instance = (DataAsset)Activator.CreateInstance(classInfo.Type)!;
+            instance._SetUUID(guid);
+            s_DataAssets[guid] = instance;
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"CreateDataAssetInstance failed: {ex}");
+            return 0;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static void DestroyDataAssetInstance(ulong guid) => s_DataAssets.TryRemove(guid, out _);
+
+    [UnmanagedCallersOnly]
+    public static unsafe byte* GetDataAssetFields(ulong guid)
+    {
+        try
+        {
+            if (!s_DataAssets.TryGetValue(guid, out var instance))
+                return NullTerminated("[]");
+
+            return SerializeInstanceFields(instance, typeof(DataAsset));
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetDataAssetFields failed: {ex.Message}");
+            return NullTerminated("[]");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe void SetDataAssetField(ulong guid, byte* fieldNamePtr, byte* valuePtr)
+    {
+        try
+        {
+            if (!s_DataAssets.TryGetValue(guid, out var instance)) return;
+            ApplyFieldEdit(instance, fieldNamePtr, valuePtr);
+            try { (instance as DataAsset)?.OnValidate(); }
+            catch (Exception ex) { Log.Error($"DataAsset.OnValidate() threw: {ex.Message}"); }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"SetDataAssetField failed: {ex.Message}");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    public static unsafe int DataAssetClassExists(byte* typeNamePtr)
+    {
+        string typeName = PtrToString(typeNamePtr);
+        return GetOrCacheClass(typeName)?.IsDataAsset == true ? 1 : 0;
+    }
+
+    // Returns JSON [{"type","menu"}] of every DataAsset subclass in the user assembly, for the editor's Create menu.
+    [UnmanagedCallersOnly]
+    public static unsafe int GetDataAssetTypesBuffer(byte* outBuffer, int capacity)
+    {
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append('[');
+            bool first = true;
+
+            if (s_UserAssembly != null)
+            {
+                Type[] types;
+                try { types = s_UserAssembly.GetTypes(); }
+                catch (ReflectionTypeLoadException ex)
+                {
+                    var loaded = new List<Type>();
+                    foreach (var t in ex.Types) if (t != null) loaded.Add(t);
+                    types = loaded.ToArray();
+                }
+
+                foreach (var type in types)
+                {
+                    if (type == null || type.IsAbstract || !type.IsSubclassOf(typeof(DataAsset)))
+                        continue;
+
+                    var attr = type.GetCustomAttribute<CreateDataAssetAttribute>();
+                    string menu = attr != null && !string.IsNullOrEmpty(attr.MenuPath) ? attr.MenuPath : type.Name;
+
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append("{\"type\":\"").Append(EscapeJson(type.Name))
+                      .Append("\",\"menu\":\"").Append(EscapeJson(menu)).Append("\"}");
+                }
+            }
+
+            sb.Append(']');
+            return WriteUtf8(sb.ToString(), outBuffer, capacity);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"GetDataAssetTypesBuffer failed: {ex.Message}");
+            return WriteUtf8("[]", outBuffer, capacity);
+        }
+    }
+
+    internal static object? GetDataAssetObject(ulong guid)
+        => s_DataAssets.TryGetValue(guid, out var instance) ? instance : null;
+
     [UnmanagedCallersOnly]
     public static unsafe int LoadUserAssembly(byte* pathPtr)
     {
@@ -921,6 +1042,7 @@ internal static class ScriptInstanceManager
                 s_SceneSystems.Clear();
                 s_SceneSystemAwoken.Clear();
                 s_GlobalSystems.Clear();
+                s_DataAssets.Clear();
                 s_ClassCache.Clear();
                 UnloadCurrentUserAssemblyContext();
             }
@@ -979,6 +1101,7 @@ internal static class ScriptInstanceManager
         s_SceneSystems.Clear();
         s_SceneSystemAwoken.Clear();
         s_GlobalSystems.Clear();
+        s_DataAssets.Clear();
         s_ClassCache.Clear();
         ReleaseFieldJsonBuffer();
 
@@ -1034,13 +1157,8 @@ internal static class ScriptInstanceManager
                 if (member.DeclaringType == typeof(EntityScript)) continue;
                 if (!IsMemberEditorVisible(member)) continue;
 
-                string fieldType = MapFieldType(member.ValueType);
-                if (fieldType == "unsupported") continue;
-
                 object? val = TryGetMemberValue(member, instance);
-                if (!first) sb.Append(',');
-                first = false;
-                AppendMemberJson(sb, member, val);
+                AppendEditorMember(sb, member, val, "", 0, ref first);
             }
 
             sb.Append(']');
@@ -1107,6 +1225,13 @@ internal static class ScriptInstanceManager
         const BindingFlags k_Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
         Type type = instance.GetType();
 
+        // Dotted names address a member of a flattened struct/class field ("P.X").
+        if (fieldName.IndexOf('.') >= 0)
+        {
+            ApplyNestedFieldEdit(instance, fieldName, valueStr);
+            return;
+        }
+
         var field = type.GetField(fieldName, k_Flags);
         if (field != null)
         {
@@ -1142,6 +1267,70 @@ internal static class ScriptInstanceManager
         }
     }
 
+    // Writes a value addressed by a dotted path ("P.X") into a flattened
+    // struct/class member. Walks the chain, then writes each link back into its
+    // owner so value-type (struct) mutations and lazily-created reference
+    // instances along the path persist.
+    private static void ApplyNestedFieldEdit(object root, string path, string valueStr)
+    {
+        const BindingFlags k_Flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+        string[] segs = path.Split('.');
+        if (segs.Length < 2) return;
+
+        var chain = new object[segs.Length];           // chain[i] owns segs[i]; chain[^1] owns the leaf
+        var links = new MemberInfo[segs.Length - 1];    // links[i]: chain[i] -> chain[i + 1]
+        chain[0] = root;
+
+        for (int i = 0; i < segs.Length - 1; i++)
+        {
+            MemberInfo? m = GetPathMember(chain[i].GetType(), segs[i], k_Flags);
+            if (m == null) return;
+            object? next = GetPathMemberValue(m, chain[i]);
+            if (next == null)
+            {
+                try { next = Activator.CreateInstance(PathMemberType(m)); }
+                catch { return; }
+                if (next == null) return;
+            }
+            links[i] = m;
+            chain[i + 1] = next;
+        }
+
+        MemberInfo? leaf = GetPathMember(chain[^1].GetType(), segs[^1], k_Flags);
+        if (leaf == null) return;
+        object? parsed = ParseFieldValue(PathMemberType(leaf), valueStr);
+        if (parsed == null) return;
+        if (!TrySetPathMember(leaf, chain[^1], parsed)) return;
+
+        for (int i = segs.Length - 2; i >= 0; i--)
+        {
+            if (!TrySetPathMember(links[i], chain[i], chain[i + 1])) return;
+        }
+    }
+
+    private static MemberInfo? GetPathMember(Type t, string name, BindingFlags flags)
+        => (MemberInfo?)t.GetField(name, flags) ?? t.GetProperty(name, flags);
+
+    private static Type PathMemberType(MemberInfo m)
+        => m is FieldInfo f ? f.FieldType : ((PropertyInfo)m).PropertyType;
+
+    private static object? GetPathMemberValue(MemberInfo m, object owner)
+        => m is FieldInfo f ? f.GetValue(owner) : ((PropertyInfo)m).GetValue(owner);
+
+    private static bool TrySetPathMember(MemberInfo m, object owner, object? value)
+    {
+        if (m is FieldInfo f)
+        {
+            if (f.IsInitOnly || f.IsLiteral) return false;
+            f.SetValue(owner, value);
+            return true;
+        }
+        var p = (PropertyInfo)m;
+        if (!p.CanWrite || p.SetMethod == null) return false;
+        p.SetValue(owner, value);
+        return true;
+    }
+
     private static unsafe byte* SerializeInstanceFields(object instance, Type ignoreBaseType)
     {
         var type = instance.GetType();
@@ -1155,13 +1344,8 @@ internal static class ScriptInstanceManager
             if (member.DeclaringType == ignoreBaseType) continue;
             if (!IsMemberEditorVisible(member)) continue;
 
-            string fieldType = MapFieldType(member.ValueType);
-            if (fieldType == "unsupported") continue;
-
             object? val = TryGetMemberValue(member, instance);
-            if (!first) sb.Append(',');
-            first = false;
-            AppendMemberJson(sb, member, val);
+            AppendEditorMember(sb, member, val, "", 0, ref first);
         }
 
         sb.Append(']');
@@ -1205,6 +1389,10 @@ internal static class ScriptInstanceManager
             // a per-bit checkbox combo instead of a single-selection dropdown.
             return t.GetCustomAttribute<FlagsAttribute>() != null ? "flagenum" : "enum";
         }
+
+        // A DataAsset subclass reference serializes as its asset GUID; the subtype name rides the code so the editor picker can filter to it.
+        if (t.IsSubclassOf(typeof(DataAsset)))
+            return "dataasset:" + t.Name;
 
         if (t.IsSubclassOf(typeof(Component)))
         {
@@ -1312,6 +1500,9 @@ internal static class ScriptInstanceManager
             var v = (Vector4Int)val;
             return $"{v.X.ToString(ic)},{v.Y.ToString(ic)},{v.Z.ToString(ic)},{v.W.ToString(ic)}";
         }
+
+        if (t.IsSubclassOf(typeof(DataAsset)))
+            return val is DataAsset dataAsset && dataAsset.UUID != 0 ? dataAsset.UUID.ToString(ic) : "";
 
         if (t.IsSubclassOf(typeof(Component)))
         {
@@ -1456,6 +1647,7 @@ internal static class ScriptInstanceManager
             if (t == typeof(Audio)) return Audio.FromAssetUUID(ParseAssetUUID(s));
             if (t == typeof(TextureRef)) return new TextureRef(ParseAssetUUID(s));
             if (t == typeof(AudioRef)) return new AudioRef(ParseAssetUUID(s));
+            if (t.IsSubclassOf(typeof(DataAsset))) return DataAssetRuntime.LoadByGuid(ParseAssetUUID(s), t);
             if (t.IsSubclassOf(typeof(Component)))
             {
                 // Format: "EntityID:ComponentName". Must go through GetComponentByType so inspector fields share the same instance as GetComponent<T>() — otherwise UI event handlers silently never fire.
@@ -1582,7 +1774,8 @@ internal static class ScriptInstanceManager
     }
 
     // Emits the JSON PropertyDescriptor shape for one member; enum fields gain enumIsFlags/enumOptions arrays for the combo/checkbox UI.
-    private static void AppendMemberJson(System.Text.StringBuilder sb, in EditorMember member, object? value)
+    // namePrefix is the dotted path of any enclosing struct/class ("" at top level, "P." for a member of a flattened `Point P`).
+    private static void AppendMemberJson(System.Text.StringBuilder sb, in EditorMember member, object? value, string namePrefix)
     {
         var ic = System.Globalization.CultureInfo.InvariantCulture;
         // showAttr is optional now: public members are visible by default
@@ -1652,7 +1845,7 @@ internal static class ScriptInstanceManager
             }
         }
 
-        sb.Append("{\"name\":\"").Append(EscapeJson(member.Name))
+        sb.Append("{\"name\":\"").Append(EscapeJson(namePrefix + member.Name))
           .Append("\",\"displayName\":\"").Append(EscapeJson(displayName))
           .Append("\",\"type\":\"").Append(fieldType)
           .Append("\",\"value\":\"").Append(EscapeJson(valueStr))
@@ -1690,6 +1883,62 @@ internal static class ScriptInstanceManager
         }
 
         sb.Append("}");
+    }
+
+    private const int k_MaxNestingDepth = 4;
+
+    // Emits one editor member. A directly-supported type (see MapFieldType)
+    // becomes a single field record; a plain user struct/class is flattened
+    // into dotted child records (P -> "P.X", "P.Y") so the editor renders it
+    // as a nested, editable group. Genuinely unsupported types are skipped.
+    private static void AppendEditorMember(System.Text.StringBuilder sb, in EditorMember member,
+        object? value, string namePrefix, int depth, ref bool first)
+    {
+        if (MapFieldType(member.ValueType) != "unsupported")
+        {
+            if (!first) sb.Append(',');
+            first = false;
+            AppendMemberJson(sb, member, value, namePrefix);
+            return;
+        }
+
+        if (depth >= k_MaxNestingDepth || !IsInspectableNestedType(member.ValueType))
+            return;
+
+        // Read defaults from a throwaway instance when the field is null so the
+        // group still shows its members (editing lazily creates the real one).
+        object? nested = value;
+        if (nested == null)
+        {
+            try { nested = Activator.CreateInstance(member.ValueType); }
+            catch { return; }
+        }
+
+        string childPrefix = namePrefix + member.Name + ".";
+        foreach (var child in CollectEditorMembers(member.ValueType))
+        {
+            if (!IsMemberEditorVisible(child)) continue;
+            object? childValue = nested != null ? TryGetMemberValue(child, nested) : null;
+            AppendEditorMember(sb, child, childValue, childPrefix, depth + 1, ref first);
+        }
+    }
+
+    // True for a plain user struct/class the inspector can flatten. Excludes
+    // primitives/enums/strings, known engine types (handled by MapFieldType),
+    // Component/IComponent, collections, delegates, and framework (System.*)
+    // types. Classes need a public parameterless ctor so defaults can be read.
+    private static bool IsInspectableNestedType(Type t)
+    {
+        if (t.IsPrimitive || t.IsEnum || t.IsArray || t.IsPointer) return false;
+        if (t == typeof(string)) return false;
+        if (t.IsGenericType) return false;
+        if (t.IsAbstract || t.IsInterface) return false;
+        if (typeof(Delegate).IsAssignableFrom(t)) return false;
+        if (t.IsSubclassOf(typeof(Component))) return false;
+        if (typeof(Index.Components.IComponent).IsAssignableFrom(t)) return false;
+        if (t.Namespace != null && t.Namespace.StartsWith("System", StringComparison.Ordinal)) return false;
+        if (!t.IsValueType && t.GetConstructor(Type.EmptyTypes) == null) return false;
+        return t.IsClass || t.IsValueType;
     }
 
     private static object? TryGetMemberValue(in EditorMember member, object instance)
@@ -1762,15 +2011,11 @@ internal static class ScriptInstanceManager
                 if (member.DeclaringType == typeof(Component)) continue;
                 if (member.DeclaringType == typeof(SceneSystem)) continue;
                 if (member.DeclaringType == typeof(GlobalSystem)) continue;
+                if (member.DeclaringType == typeof(DataAsset)) continue;
                 if (!IsMemberEditorVisible(member)) continue;
 
-                string fieldType = MapFieldType(member.ValueType);
-                if (fieldType == "unsupported") continue;
-
                 object? val = TryGetMemberValue(member, tempInstance);
-                if (!first) sb.Append(',');
-                first = false;
-                AppendMemberJson(sb, member, val);
+                AppendEditorMember(sb, member, val, "", 0, ref first);
             }
 
             sb.Append(']');
@@ -2076,7 +2321,8 @@ internal static class ScriptInstanceManager
                 || (type.IsValueType && typeof(Index.Components.IComponent).IsAssignableFrom(type)));
         bool isSceneSystem = type != null && type.IsSubclassOf(typeof(SceneSystem));
         bool isGlobalSystem = type != null && type.IsSubclassOf(typeof(GlobalSystem));
-        if (type == null || (!isScript && !isComponent && !isSceneSystem && !isGlobalSystem))
+        bool isDataAsset = type != null && type.IsSubclassOf(typeof(DataAsset));
+        if (type == null || (!isScript && !isComponent && !isSceneSystem && !isGlobalSystem && !isDataAsset))
         {
             s_ClassCache[className] = null;
             return null;
@@ -2089,6 +2335,7 @@ internal static class ScriptInstanceManager
             IsComponent = isComponent,
             IsSceneSystem = isSceneSystem,
             IsGlobalSystem = isGlobalSystem,
+            IsDataAsset = isDataAsset,
             StartMethod = isScript ? type.GetMethod("Start", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
             UpdateMethod = isScript ? type.GetMethod("Update", BindingFlags.Public | BindingFlags.Instance, Type.EmptyTypes) : null,
         };

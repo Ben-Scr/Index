@@ -1263,8 +1263,9 @@ namespace Index::PropertyDrawer {
 			changed = DrawAssetRefByKind(entities, d, fieldKey, AssetKind::Prefab,
 				PropertyType::PrefabRef, "Select Prefab"); break;
 		case PropertyType::AssetRef:
-			changed = DrawAssetRefByKind(entities, d, fieldKey, AssetKind::Unknown,
-				PropertyType::AssetRef, "Select Asset"); break;
+			changed = DrawAssetRefByKind(entities, d, fieldKey, d.Metadata.AssetKindFilter,
+				PropertyType::AssetRef,
+				d.Metadata.AssetKindFilter == AssetKind::DataAsset ? "Select Data Asset" : "Select Asset"); break;
 		case PropertyType::EntityRef:    changed = DrawEntityRef(entities, d, fieldKey); break;
 		case PropertyType::ComponentRef: changed = DrawComponentRef(entities, d, fieldKey); break;
 		}

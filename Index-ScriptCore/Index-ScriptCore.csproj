@@ -66,6 +66,7 @@
   <ItemGroup>
     <Compile Include="Source\GlobalUsings.cs" />
     <Compile Include="Source\Index\Attributes\ClampValueAttribute.cs" />
+    <Compile Include="Source\Index\Attributes\CreateDataAssetAttribute.cs" />
     <Compile Include="Source\Index\Attributes\EditorIgnoreAttribute.cs" />
     <Compile Include="Source\Index\Attributes\EditorReadOnlyAttribute.cs" />
     <Compile Include="Source\Index\Attributes\EnabledIfAttribute.cs" />
@@ -98,6 +99,7 @@
     <Compile Include="Source\Index\Core\Application.cs" />
     <Compile Include="Source\Index\Core\AssetManager.cs" />
     <Compile Include="Source\Index\Core\Cursor.cs" />
+    <Compile Include="Source\Index\Core\DataAssetRuntime.cs" />
     <Compile Include="Source\Index\Core\Engine.cs" />
     <Compile Include="Source\Index\Core\GlobalUsings.cs" />
     <Compile Include="Source\Index\Core\Input.cs" />
@@ -160,6 +162,7 @@
     <Compile Include="Source\Index\Scene\AssetRef.cs" />
     <Compile Include="Source\Index\Scene\Component.cs" />
     <Compile Include="Source\Index\Scene\Components.cs" />
+    <Compile Include="Source\Index\Scene\DataAsset.cs" />
     <Compile Include="Source\Index\Scene\Entity.cs" />
     <Compile Include="Source\Index\Scene\EntityCommandBuffer.cs" />
     <Compile Include="Source\Index\Scene\EntityCommandBufferParallelWriter.cs" />

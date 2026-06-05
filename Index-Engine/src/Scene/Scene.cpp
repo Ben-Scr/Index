@@ -329,7 +329,7 @@ namespace Index {
 		constexpr std::size_t kMaxLiveEntities = static_cast<std::size_t>(EntityTraits::entity_mask);
 		IDX_CORE_ASSERT(m_EntityCount + n <= kMaxLiveEntities, IndexErrorCode::InvalidValue,
 			"Scene::CreateEntitiesBulk: batch would exceed the EnTT entity cap. "
-			"Raise 'entityBits' in index-project.json and rebuild.");
+			"Raise 'entityBits' in project.json and rebuild.");
 		m_Registry.storage<EntityHandle>().reserve(
 			m_Registry.storage<EntityHandle>().size() + n);
 		m_Registry.create(out.begin(), out.begin() + n);

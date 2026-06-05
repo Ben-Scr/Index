@@ -1311,7 +1311,7 @@ namespace Index {
 		if (success) {
 			const size_t newlyLoaded = PackageHost::LoadInstalled();
 
-			// SEH rollback: if the DLL failed to load it stays in index-project.json causing repeated crash-on-open;
+			// SEH rollback: if the DLL failed to load it stays in project.json causing repeated crash-on-open;
 			// remove it from the allow-list immediately so the project stays usable.
 			bool didRollback = false;
 			if (!pendingInstall.empty() && !PackageHost::IsPackageLoaded(pendingInstall)) {

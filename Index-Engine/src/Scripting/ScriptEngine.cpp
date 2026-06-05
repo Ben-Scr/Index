@@ -3,6 +3,7 @@
 #include "Scripting/InspectorEventDispatch.hpp"
 #include "Scripting/ScriptBindings.hpp"
 #include "Scripting/ScriptComponent.hpp"
+#include "Scripting/DataAssetManager.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
@@ -165,6 +166,9 @@ namespace Index {
 
 			if (s_HasUserAssembly) {
 				IDX_CORE_INFO_TAG("ScriptEngine", "User assembly loaded: {}", path);
+
+					// Re-hydrate data-asset instances the assembly swap dropped (no-op on first load).
+					DataAssetManager::ReloadAll();
 
 				// Restore dynamic component rows from ScriptComponent.Scripts; new storage instances are empty after reload.
 				if (auto* app = Application::GetInstance()) {
@@ -643,6 +647,46 @@ namespace Index {
 	{
 		if (handle == 0 || !s_Callbacks.SetSceneSystemField) return;
 		s_Callbacks.SetSceneSystemField(static_cast<int32_t>(handle), fieldName, value);
+	}
+
+	int ScriptEngine::CreateDataAssetInstance(const std::string& typeName, uint64_t guid)
+	{
+		if (!s_Initialized || !s_Callbacks.CreateDataAssetInstance) return 0;
+		return s_Callbacks.CreateDataAssetInstance(typeName.c_str(), guid);
+	}
+
+	void ScriptEngine::DestroyDataAssetInstance(uint64_t guid)
+	{
+		if (!s_Callbacks.DestroyDataAssetInstance) return;
+		s_Callbacks.DestroyDataAssetInstance(guid);
+	}
+
+	const char* ScriptEngine::GetDataAssetFields(uint64_t guid)
+	{
+		if (guid == 0 || !s_Callbacks.GetDataAssetFields) return "[]";
+		return s_Callbacks.GetDataAssetFields(guid);
+	}
+
+	void ScriptEngine::SetDataAssetField(uint64_t guid, const char* fieldName, const char* value)
+	{
+		if (guid == 0 || !s_Callbacks.SetDataAssetField) return;
+		s_Callbacks.SetDataAssetField(guid, fieldName, value);
+	}
+
+	bool ScriptEngine::DataAssetClassExists(const std::string& typeName)
+	{
+		if (!s_Initialized || !s_Callbacks.DataAssetClassExists) return false;
+		return s_Callbacks.DataAssetClassExists(typeName.c_str()) != 0;
+	}
+
+	int ScriptEngine::GetDataAssetTypes(char* outBuffer, int capacity)
+	{
+		if (!s_Initialized || !s_Callbacks.GetDataAssetTypes)
+		{
+			if (outBuffer && capacity > 0) outBuffer[0] = 0;
+			return 0;
+		}
+		return s_Callbacks.GetDataAssetTypes(outBuffer, capacity);
 	}
 
 	void ScriptEngine::PumpCoroutinesUpdate(float deltaTime)

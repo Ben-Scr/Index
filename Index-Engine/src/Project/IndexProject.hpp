@@ -47,7 +47,7 @@ namespace Index {
 		int BuildMaxWidth = 0;
 		int BuildMaxHeight = 0;
 		bool BuildFullscreen = true;
-		// Persisted as a string label in index-project.json; unknown labels fall back to Exclusive on load.
+		// Persisted as a string label in project.json; unknown labels fall back to Exclusive on load.
 		FullscreenMode BuildFullscreenMode = FullscreenMode::Exclusive;
 		bool BuildResizable = true;
 		bool BuildRunInBackground = true;
@@ -204,7 +204,7 @@ namespace Index {
 		static IndexProject Create(const std::string& name, const std::string& parentDir,
 			const std::string& directoryName, const CreateProgressCallback& progressCallback = {});
 		// Deep-copies an existing project to a new name/location. Inherits every
-		// setting, rewrites the name-bound files (index-project.json, .csproj/.sln
+		// setting, rewrites the name-bound files (project.json, .csproj/.sln
 		// rename + .sln/.vscode contents), and skips build artifacts
 		// (bin/obj/.vs/Builds/NativeScripts/build, *.user) and .git. Throws on failure.
 		static IndexProject Duplicate(const std::string& sourceRootDir, const std::string& newName,

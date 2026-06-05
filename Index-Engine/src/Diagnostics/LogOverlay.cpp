@@ -20,7 +20,7 @@ namespace Index::Diagnostics {
 				case Log::Level::Critical: return ImVec4(1.00f, 0.20f, 0.20f, 1.00f);
 			}
 			return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-		}
+		} 
 
 		const char* ShortLevelTag(Log::Level level) {
 			switch (level) {

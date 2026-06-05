@@ -225,7 +225,7 @@ async Task<int> GitHubDownload(string[] args)
 //
 // Packs <projectDir> into <outZip>. Files land at the zip root (no
 // wrapper folder) — that's the shape the launcher's asset-library
-// importer expects to find `index-project.json` at. Excludes the
+// importer expects to find `project.json` at. Excludes the
 // build/IDE noise that PublishProject.py also strips: `bin/`, `obj/`,
 // `.vs/`, `.vscode/`, `__pycache__/`, `.idea/`, plus `*.user`, `*.suo`,
 // `.DS_Store`, `Thumbs.db`.

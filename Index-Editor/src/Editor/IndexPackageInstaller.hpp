@@ -62,7 +62,7 @@ namespace Index {
 		// Remove a project-local package directory. Refuses to touch engine packages.
 		static InstallResult Uninstall(const std::string& projectPackagesDir, const std::string& packageName);
 
-		// Add a package name to project.Packages and persist index-project.json.
+		// Add a package name to project.Packages and persist project.json.
 		// Validates the package exists either in <engine-root>/packages/ or
 		// <project>/Packages/. After mutating the project, regenerates the
 		// IndexPackages.props that the .csproj imports.

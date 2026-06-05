@@ -282,7 +282,7 @@ namespace Index {
 			constexpr uint64_t kEntityCap = static_cast<uint64_t>(EntityTraits::entity_mask);
 			constexpr uint64_t kVersionCount = static_cast<uint64_t>(EntityTraits::version_mask) + 1u;
 			IDX_INFO_TAG("Scene",
-				"Entity cap: {} live entities, {} versions per slot (entityBits in index-project.json controls this).",
+				"Entity cap: {} live entities, {} versions per slot (entityBits in project.json controls this).",
 				kEntityCap, kVersionCount);
 		}
 

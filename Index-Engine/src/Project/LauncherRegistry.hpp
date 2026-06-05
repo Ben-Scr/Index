@@ -16,7 +16,7 @@ namespace Index {
 		void AddProject(const std::string& name, const std::string& path);
 		void RemoveProject(const std::string& path);
 		void UpdateLastOpened(const std::string& path);
-		// Updates the launcher's display label only — does NOT modify the project's on-disk index-project.json.
+		// Updates the launcher's display label only — does NOT modify the project's on-disk project.json.
 		bool RenameProject(const std::string& path, const std::string& newName);
 		void ValidateAll();
 

@@ -2,7 +2,7 @@
 """
 Index package remover — inverse of `scripts/packages/NewPackage.py`.
 
-Deletes a package directory, removes it from a project's `index-project.json`
+Deletes a package directory, removes it from a project's `project.json`
 allow-list (when `--project` is given), and re-runs premake so the project
 disappears from the IDE solution on next reload.
 
@@ -11,7 +11,7 @@ Usage examples
     # Engine package:
     python scripts/packages/RemovePackage.py Index.Foo
 
-    # Project-local package (also removes from index-project.json):
+    # Project-local package (also removes from project.json):
     python scripts/packages/RemovePackage.py MyGame.Loot --project "C:/path/to/MyProject"
 
     # Skip premake regen (CI / batch removal):
@@ -41,12 +41,12 @@ PACKAGE_NAME_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9]+(\.[A-Z][A-Za-z0-9]+)+$")
 
 
 def remove_from_project_allow_list(project_root: Path, name: str) -> bool:
-    """Remove `name` from <project>/index-project.json's `packages` array.
+    """Remove `name` from <project>/project.json's `packages` array.
 
     Returns True if the file was modified, False if the entry wasn't present
     or the file couldn't be parsed.
     """
-    project_file = project_root / "index-project.json"
+    project_file = project_root / "project.json"
     if not project_file.is_file():
         print(
             f"[RemovePackage] WARNING: --project given but {project_file} not found. "
@@ -129,7 +129,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--project",
         default=None,
         help="Absolute path to an Index project. If set, the package is looked up under "
-        "<project>/Packages/<Name>/ AND removed from <project>/index-project.json. "
+        "<project>/Packages/<Name>/ AND removed from <project>/project.json. "
         "Otherwise, looked up under <repo>/packages/<Name>/.",
     )
     parser.add_argument(

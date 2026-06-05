@@ -29,6 +29,8 @@
 #include "Graphics/Gizmo.hpp"
 #include "Graphics/RenderApi.hpp"
 #include "Graphics/Renderer2D.hpp"
+#include "Graphics/SpriteUVResolver.hpp"
+#include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
 #include "Gui/GuiRenderer.hpp"
 #include "Gui/EditorIcons.hpp"
@@ -46,8 +48,158 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace Index {
+
+	namespace {
+		// ── Sprite selection outline ────────────────────────────────────────
+		// The editor selection gizmo traces a sprite's opaque silhouette rather
+		// than its rectangular quad. We compute the convex hull of the texture's
+		// non-transparent texels once per (texture asset, sprite slice), in the
+		// renderer's unit-quad local space ([-0.5, 0.5]²), and cache it. Each
+		// frame the gizmo transforms those points by the entity transform, so the
+		// outline hugs the texture and follows rotation/scale. Full-bleed textures
+		// collapse to the four quad corners, matching the old behaviour.
+
+		struct SpriteOutlineKey {
+			uint64_t AssetId;
+			uint64_t SliceHash;
+			bool operator==(const SpriteOutlineKey& o) const {
+				return AssetId == o.AssetId && SliceHash == o.SliceHash;
+			}
+		};
+		struct SpriteOutlineKeyHash {
+			size_t operator()(const SpriteOutlineKey& k) const {
+				return std::hash<uint64_t>{}(k.AssetId) ^ (std::hash<uint64_t>{}(k.SliceHash) << 1);
+			}
+		};
+
+		// Empty vector = "no silhouette" (fully transparent / undecodable); the
+		// caller then falls back to the rectangular quad.
+		std::unordered_map<SpriteOutlineKey, std::vector<Vec2>, SpriteOutlineKeyHash> g_SpriteOutlineCache;
+
+		std::vector<Vec2> BuildSpriteOutline(Texture2D& tex, const SpriteRendererComponent& sprite) {
+			std::unique_ptr<ImageData> image = tex.GetImageData();
+			if (!image || image->Width <= 0 || image->Height <= 0 || !image->Pixels) return {};
+
+			const int w = image->Width;
+			const int h = image->Height;
+			const unsigned char* px = image->Pixels;
+
+			const SpriteUVRect uv = ResolveSpriteUVRect(sprite.TextureAssetId, sprite.SpriteName, w, h);
+			const float uSpan = uv.U1 - uv.U0;
+			const float vSpan = uv.V1 - uv.V0;
+			if (std::abs(uSpan) < 1e-6f || std::abs(vSpan) < 1e-6f) return {};
+
+			auto clampi = [](int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); };
+			const int sx0 = clampi(static_cast<int>(std::floor(std::min(uv.U0, uv.U1) * w)), 0, w);
+			const int sx1 = clampi(static_cast<int>(std::ceil (std::max(uv.U0, uv.U1) * w)), 0, w);
+			const int sy0 = clampi(static_cast<int>(std::floor(std::min(uv.V0, uv.V1) * h)), 0, h);
+			const int sy1 = clampi(static_cast<int>(std::ceil (std::max(uv.V0, uv.V1) * h)), 0, h);
+			if (sx1 <= sx0 || sy1 <= sy0) return {};
+
+			// Stride-sample large textures so selecting never hitches.
+			const int stride = std::max(1, std::max(sx1 - sx0, sy1 - sy0) / 512);
+			constexpr unsigned char kAlphaThreshold = 16;
+
+			// Per-row L/R and per-column T/B opaque extremes: their convex hull
+			// equals the hull of every opaque texel, at only O(W + H) points.
+			std::vector<int> rowMinX(h, -1), rowMaxX(h, -1);
+			std::vector<int> colMinY(w, -1), colMaxY(w, -1);
+			bool any = false;
+			for (int y = sy0; y < sy1; y += stride) {
+				const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(w);
+				for (int x = sx0; x < sx1; x += stride) {
+					if (px[(rowBase + static_cast<size_t>(x)) * 4u + 3u] < kAlphaThreshold) continue;
+					any = true;
+					if (rowMinX[y] < 0 || x < rowMinX[y]) rowMinX[y] = x;
+					if (x > rowMaxX[y]) rowMaxX[y] = x;
+					if (colMinY[x] < 0 || y < colMinY[x]) colMinY[x] = y;
+					if (y > colMaxY[x]) colMaxY[x] = y;
+				}
+			}
+			if (!any) return {};
+
+			struct P { long long x, y; };
+			std::vector<P> pts;
+			for (int y = sy0; y < sy1; ++y) {
+				if (rowMinX[y] < 0) continue;
+				pts.push_back({ rowMinX[y], y });
+				pts.push_back({ rowMaxX[y], y });
+			}
+			for (int x = sx0; x < sx1; ++x) {
+				if (colMinY[x] < 0) continue;
+				pts.push_back({ x, colMinY[x] });
+				pts.push_back({ x, colMaxY[x] });
+			}
+
+			std::sort(pts.begin(), pts.end(),
+				[](const P& a, const P& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
+			pts.erase(std::unique(pts.begin(), pts.end(),
+				[](const P& a, const P& b) { return a.x == b.x && a.y == b.y; }), pts.end());
+
+			// Andrew's monotone-chain convex hull (integer math, exact).
+			const int n = static_cast<int>(pts.size());
+			std::vector<P> hull;
+			if (n < 3) {
+				hull = pts;
+			}
+			else {
+				auto cross = [](const P& o, const P& a, const P& b) -> long long {
+					return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+				};
+				hull.resize(static_cast<size_t>(2 * n));
+				int k = 0;
+				for (int i = 0; i < n; ++i) {
+					while (k >= 2 && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
+					hull[k++] = pts[i];
+				}
+				for (int i = n - 2, t = k + 1; i >= 0; --i) {
+					while (k >= t && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
+					hull[k++] = pts[i];
+				}
+				hull.resize(static_cast<size_t>(k - 1));
+			}
+			if (hull.size() < 3) return {};
+
+			// Invert the sprite shader: baseUV = (lx + 0.5, 0.5 - ly);
+			// uv = mix(UvRect.xy, UvRect.zw, baseUV). Texel centres → local space.
+			std::vector<Vec2> local;
+			local.reserve(hull.size());
+			for (const P& p : hull) {
+				const float u = (static_cast<float>(p.x) + 0.5f) / static_cast<float>(w);
+				const float v = (static_cast<float>(p.y) + 0.5f) / static_cast<float>(h);
+				const float baseX = (u - uv.U0) / uSpan;
+				const float baseY = (v - uv.V0) / vSpan;
+				local.push_back(Vec2{ baseX - 0.5f, 0.5f - baseY });
+			}
+			return local;
+		}
+
+		// Returns the cached outline, building it on first use. nullptr means
+		// "no silhouette this frame" (texture not resolved yet, or transparent) —
+		// the caller draws the rectangular quad instead.
+		const std::vector<Vec2>* GetSpriteSelectionOutline(const SpriteRendererComponent& sprite) {
+			if (static_cast<uint64_t>(sprite.TextureAssetId) == 0) return nullptr;
+
+			const SpriteOutlineKey key{
+				static_cast<uint64_t>(sprite.TextureAssetId),
+				std::hash<std::string>{}(sprite.SpriteName) };
+
+			auto it = g_SpriteOutlineCache.find(key);
+			if (it == g_SpriteOutlineCache.end()) {
+				Texture2D* tex = TextureManager::GetTexture(sprite.TextureHandle);
+				if (!tex || !tex->IsValid()) return nullptr; // not ready — retry next frame, don't cache
+				it = g_SpriteOutlineCache.emplace(key, BuildSpriteOutline(*tex, sprite)).first;
+			}
+			return it->second.size() >= 3 ? &it->second : nullptr;
+		}
+	}
 
 	void ImGuiEditorLayer::RenderSceneIntoFBO(Framebuffer& fbo, Scene& scene,
 		const glm::mat4& vp, const AABB& viewportAABB,
@@ -188,15 +340,38 @@ namespace Index {
 			auto& transform = scene.GetComponent<Transform2DComponent>(m_SelectedEntity);
 			const float rotationDegrees = transform.GetRotationDegrees();
 	
-			Gizmo::SetColor(Color(1.0f, 0.65f, 0.10f, 1.0f));
-			Gizmo::SetLineWidth(2.0f);
-			Gizmo::DrawSquare(transform.Position, transform.Scale, rotationDegrees);
-	
+			if (scene.HasComponent<SpriteRendererComponent>(m_SelectedEntity)) {
+				const auto& sprite = scene.GetComponent<SpriteRendererComponent>(m_SelectedEntity);
+				Gizmo::SetColor(Color(1.0f, 0.65f, 0.10f, 1.0f));
+				Gizmo::SetLineWidth(2.0f);
+
+				// Outline the texture's opaque silhouette (cached, in unit-quad
+				// local space); TransformPoint folds in Scale/Rotation/Position so
+				// it tracks the rendered sprite. Fall back to the quad when the
+				// texture has no silhouette (procedural, transparent, or loading).
+				if (const std::vector<Vec2>* outline = GetSpriteSelectionOutline(sprite)) {
+					const std::vector<Vec2>& pts = *outline;
+					for (size_t i = 0; i < pts.size(); ++i) {
+						const Vec2 a = transform.TransformPoint(pts[i]);
+						const Vec2 b = transform.TransformPoint(pts[(i + 1) % pts.size()]);
+						Gizmo::DrawLine(a, b);
+					}
+				}
+				else {
+					Gizmo::DrawSquare(transform.Position, transform.Scale, rotationDegrees);
+				}
+			}
+
 			if (scene.HasComponent<Camera2DComponent>(m_SelectedEntity)) {
 				auto& camera = scene.GetComponent<Camera2DComponent>(m_SelectedEntity);
 				Gizmo::SetColor(Color::White());
 				Gizmo::SetLineWidth(1.5f);
-				Gizmo::DrawSquare(transform.Position, camera.WorldViewPort(), rotationDegrees);
+				// Frame at the configured Game View aspect, not the live window aspect — WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio → keep the window aspect.
+				Vec2 camFrame = camera.WorldViewPort();
+				const int gvAspectIdx = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
+				const float gvAspect = k_AspectRatioPresets[gvAspectIdx].Aspect;
+				if (gvAspect > 0.0f) camFrame.x = camFrame.y * gvAspect;
+				Gizmo::DrawSquare(transform.Position, camFrame, rotationDegrees);
 			}
 	
 			if (scene.HasComponent<BoxCollider2DComponent>(m_SelectedEntity)) {

@@ -21,7 +21,7 @@ static std::string s_ProjectPath;
 
 class EditorApplication : public Application {
 public:
-	EditorApplication() {
+	EditorApplication() { 
 		SetEditorHost(true);
 	}
 

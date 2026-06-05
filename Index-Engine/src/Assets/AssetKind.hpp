@@ -11,6 +11,7 @@ namespace Index {
 		Script,
 		Font,
 		Shader,
+		DataAsset,
 		Other
 	};
 

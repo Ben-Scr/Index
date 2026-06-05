@@ -214,7 +214,7 @@ namespace Index {
 				if (isInitialLoadAll) {
 					if (activeProject) {
 						IDX_CORE_INFO_TAG("PackageHost",
-							"No packages installed for project '{}' — skipping all {} discovered package DLL(s). Add entries to index-project.json's `packages` array to install them.",
+							"No packages installed for project '{}' — skipping all {} discovered package DLL(s). Add entries to project.json's `packages` array to install them.",
 							activeProject->Name, candidates.size());
 					}
 					else {

@@ -89,14 +89,14 @@ def find_runtime_binary() -> Path:
 
 def stage_smoke_project(runtime_dir: Path) -> None:
     shutil.rmtree(runtime_dir / "Assets", ignore_errors=True)
-    project_file = runtime_dir / "index-project.json"
+    project_file = runtime_dir / "project.json"
     if project_file.exists():
         project_file.unlink()
 
     scenes_dir = runtime_dir / "Assets" / "Scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
 
-    (runtime_dir / "index-project.json").write_text(
+    (runtime_dir / "project.json").write_text(
         json.dumps(
             {
                 "name": "SmokeProject",

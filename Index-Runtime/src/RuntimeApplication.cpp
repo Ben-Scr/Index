@@ -164,7 +164,7 @@ Index::Application* Index::CreateApplication() {
 		}
 	}
 
-	// Auto-detect project: look for index-project.json next to the executable
+	// Auto-detect project: look for project.json next to the executable
 	const std::string projectRoot = s_ProjectPath.empty() ? Path::ExecutableDir() : s_ProjectPath;
 	if (IndexProject::Validate(projectRoot)) {
 		auto project = std::make_unique<IndexProject>(IndexProject::Load(projectRoot));
@@ -173,8 +173,8 @@ Index::Application* Index::CreateApplication() {
 	}
 	else {
 		// E30: no project file next to the executable — surface the fallback so
-		// a packaging mistake (missing index-project.json) is visible in logs.
-		IDX_CORE_WARN_TAG("Runtime", "index-project.json not found at '{}'; falling back to built-in sample scene", projectRoot);
+		// a packaging mistake (missing project.json) is visible in logs.
+		IDX_CORE_WARN_TAG("Runtime", "project.json not found at '{}'; falling back to built-in sample scene", projectRoot);
 	}
 
 	return new RuntimeApplication();

@@ -64,6 +64,8 @@
     <Compile Include="Source\CreateEntityJobSample.cs" />
     <Compile Include="Source\EcbBenchmarkSystem.cs" />
     <Compile Include="Source\IJobQueryQuickTest.cs" />
+    <Compile Include="Source\ItemData.cs" />
+    <Compile Include="Source\ItemHolder.cs" />
     <Compile Include="Source\JobSystemQuickTest.cs" />
     <Compile Include="Source\PlayerController.cs" />
     <Compile Include="Source\PrefabSpawnJobSample.cs" />

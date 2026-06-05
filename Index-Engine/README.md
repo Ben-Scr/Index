@@ -41,7 +41,7 @@ Index::Application* Index::CreateApplication() {
 
 > **Warning (audit E29):** `EntryPoint.hpp` defines `main()` (or `WinMain()` in Dist Windows builds) at file scope. Including it in two translation units triggers a duplicate-symbol linker error — and the header guards against this with a sentinel that produces a `#error` if the header is re-included after the symbol has been emitted. **Include it in exactly one `.cpp`.** Every other TU should use `<Index/App.hpp>` (or `<Index/Core.hpp>`) only.
 
-The canonical end-to-end example lives in [`Index-Runtime/src/RuntimeApplication.cpp`](../Index-Runtime/src/RuntimeApplication.cpp): it loads `index-project.json` next to the executable, registers project scenes, and falls back to a built-in sample if no project is found.
+The canonical end-to-end example lives in [`Index-Runtime/src/RuntimeApplication.cpp`](../Index-Runtime/src/RuntimeApplication.cpp): it loads `project.json` next to the executable, registers project scenes, and falls back to a built-in sample if no project is found.
 
 ## Picking an umbrella header
 
@@ -146,8 +146,8 @@ Conditional:
 
 - `nethost.dll` — required when scripting is enabled. The runtime's post-build copies it from `External/dotnet/lib/nethost.dll`.
 - `Tracy.dll` — required when the profiler is enabled (i.e. when `--no-profiler` was *not* passed). Stripped builds skip this.
-- `index-project.json` — your project manifest. The runtime auto-detects it via `IndexProject::Validate(exeDir)` and loads it through `ProjectManager`. **If absent, the runtime logs a warning and falls back to a built-in `SampleScene`** — that warning is the only signal a packaging mistake gives you (audit E30). Always ship the project file.
-- Your project's scene files, package DLLs (`Pkg.<Name>.Native.dll`), C# script assemblies, and any user assets referenced by `index-project.json`.
+- `project.json` — your project manifest. The runtime auto-detects it via `IndexProject::Validate(exeDir)` and loads it through `ProjectManager`. **If absent, the runtime logs a warning and falls back to a built-in `SampleScene`** — that warning is the only signal a packaging mistake gives you (audit E30). Always ship the project file.
+- Your project's scene files, package DLLs (`Pkg.<Name>.Native.dll`), C# script assemblies, and any user assets referenced by `project.json`.
 
 ## See also
 
@@ -157,4 +157,4 @@ Conditional:
 - [`Core/Application.hpp`](src/Core/Application.hpp) — full virtual surface and lifecycle.
 - [`Core/ApplicationConfig.hpp`](src/Core/ApplicationConfig.hpp) — every per-subsystem flag and its meaning.
 - [`Core/Export.hpp`](src/Core/Export.hpp) — `INDEX_API` / `INDEX_WITH_*` / `INDEX_CORE_ONLY` macro contract.
-- Audit references: **H13** (umbrella consolidation — three headers documented here), **E29** (`EntryPoint.hpp` single-TU guard), **E30** (`index-project.json` fallback warning), **E6** (`ApplicationConfig` factories).
+- Audit references: **H13** (umbrella consolidation — three headers documented here), **E29** (`EntryPoint.hpp` single-TU guard), **E30** (`project.json` fallback warning), **E6** (`ApplicationConfig` factories).

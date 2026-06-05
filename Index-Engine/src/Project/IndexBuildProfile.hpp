@@ -9,7 +9,7 @@
 
 namespace Index {
 
-	// Stable integer values — don't renumber without a migration path for existing .indexbuild files.
+	// Stable integer values — don't renumber without a migration path for existing .build files.
 	enum class BuildPlatform : uint8_t {
 		Windows  = 0,  // display: "Windows Desktop" — kept as "Windows" for serialization back-compat
 		Linux    = 1,
@@ -41,7 +41,7 @@ namespace Index {
 		// Writes default profiles (Windows + Linux); skips files that already exist. Returns count written.
 		static int WriteDefaultProfiles(const std::string& directory);
 
-		static constexpr std::string_view FileExtension = ".indexbuild";
+		static constexpr std::string_view FileExtension = ".build";
 	};
 
 } // namespace Index

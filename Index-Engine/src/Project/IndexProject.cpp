@@ -27,7 +27,7 @@ namespace Index {
 	namespace {
 		// Reject scene/icon strings that try to escape the project tree or carry
 		// shell/OS-control characters. Defense-in-depth: GetSceneFilePath also
-		// guards, but rejecting at load means a tampered index-project.json
+		// guards, but rejecting at load means a tampered project.json
 		// can't poison BuildSceneList / StartupScene / LastOpenedScene either.
 		bool IsValidSceneName(std::string_view value) {
 			if (value.empty()) return false;
@@ -43,7 +43,7 @@ namespace Index {
 
 		// Asset-path fields (splash, cursor) may be project-relative SUBpaths, so
 		// they can't use IsValidSceneName (which forbids '/'). Lighter guard: reject
-		// path traversal + absolute paths so a tampered index-project.json can't point
+		// path traversal + absolute paths so a tampered project.json can't point
 		// the engine at files outside the project tree. Empty = "none", allowed.
 		bool IsSafeAssetPath(std::string_view value) {
 			if (value.empty()) return true;
@@ -237,7 +237,7 @@ namespace Index {
 			uint64_t h = k_Fnv1aSeed;
 			h = HashStringInto(h, "regen-v1");
 			h = HashStringInto(h, projectRoot.generic_string());
-			h = HashFileContentsInto(h, projectRoot / "index-project.json");
+			h = HashFileContentsInto(h, projectRoot / "project.json");
 			h = HashPackageManifestsInto(h, projectRoot / "Packages");
 			h = HashPackageManifestsInto(h, engineRoot / "packages");
 			h = HashFileContentsInto(h, engineRoot / "premake5.lua");
@@ -679,7 +679,7 @@ endforeach()
 		p.PackagesDirectory = Path::Combine(p.RootDirectory, "Packages");
 		p.CsprojPath = Path::Combine(p.RootDirectory, p.Name + ".csproj");
 		p.SlnPath = Path::Combine(p.RootDirectory, p.Name + ".sln");
-		p.ProjectFilePath = Path::Combine(p.RootDirectory, "index-project.json");
+		p.ProjectFilePath = Path::Combine(p.RootDirectory, "project.json");
 	}
 
 	static Json::Value BuildProjectJson(const IndexProject& project) {
@@ -1229,7 +1229,7 @@ endforeach()
 	}
 
 	bool IndexProject::Validate(const std::string& rootDir) {
-		return std::filesystem::exists(Path::Combine(rootDir, "index-project.json"))
+		return std::filesystem::exists(Path::Combine(rootDir, "project.json"))
 			&& std::filesystem::exists(Path::Combine(rootDir, "Assets"));
 	}
 
@@ -1237,7 +1237,7 @@ endforeach()
 		IndexProject project;
 		project.RootDirectory = rootDir;
 
-		std::string configPath = Path::Combine(rootDir, "index-project.json");
+		std::string configPath = Path::Combine(rootDir, "project.json");
 		if (File::Exists(configPath)) {
 			std::string jsonText = File::ReadAllText(configPath);
 			Json::Value root;
@@ -1551,7 +1551,7 @@ endforeach()
 					}
 					else {
 						IDX_CORE_WARN_TAG("IndexProject",
-							"index-project.json: entityBits={} is not one of {{16, 20, 22, 24, 28}}; falling back to 20.",
+							"project.json: entityBits={} is not one of {{16, 20, 22, 24, 28}}; falling back to 20.",
 							bits);
 						project.EntityBits = 20;
 					}
@@ -1671,7 +1671,7 @@ endforeach()
 			project.BuildSceneList.push_back(project.StartupScene);
 		}
 
-		// Write index-project.json
+		// Write project.json
 		{
 			ReportCreateProgress(progressCallback, 0.48f, "Writing project configuration...");
 			Json::Value root = BuildProjectJson(project);
@@ -1985,7 +1985,7 @@ public class GameScript : EntityScript
 			(void)File::WriteAllText(vscodeSettings, s);
 		}
 
-		// Persist index-project.json with the new name (all other settings inherited).
+		// Persist project.json with the new name (all other settings inherited).
 		{
 			Json::Value root = BuildProjectJson(target);
 			(void)File::WriteAllText(target.ProjectFilePath, Json::Stringify(root, true));

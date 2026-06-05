@@ -19,27 +19,45 @@ namespace Index {
 		struct CachedEntry {
 			uint64_t                 BuiltAtEpoch = 0;
 			std::vector<SpriteSlice> Slices;
+			TextureCrop              Crop;
 		};
 
 		std::unordered_map<uint64_t, CachedEntry> g_Cache;
 
 		std::unordered_set<std::string> g_WarnedRefs;
 
-		const std::vector<SpriteSlice>& GetCachedSlices(UUID textureAssetId) {
+		const CachedEntry& GetCachedEntry(UUID textureAssetId) {
 			const uint64_t epoch = g_SliceEpoch.load(std::memory_order_acquire);
 			auto it = g_Cache.find(static_cast<uint64_t>(textureAssetId));
 			if (it != g_Cache.end() && it->second.BuiltAtEpoch == epoch) {
-				return it->second.Slices;
+				return it->second;
 			}
 
 			const std::string path = AssetRegistry::ResolvePath(static_cast<uint64_t>(textureAssetId));
 			CachedEntry& entry = g_Cache[static_cast<uint64_t>(textureAssetId)];
 			entry.BuiltAtEpoch = epoch;
 			entry.Slices.clear();
+			entry.Crop = TextureCrop{};
 			if (!path.empty()) {
-				entry.Slices = AssetRegistry::ReadTextureMeta(path).Sprites;
+				TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
+				entry.Slices = std::move(meta.Sprites);
+				entry.Crop   = meta.Crop;
 			}
-			return entry.Slices;
+			return entry;
+		}
+
+		// Slice/crop rect (texture pixels) → UV, with a half-texel inset to
+		// stop adjacent-slice bleed under Bilinear filtering.
+		SpriteUVRect RectToUV(int x, int y, int w, int h, int texPxW, int texPxH) {
+			const float fW = static_cast<float>(texPxW);
+			const float fH = static_cast<float>(texPxH);
+			SpriteUVRect uv;
+			uv.U0 = (static_cast<float>(x)     + 0.5f) / fW;
+			uv.V0 = (static_cast<float>(y)     + 0.5f) / fH;
+			uv.U1 = (static_cast<float>(x + w) - 0.5f) / fW;
+			uv.V1 = (static_cast<float>(y + h) - 0.5f) / fH;
+			uv.IsFullTexture = false;
+			return uv;
 		}
 
 		void WarnOnceMissing(UUID textureAssetId, std::string_view spriteName) {
@@ -59,18 +77,24 @@ namespace Index {
 		int texPxW,
 		int texPxH)
 	{
-		// Hot path: empty name skips the cache lookup entirely. Most
-		// SpriteRenderers in any existing scene hit this branch.
-		if (spriteName.empty()) {
-			return SpriteUVRect{};
-		}
+		// No asset id (e.g. procedural texture) — nothing to look up.
 		if (static_cast<uint64_t>(textureAssetId) == 0 || texPxW <= 0 || texPxH <= 0) {
 			return SpriteUVRect{};
 		}
 
-		const std::vector<SpriteSlice>& slices = GetCachedSlices(textureAssetId);
+		const CachedEntry& entry = GetCachedEntry(textureAssetId);
+
+		// Empty name = "single sprite": fall back to the per-texture crop if
+		// one is authored, else the full texture.
+		if (spriteName.empty()) {
+			if (entry.Crop.Enabled && entry.Crop.W > 0 && entry.Crop.H > 0) {
+				return RectToUV(entry.Crop.X, entry.Crop.Y, entry.Crop.W, entry.Crop.H, texPxW, texPxH);
+			}
+			return SpriteUVRect{};
+		}
+
 		const SpriteSlice* match = nullptr;
-		for (const SpriteSlice& s : slices) {
+		for (const SpriteSlice& s : entry.Slices) {
 			if (s.Name == spriteName) {
 				match = &s;
 				break;
@@ -81,16 +105,7 @@ namespace Index {
 			return SpriteUVRect{};
 		}
 
-		// Half-texel inset prevents adjacent-slice bleed under Bilinear filtering.
-		const float fW = static_cast<float>(texPxW);
-		const float fH = static_cast<float>(texPxH);
-		SpriteUVRect uv;
-		uv.U0 = (static_cast<float>(match->X) + 0.5f) / fW;
-		uv.V0 = (static_cast<float>(match->Y) + 0.5f) / fH;
-		uv.U1 = (static_cast<float>(match->X + match->W) - 0.5f) / fW;
-		uv.V1 = (static_cast<float>(match->Y + match->H) - 0.5f) / fH;
-		uv.IsFullTexture = false;
-		return uv;
+		return RectToUV(match->X, match->Y, match->W, match->H, texPxW, texPxH);
 	}
 
 	void NotifySpriteSliceEpochBumped() {

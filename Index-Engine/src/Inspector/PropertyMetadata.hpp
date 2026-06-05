@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Inspector/PropertyType.hpp"
+#include "Assets/AssetKind.hpp"
 
 #include <functional>
 #include <memory>
@@ -46,6 +47,10 @@ namespace Index {
 		// For PropertyType::ComponentRef — the displayName of the required
 		// ComponentInfo (matches the engine's ComponentInfo::displayName).
 		std::string ComponentTypeName;
+
+		// For PropertyType::AssetRef — restricts the picker to one AssetKind
+		// (e.g. DataAsset). Unknown = any asset.
+		AssetKind AssetKindFilter = AssetKind::Unknown;
 
 		// For PropertyType::List — the PropertyType of each list item. The
 		// drawer dispatches per-row through the matching primitive widget.

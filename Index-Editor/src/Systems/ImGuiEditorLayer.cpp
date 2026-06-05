@@ -3301,18 +3301,39 @@ namespace Index {
 					if (entityIsDisabled)
 						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
 
-					bool entityIsPrefabTinted = false;
-					if (!entityIsDisabled && !Application::GetIsPlaying() && scene.GetEntityOrigin(entityHandle) == EntityOrigin::Prefab) {
+					// Prefab origin drives both the type icon and the row tint below.
+					const bool entityIsPrefab = !Application::GetIsPlaying() && scene.GetEntityOrigin(entityHandle) == EntityOrigin::Prefab;
+					bool entityPrefabResolvable = false;
+					if (entityIsPrefab) {
 						const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entityHandle));
-						const bool resolvable = prefabGuid != 0 && !AssetRegistry::ResolvePath(prefabGuid).empty();
+						entityPrefabResolvable = prefabGuid != 0 && !AssetRegistry::ResolvePath(prefabGuid).empty();
+					}
+
+					bool entityIsPrefabTinted = false;
+					if (!entityIsDisabled && entityIsPrefab) {
 						ImGui::PushStyleColor(ImGuiCol_Text,
-							resolvable ? EditorTheme::Colors::PrefabInstance : EditorTheme::Colors::PrefabOrphan);
+							entityPrefabResolvable ? EditorTheme::Colors::PrefabInstance : EditorTheme::Colors::PrefabOrphan);
 						entityIsPrefabTinted = true;
 					}
 
 					bool entityIsCutMarked = m_CutEntities.contains(static_cast<uint32_t>(entityHandle));
 					if (entityIsCutMarked)
 						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
+
+					// Type icon at the left of every row: prefab / prefab_missing for prefab instances
+					// (by whether the source asset resolves), otherwise the generic entity icon.
+					{
+						const char* entityIconName = entityIsPrefab
+							? (entityPrefabResolvable ? "prefab" : "prefab_missing")
+							: "entity";
+						const float entityIconSize = ImGui::GetTextLineHeight();
+						const uint64_t entityIcon = EditorIcons::Get(entityIconName, static_cast<int>(entityIconSize));
+						if (entityIcon) {
+							ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(entityIcon)),
+								ImVec2(entityIconSize, entityIconSize), ImVec2(0, 1), ImVec2(1, 0));
+							ImGui::SameLine(0.0f, 4.0f);
+						}
+					}
 
 					if (m_RenamingEntity == entityHandle) {
 						m_EntityRenameFrameCounter++;

@@ -1,5 +1,7 @@
 #include <pch.hpp>
 #include "Assets/AssetRegistry.hpp"
+#include "Scripting/ScriptEngine.hpp"
+#include "Serialization/Json.hpp"
 #include "Gui/AssetBrowser.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Serialization/Path.hpp"
@@ -18,6 +20,7 @@
 #include "Graphics/Texture2D.hpp"
 #include <imgui.h>
 #include <imgui_internal.h>
+#include <functional>
 #include <algorithm>
 #include "Gui/EditorIcons.hpp"
 #include "Gui/Icons.hpp"
@@ -646,6 +649,7 @@ namespace Index {
 		if (ext == ".cpp" || ext == ".c" || ext == ".h" || ext == ".hpp")    return "file_fallback";
 		if (ext == ".scene" || ext == ".index")                               return "file_scene";
 		if (ext == ".prefab")                                                return "file_prefab";
+		if (ext == ".dataasset")                                             return "file_dataasset";
 		if (ext == ".anim")                                                  return "file_anim";
 		if (ext == ".shader")                                                return "file_shader";
 		if (ext == ".json")                                                  return "file_json";
@@ -843,6 +847,16 @@ namespace Index {
 			return;
 		}
 
+		// TEMP EXT-DRAG DIAG — remove after debugging
+		{
+			const bool diagLbtn = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+			const bool diagPast = IsScreenDragPastThreshold(m_ExternalDragStartScreenX, m_ExternalDragStartScreenY);
+			const bool diagInside = IsCursorInsideAnyEditorWindow();
+			IDX_CORE_INFO_TAG("ExtDragDiag",
+				"tracking paths={} lbtnDown={} pastThreshold={} insideEditor={}",
+				m_ExternalDragPaths.size(), diagLbtn, diagPast, diagInside);
+		}
+
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) {
 			ClearExternalFileDrag();
 			return;
@@ -862,7 +876,9 @@ namespace Index {
 			}
 			m_ExternalDragCaptureWindow = nullptr;
 		}
-		StartNativeFileDrag(paths);
+		IDX_CORE_INFO_TAG("ExtDragDiag", "FIRING StartNativeFileDrag for {} paths", paths.size());
+		const bool diagDragOk = StartNativeFileDrag(paths);
+		IDX_CORE_INFO_TAG("ExtDragDiag", "StartNativeFileDrag returned {}", diagDragOk);
 	}
 #endif
 
@@ -1829,6 +1845,88 @@ namespace Index {
 				}
 				if (ImGui::MenuItem("GlobalSystem")) {
 					CreateGlobalSystem(m_CurrentDirectory);
+				}
+				ImGui::EndMenu();
+			}
+			if (ImGui::BeginMenu("Data Asset")) {
+				std::vector<char> typesBuf(8192);
+				int required = ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
+				if (required > static_cast<int>(typesBuf.size())) {
+					typesBuf.resize(static_cast<std::size_t>(required));
+					ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
+				}
+
+				// Build a submenu tree from each type's '/'-separated menu path
+				// ("Gameplay/Item Data" -> Gameplay > Item Data). The last segment
+				// is the creatable leaf; the earlier ones are nested submenus.
+				struct MenuNode {
+					std::string Label;
+					std::string TypeName; // non-empty => creatable leaf
+					std::vector<MenuNode> Children;
+					MenuNode* FindGroup(const std::string& label) {
+						for (auto& c : Children)
+							if (c.TypeName.empty() && c.Label == label) return &c;
+						return nullptr;
+					}
+				};
+
+				MenuNode root;
+				bool anyType = false;
+				Json::Value parsed;
+				if (typesBuf[0] != '\0' && Json::TryParse(typesBuf.data(), parsed) && parsed.IsArray()) {
+					for (const Json::Value& item : parsed.GetArray()) {
+						if (!item.IsObject()) continue;
+						const Json::Value* typeMember = item.FindMember("type");
+						if (!typeMember) continue;
+						const std::string typeName = typeMember->AsStringOr();
+						if (typeName.empty()) continue;
+						const Json::Value* menuMember = item.FindMember("menu");
+						std::string menuPath = menuMember ? menuMember->AsStringOr(typeName) : typeName;
+						if (menuPath.empty()) menuPath = typeName;
+						anyType = true;
+
+						MenuNode* cur = &root;
+						std::size_t start = 0;
+						while (true) {
+							const std::size_t slash = menuPath.find('/', start);
+							std::string seg = (slash == std::string::npos)
+								? menuPath.substr(start)
+								: menuPath.substr(start, slash - start);
+							if (slash == std::string::npos) {
+								if (seg.empty()) seg = typeName;
+								cur->Children.push_back(MenuNode{ seg, typeName, {} });
+								break;
+							}
+							if (!seg.empty()) {
+								MenuNode* group = cur->FindGroup(seg);
+								if (!group) {
+									cur->Children.push_back(MenuNode{ seg, std::string(), {} });
+									group = &cur->Children.back();
+								}
+								cur = group;
+							}
+							start = slash + 1;
+						}
+					}
+				}
+
+				if (!anyType) {
+					ImGui::TextDisabled("No DataAsset types");
+				}
+				else {
+					std::function<void(const MenuNode&)> renderNode = [&](const MenuNode& node) {
+						for (const MenuNode& child : node.Children) {
+							if (!child.TypeName.empty()) {
+								if (ImGui::MenuItem(child.Label.c_str()))
+									CreateDataAsset(m_CurrentDirectory, child.TypeName);
+							}
+							else if (ImGui::BeginMenu(child.Label.c_str())) {
+								renderNode(child);
+								ImGui::EndMenu();
+							}
+						}
+					};
+					renderNode(root);
 				}
 				ImGui::EndMenu();
 			}

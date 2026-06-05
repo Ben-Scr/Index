@@ -5,6 +5,7 @@
 #include "Scripting/ScriptComponent.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/NativeScriptHost.hpp"
+#include "Scripting/DataAssetManager.hpp"
 #include "Core/Application.hpp"
 #include "Core/Input.hpp"
 #include "Core/Time.hpp"
@@ -1007,6 +1008,11 @@ namespace Index {
 	static int Index_Asset_GetKind(uint64_t assetId)
 	{
 		return static_cast<int>(AssetRegistry::GetKind(assetId));
+	}
+
+	static int Index_DataAsset_EnsureLoaded(uint64_t guid)
+	{
+		return DataAssetManager::Load(guid) ? 1 : 0;
 	}
 
 	static int Index_Asset_FindAllBuffer(const char* pathPrefix, int kind, char* outBuffer, int capacity)
@@ -3699,6 +3705,7 @@ namespace Index {
 		b.Asset_GetDisplayNameBuffer = &Index_Asset_GetDisplayNameBuffer;
 		b.Asset_GetKind = &Index_Asset_GetKind;
 		b.Asset_FindAllBuffer = &Index_Asset_FindAllBuffer;
+		b.DataAsset_EnsureLoaded = &Index_DataAsset_EnsureLoaded;
 		b.Texture_LoadAsset = &Index_Texture_LoadAsset;
 		b.Texture_GetWidth = &Index_Texture_GetWidth;
 		b.Texture_GetHeight = &Index_Texture_GetHeight;

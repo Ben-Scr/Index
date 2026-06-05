@@ -21,6 +21,7 @@ Index recognizes these asset kinds (from the `AssetKind` list):
 | **Prefab** | `.prefab` | A reusable, saved entity (with children) |
 | **Script** | `.cs` (and C/C++ source) | Game logic |
 | **Shader** | `.wgsl`, `.vert`, `.frag`, … | Custom rendering |
+| **Data Asset** | `.dataasset` | Shared game data — items, stats, config (see [Data Assets](Data-Assets.md)) |
 | **Other** | anything else | Tracked but not specially handled |
 
 Anything with an unknown extension is still tracked as **Other**, so nothing in your project is invisible to the engine.

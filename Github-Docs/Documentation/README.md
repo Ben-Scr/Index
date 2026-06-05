@@ -18,6 +18,7 @@ The foundational systems that make a game run.
 ## Assets
 
 - **[Assets](Assets/Assets.md)** — how textures, audio, fonts, scenes, and prefabs are identified, found, referenced, and loaded.
+- **[Data Assets](Assets/Data-Assets.md)** — shared, reusable game data (Index's ScriptableObject equivalent).
 
 ## Scripting
 

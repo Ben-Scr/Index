@@ -2,6 +2,7 @@
 #include "Gui/AssetBrowser.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Scripting/DataAssetManager.hpp"
 #include "Core/Log.hpp"
 #include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Editor/EditorPreferences.hpp"
@@ -1026,6 +1027,24 @@ namespace Index {
 				Refresh();
 				m_SelectedPath = finalPathStr;
 				BeginRename(finalPathStr, finalPath.filename().string());
+			});
+	}
+
+	void AssetBrowser::CreateDataAsset(const std::string& parentDir, const std::string& typeName) {
+		const std::filesystem::path preferred =
+			std::filesystem::path(parentDir) / (typeName + ".dataasset");
+
+		CreateAssetWithCollisionCheck(preferred,
+			[this, typeName](const std::filesystem::path& finalPath) {
+				const std::string finalPathStr = finalPath.string();
+				// DataAssetManager::Create writes the {version,type,fields} stub and registers the GUID.
+				if (DataAssetManager::Create(finalPathStr, typeName) == 0)
+					return;
+
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPathStr;
+				BeginRename(finalPathStr, finalPath.stem().string());
 			});
 	}
 

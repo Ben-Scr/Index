@@ -162,7 +162,15 @@ namespace Index {
 	Vec2 Camera2DComponent::WorldViewPort() const {
 		if (!m_Viewport) return { 0.0f, 0.0f };
 
+		// Editor restores m_Viewport to the OS-window size after the Game View renders,
+		// overstating the horizontal view; UIRegion pins the real game-view render rect
+		// (mirrors ScreenToWorld). Runtime leaves UIRegion unset → fall back to m_Viewport.
 		float aspect = m_Viewport->GetAspect();
+		const Window::UIRegion uiRegion = Window::GetUIRegion();
+		if (uiRegion.IsActive() && uiRegion.Height > 0) {
+			aspect = static_cast<float>(uiRegion.Width) / static_cast<float>(uiRegion.Height);
+		}
+
 		float worldHeight = 2.0f * (m_OrthographicSize * m_Zoom);
 		float worldWidth = worldHeight * aspect;
 		return { worldWidth, worldHeight };

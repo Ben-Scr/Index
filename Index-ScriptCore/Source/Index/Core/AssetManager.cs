@@ -17,7 +17,9 @@ public static class AssetManager
         Prefab = 4,
         Script = 5,
         Font = 6,
-        Other = 7
+        Shader = 7,
+        DataAsset = 8,
+        Other = 9
     }
 
     public static T? Load<T>(string path) where T : class
@@ -48,6 +50,9 @@ public static class AssetManager
 
         if (type == typeof(Font) && kind == AssetKind.Font)
             return Font.FromAssetUUID(guid) as T;
+
+        if (kind == AssetKind.DataAsset && typeof(DataAsset).IsAssignableFrom(type))
+            return DataAssetRuntime.LoadByGuid(guid, type) as T;
 
         return null;
     }
@@ -94,6 +99,7 @@ public static class AssetManager
         if (type == typeof(Audio)) return AssetKind.Audio;
         if (type == typeof(Entity)) return AssetKind.Prefab;
         if (type == typeof(Font)) return AssetKind.Font;
+        if (typeof(DataAsset).IsAssignableFrom(type)) return AssetKind.DataAsset;
         return AssetKind.Unknown;
     }
 

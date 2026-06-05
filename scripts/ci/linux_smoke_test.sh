@@ -30,10 +30,10 @@ if [[ ! -d "$index_assets_dir" ]]; then
     exit 1
 fi
 
-rm -rf "$runtime_dir/Assets" "$runtime_dir/index-project.json"
+rm -rf "$runtime_dir/Assets" "$runtime_dir/project.json"
 mkdir -p "$runtime_dir/Assets/Scenes"
 
-cat >"$runtime_dir/index-project.json" <<'EOF'
+cat >"$runtime_dir/project.json" <<'EOF'
 {
   "name": "SmokeProject",
   "engineVersion": "ci",

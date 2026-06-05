@@ -90,6 +90,15 @@ internal unsafe struct ManagedCallbacksStruct
     // ── Play-mode lifecycle (appended for binary compat) ──
     // Called on stop BEFORE scene snapshot restore; sweeps play-mode static event subscribers to prevent edit-mode ghost firings.
     public delegate* unmanaged<void> OnPlayModeExited;
+
+    // ── DataAsset (appended for binary compat) ──
+    // Order must match ScriptGlue.hpp's ManagedCallbacks struct exactly.
+    public delegate* unmanaged<byte*, ulong, int> CreateDataAssetInstance;
+    public delegate* unmanaged<ulong, void> DestroyDataAssetInstance;
+    public delegate* unmanaged<ulong, byte*> GetDataAssetFields;
+    public delegate* unmanaged<ulong, byte*, byte*, void> SetDataAssetField;
+    public delegate* unmanaged<byte*, int> DataAssetClassExists;
+    public delegate* unmanaged<byte*, int, int> GetDataAssetTypes;
 }
 
 /// <summary>Entry point called from C++ via hostfxr; exchanges native/managed function pointers.</summary>
@@ -178,6 +187,14 @@ internal static class ScriptHostBridge
 
             // ── Play-mode lifecycle (appended for binary compat) ──
             managedCallbacks->OnPlayModeExited = &ScriptInstanceManager.OnPlayModeExited;
+
+            // ── DataAsset (appended for binary compat) ──
+            managedCallbacks->CreateDataAssetInstance = &ScriptInstanceManager.CreateDataAssetInstance;
+            managedCallbacks->DestroyDataAssetInstance = &ScriptInstanceManager.DestroyDataAssetInstance;
+            managedCallbacks->GetDataAssetFields = &ScriptInstanceManager.GetDataAssetFields;
+            managedCallbacks->SetDataAssetField = &ScriptInstanceManager.SetDataAssetField;
+            managedCallbacks->DataAssetClassExists = &ScriptInstanceManager.DataAssetClassExists;
+            managedCallbacks->GetDataAssetTypes = &ScriptInstanceManager.GetDataAssetTypesBuffer;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

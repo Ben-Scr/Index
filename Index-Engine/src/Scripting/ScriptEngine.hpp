@@ -91,6 +91,15 @@ namespace Index {
 		static const char* GetSceneSystemFields(uint32_t handle);
 		static void SetSceneSystemField(uint32_t handle, const char* fieldName, const char* value);
 
+		// ── DataAsset ──
+		// Standalone data-asset instances are keyed by asset GUID. Driven by DataAssetManager (load/save/reload) and the editor inspector.
+		static int  CreateDataAssetInstance(const std::string& typeName, uint64_t guid);
+		static void DestroyDataAssetInstance(uint64_t guid);
+		static const char* GetDataAssetFields(uint64_t guid);
+		static void SetDataAssetField(uint64_t guid, const char* fieldName, const char* value);
+		static bool DataAssetClassExists(const std::string& typeName);
+		static int  GetDataAssetTypes(char* outBuffer, int capacity);
+
 		static void PumpCoroutinesUpdate(float deltaTime);
 		static void PumpCoroutinesFixedUpdate();
 

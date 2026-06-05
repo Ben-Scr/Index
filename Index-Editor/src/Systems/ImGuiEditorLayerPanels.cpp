@@ -26,6 +26,7 @@
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptDiscovery.hpp"
 #include "Scripting/ScriptEngine.hpp"
+#include "Scripting/ScriptComponentInspector.hpp"
 #include "Scripting/ScriptSystem.hpp"
 #include "Serialization/Directory.hpp"
 #include "Serialization/File.hpp"
@@ -1303,11 +1304,11 @@ namespace Index {
 		}
 
 		try {
-			std::filesystem::copy_file(project->ProjectFilePath, outDir / "index-project.json",
+			std::filesystem::copy_file(project->ProjectFilePath, outDir / "project.json",
 				std::filesystem::copy_options::overwrite_existing);
 		}
 		catch (const std::exception& e) {
-			IDX_WARN_TAG("Build", "Failed to copy index-project.json: {}", e.what());
+			IDX_WARN_TAG("Build", "Failed to copy project.json: {}", e.what());
 		}
 
 		ReportBuildProgress(0.75f, "Copying project assets");
@@ -2197,9 +2198,7 @@ namespace Index {
 			ImGui::OpenPopup("Restart Editor");
 			s_RenderBackendChangePopup = false;
 		}
-		// ImGuiCond_Always needed: multi-viewport + NoAutoMerge makes the Appearing-cond Pos hint unreliable, pinning the dialog off-center on first show.
-		const ImVec2 viewportCenter = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(viewportCenter, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+		ImGuiUtils::CenterNextModal();
 		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
 		if (ImGui::BeginPopupModal("Restart Editor", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
@@ -3281,6 +3280,15 @@ namespace Index {
 		if (m_PrefabInspector.IsOpen() && !m_PrefabInspector.HasUnsavedChanges()) {
 			m_PrefabInspector.Close();
 			m_PrefabInspectorPath.clear();
+		}
+
+		if (ext == ".dataasset") {
+			ImGui::TextDisabled("Data Asset:");
+			ImGui::SameLine();
+			ImGuiUtils::TextEllipsis(name);
+			ImGui::Separator();
+			DrawDataAssetFields(AssetRegistry::GetOrCreateAssetUUID(selectedPath));
+			return;
 		}
 
 		ImGui::TextDisabled("Asset:");

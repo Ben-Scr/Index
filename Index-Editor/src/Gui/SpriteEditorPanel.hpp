@@ -27,6 +27,10 @@ namespace Index {
 		enum class SliceMode { Manual, GridBySize, GridByCount, Auto };
 		enum class DragMode  { None, MoveBody, ResizeEdge, ResizeCorner };
 
+		// Slices = cut the sheet into named sprites; Crop = trim the lone
+		// "whole texture" sprite (applies when a renderer leaves SpriteName empty).
+		enum class EditMode  { Slices, Crop };
+
 		// One screen-space handle position around a selected slice — 4
 		// corners + 4 edge midpoints.
 		enum class Handle : int {
@@ -41,6 +45,7 @@ namespace Index {
 		void RenderToolbar();
 		void RenderCanvas();
 		void RenderSliceList();
+		void RenderCropPanel();
 		void RenderSliceModePopup();
 		void RenderUnsavedPrompt();
 
@@ -61,6 +66,18 @@ namespace Index {
 		void   ZoomToFitTexture();
 		int    HitTestSlice(ImVec2 mouseTexPx, Handle& outHandle) const;
 		bool   PointInRect(ImVec2 pt, ImVec2 rectMin, ImVec2 rectMax) const;
+		// Which screen-space handle (corner/edge) of a tex-space rect the
+		// cursor is over, or Handle::None. Shared by slice + crop hit-tests.
+		Handle HitRectHandle(int x, int y, int w, int h, ImVec2 mouseTexPx) const;
+		// Move/resize a rect by a pixel delta per the active drag handle; clamps to texture bounds.
+		void   ApplyHandleDrag(int& X, int& Y, int& W, int& H,
+		                       int startX, int startY, int startW, int startH,
+		                       int dx, int dy) const;
+
+		// ── Crop mode ──────────────────────────────────────────────────
+		bool HitTestCropRect(ImVec2 mouseTexPx, Handle& outHandle) const;
+		void DrawCropOverlay(ImDrawList* drawList);
+		void HandleCropInteraction(bool hovered, const ImGuiIO& io, ImVec2 mouseTexPx);
 
 		// ── Staged-list helpers ────────────────────────────────────────
 		std::string MakeUniqueName(std::string baseName) const;
@@ -90,6 +107,9 @@ namespace Index {
 		std::vector<int>         m_Selection;    // indices into m_Slices
 		bool                     m_Dirty = false;
 
+		EditMode    m_EditMode = EditMode::Slices;
+		TextureCrop m_Crop;                      // staged per-texture crop
+
 		ImVec2 m_PanOffset{ 0.0f, 0.0f };
 		float  m_Zoom            = 1.0f;
 		bool   m_PanInitialized  = false;
@@ -105,6 +125,10 @@ namespace Index {
 		Handle      m_DragHandle      = Handle::None;
 		ImVec2      m_DragStartMouseTexPx{ 0.0f, 0.0f };
 		SpriteSlice m_DragStartSliceState{};
+
+		// Drag-crop state (Crop mode).
+		bool        m_CropDragActive  = false;
+		TextureCrop m_DragStartCrop{};
 
 		// Slice-mode form values (live across sessions for the lifetime of
 		// the editor process; not persisted to project settings yet).

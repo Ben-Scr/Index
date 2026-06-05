@@ -475,7 +475,7 @@ local function RegisterCSharpProject(manifest)
         filter {}
 end
 
--- Reads <project>/index-project.json and extracts the top-level "packages" array.
+-- Reads <project>/project.json and extracts the top-level "packages" array.
 -- Returns:
 --   nil               — no project given (engine-developer mode, legacy scan-all)
 --   {}                — project loaded, no packages installed (fresh/empty project)
@@ -488,9 +488,9 @@ local function ReadProjectPackagesAllowList(projectRootDir)
         return nil
     end
 
-    local manifestPath = path.join(projectRootDir, "index-project.json")
+    local manifestPath = path.join(projectRootDir, "project.json")
     if not os.isfile(manifestPath) then
-        -- A project path was specified but index-project.json is missing — fail closed
+        -- A project path was specified but project.json is missing — fail closed
         -- (treat as no packages installed) rather than scanning everything.
         return {}
     end
@@ -512,7 +512,7 @@ local function ReadProjectPackagesAllowList(projectRootDir)
     -- Locate "packages" : [ ... ]. The string up to the first matching ] is the array.
     local arrayBody = jsonText:match('"packages"%s*:%s*%[(.-)%]')
     if not arrayBody then
-        -- Field absent in index-project.json = no packages installed.
+        -- Field absent in project.json = no packages installed.
         return {}
     end
 

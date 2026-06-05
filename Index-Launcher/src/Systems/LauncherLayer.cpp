@@ -2180,7 +2180,7 @@ artifacts/
 							m_Registry.Save();
 						}
 						else {
-							ShowError("Not a valid Index project (missing index-project.json or Assets/)");
+							ShowError("Not a valid Index project (missing project.json or Assets/)");
 						}
 					}
 					result->Release();
@@ -3015,10 +3015,10 @@ artifacts/
 			return e;
 		}
 
-		// Accepts flat archives (index-project.json at root) and single-subdir archives; rejects anything else.
+		// Accepts flat archives (project.json at root) and single-subdir archives; rejects anything else.
 		std::filesystem::path PickExtractedProjectRoot(const std::filesystem::path& stagingDir) {
 			std::error_code ec;
-			if (std::filesystem::exists(stagingDir / "index-project.json", ec)) {
+			if (std::filesystem::exists(stagingDir / "project.json", ec)) {
 				return stagingDir;
 			}
 			std::filesystem::path onlySubdir;
@@ -3035,7 +3035,7 @@ artifacts/
 				}
 			}
 			if (dirCount == 1 && topFiles == 0) {
-				if (std::filesystem::exists(onlySubdir / "index-project.json", ec)) {
+				if (std::filesystem::exists(onlySubdir / "project.json", ec)) {
 					return onlySubdir;
 				}
 			}
@@ -3343,7 +3343,7 @@ artifacts/
 		// the Name field to detect the "manifest missing / unparseable" case.
 		IndexProject loaded = IndexProject::Load(finalDir.string());
 		if (loaded.Name.empty()) {
-			fail("Project failed to load: index-project.json is missing or invalid");
+			fail("Project failed to load: project.json is missing or invalid");
 			return;
 		}
 

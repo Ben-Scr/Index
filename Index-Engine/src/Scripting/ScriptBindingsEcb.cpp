@@ -188,7 +188,7 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("Ecb",
 				"Ecb_Playback rejected: batch would exceed entity cap "
 				"(current={}, requested={}+{} prefab children, cap={}). Raise 'entityBits' in "
-				"index-project.json and rebuild (Project Settings > Entity ID bits).",
+				"project.json and rebuild (Project Settings > Entity ID bits).",
 				currentCount, header.entityCount, totalExtraChildren, kMaxLiveEntities);
 			return kEcbErrorEntityCapExceeded;
 		}

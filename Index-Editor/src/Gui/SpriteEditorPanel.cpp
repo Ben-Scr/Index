@@ -42,6 +42,8 @@ namespace Index {
 		m_PreviewHandle = TextureHandle{};
 		m_Slices.clear();
 		m_Selection.clear();
+		m_Crop = TextureCrop{};
+		m_CropDragActive = false;
 		m_Dirty = false;
 		m_DecodedPixels.clear();
 	}
@@ -73,14 +75,26 @@ namespace Index {
 			m_TexHeight = 0;
 		}
 
-		m_Slices    = AssetRegistry::ReadTextureMeta(assetPath).Sprites;
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(assetPath);
+		m_Slices    = meta.Sprites;
+		m_Crop      = meta.Crop;
+		// Guard against a crop authored before the texture was re-imported smaller.
+		if (m_Crop.W > 0 && m_Crop.H > 0 && m_TexWidth > 0 && m_TexHeight > 0) {
+			m_Crop.X = std::clamp(m_Crop.X, 0, std::max(0, m_TexWidth  - 1));
+			m_Crop.Y = std::clamp(m_Crop.Y, 0, std::max(0, m_TexHeight - 1));
+			m_Crop.W = std::clamp(m_Crop.W, 1, std::max(1, m_TexWidth  - m_Crop.X));
+			m_Crop.H = std::clamp(m_Crop.H, 1, std::max(1, m_TexHeight - m_Crop.Y));
+		}
 		m_Selection.clear();
 		m_Dirty = false;
+		// Open straight into Crop mode if this texture is already cropped.
+		m_EditMode = m_Crop.Enabled ? EditMode::Crop : EditMode::Slices;
 
 		m_PanInitialized = false;          // ZoomToFitTexture next render
 		m_IsDrawing      = false;
 		m_DragMode       = DragMode::None;
 		m_DragSliceIndex = -1;
+		m_CropDragActive = false;
 
 		m_DecodedPixels.clear();           // re-decoded lazily on Auto-slice
 	}
@@ -122,8 +136,25 @@ namespace Index {
 		ImGui::SameLine();
 		ImGui::BeginChild("##SpriteEditorList", ImVec2(sliceListWidth, panelHeight),
 			ImGuiChildFlags_Borders);
-		RenderSliceList();
+		if (m_EditMode == EditMode::Crop) {
+			RenderCropPanel();
+		}
+		else {
+			RenderSliceList();
+		}
 		ImGui::EndChild();
+
+		// Delete selected slices via Entf or the numpad Del/comma key — works
+		// whether the canvas or the slice list is focused. Skipped while a field
+		// (e.g. a name InputText) is active so it doesn't eat that keypress.
+		if (m_EditMode == EditMode::Slices
+			&& !m_Selection.empty()
+			&& !ImGui::IsAnyItemActive()
+			&& ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+			&& (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadDecimal, false)))
+		{
+			DeleteSelected();
+		}
 
 		RenderUnsavedPrompt();
 		RenderSliceModePopup();
@@ -136,9 +167,32 @@ namespace Index {
 	// ─────────────────────────────────────────────────────────────────────
 
 	void SpriteEditorPanel::RenderToolbar() {
+		// Edit-mode toggle: cut named slices vs. crop the single sprite.
+		int editMode = static_cast<int>(m_EditMode);
+		if (ImGui::RadioButton("Slices", &editMode, static_cast<int>(EditMode::Slices))) {
+			m_EditMode = EditMode::Slices;
+			m_IsDrawing = false;
+			m_CropDragActive = false;
+			m_DragMode = DragMode::None;
+		}
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Crop", &editMode, static_cast<int>(EditMode::Crop))) {
+			m_EditMode = EditMode::Crop;
+			m_IsDrawing = false;
+			m_DragMode = DragMode::None;
+			m_DragSliceIndex = -1;
+			m_Selection.clear();
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("|");
+		ImGui::SameLine();
+
+		const bool sliceMode = (m_EditMode == EditMode::Slices);
+		if (!sliceMode) ImGui::BeginDisabled();
 		if (ImGui::Button("Slice")) {
 			m_OpenSlicePopup = true;
 		}
+		if (!sliceMode) ImGui::EndDisabled();
 		ImGui::SameLine();
 		const bool canApply = m_Dirty;
 		if (!canApply) ImGui::BeginDisabled();
@@ -349,8 +403,12 @@ namespace Index {
 		// Border around the texture so the user sees its extents.
 		drawList->AddRect(imageMin, imageMax, RGBA(180, 180, 180, 200));
 
-		// Drawn slice rects.
-		for (size_t i = 0; i < m_Slices.size(); ++i) {
+		if (m_EditMode == EditMode::Crop) {
+			DrawCropOverlay(drawList);
+		}
+
+		// Slice rects (Slices mode only).
+		for (size_t i = 0; m_EditMode == EditMode::Slices && i < m_Slices.size(); ++i) {
 			const SpriteSlice& slice = m_Slices[i];
 			const ImVec2 minPx = TextureToScreen(ImVec2(static_cast<float>(slice.X), static_cast<float>(slice.Y)));
 			const ImVec2 maxPx = TextureToScreen(ImVec2(static_cast<float>(slice.X + slice.W), static_cast<float>(slice.Y + slice.H)));
@@ -387,8 +445,8 @@ namespace Index {
 			}
 		}
 
-		// In-progress manual drag-out preview.
-		if (m_IsDrawing) {
+		// In-progress manual drag-out preview (Crop mode draws its own).
+		if (m_IsDrawing && m_EditMode == EditMode::Slices) {
 			const ImVec2 mouseTexPx = ScreenToTexture(ImGui::GetIO().MousePos);
 			const ImVec2 a = TextureToScreen(m_DrawStartTexPx);
 			const ImVec2 b = TextureToScreen(mouseTexPx);
@@ -425,6 +483,11 @@ namespace Index {
 				m_PanOffset.x += io.MousePos.x - anchorScreenAfter.x;
 				m_PanOffset.y += io.MousePos.y - anchorScreenAfter.y;
 			}
+		}
+
+		if (m_EditMode == EditMode::Crop) {
+			HandleCropInteraction(hovered, io, mouseTexPx);
+			return;
 		}
 
 		if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -473,41 +536,11 @@ namespace Index {
 			&& m_DragSliceIndex < static_cast<int>(m_Slices.size()))
 		{
 			SpriteSlice& slice = m_Slices[m_DragSliceIndex];
-			const ImVec2 deltaTex(mouseTexPx.x - m_DragStartMouseTexPx.x,
-								  mouseTexPx.y - m_DragStartMouseTexPx.y);
-			const int dx = static_cast<int>(std::round(deltaTex.x));
-			const int dy = static_cast<int>(std::round(deltaTex.y));
-
-			if (m_DragMode == DragMode::MoveBody) {
-				slice.X = m_DragStartSliceState.X + dx;
-				slice.Y = m_DragStartSliceState.Y + dy;
-			}
-			else {
-				int x0 = m_DragStartSliceState.X;
-				int y0 = m_DragStartSliceState.Y;
-				int x1 = x0 + m_DragStartSliceState.W;
-				int y1 = y0 + m_DragStartSliceState.H;
-				switch (m_DragHandle) {
-				case Handle::TopLeft:     x0 += dx; y0 += dy; break;
-				case Handle::TopRight:    x1 += dx; y0 += dy; break;
-				case Handle::BottomLeft:  x0 += dx; y1 += dy; break;
-				case Handle::BottomRight: x1 += dx; y1 += dy; break;
-				case Handle::Top:         y0 += dy; break;
-				case Handle::Bottom:      y1 += dy; break;
-				case Handle::Left:        x0 += dx; break;
-				case Handle::Right:       x1 += dx; break;
-				case Handle::None:        break;
-				}
-				if (x1 < x0) std::swap(x0, x1);
-				if (y1 < y0) std::swap(y0, y1);
-				slice.X = x0; slice.Y = y0;
-				slice.W = std::max(1, x1 - x0);
-				slice.H = std::max(1, y1 - y0);
-			}
-			slice.X = std::clamp(slice.X, 0, std::max(0, m_TexWidth - 1));
-			slice.Y = std::clamp(slice.Y, 0, std::max(0, m_TexHeight - 1));
-			slice.W = std::clamp(slice.W, 1, std::max(1, m_TexWidth  - slice.X));
-			slice.H = std::clamp(slice.H, 1, std::max(1, m_TexHeight - slice.Y));
+			const int dx = static_cast<int>(std::round(mouseTexPx.x - m_DragStartMouseTexPx.x));
+			const int dy = static_cast<int>(std::round(mouseTexPx.y - m_DragStartMouseTexPx.y));
+			ApplyHandleDrag(slice.X, slice.Y, slice.W, slice.H,
+				m_DragStartSliceState.X, m_DragStartSliceState.Y,
+				m_DragStartSliceState.W, m_DragStartSliceState.H, dx, dy);
 			m_Dirty = true;
 		}
 
@@ -552,9 +585,8 @@ namespace Index {
 		}
 
 		if (hovered) {
-			if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !m_Selection.empty()) {
-				DeleteSelected();
-			}
+			// Delete is handled at panel scope (see Render) so it also fires
+			// when the slice list — not the canvas — has focus.
 			if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false) && !m_Slices.empty()) {
 				m_Selection.clear();
 				m_Selection.reserve(m_Slices.size());
@@ -564,6 +596,204 @@ namespace Index {
 				DuplicateSelected();
 			}
 		}
+	}
+
+	// ─────────────────────────────────────────────────────────────────────
+	// Crop mode (single-sprite trim)
+	// ─────────────────────────────────────────────────────────────────────
+
+	void SpriteEditorPanel::HandleCropInteraction(bool hovered, const ImGuiIO& io, ImVec2 mouseTexPx) {
+		(void)io;
+		// Click a handle/body to drag the crop, or click empty texture to draw a fresh box.
+		if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+			Handle hit = Handle::None;
+			if (HitTestCropRect(mouseTexPx, hit)) {
+				m_DragHandle          = hit;
+				m_DragStartMouseTexPx = mouseTexPx;
+				m_DragStartCrop       = m_Crop;
+				m_CropDragActive      = true;
+				if (hit == Handle::None) {
+					m_DragMode = DragMode::MoveBody;
+				}
+				else if (hit == Handle::TopLeft || hit == Handle::TopRight
+					|| hit == Handle::BottomLeft || hit == Handle::BottomRight) {
+					m_DragMode = DragMode::ResizeCorner;
+				}
+				else {
+					m_DragMode = DragMode::ResizeEdge;
+				}
+			}
+			else if (mouseTexPx.x >= 0 && mouseTexPx.y >= 0
+				&& mouseTexPx.x <= static_cast<float>(m_TexWidth)
+				&& mouseTexPx.y <= static_cast<float>(m_TexHeight))
+			{
+				m_IsDrawing      = true;
+				m_DrawStartTexPx = mouseTexPx;
+			}
+		}
+
+		// Live drag of the crop rect.
+		if (m_CropDragActive && m_DragMode != DragMode::None) {
+			const int dx = static_cast<int>(std::round(mouseTexPx.x - m_DragStartMouseTexPx.x));
+			const int dy = static_cast<int>(std::round(mouseTexPx.y - m_DragStartMouseTexPx.y));
+			ApplyHandleDrag(m_Crop.X, m_Crop.Y, m_Crop.W, m_Crop.H,
+				m_DragStartCrop.X, m_DragStartCrop.Y, m_DragStartCrop.W, m_DragStartCrop.H, dx, dy);
+			m_Dirty = true;
+		}
+
+		// Esc cancels the in-progress crop drag (snap back to pre-drag state).
+		if (m_CropDragActive && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+			m_Crop           = m_DragStartCrop;
+			m_DragMode       = DragMode::None;
+			m_CropDragActive = false;
+		}
+		if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+			m_DragMode       = DragMode::None;
+			m_CropDragActive = false;
+			m_DragHandle     = Handle::None;
+		}
+
+		// Commit a freshly drawn crop box on mouse release.
+		if (m_IsDrawing && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+			int x0 = static_cast<int>(std::round(std::min(m_DrawStartTexPx.x, mouseTexPx.x)));
+			int y0 = static_cast<int>(std::round(std::min(m_DrawStartTexPx.y, mouseTexPx.y)));
+			int x1 = static_cast<int>(std::round(std::max(m_DrawStartTexPx.x, mouseTexPx.x)));
+			int y1 = static_cast<int>(std::round(std::max(m_DrawStartTexPx.y, mouseTexPx.y)));
+			x0 = std::clamp(x0, 0, m_TexWidth);
+			y0 = std::clamp(y0, 0, m_TexHeight);
+			x1 = std::clamp(x1, 0, m_TexWidth);
+			y1 = std::clamp(y1, 0, m_TexHeight);
+			const int w = x1 - x0;
+			const int h = y1 - y0;
+			if (w > 0 && h > 0) {
+				m_Crop.X = x0; m_Crop.Y = y0;
+				m_Crop.W = w;  m_Crop.H = h;
+				m_Crop.Enabled = true;
+				m_Dirty = true;
+			}
+			m_IsDrawing = false;
+		}
+	}
+
+	void SpriteEditorPanel::DrawCropOverlay(ImDrawList* drawList) {
+		const ImVec2 imgMin = TextureToScreen(ImVec2(0.0f, 0.0f));
+		const ImVec2 imgMax = TextureToScreen(ImVec2(static_cast<float>(m_TexWidth), static_cast<float>(m_TexHeight)));
+
+		if (m_Crop.Enabled && m_Crop.W > 0 && m_Crop.H > 0) {
+			const ImVec2 cMin = TextureToScreen(ImVec2(static_cast<float>(m_Crop.X), static_cast<float>(m_Crop.Y)));
+			const ImVec2 cMax = TextureToScreen(ImVec2(static_cast<float>(m_Crop.X + m_Crop.W), static_cast<float>(m_Crop.Y + m_Crop.H)));
+
+			// Dim the four texture bands outside the crop so the kept region reads clearly.
+			const ImU32 dim = RGBA(0, 0, 0, 150);
+			drawList->AddRectFilled(imgMin, ImVec2(imgMax.x, cMin.y), dim);
+			drawList->AddRectFilled(ImVec2(imgMin.x, cMax.y), imgMax, dim);
+			drawList->AddRectFilled(ImVec2(imgMin.x, cMin.y), ImVec2(cMin.x, cMax.y), dim);
+			drawList->AddRectFilled(ImVec2(cMax.x, cMin.y), ImVec2(imgMax.x, cMax.y), dim);
+
+			drawList->AddRect(cMin, cMax, RGBA(90, 230, 150, 255), 0.0f, 0, 2.0f);
+
+			const float hs = k_HandleSizePx * 0.5f;
+			auto handle = [&](ImVec2 centre) {
+				drawList->AddRectFilled(ImVec2(centre.x - hs, centre.y - hs), ImVec2(centre.x + hs, centre.y + hs), RGBA(255, 255, 255), 0.0f);
+				drawList->AddRect(ImVec2(centre.x - hs, centre.y - hs), ImVec2(centre.x + hs, centre.y + hs), RGBA(0, 0, 0), 0.0f);
+			};
+			const ImVec2 mid((cMin.x + cMax.x) * 0.5f, (cMin.y + cMax.y) * 0.5f);
+			handle(cMin);
+			handle(ImVec2(cMax.x, cMin.y));
+			handle(ImVec2(cMin.x, cMax.y));
+			handle(cMax);
+			handle(ImVec2(mid.x, cMin.y));
+			handle(ImVec2(mid.x, cMax.y));
+			handle(ImVec2(cMin.x, mid.y));
+			handle(ImVec2(cMax.x, mid.y));
+		}
+
+		// Draw-out preview for a fresh crop box.
+		if (m_IsDrawing) {
+			const ImVec2 cur = ScreenToTexture(ImGui::GetIO().MousePos);
+			const ImVec2 a = TextureToScreen(m_DrawStartTexPx);
+			const ImVec2 b = TextureToScreen(cur);
+			drawList->AddRect(
+				ImVec2(std::min(a.x, b.x), std::min(a.y, b.y)),
+				ImVec2(std::max(a.x, b.x), std::max(a.y, b.y)),
+				RGBA(90, 230, 150, 230), 0.0f, 0, 1.5f);
+		}
+	}
+
+	bool SpriteEditorPanel::HitTestCropRect(ImVec2 mouseTexPx, Handle& outHandle) const {
+		outHandle = Handle::None;
+		if (!m_Crop.Enabled || m_Crop.W <= 0 || m_Crop.H <= 0) return false;
+		outHandle = HitRectHandle(m_Crop.X, m_Crop.Y, m_Crop.W, m_Crop.H, mouseTexPx);
+		if (outHandle != Handle::None) return true;
+		return mouseTexPx.x >= m_Crop.X && mouseTexPx.x <= m_Crop.X + m_Crop.W
+			&& mouseTexPx.y >= m_Crop.Y && mouseTexPx.y <= m_Crop.Y + m_Crop.H;
+	}
+
+	SpriteEditorPanel::Handle SpriteEditorPanel::HitRectHandle(int x, int y, int w, int h, ImVec2 mouseTexPx) const {
+		// Handle hit zones are in SCREEN space (zoom-independent), so convert
+		// the screen radius to a tex-space radius via 1/zoom.
+		const float radTex = (k_HandleSizePx * 0.5f + k_HandleHitPad) / std::max(0.01f, m_Zoom);
+		const float xL = static_cast<float>(x);
+		const float yT = static_cast<float>(y);
+		const float xR = static_cast<float>(x + w);
+		const float yB = static_cast<float>(y + h);
+		const float xM = xL + w * 0.5f;
+		const float yM = yT + h * 0.5f;
+		struct H { Handle h; ImVec2 c; };
+		const H handles[] = {
+			{ Handle::TopLeft,     ImVec2(xL, yT) },
+			{ Handle::TopRight,    ImVec2(xR, yT) },
+			{ Handle::BottomLeft,  ImVec2(xL, yB) },
+			{ Handle::BottomRight, ImVec2(xR, yB) },
+			{ Handle::Top,         ImVec2(xM, yT) },
+			{ Handle::Bottom,      ImVec2(xM, yB) },
+			{ Handle::Left,        ImVec2(xL, yM) },
+			{ Handle::Right,       ImVec2(xR, yM) },
+		};
+		for (const H& hnd : handles) {
+			if (PointInRect(mouseTexPx,
+				ImVec2(hnd.c.x - radTex, hnd.c.y - radTex),
+				ImVec2(hnd.c.x + radTex, hnd.c.y + radTex)))
+			{
+				return hnd.h;
+			}
+		}
+		return Handle::None;
+	}
+
+	void SpriteEditorPanel::ApplyHandleDrag(int& X, int& Y, int& W, int& H,
+		int startX, int startY, int startW, int startH, int dx, int dy) const
+	{
+		if (m_DragMode == DragMode::MoveBody) {
+			X = startX + dx;
+			Y = startY + dy;
+		}
+		else {
+			int x0 = startX;
+			int y0 = startY;
+			int x1 = startX + startW;
+			int y1 = startY + startH;
+			switch (m_DragHandle) {
+			case Handle::TopLeft:     x0 += dx; y0 += dy; break;
+			case Handle::TopRight:    x1 += dx; y0 += dy; break;
+			case Handle::BottomLeft:  x0 += dx; y1 += dy; break;
+			case Handle::BottomRight: x1 += dx; y1 += dy; break;
+			case Handle::Top:         y0 += dy; break;
+			case Handle::Bottom:      y1 += dy; break;
+			case Handle::Left:        x0 += dx; break;
+			case Handle::Right:       x1 += dx; break;
+			case Handle::None:        break;
+			}
+			if (x1 < x0) std::swap(x0, x1);
+			if (y1 < y0) std::swap(y0, y1);
+			X = x0; Y = y0;
+			W = std::max(1, x1 - x0);
+			H = std::max(1, y1 - y0);
+		}
+		X = std::clamp(X, 0, std::max(0, m_TexWidth - 1));
+		Y = std::clamp(Y, 0, std::max(0, m_TexHeight - 1));
+		W = std::clamp(W, 1, std::max(1, m_TexWidth  - X));
+		H = std::clamp(H, 1, std::max(1, m_TexHeight - Y));
 	}
 
 	// ─────────────────────────────────────────────────────────────────────
@@ -652,6 +882,56 @@ namespace Index {
 			DeleteSelected();
 		}
 		if (!canDelete) ImGui::EndDisabled();
+	}
+
+	// ─────────────────────────────────────────────────────────────────────
+	// Crop panel
+	// ─────────────────────────────────────────────────────────────────────
+
+	void SpriteEditorPanel::RenderCropPanel() {
+		ImGui::TextDisabled("Crop");
+		ImGui::Separator();
+		ImGui::TextWrapped("Trims the single sprite. Applies when a Sprite Renderer or Image "
+			"uses this texture with no sprite selected.");
+		ImGui::Spacing();
+
+		bool enabled = m_Crop.Enabled;
+		if (ImGui::Checkbox("Enable Crop", &enabled)) {
+			// First enable with no rect yet → seed it to the full texture.
+			if (enabled && (m_Crop.W <= 0 || m_Crop.H <= 0)) {
+				m_Crop.X = 0; m_Crop.Y = 0;
+				m_Crop.W = m_TexWidth; m_Crop.H = m_TexHeight;
+			}
+			m_Crop.Enabled = enabled;
+			m_Dirty = true;
+		}
+
+		if (!m_Crop.Enabled) ImGui::BeginDisabled();
+
+		ImGui::Spacing();
+		ImGui::TextDisabled("Rect (X, Y, W, H)");
+		int rect[4] = { m_Crop.X, m_Crop.Y, m_Crop.W, m_Crop.H };
+		ImGui::SetNextItemWidth(-FLT_MIN);
+		if (ImGui::DragInt4("##croprect", rect, 1, 0, 65535, "%d")) {
+			m_Crop.X = std::clamp(rect[0], 0, std::max(0, m_TexWidth  - 1));
+			m_Crop.Y = std::clamp(rect[1], 0, std::max(0, m_TexHeight - 1));
+			m_Crop.W = std::clamp(rect[2], 1, std::max(1, m_TexWidth  - m_Crop.X));
+			m_Crop.H = std::clamp(rect[3], 1, std::max(1, m_TexHeight - m_Crop.Y));
+			m_Dirty = true;
+		}
+
+		ImGui::Spacing();
+		if (ImGui::Button("Reset to Full Texture", ImVec2(-FLT_MIN, 0.0f))) {
+			m_Crop.X = 0; m_Crop.Y = 0;
+			m_Crop.W = m_TexWidth; m_Crop.H = m_TexHeight;
+			m_Dirty = true;
+		}
+
+		if (!m_Crop.Enabled) ImGui::EndDisabled();
+
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::TextWrapped("Drag a box on the canvas to set the crop, or drag the handles to adjust.");
 	}
 
 	// ─────────────────────────────────────────────────────────────────────
@@ -828,34 +1108,10 @@ namespace Index {
 			const int idx = m_Selection.front();
 			if (idx >= 0 && idx < static_cast<int>(m_Slices.size())) {
 				const SpriteSlice& s = m_Slices[idx];
-				// Handle hit zones are in SCREEN space (zoom-independent),
-				// so convert to a tex-space radius via 1/zoom.
-				const float radTex = (k_HandleSizePx * 0.5f + k_HandleHitPad) / std::max(0.01f, m_Zoom);
-				struct H { Handle h; ImVec2 c; };
-				const float xL = static_cast<float>(s.X);
-				const float yT = static_cast<float>(s.Y);
-				const float xR = xL + s.W;
-				const float yB = yT + s.H;
-				const float xM = xL + s.W * 0.5f;
-				const float yM = yT + s.H * 0.5f;
-				const H handles[] = {
-					{ Handle::TopLeft,    ImVec2(xL, yT) },
-					{ Handle::TopRight,   ImVec2(xR, yT) },
-					{ Handle::BottomLeft, ImVec2(xL, yB) },
-					{ Handle::BottomRight, ImVec2(xR, yB) },
-					{ Handle::Top,        ImVec2(xM, yT) },
-					{ Handle::Bottom,     ImVec2(xM, yB) },
-					{ Handle::Left,       ImVec2(xL, yM) },
-					{ Handle::Right,      ImVec2(xR, yM) },
-				};
-				for (const H& h : handles) {
-					if (PointInRect(mouseTexPx,
-						ImVec2(h.c.x - radTex, h.c.y - radTex),
-						ImVec2(h.c.x + radTex, h.c.y + radTex)))
-					{
-						outHandle = h.h;
-						return idx;
-					}
+				const Handle h = HitRectHandle(s.X, s.Y, s.W, s.H, mouseTexPx);
+				if (h != Handle::None) {
+					outHandle = h;
+					return idx;
 				}
 			}
 		}
@@ -960,6 +1216,7 @@ namespace Index {
 		if (m_AssetPath.empty()) return;
 		TextureMeta meta = AssetRegistry::ReadTextureMeta(m_AssetPath);
 		meta.Sprites = m_Slices;
+		meta.Crop    = m_Crop;
 		if (!AssetRegistry::WriteTextureMeta(m_AssetPath, meta)) {
 			IDX_ERROR_TAG("SpriteEditor", "Failed to write meta for '{}' — slice edits not persisted.", m_AssetPath);
 			return;
@@ -971,8 +1228,11 @@ namespace Index {
 
 	void SpriteEditorPanel::Revert() {
 		if (m_AssetPath.empty()) return;
-		m_Slices = AssetRegistry::ReadTextureMeta(m_AssetPath).Sprites;
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(m_AssetPath);
+		m_Slices = meta.Sprites;
+		m_Crop   = meta.Crop;
 		m_Selection.clear();
+		m_CropDragActive = false;
 		m_Dirty = false;
 	}
 

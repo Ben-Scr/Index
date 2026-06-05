@@ -163,7 +163,8 @@ Dependency.EngineSelectedModules = MergeDependencySets(
     IndexModules.Physics and Dependency.EngineCorePhysics or nil,
     IndexModules.Scripting and Dependency.EngineCoreScripting or nil,
     IndexProfiler.Enabled and Dependency.Profiler or nil,
-    Dependency.EngineCoreEditor  -- engine.dll always hosts the ImGui backend
+    Dependency.EngineCoreEditor,  -- engine.dll always hosts the ImGui backend
+    Dependency.EngineCoreLinuxSystem
 )
 
 Dependency.EditorRuntimeCommon = MergeDependencySets(
@@ -181,7 +182,7 @@ Dependency.EditorRuntimeCommon = MergeDependencySets(
 )
 
 -- Picks the EnTT entity/version bit-split from the active project's
--- index-project.json. Default is 20 — matches EnTT's stock split, so
+-- project.json. Default is 20 — matches EnTT's stock split, so
 -- existing projects pay no extra memory and behave identically to the
 -- unpatched engine. Cached so repeated calls from each consumer's
 -- premake5.lua don't re-parse the file. The vendored EnTT header at
@@ -205,7 +206,7 @@ function GetIndexEntityBits()
         return IndexEntityBits
     end
 
-    local manifestPath = path.join(projectRootDir, "index-project.json")
+    local manifestPath = path.join(projectRootDir, "project.json")
     if not os.isfile(manifestPath) then
         IndexEntityBits = default
         return IndexEntityBits
@@ -234,7 +235,7 @@ function GetIndexEntityBits()
     if bits == 16 or bits == 20 or bits == 22 or bits == 24 or bits == 28 then
         IndexEntityBits = bits
     else
-        print("[Index] index-project.json: entityBits=" .. tostring(valueText)
+        print("[Index] project.json: entityBits=" .. tostring(valueText)
             .. " is not one of {16, 20, 22, 24, 28}; falling back to 20.")
         IndexEntityBits = default
     end
@@ -254,7 +255,7 @@ end
 -- Every C++ project that compiles entt-using code has this folder on its
 -- include path (the four main projects + RegisterNativeProject). On
 -- premake regen we always rewrite the header so its value tracks
--- index-project.json. If the file ever drifts from the -D, the header
+-- project.json. If the file ever drifts from the -D, the header
 -- wins (it #undef/#defines INDEX_ENTITY_BITS).
 IndexEntityBitsConfigHeader = path.join(ROOT_DIR,
     "Index-Engine/src/Generated/IndexEntityBitsConfig.h")

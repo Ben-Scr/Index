@@ -264,7 +264,10 @@ namespace Index::ImGuiUtils {
 
 	void CenterNextModal() {
 		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		// ImGuiCond_Always, not Appearing: every caller pairs this with SetNextWindowAsNativeDialog(),
+		// and multi-viewport + NoAutoMerge makes the Appearing-cond Pos hint unreliable, pinning the
+		// dialog off-center on first show.
+		ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 	}
 
 	bool BeginComponentSection(const char* label, bool& removeRequested, const std::function<void()>& contextMenu)

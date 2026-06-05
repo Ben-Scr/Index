@@ -148,8 +148,10 @@ jobs:
           # xorg-dev + libglu: GLFW. pkg-config: Dawn's CMake dep probing when
           # building webgpu_dawn from source. xvfb: headless runtime smoke test.
           # clang: Dawn's build is Clang-oriented and fails to compile under GCC 13.
+          # lld: GNU ld is memory-hungry when linking the engine .so against
+          # Dawn's large monolithic static archive; lld keeps the CI link stable.
           # libx11-xcb-dev: Dawn's X11 backend needs X11/Xlib-xcb.h (not in xorg-dev).
-          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang libx11-xcb-dev
+          sudo apt-get install -y xorg-dev libglu1-mesa-dev xvfb pkg-config clang lld libx11-xcb-dev
 
       - name: Install Premake
         run: |
@@ -203,15 +205,15 @@ jobs:
           ./scripts/Setup.sh
 
       - name: Build Linux Targets
-        run: make config=release -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
+        run: make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
 
       - name: Linux Engine Tests
         run: |
-          make config=release -j"$(nproc)" Index-Engine-Tests
+          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests
           ./bin/Release-linux-x86_64/Index-Engine-Tests/Index-Engine-Tests
 
       - name: Build Linux Debug Targets
-        run: make config=debug -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
+        run: make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
 
       - name: Linux Runtime Smoke Test
         run: python3 scripts/ci/runtime_smoke_test.py --binary bin/Release-linux-x86_64/Index-Runtime/Index-Runtime

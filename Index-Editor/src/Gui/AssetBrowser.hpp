@@ -126,6 +126,7 @@ namespace Index {
 		void CreateSceneSystem(const std::string& parentDir);
 		void CreateGlobalSystem(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
+		void CreateDataAsset(const std::string& parentDir, const std::string& typeName);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
 		void CreateDefaultTexture(const std::string& parentDir,
 			const std::string& sourceFile, const std::string& displayName);

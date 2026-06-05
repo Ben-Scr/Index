@@ -7,7 +7,7 @@
 
 namespace Index {
 
-	// Values are stable on disk (mapped in index-project.json) — do not reorder, append only.
+	// Values are stable on disk (mapped in project.json) — do not reorder, append only.
 	enum class FullscreenMode : uint8_t {
 		// True exclusive fullscreen: glfwSetWindowMonitor, lowest latency, expensive Alt-Tab restore.
 		Exclusive = 0,

@@ -585,6 +585,9 @@ namespace Index {
 			if (extension == ".wgsl" || extension == ".vs" || extension == ".fs" || extension == ".vert" || extension == ".frag" || extension == ".glsl") {
 				return AssetKind::Shader;
 			}
+			if (extension == ".dataasset") {
+				return AssetKind::DataAsset;
+			}
 			if (!extension.empty()) {
 				return AssetKind::Other;
 			}
@@ -760,6 +763,19 @@ namespace Index {
 				}
 			}
 
+			if (const Json::Value* cropNode = root.FindMember("crop"); cropNode && cropNode->IsObject()) {
+				const Json::Value* enabledNode = cropNode->FindMember("enabled");
+				const bool enabled = enabledNode && enabledNode->AsBoolOr(false);
+				if (const Json::Value* r = cropNode->FindMember("rect"); r && r->IsArray() && r->GetArray().size() >= 4) {
+					const auto& a = r->GetArray();
+					meta.Crop.X = a[0].AsIntOr(0);
+					meta.Crop.Y = a[1].AsIntOr(0);
+					meta.Crop.W = a[2].AsIntOr(0);
+					meta.Crop.H = a[3].AsIntOr(0);
+				}
+				meta.Crop.Enabled = enabled && meta.Crop.W > 0 && meta.Crop.H > 0;
+			}
+
 			return meta;
 		}
 
@@ -796,6 +812,26 @@ namespace Index {
 				spritesValue.Append(std::move(spriteValue));
 			}
 			SetOrAddMember(root, "sprites", std::move(spritesValue));
+
+			// Write `crop` only when enabled; if disabled, overwrite an
+			// existing block (the Json API has no member-remove) so a crop
+			// can be turned off, and leave never-cropped metas untouched.
+			if (meta.Crop.Enabled) {
+				Json::Value cropValue = Json::Value::MakeObject();
+				cropValue.AddMember("enabled", Json::Value(true));
+				Json::Value rectValue = Json::Value::MakeArray();
+				rectValue.Append(Json::Value(meta.Crop.X));
+				rectValue.Append(Json::Value(meta.Crop.Y));
+				rectValue.Append(Json::Value(meta.Crop.W));
+				rectValue.Append(Json::Value(meta.Crop.H));
+				cropValue.AddMember("rect", std::move(rectValue));
+				SetOrAddMember(root, "crop", std::move(cropValue));
+			}
+			else if (root.FindMember("crop")) {
+				Json::Value cropValue = Json::Value::MakeObject();
+				cropValue.AddMember("enabled", Json::Value(false));
+				SetOrAddMember(root, "crop", std::move(cropValue));
+			}
 
 			const bool wrote = File::WriteAllText(metaPath, Json::Stringify(root, true));
 			if (wrote) {

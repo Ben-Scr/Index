@@ -70,7 +70,7 @@
     "launcher.asset_library.done.body": "The project has been downloaded and added to your projects.",
     "launcher.asset_library.done.ok": "OK",
     "launcher.asset_library.error.verification": "Archive verification failed. The library index may be out of date.",
-    "launcher.asset_library.error.no_project_in_archive": "Archive doesn't contain an Index project (no index-project.json).",
+    "launcher.asset_library.error.no_project_in_archive": "Archive doesn't contain an Index project (no project.json).",
     "launcher.asset_library.error.untrusted_host": "Refusing to download from a non-GitHub host.",
 
     "launcher.asset_library.trust.title": "Community content",
