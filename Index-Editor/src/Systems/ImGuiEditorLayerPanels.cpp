@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -1138,8 +1139,10 @@ namespace Index {
 				"-c", buildConfiguration,
 				"--nologo",
 				"-v", "q",
+				"-nodeReuse:false",
+				"-p:UseSharedCompilation=false",
 				"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants("INDEX_BUILD")
-			});
+			}, {}, std::chrono::minutes(5));
 			if (!buildResult.Succeeded()) {
 				IDX_ERROR_TAG("Build", "C# script compilation failed (exit code {}).", buildResult.ExitCode);
 				if (!buildResult.Output.empty()) {
@@ -2834,7 +2837,7 @@ namespace Index {
 							"echo.\r\n"
 							"dotnet build \"" << userCsprojPath << "\""
 							" -c " << config <<
-							" --nologo -v q\r\n"
+							" --nologo -v q -nodeReuse:false -p:UseSharedCompilation=false\r\n"
 							"if errorlevel 1 (\r\n"
 							"  echo.\r\n"
 							"  echo *** User script build FAILED. C# errors above. ***\r\n"

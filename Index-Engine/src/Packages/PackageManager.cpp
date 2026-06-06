@@ -6,6 +6,7 @@
 #include "Serialization/File.hpp"
 #include "Utils/Process.hpp"
 
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 
@@ -60,8 +61,9 @@ namespace Index {
 				"restore",
 				csprojPath,
 				"--nologo",
-				"-v", "q"
-			});
+				"-v", "q",
+				"-nodeReuse:false"
+			}, {}, std::chrono::minutes(10));
 			if (!restoreResult.Succeeded()) {
 				IDX_CORE_ERROR_TAG("PackageManager", "dotnet restore failed (exit code {})", restoreResult.ExitCode);
 				if (!restoreResult.Output.empty()) {
@@ -77,8 +79,10 @@ namespace Index {
 				"-c", buildConfig,
 				"--nologo",
 				"-v", "q",
+				"-nodeReuse:false",
+				"-p:UseSharedCompilation=false",
 				defineConstantsArg
-			});
+			}, {}, std::chrono::minutes(5));
 			if (!buildResult.Succeeded()) {
 				IDX_CORE_ERROR_TAG("PackageManager", "dotnet build failed (exit code {})", buildResult.ExitCode);
 				if (!buildResult.Output.empty()) {
@@ -130,8 +134,10 @@ namespace Index {
 					projectDir.string(),
 					"-c", buildConfiguration,
 					"--nologo",
-					"-v", "q"
-				});
+					"-v", "q",
+					"-nodeReuse:false",
+					"-p:UseSharedCompilation=false"
+				}, {}, std::chrono::minutes(5));
 				if (buildResult.Succeeded()) {
 					for (const auto& candidate : GetPackageToolCandidates(exeDir, {})) {
 						if (!candidate.empty() && std::filesystem::exists(candidate)) {

@@ -92,16 +92,25 @@ namespace Index::Process {
 			return wide;
 		}
 
-		std::string ReadPipeToEnd(HANDLE readPipe) {
-			std::string output;
+		bool DrainAvailablePipe(HANDLE readPipe, std::string& output) {
 			char buffer[4096];
-			DWORD bytesRead = 0;
 
-			while (ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
+			while (true) {
+				DWORD available = 0;
+				if (!PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr)) {
+					return false;
+				}
+				if (available == 0) {
+					return true;
+				}
+
+				const DWORD bytesToRead = std::min<DWORD>(available, static_cast<DWORD>(sizeof(buffer)));
+				DWORD bytesRead = 0;
+				if (!ReadFile(readPipe, buffer, bytesToRead, &bytesRead, nullptr) || bytesRead == 0) {
+					return false;
+				}
 				output.append(buffer, buffer + bytesRead);
 			}
-
-			return output;
 		}
 #endif
 	} // namespace
@@ -174,7 +183,6 @@ namespace Index::Process {
 		// terminate the child instead of blocking forever.
 		const auto deadline = hasTimeout ? std::chrono::steady_clock::now() + timeout
 		                                  : std::chrono::steady_clock::time_point::max();
-		char buffer[4096];
 		while (true) {
 			if (hasTimeout && std::chrono::steady_clock::now() >= deadline) {
 				result.TimedOut = true;
@@ -201,24 +209,18 @@ namespace Index::Process {
 					: 50;
 				const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, waitMs);
 				if (waitResult == WAIT_OBJECT_0) {
-					// Process exited — drain any final bytes still in the pipe.
-					DWORD finalAvailable = 0;
-					if (PeekNamedPipe(readPipe, nullptr, 0, nullptr, &finalAvailable, nullptr) && finalAvailable > 0) {
-						DWORD bytesRead = 0;
-						while (ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
-							result.Output.append(buffer, buffer + bytesRead);
-						}
-					}
+					// Process exited; drain only bytes already available. Build
+					// servers spawned by tools like dotnet/MSBuild may keep the
+					// inherited write handle alive after the direct child exits.
+					(void)DrainAvailablePipe(readPipe, result.Output);
 					break;
 				}
 				continue;
 			}
 
-			DWORD bytesRead = 0;
-			if (!ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, nullptr) || bytesRead == 0) {
+			if (!DrainAvailablePipe(readPipe, result.Output)) {
 				break;
 			}
-			result.Output.append(buffer, buffer + bytesRead);
 		}
 		CloseHandle(readPipe);
 

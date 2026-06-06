@@ -17,6 +17,7 @@
 #include "Project/ProjectManager.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cctype>
 #include <exception>
@@ -1252,9 +1253,11 @@ namespace Index {
 				"-c", buildConfig,
 				"--nologo",
 				"-v", "q",
+				"-nodeReuse:false",
+				"-p:UseSharedCompilation=false",
 				"-p:IndexCodegenEnabled=false",
 				defineConstantsArg
-			});
+			}, {}, std::chrono::minutes(5));
 		});
 	}
 

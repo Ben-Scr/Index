@@ -635,9 +635,11 @@ artifacts/
 					"-c", buildConfiguration,
 					"--nologo",
 					"-v", "q",
+					"-nodeReuse:false",
+					"-p:UseSharedCompilation=false",
 					"-nowarn:CS8632",
 					"-p:DefineConstants=" + IndexProject::BuildManagedDefineConstants("INDEX_EDITOR")
-					});
+					}, {}, std::chrono::minutes(5));
 
 				if (initializeGit) {
 					updateProgress(0.95f, "Initializing Git repository...");
@@ -1860,8 +1862,10 @@ artifacts/
 					"-c", buildConfiguration,
 					"--nologo",
 					"-v", "q",
+					"-nodeReuse:false",
+					"-p:UseSharedCompilation=false",
 					"-p:DefineConstants=" + BuildManagedDefineConstantsForProject(project, "INDEX_BUILD")
-				});
+				}, {}, std::chrono::minutes(5));
 				if (!buildResult.Succeeded()) {
 					fail("Runtime script build failed (dotnet exit code "
 						+ std::to_string(buildResult.ExitCode) + ").");
