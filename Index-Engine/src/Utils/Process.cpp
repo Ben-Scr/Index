@@ -190,11 +190,16 @@ namespace Index::Process {
 				// Either the child is still running with no output, or it has
 				// exited. Wait briefly for either an output byte or process
 				// exit before retrying.
+				// Clamp to [1,50]: if the deadline elapsed between the check at the top
+				// of the loop and now(), the remaining duration is negative; casting a
+				// negative count to DWORD (unsigned) would wrap to ~49 days and hang
+				// WaitForSingleObject far past the caller's timeout.
 				const DWORD waitMs = hasTimeout
-					? static_cast<DWORD>(std::min<long long>(50,
-						std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count()))
+					? static_cast<DWORD>(std::clamp<long long>(
+						std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count(),
+						1, 50))
 					: 50;
-				const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, waitMs == 0 ? 1 : waitMs);
+				const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, waitMs);
 				if (waitResult == WAIT_OBJECT_0) {
 					// Process exited — drain any final bytes still in the pipe.
 					DWORD finalAvailable = 0;

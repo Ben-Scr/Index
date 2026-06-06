@@ -2645,6 +2645,28 @@ namespace Index {
 			}
 			ImGui::TextDisabled("Default: project name (\"%s\"). The platform extension is appended automatically.",
 				project.Name.c_str());
+
+			ImGui::Spacing();
+			ImGui::TextUnformatted("Version:");
+			char versionBuf[256];
+			std::snprintf(versionBuf, sizeof(versionBuf), "%s", project.BuildVersion.c_str());
+			ImGui::SetNextItemWidth(-1);
+			if (ImGui::InputText("##BuildVersion", versionBuf, sizeof(versionBuf))) {
+				project.BuildVersion = versionBuf;
+				changed = true;
+			}
+			ImGui::TextDisabled("Surfaced to scripts as Application.Version (e.g. 1.0.0).");
+
+			ImGui::Spacing();
+			ImGui::TextUnformatted("Company:");
+			char companyBuf[256];
+			std::snprintf(companyBuf, sizeof(companyBuf), "%s", project.BuildCompany.c_str());
+			ImGui::SetNextItemWidth(-1);
+			if (ImGui::InputText("##BuildCompany", companyBuf, sizeof(companyBuf))) {
+				project.BuildCompany = companyBuf;
+				changed = true;
+			}
+			ImGui::TextDisabled("Surfaced to scripts as Application.Company.");
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Executable")

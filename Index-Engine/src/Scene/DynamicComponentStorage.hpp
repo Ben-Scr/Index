@@ -17,6 +17,10 @@ namespace Index {
 		static constexpr std::size_t kPageSize = traits_type::page_size;
 
 	public:
+		// Preconditions (enforced by the sole creator, ComponentRegistry::RegisterDynamic):
+		// alignment is a power of two and <= alignof(max_align_t), and elementSize is a
+		// multiple of alignment. Together these keep the std::vector<uint8_t> backing
+		// (max_align-aligned) and every denseIdx*elementSize offset correctly aligned.
 		explicit DynamicComponentStorage(uint32_t elementSize, uint32_t alignment)
 			: m_ElementSize(elementSize), m_Alignment(alignment) {}
 

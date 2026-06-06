@@ -54,6 +54,11 @@ namespace Index {
 			// field name predates the OpenGL → WebGPU port.
 			uint64_t GlHandle = 0;
 			std::list<std::string>::iterator LruIt;
+			// ImGui frame this entry was last accessed. EnforceCapacity refuses to
+			// evict an entry used this frame, because its WGPUTextureView is still
+			// referenced by an ImGui::Image draw command that submits at frame end —
+			// destroying it here would be a GPU use-after-free.
+			uint64_t LastUsedFrame = 0;
 		};
 
 		// Touches a path to mark it most-recently-used. Caller must hold a valid

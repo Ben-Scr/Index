@@ -19,6 +19,7 @@ namespace Index {
 
 		virtual void Start() {}
 		virtual void Update(float deltaTime) {}
+		virtual void FixedUpdate(float fixedDeltaTime) {}
 		virtual void OnDestroy() {}
 
 		uint32_t GetEntityID() const { return m_EntityID; }

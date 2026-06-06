@@ -34,6 +34,12 @@ namespace Index {
 
 	public:
 		Scene(const Scene&) = delete;
+		// m_Registry is the first-declared member, so the implicit dtor destroys it
+		// LAST — its on_destroy hooks would then touch already-destroyed Scene members
+		// (UB). Detached scenes (e.g. the prefab inspector) are also dropped without a
+		// prior ClearEntities(). The explicit dtor clears the registry while every
+		// member is still alive, with the teardown gate set.
+		~Scene();
 
 		// Detached scene: no SceneDefinition, no tick, global subsystem hooks (physics/audio/scripts) gated off.
 		static std::unique_ptr<Scene> CreateDetachedScene(const std::string& name);

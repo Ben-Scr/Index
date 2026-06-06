@@ -72,13 +72,14 @@ namespace Index::Package {
 
     // Call AFTER RegisterComponent; asserts if TComponent isn't registered yet (avoids silently dropping the gizmo).
     template <typename TComponent>
-    void SetEditorGizmo(void (*drawEditorGizmo)(Entity)) {
+    void SetEditorGizmo(void (*drawEditorGizmo)(Entity), bool always = false) {
         const std::type_index typeId(typeid(TComponent));
         bool patched = false;
         SceneManager::Get().GetComponentRegistry().ForEachComponentInfo(
             [&](const std::type_index& id, ComponentInfo& info) {
                 if (id == typeId) {
                     info.drawEditorGizmo = drawEditorGizmo;
+                    info.drawEditorGizmoAlways = always;
                     patched = true;
                 }
             });

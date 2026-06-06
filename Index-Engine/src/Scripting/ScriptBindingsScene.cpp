@@ -210,6 +210,32 @@ namespace Index {
 		return CopyToManagedBuffer(project ? std::string_view(project->AssetsDirectory) : std::string_view{}, outBuffer, capacity);
 	}
 
+	// Application.Name → build Output Name (ExecutableName), falling back to the project name when empty; empty when no project.
+	static int Index_Application_GetNameBuffer(char* outBuffer, int capacity)
+	{
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			return CopyToManagedBuffer(std::string_view{}, outBuffer, capacity);
+		}
+		// Bind a reference (not a copy) so the string_view stays valid for the synchronous CopyToManagedBuffer call.
+		const std::string& name = project->ExecutableName.empty() ? project->Name : project->ExecutableName;
+		return CopyToManagedBuffer(std::string_view(name), outBuffer, capacity);
+	}
+
+	// Application.Version → build settings Version; empty when no project.
+	static int Index_Application_GetVersionBuffer(char* outBuffer, int capacity)
+	{
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		return CopyToManagedBuffer(project ? std::string_view(project->BuildVersion) : std::string_view{}, outBuffer, capacity);
+	}
+
+	// Application.Company → build settings Company; empty when no project.
+	static int Index_Application_GetCompanyBuffer(char* outBuffer, int capacity)
+	{
+		const IndexProject* project = ProjectManager::GetCurrentProject();
+		return CopyToManagedBuffer(project ? std::string_view(project->BuildCompany) : std::string_view{}, outBuffer, capacity);
+	}
+
 
 	static int Index_Window_GetWidth()
 	{
@@ -565,6 +591,9 @@ namespace Index {
 		b.Application_GetUnscaledDeltaTime = &Index_Application_GetUnscaledDeltaTime;
 		b.Application_GetFixedUnscaledDeltaTime = &Index_Application_GetFixedUnscaledDeltaTime;
 		b.Application_GetTimeScale = &Index_Application_GetTimeScale;
+		b.Application_GetNameBuffer = &Index_Application_GetNameBuffer;
+		b.Application_GetVersionBuffer = &Index_Application_GetVersionBuffer;
+		b.Application_GetCompanyBuffer = &Index_Application_GetCompanyBuffer;
 		b.Application_SetTimeScale = &Index_Application_SetTimeScale;
 		b.Application_GetClipboardStringBuffer = &Index_Application_GetClipboardStringBuffer;
 		b.Application_SetClipboardString = &Index_Application_SetClipboardString;

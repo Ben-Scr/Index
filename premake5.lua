@@ -765,6 +765,57 @@ if IndexModules.Editor then
         filter {}
 end
 
+-- ImGuizmo (translate/rotate/scale gizmos) — editor-only. Built as its own
+-- StaticLib so it compiles WITHOUT the engine PCH/forceinclude the editor uses;
+-- it only needs the imgui headers and resolves ImGui symbols at editor link time.
+if IndexModules.Editor then
+    project "ImGuizmo"
+        location (path.join(ROOT_DIR, "premake/generated/ImGuizmo"))
+        kind "StaticLib"
+        language "C++"
+        cppdialect "C++20"
+        staticruntime "off"
+
+        targetdir (path.join(ROOT_DIR, "bin/" .. outputdir .. "/%{prj.name}"))
+        objdir (path.join(ROOT_DIR, "bin-int/" .. outputdir .. "/%{prj.name}"))
+
+        files
+        {
+            "External/ImGuizmo/src/ImGuizmo.h",
+            "External/ImGuizmo/src/ImGuizmo.cpp"
+        }
+
+        includedirs
+        {
+            "External/imgui",
+            "External/ImGuizmo/src"
+        }
+
+        filter "system:windows"
+            flags { "MultiProcessorCompile" }
+            buildoptions { "/FS", "/Zc:preprocessor" }
+            systemversion "latest"
+
+        filter "configurations:Debug"
+            runtime "Debug"
+            symbols "On"
+            defines { "_DEBUG" }
+
+        filter "configurations:Release"
+            runtime "Release"
+            optimize "On"
+            symbols "On"
+            defines { "NDEBUG" }
+
+        filter "configurations:Dist"
+            runtime "Release"
+            optimize "Full"
+            symbols "Off"
+            defines { "NDEBUG" }
+
+        filter {}
+end
+
 if IndexModules.Render then
     include "premake/dependencies/glfw.lua"
     -- Dawn (WebGPU) is the engine's sole GPU backend. The pre-built

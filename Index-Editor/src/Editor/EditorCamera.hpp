@@ -15,6 +15,9 @@ namespace Index {
 		void Update(float deltaTime, bool isHovered, const Vec2& mouseDelta, float scroll);
 
 		glm::mat4 GetViewProjectionMatrix() const;
+		// Separate view/projection for ImGuizmo (it takes them individually).
+		const glm::mat4& GetViewMatrix() const { return m_ViewMat; }
+		const glm::mat4& GetProjectionMatrix() const { return m_ProjMat; }
 		AABB GetViewportAABB() const;
 
 		void SetPosition(const Vec2& pos) {

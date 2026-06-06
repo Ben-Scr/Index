@@ -81,6 +81,10 @@ namespace Index {
 
 		// Per-component viewport gizmo called inside the Editor View gizmo pass. Must be safe to call when sibling components are absent.
 		void (*drawEditorGizmo)(Entity) = nullptr;
+		// When true, drawEditorGizmo runs for EVERY entity that has the component while
+		// editor gizmos are enabled (always-visible, like Camera), not just the selected
+		// ones. When false (default) the gizmo is drawn only for selected entities.
+		bool drawEditorGizmoAlways = false;
 
 		std::vector<PropertyDescriptor> properties;
 

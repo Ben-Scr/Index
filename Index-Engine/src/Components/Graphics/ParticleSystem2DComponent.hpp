@@ -4,6 +4,7 @@
 #include "Core/UUID.hpp"
 #include "Graphics/TextureHandle.hpp"
 #include "Collections/Color.hpp"
+#include "Collections/Curve.hpp"
 #include "Scene/EntityHandle.hpp"
 #include <cstddef>
 #include <variant>
@@ -25,6 +26,10 @@ namespace Index {
 			Color Color;
 			float LifeTime;
 			Vec2 Velocity;
+			// Captured at emit for Scale-over-Lifetime: normalized age = 1 - LifeTime/StartLifeTime,
+			// final scale = StartScale * curve(age).
+			float StartLifeTime{ 1.f };
+			Vec2 StartScale{ 1.f, 1.f };
 		};
 
 		enum class Space {
@@ -45,6 +50,14 @@ namespace Index {
 			uint8_t SortingLayer{ 0 };
 		};
 
+		// Scale-over-Lifetime: when Enabled, the curve (cubic-bezier, see Index::Curve) is
+		// sampled over the particle's normalized lifetime and used as a scale multiplier.
+		struct ScaleOverLifetimeSettings {
+			bool Enabled{ false };
+			Curve Curve;
+			float Evaluate(float t01) const { return Curve.Evaluate(t01); }
+		};
+
 		struct ParticleSettings {
 			float LifeTime{ 1.f };
 			float Speed{ 5.f };
@@ -53,6 +66,7 @@ namespace Index {
 			bool UseRandomColors{ false };
 			Vec2 Scale{ 1.f, 1.f };
 			Vec2 MoveDirection{ 0.f, 0.f };
+			ScaleOverLifetimeSettings ScaleOverLifetime;
 		};
 
 		struct EmissionSettings {
@@ -63,7 +77,8 @@ namespace Index {
 
 
 
-		struct CircleParams { float Radius = 1.f; bool IsOnCircle = false; };
+		// Arc (degrees, 0-360): emission sweeps angles in [0, Arc). 360 = full circle.
+		struct CircleParams { float Radius = 1.f; bool IsOnCircle = false; float Arc = 360.f; };
 		struct SquareParams { Vec2 HalfExtends{ 1.f,1.f }; };
 		struct EdgeParams { float Length = 1.f; };
 

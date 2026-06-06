@@ -13,7 +13,7 @@
 #include <string>
 #include <type_traits>
 
-namespace Index { class Texture2D; }
+namespace Index { class Texture2D; struct Curve; }
 
 namespace Index::ImGuiUtils {
 	float GetInspectorLabelColumnWidth();
@@ -146,6 +146,15 @@ namespace Index::ImGuiUtils {
 	// a centered "No Texture" label. Use wherever a preview would draw but no
 	// texture is assigned, so the slot is visible before one is applied.
 	void DrawTexturePlaceholder(float previewSize = 96.0f);
+
+	// Reusable editable curve graph for Index::Curve. Draggable keys + per-key in/out
+	// tangent handles, double-click to add a point, right-click context menu
+	// (reset / delete / copy / paste values — the clipboard is shared so values copy
+	// between any graphs). Hold Left-Ctrl while dragging to snap to 0.15 increments.
+	// When 'enabled' is false the graph is drawn greyed-out and non-interactive (so a
+	// disabled feature still shows its curve instead of vanishing). Returns true if
+	// the curve was edited this frame.
+	bool DrawCurveEditor(const char* id, Curve& curve, bool enabled = true);
 
 	void CenterNextModal();
 	std::string Ellipsize(const std::string& text, float maxWidth, bool* outTruncated = nullptr);

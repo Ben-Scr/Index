@@ -829,6 +829,11 @@ namespace Index {
 			const auto& cb = commands[b];
 			if (ca.SortingLayer != cb.SortingLayer) return ca.SortingLayer < cb.SortingLayer;
 			if (ca.SortingOrder != cb.SortingOrder) return ca.SortingOrder < cb.SortingOrder;
+			// DrawIndex is the documented paint-order tiebreaker (hierarchy/submit order)
+			// and must outrank FontPtr — FontPtr ordering is only an atlas-batching
+			// optimization. Without this, overlapping equal-order UI text (e.g. a panel
+			// title and a button label sharing a font) gets non-deterministic z-order.
+			if (ca.DrawIndex != cb.DrawIndex) return ca.DrawIndex < cb.DrawIndex;
 			return ca.FontPtr < cb.FontPtr;
 		});
 

@@ -414,8 +414,16 @@ namespace Index::PropertyDrawer {
 			}
 			else {
 				const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
-				changed = ImGui::DragFloat("##Value", &tmp, speed, clampMin, clampMax,
-					uniform ? "%.3f" : "-");
+				// Soft drag clamp keeps a normal DragFloat but bounds the value (no slider).
+				float dragMin = clampMin, dragMax = clampMax;
+				ImGuiSliderFlags dragFlags = 0;
+				if (d.Metadata.HasDragClamp) {
+					dragMin = static_cast<float>(d.Metadata.DragClampMin);
+					dragMax = static_cast<float>(d.Metadata.DragClampMax);
+					dragFlags = ImGuiSliderFlags_AlwaysClamp;
+				}
+				changed = ImGui::DragFloat("##Value", &tmp, speed, dragMin, dragMax,
+					uniform ? "%.3f" : "-", dragFlags);
 			}
 			ImGui::PopID();
 			if (changed) {

@@ -1728,7 +1728,11 @@ namespace Index {
 				state->Progress = 0.3f;
 			}
 
-			const Process::Result result = Process::Run(command, {}, std::chrono::milliseconds(0));
+			// Bounded timeout (not 0 = wait-forever): a stalled registry download would
+			// otherwise pin m_CloudInstallWorker, and Shutdown()'s unconditional join()
+			// would hang the editor on exit. 180s is generous for large artifacts; the
+			// sibling registry-fetch uses 30s.
+			const Process::Result result = Process::Run(command, {}, std::chrono::milliseconds(180000));
 
 			std::scoped_lock lock(state->Mutex);
 			state->Success = result.Succeeded();

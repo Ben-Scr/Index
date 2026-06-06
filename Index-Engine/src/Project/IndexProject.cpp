@@ -711,6 +711,8 @@ endforeach()
 		if (!project.ExecutableName.empty()) {
 			root.AddMember("executableName", project.ExecutableName);
 		}
+		root.AddMember("buildVersion", project.BuildVersion);
+		root.AddMember("buildCompany", project.BuildCompany);
 
 		{
 			Json::Value splash = Json::Value::MakeObject();
@@ -1348,6 +1350,12 @@ endforeach()
 				}
 				if (const Json::Value* exeNameValue = root.FindMember("executableName")) {
 					{ const std::string exeName = exeNameValue->AsStringOr(); if (exeName.empty() || IsValidSceneName(exeName)) project.ExecutableName = exeName; else IDX_CORE_WARN_TAG("IndexProject", "Project '{}': ignoring invalid executableName '{}' (no path separators or traversal allowed)", configPath, exeName); }
+				}
+				if (const Json::Value* v = root.FindMember("buildVersion")) {
+					project.BuildVersion = v->AsStringOr(project.BuildVersion);
+				}
+				if (const Json::Value* v = root.FindMember("buildCompany")) {
+					project.BuildCompany = v->AsStringOr(project.BuildCompany);
 				}
 				if (const Json::Value* splashValue = root.FindMember("splashScreen")) {
 					if (const Json::Value* v = splashValue->FindMember("enabled")) {

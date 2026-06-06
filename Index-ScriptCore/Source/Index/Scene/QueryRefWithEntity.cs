@@ -99,6 +99,10 @@ public ref struct QueryRefEntityBuilder1<TW1>
 
         public bool MoveNext() => ++m_Index < m_Count;
 
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
+
         public unsafe Row Current
         {
             get
@@ -161,6 +165,10 @@ public ref struct QueryRefEntityBuilder1_RO1<TW1, TRO1>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {
@@ -231,6 +239,10 @@ public ref struct QueryRefEntityBuilder2<TW1, TW2>
 
         public bool MoveNext() => ++m_Index < m_Count;
 
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
+
         public unsafe Row Current
         {
             get
@@ -298,6 +310,10 @@ public ref struct QueryRefEntityBuilder3<TW1, TW2, TW3>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {
@@ -372,6 +388,10 @@ public ref struct QueryRefEntityBuilder4<TW1, TW2, TW3, TW4>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {
@@ -452,6 +472,10 @@ public ref struct QueryRefEntityBuilder5<TW1, TW2, TW3, TW4, TW5>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {
@@ -538,6 +562,10 @@ public ref struct QueryRefEntityBuilder6<TW1, TW2, TW3, TW4, TW5, TW6>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {
@@ -630,6 +658,10 @@ public ref struct QueryRefEntityBuilder7<TW1, TW2, TW3, TW4, TW5, TW6, TW7>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {
@@ -728,6 +760,10 @@ public ref struct QueryRefEntityBuilder8<TW1, TW2, TW3, TW4, TW5, TW6, TW7, TW8>
         }
 
         public bool MoveNext() => ++m_Index < m_Count;
+
+        // foreach disposes ref-struct enumerators — return both buffers to the
+        // per-thread pool so a sibling/outer query can reuse them without aliasing.
+        public void Dispose() => QueryRefBuffers.ReturnWithEntities(m_Buffer, m_EntityIds);
 
         public unsafe Row Current
         {

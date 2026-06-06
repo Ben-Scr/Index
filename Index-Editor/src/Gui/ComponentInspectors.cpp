@@ -338,13 +338,13 @@ namespace Index {
 				if (open) {
 					int count = static_cast<int>(bursts[i].Count);
 					ImGui::SetNextItemWidth(120.0f);
-					if (ImGui::InputInt("Count", &count, 1, 10)) {
+					if (ImGui::InputInt("Count", &count, 0, 0)) {
 						bursts[i].Count = static_cast<uint32_t>(std::max(0, count));
 						ImGuiUtils::MarkSelectionDirty(entities);
 					}
 					float interval = bursts[i].Interval;
 					ImGui::SetNextItemWidth(120.0f);
-					if (ImGui::InputFloat("Interval", &interval, 0.1f, 1.0f, "%.3f")) {
+					if (ImGui::InputFloat("Interval", &interval, 0.0f, 0.0f, "%.3f")) {
 						bursts[i].Interval = std::max(0.0f, interval);
 						ImGuiUtils::MarkSelectionDirty(entities);
 					}
@@ -361,6 +361,24 @@ namespace Index {
 			if (ImGui::Button("+ Add Burst")) {
 				ps.AddBurst(ParticleSystem2DComponent::Burst{});
 				ImGuiUtils::MarkSelectionDirty(entities);
+			}
+
+			ImGui::Spacing();
+			// "Scale over Lifetime" as a collapsible tab with an inline on/off toggle;
+			// the curve editor shows inside when expanded and enabled.
+			auto& sol = ps.ParticleSettings.ScaleOverLifetime;
+			bool solEnabled = sol.Enabled;
+			if (ImGui::Checkbox("##ScaleOverLifetimeEnabled", &solEnabled)) {
+				sol.Enabled = solEnabled;
+				ImGuiUtils::MarkSelectionDirty(entities);
+			}
+			ImGui::SameLine();
+			if (ImGui::CollapsingHeader("Scale over Lifetime")) {
+				// Always show the graph when expanded; pass the toggle through so it
+				// renders greyed-out + non-interactive (instead of vanishing) when off.
+				if (ImGuiUtils::DrawCurveEditor("ScaleOverLifetimeCurve", sol.Curve, sol.Enabled)) {
+					ImGuiUtils::MarkSelectionDirty(entities);
+				}
 			}
 		}
 	}

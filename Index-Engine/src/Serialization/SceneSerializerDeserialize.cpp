@@ -550,6 +550,11 @@ namespace Index {
 			const std::unordered_map<uint32_t, uint64_t>& sourceIds) {
 			Value entityValue = Detail::SerializeEntity(scene, entity);
 			RemovePrefabRuntimeIdentityMembers(entityValue);
+			// SerializeEntity already stamped live uuid/parentUuid; drop them so the
+			// source-id re-stamp below inserts cleanly instead of tripping AddMember's
+			// duplicate-key overwrite trace (this runs every frame in the inspector diff).
+			RemoveObjectMember(entityValue, "uuid");
+			RemoveObjectMember(entityValue, "parentUuid");
 
 			const auto sourceIt = sourceIds.find(static_cast<uint32_t>(entity));
 			const uint64_t sourceId = sourceIt != sourceIds.end() ? sourceIt->second : 0;
@@ -1251,6 +1256,24 @@ namespace Index {
 			particleSystem.ParticleSettings.UseRandomColors = GetBoolMember(*particleValue, "useRandomColors", false);
 			particleSystem.ParticleSettings.MoveDirection.x = GetFloatMember(*particleValue, "moveDirectionX", 0.0f);
 			particleSystem.ParticleSettings.MoveDirection.y = GetFloatMember(*particleValue, "moveDirectionY", 0.0f);
+			particleSystem.ParticleSettings.ScaleOverLifetime.Enabled =
+				GetBoolMember(*particleValue, "scaleOverLifetimeEnabled", false);
+			if (const Value* solKeys = GetArrayMember(*particleValue, "scaleOverLifetimeKeys")) {
+				auto& solKeyList = particleSystem.ParticleSettings.ScaleOverLifetime.Curve.Keys;
+				solKeyList.clear();
+				for (const Value& keyValue : solKeys->GetArray()) {
+					Curve::Key key;
+					key.Pos = Vec2{ GetFloatMember(keyValue, "x", 0.0f), GetFloatMember(keyValue, "y", 1.0f) };
+					key.InTangent = Vec2{ GetFloatMember(keyValue, "inX", -0.2f), GetFloatMember(keyValue, "inY", 0.0f) };
+					key.OutTangent = Vec2{ GetFloatMember(keyValue, "outX", 0.2f), GetFloatMember(keyValue, "outY", 0.0f) };
+					solKeyList.push_back(key);
+				}
+				std::sort(solKeyList.begin(), solKeyList.end(),
+					[](const auto& a, const auto& b) { return a.Pos.x < b.Pos.x; });
+				if (solKeyList.size() < 2) {
+					solKeyList = Curve::DefaultKeys();
+				}
+			}
 			particleSystem.EmissionSettings.EmitOverTime =
 				static_cast<uint16_t>(GetIntMember(*particleValue, "emitOverTime", 10));
 			particleSystem.EmissionSettings.RateOverDistance =
@@ -1263,6 +1286,7 @@ namespace Index {
 				ParticleSystem2DComponent::CircleParams circle;
 				circle.Radius = GetFloatMember(*particleValue, "radius", 1.0f);
 				circle.IsOnCircle = GetBoolMember(*particleValue, "isOnCircle", false);
+				circle.Arc = GetFloatMember(*particleValue, "arc", 360.0f);
 				particleSystem.Shape = circle;
 			}
 			else if (shapeType == 1) {
@@ -1896,6 +1920,24 @@ namespace Index {
 			particleSystem.ParticleSettings.UseRandomColors = GetBoolMember(componentValue, "useRandomColors", false);
 			particleSystem.ParticleSettings.MoveDirection.x = GetFloatMember(componentValue, "moveDirectionX", 0.0f);
 			particleSystem.ParticleSettings.MoveDirection.y = GetFloatMember(componentValue, "moveDirectionY", 0.0f);
+			particleSystem.ParticleSettings.ScaleOverLifetime.Enabled =
+				GetBoolMember(componentValue, "scaleOverLifetimeEnabled", false);
+			if (const Value* solKeys = GetArrayMember(componentValue, "scaleOverLifetimeKeys")) {
+				auto& solKeyList = particleSystem.ParticleSettings.ScaleOverLifetime.Curve.Keys;
+				solKeyList.clear();
+				for (const Value& keyValue : solKeys->GetArray()) {
+					Curve::Key key;
+					key.Pos = Vec2{ GetFloatMember(keyValue, "x", 0.0f), GetFloatMember(keyValue, "y", 1.0f) };
+					key.InTangent = Vec2{ GetFloatMember(keyValue, "inX", -0.2f), GetFloatMember(keyValue, "inY", 0.0f) };
+					key.OutTangent = Vec2{ GetFloatMember(keyValue, "outX", 0.2f), GetFloatMember(keyValue, "outY", 0.0f) };
+					solKeyList.push_back(key);
+				}
+				std::sort(solKeyList.begin(), solKeyList.end(),
+					[](const auto& a, const auto& b) { return a.Pos.x < b.Pos.x; });
+				if (solKeyList.size() < 2) {
+					solKeyList = Curve::DefaultKeys();
+				}
+			}
 			particleSystem.EmissionSettings.EmitOverTime =
 				static_cast<uint16_t>(GetIntMember(componentValue, "emitOverTime", 10));
 			particleSystem.EmissionSettings.RateOverDistance =
@@ -1908,6 +1950,7 @@ namespace Index {
 				ParticleSystem2DComponent::CircleParams circle;
 				circle.Radius = GetFloatMember(componentValue, "radius", 1.0f);
 				circle.IsOnCircle = GetBoolMember(componentValue, "isOnCircle", false);
+				circle.Arc = GetFloatMember(componentValue, "arc", 360.0f);
 				particleSystem.Shape = circle;
 			}
 			else if (shapeType == 1) {

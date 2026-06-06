@@ -76,12 +76,20 @@ namespace Index {
 			}
 		}
 		if (m_IsSimulating) {
+			const bool scaleOverLife = ParticleSettings.ScaleOverLifetime.Enabled;
 			for (auto& particle : m_Particles) {
 				if (ParticleSettings.UseGravity) {
 					particle.Velocity += ParticleSettings.Gravity * deltaTime;
 				}
 
 				particle.Transform.Position += particle.Velocity * deltaTime;
+
+				if (scaleOverLife) {
+					const float age01 = particle.StartLifeTime > 0.f
+						? std::clamp(1.0f - particle.LifeTime / particle.StartLifeTime, 0.0f, 1.0f)
+						: 1.0f;
+					particle.Transform.Scale = particle.StartScale * ParticleSettings.ScaleOverLifetime.Evaluate(age01);
+				}
 			}
 
 			m_Particles.erase(std::remove_if(m_Particles.begin(), m_Particles.end(),
@@ -107,6 +115,7 @@ namespace Index {
 		while (count > 0) {
 			Particle particle;
 			particle.LifeTime = ParticleSettings.LifeTime;
+			particle.StartLifeTime = ParticleSettings.LifeTime;
 
 			Vec2 position{ 0 };
 			Vec2 scale = ParticleSettings.Scale;
@@ -117,7 +126,15 @@ namespace Index {
 			std::visit([&](auto const& s) {
 				using T = std::decay_t<decltype(s)>;
 				if constexpr (std::is_same_v<T, CircleParams>) {
-					position = s.IsOnCircle ? RandomOnCircle(s.Radius) : RandomInCircle(s.Radius);
+					// Arc-restricted emission: angle in [0, Arc) degrees; Arc==360 reproduces
+					// the full-circle distribution. In-circle uses r=R*sqrt(u) for uniform area.
+					const float arcRad = std::clamp(s.Arc, 0.0f, 360.0f) * 0.01745329252f;
+					const float theta = Random::NextFloat(0.0f, arcRad);
+					// Safety net: a zero radius spawns everything at the centre (all particles
+					// would then emit straight up). The editor clamps this too.
+					const float safeRadius = std::max(s.Radius, 0.0001f);
+					const float r = s.IsOnCircle ? safeRadius : safeRadius * std::sqrt(Random::NextFloat(0.0f, 1.0f));
+					position = FromAngle(theta) * r;
 					velocityDirection = DirectionOrUp(position);
 					velocity = velocityDirection * ParticleSettings.Speed;
 				}
@@ -150,6 +167,7 @@ namespace Index {
 			particle.Transform.Position = position;
 			particle.Transform.Rotation = rot;
 			particle.Transform.Scale = scale;
+			particle.StartScale = scale;
 			particle.Color = ParticleSettings.UseRandomColors ? Index::Color(Random::NextFloat(0.f, 1.f), Random::NextFloat(0.f, 1.f), Random::NextFloat(0.f, 1.f)) : RenderingSettings.Color;
 			m_Particles.push_back(particle);
 

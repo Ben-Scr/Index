@@ -244,10 +244,10 @@ namespace Index {
 			{-halfExtents.x, -halfExtents.y},
 			{ halfExtents.x, -halfExtents.y}
 		};
-		Mat2 rot = {
-			{ Cos(radians), -Sin(radians) },
-			{ Sin(radians),  Cos(radians) }
-		};
+		// Index::Rotation is the canonical CCW matrix (matches AABB::Create and the
+		// b2Rot body convention). The previous hand-written brace-init was its
+		// transpose (clockwise), which mirrored non-square query boxes.
+		Mat2 rot = Index::Rotation(radians);
 
 		b2ShapeProxy proxy{};
 		proxy.count = 4;
@@ -348,10 +348,10 @@ namespace Index {
 			{-halfExtents.x, -halfExtents.y},
 			{ halfExtents.x, -halfExtents.y}
 		};
-		Mat2 rot = {
-			{ Cos(radians), -Sin(radians) },
-			{ Sin(radians),  Cos(radians) }
-		};
+		// Index::Rotation is the canonical CCW matrix (matches AABB::Create and the
+		// b2Rot body convention). The previous hand-written brace-init was its
+		// transpose (clockwise), which mirrored non-square query boxes.
+		Mat2 rot = Index::Rotation(radians);
 
 		b2ShapeProxy proxy{};
 		proxy.count = 4;

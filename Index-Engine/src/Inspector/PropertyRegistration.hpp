@@ -35,6 +35,13 @@ namespace Index::Properties {
 			else if constexpr (std::is_same_v<T, uint16_t> || std::is_same_v<T, unsigned short>) return PropertyType::UInt16;
 			else if constexpr (std::is_same_v<T, uint32_t> || std::is_same_v<T, unsigned int>) return PropertyType::UInt32;
 			else if constexpr (std::is_same_v<T, uint64_t> || std::is_same_v<T, unsigned long long>) return PropertyType::UInt64;
+			// `long`/`unsigned long` are distinct types from int/long long and their
+			// width is platform-dependent (LLP64=32-bit on Windows, LP64=64-bit on
+			// Linux) — map by sizeof so they don't silently deduce to None.
+			else if constexpr (std::is_same_v<T, long>) return sizeof(long) == 8 ? PropertyType::Int64 : PropertyType::Int32;
+			else if constexpr (std::is_same_v<T, unsigned long>) return sizeof(unsigned long) == 8 ? PropertyType::UInt64 : PropertyType::UInt32;
+			// plain `char` is a third distinct type from signed/unsigned char.
+			else if constexpr (std::is_same_v<T, char>) return std::is_signed_v<char> ? PropertyType::Int8 : PropertyType::UInt8;
 			else if constexpr (std::is_same_v<T, float>) return PropertyType::Float;
 			else if constexpr (std::is_same_v<T, double>) return PropertyType::Double;
 			else if constexpr (std::is_same_v<T, std::string>) return PropertyType::String;
@@ -160,6 +167,11 @@ namespace Index::Properties {
 	PropertyDescriptor Make(const std::string& name, const std::string& displayName,
 		TField TComponent::* member, PropertyMetadata metadata = {})
 	{
+		// Fail loudly at compile time instead of silently registering a field that
+		// deduces to PropertyType::None and then never renders in the inspector.
+		static_assert(detail::DeducePropertyType<TField>() != PropertyType::None,
+			"Properties::Make: unsupported field type (DeducePropertyType returned None). "
+			"Add a branch to DeducePropertyType, or use a typed Make* helper.");
 		PropertyDescriptor desc;
 		desc.Name = name;
 		desc.DisplayName = displayName.empty() ? name : displayName;

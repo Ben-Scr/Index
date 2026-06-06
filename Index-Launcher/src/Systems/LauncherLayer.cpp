@@ -3201,11 +3201,16 @@ artifacts/
 		if (m_AssetLibraryTask.Worker.joinable()) m_AssetLibraryTask.Worker.join();
 
 		AssetLibraryEntry entryCopy = entry; // capture by value
+		// Resolve the projects base dir HERE (render thread): m_DefaultProjectsLocation
+		// is mutated by the settings UI on this thread, so the worker must not read it.
+		std::string baseDir = m_DefaultProjectsLocation.empty()
+			? IndexProject::GetDefaultProjectsDir()
+			: m_DefaultProjectsLocation;
 		m_AssetLibraryTask.Worker = std::thread(
-			&LauncherLayer::AssetLibraryDownloadWorkerBody, this, std::move(entryCopy));
+			&LauncherLayer::AssetLibraryDownloadWorkerBody, this, std::move(entryCopy), std::move(baseDir));
 	}
 
-	void LauncherLayer::AssetLibraryDownloadWorkerBody(AssetLibraryEntry entry) {
+	void LauncherLayer::AssetLibraryDownloadWorkerBody(AssetLibraryEntry entry, std::string baseDir) {
 		auto setStage = [&](AssetLibraryStage stage, float progress) {
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			m_AssetLibraryTask.Stage = stage;
@@ -3233,10 +3238,9 @@ artifacts/
 
 		setStage(AssetLibraryStage::Downloading, 0.0f);
 
-		// Stage download to <projects>/.asset-library-staging/<id>-<rand>.zip.tmp
-		const std::string baseDir = m_DefaultProjectsLocation.empty()
-			? IndexProject::GetDefaultProjectsDir()
-			: m_DefaultProjectsLocation;
+		// Stage download to <projects>/.asset-library-staging/<id>-<rand>.zip.tmp.
+		// baseDir was resolved on the render thread (passed in) — do NOT read
+		// m_DefaultProjectsLocation here.
 		std::error_code ec;
 		const std::filesystem::path stagingRoot = std::filesystem::path(baseDir) / ".asset-library-staging";
 		std::filesystem::create_directories(stagingRoot, ec);
@@ -3261,7 +3265,9 @@ artifacts/
 		dlCmd.push_back(entry.ArchiveUrl);
 		dlCmd.push_back(tempZip.string());
 
-		const Process::Result dlResult = Process::Run(dlCmd, {}, std::chrono::milliseconds(0));
+		// Bounded timeout (not 0 = wait-forever): a stalled mirror would otherwise pin
+		// this worker, and joining it on shutdown would hang the launcher on exit.
+		const Process::Result dlResult = Process::Run(dlCmd, {}, std::chrono::milliseconds(180000));
 		if (!dlResult.Succeeded()) {
 			cleanup();
 			fail("Download failed (exit code " + std::to_string(dlResult.ExitCode) + ")");
@@ -3291,7 +3297,7 @@ artifacts/
 		unzipCmd.push_back("unzip");
 		unzipCmd.push_back(tempZip.string());
 		unzipCmd.push_back(stagingDir.string());
-		const Process::Result unzipResult = Process::Run(unzipCmd, {}, std::chrono::milliseconds(0));
+		const Process::Result unzipResult = Process::Run(unzipCmd, {}, std::chrono::milliseconds(180000));
 		if (!unzipResult.Succeeded()) {
 			cleanup();
 			fail("Extraction failed (exit code " + std::to_string(unzipResult.ExitCode) + ")");
@@ -3348,9 +3354,9 @@ artifacts/
 		}
 
 		const std::string finalName = loaded.Name.empty() ? entry.Name : loaded.Name;
-		m_Registry.AddProject(finalName, finalDir.string());
-		m_Registry.Save();
-
+		// NOTE: registry mutation (AddProject/Save) is deferred to the render thread
+		// in PollAssetLibraryTask — LauncherRegistry is unsynchronized and the render
+		// thread iterates it every frame. The worker only publishes the result.
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			m_AssetLibraryTask.Stage = AssetLibraryStage::Done;
@@ -3359,6 +3365,7 @@ artifacts/
 			m_AssetLibraryTask.Finished = true;
 			m_AssetLibraryTask.Success = true;
 			m_AssetLibraryTask.TargetProjectPath = finalDir.string();
+			m_AssetLibraryTask.FinalName = finalName;
 		}
 		IDX_CORE_INFO_TAG("AssetLibrary", "Imported '{}' to '{}'",
 			finalName, finalDir.string());
@@ -3367,6 +3374,7 @@ artifacts/
 	void LauncherLayer::PollAssetLibraryTask() {
 		bool finishedThisFrame = false;
 		std::string targetPath;
+		std::string finalName;
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			if (m_AssetLibraryTask.Finished && !m_AssetLibraryTask.Running
@@ -3374,9 +3382,16 @@ artifacts/
 			{
 				finishedThisFrame = m_AssetLibraryTask.Success;
 				targetPath = m_AssetLibraryTask.TargetProjectPath;
+				finalName = m_AssetLibraryTask.FinalName;
 			}
 		}
 		if (finishedThisFrame && !targetPath.empty()) {
+			// Register the imported project HERE (render thread): the worker is done,
+			// and LauncherRegistry must only be mutated on the thread that iterates it.
+			if (!finalName.empty()) {
+				m_Registry.AddProject(finalName, targetPath);
+				m_Registry.Save();
+			}
 			// Refresh the registry view so the new project shows up under
 			// My Projects without restarting. Don't auto-switch tabs. Completion
 			// is surfaced via a modal (RenderAssetLibraryDoneModal), so this
@@ -3386,6 +3401,7 @@ artifacts/
 			m_OpenAssetLibraryDonePopup = true;
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			m_AssetLibraryTask.TargetProjectPath.clear(); // one-shot
+			m_AssetLibraryTask.FinalName.clear();
 		}
 	}
 

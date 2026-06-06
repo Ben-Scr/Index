@@ -695,7 +695,12 @@ namespace Index {
 			SetOrAddMember(meta, "AssetGUID", Json::Value(std::to_string(id)));
 			SetOrAddMember(meta, "uuid",      Json::Value(std::to_string(id)));
 			SetOrAddMember(meta, "kind",      Json::Value(ToString(kind)));
-			(void)File::WriteAllText(metaPath, Json::Stringify(meta, true));
+			if (File::WriteAllText(metaPath, Json::Stringify(meta, true))) {
+				// Invalidate the (mtime,size) fingerprint cache — same-size/same-tick
+				// rewrites (e.g. a GUID-collision regen) would otherwise let ReadMetaId
+				// return the STALE pre-write id. Mirrors WriteTextureMeta.
+				s_MetaIdCache.erase(metaPath);
+			}
 		}
 
 	public:

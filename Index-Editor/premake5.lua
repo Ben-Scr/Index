@@ -39,6 +39,10 @@ project "Index-Editor"
     ApplyIndexEditorModuleDefine()
     defines { "IDX_IMPORT_DLL" }
     includedirs { "src" }
+    -- ImGuizmo translate gizmo (editor-only StaticLib, see root premake5.lua).
+    includedirs { path.join(ROOT_DIR, "External/ImGuizmo/src") }
+    dependson { "ImGuizmo" }
+    links { "ImGuizmo" }
     -- The editor's Rebuild Engine flow rewrites IndexEntityBitsConfig.h
     -- to override INDEX_ENTITY_BITS without a premake regen. The EnTT
     -- patch picks it up via `#include "IndexEntityBitsConfig.h"`. See

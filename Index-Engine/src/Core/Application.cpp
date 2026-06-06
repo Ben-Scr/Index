@@ -904,11 +904,14 @@ namespace Index {
 
 		m_Window.reset();
 
-		FrameArenas::Shutdown();
-
+		// Drain the job system BEFORE freeing the frame arenas: JobSystem::Shutdown
+		// runs any still-queued/in-flight jobs, and a fire-and-forget job may write
+		// into frame-arena memory. Freeing the arenas first would make that a UAF.
 		if (JobSystem::IsInitialized()) {
 			JobSystem::Shutdown();
 		}
+
+		FrameArenas::Shutdown();
 
 #ifdef INDEX_PROFILER_ENABLED
 		// Profiler last so subsystems above can still emit profile marks during teardown.

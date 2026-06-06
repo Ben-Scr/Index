@@ -1251,6 +1251,17 @@ namespace Index {
 			}
 			WebGPUBackend::RestoreBoundTarget(callerSnap);
 		}
+		else {
+			// No post-process: the sprite pass drew straight to the target, and unlike
+			// the PP branch nothing has flushed yet. Submit now so this scene's
+			// WriteBuffer(g_InstanceBuffer)+pass is its own atomic unit. Otherwise the
+			// NEXT additive scene's WriteBuffer to the same shared buffer overwrites
+			// this scene's instance data before this pass executes — Dawn coalesces all
+			// WriteBuffers in a submit ahead of any pass (see FlushFrameCommands). With
+			// n==0 && !usePostProcess already early-returned above, reaching here means
+			// real instance data was uploaded.
+			WebGPUBackend::FlushCommands();
+		}
 
 		// Use callerInfo (NOT target): after PP redirect, target is the intermediate FBO, not the swap chain.
 		if (callerInfo.IsSwapChain) {

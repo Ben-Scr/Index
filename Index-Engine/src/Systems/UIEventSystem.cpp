@@ -1014,6 +1014,20 @@ namespace Index {
 		}
 		} // end UIEvent.RefResolve scope
 
+		// Script-facing UI dispatches are COLLECTED during the widget views below and
+		// REPLAYED once at the end (just before RaiseUiEventDispatch). Firing a script
+		// handler mid-view is UB: the handler can DestroyEntity / Add-Remove a component
+		// the view tracks, invalidating the in-progress EnTT iteration. Bindings are
+		// copied so the snapshot is self-contained, and the owner is re-validated at
+		// replay (an earlier handler may have destroyed it).
+		struct DeferredUiDispatch {
+			EntityHandle Entity;
+			std::vector<InspectorEventBinding> Bindings;
+			bool HasArg = false;
+			InspectorEvents::DynamicArg Arg;
+		};
+		std::vector<DeferredUiDispatch> deferredUiDispatches;
+
 		{
 		INDEX_PROFILE_SCOPE("UIEvent.HitTest");
 		// ── 1. Resolve dropdown popup hits FIRST ─────────────────────
@@ -1161,7 +1175,7 @@ namespace Index {
 						interact.IsClicked = true;
 						if (auto* btn = registry.try_get<ButtonComponent>(entity)) {
 							if (!btn->OnClick.Bindings.empty()) {
-								InspectorEvents::FireAll(scene, entity, btn->OnClick.Bindings);
+								deferredUiDispatches.push_back({ entity, btn->OnClick.Bindings, false, {} });
 							}
 						}
 					}
@@ -1196,7 +1210,7 @@ namespace Index {
 					interact.IsPressed   = true;
 					if (auto* btn = registry.try_get<ButtonComponent>(entity)) {
 						if (!btn->OnClick.Bindings.empty()) {
-							InspectorEvents::FireAll(scene, entity, btn->OnClick.Bindings);
+							deferredUiDispatches.push_back({ entity, btn->OnClick.Bindings, false, {} });
 						}
 					}
 				}
@@ -1245,8 +1259,7 @@ namespace Index {
 					InspectorEvents::DynamicArg dyn;
 					dyn.Kind = InspectorEventArgKind::Int;
 					dyn.Encoded = std::to_string(dd.SelectedIndex);
-					InspectorEvents::FireAllWithDynamicArg(scene, entity,
-						dd.OnValueChanged.Bindings, dyn);
+					deferredUiDispatches.push_back({ entity, dd.OnValueChanged.Bindings, true, dyn });
 				}
 			}
 		}
@@ -1393,8 +1406,7 @@ namespace Index {
 					char buf[32];
 					std::snprintf(buf, sizeof(buf), "%g", slider.Value);
 					dyn.Encoded = buf;
-					InspectorEvents::FireAllWithDynamicArg(scene, entity,
-						slider.OnValueChanged.Bindings, dyn);
+					deferredUiDispatches.push_back({ entity, slider.OnValueChanged.Bindings, true, dyn });
 				}
 			}
 		}
@@ -1609,6 +1621,7 @@ namespace Index {
 
 		// ── 6d. Scroll Rects ─────────────────────────────────────────
 		auto scrollRectView = registry.view<ScrollRectComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
+		std::vector<std::pair<EntityHandle, bool>> deferredScrollbarEnable;
 		for (auto&& [entity, sr, viewportRect] : scrollRectView.each()) {
 			sr.ValueChangedThisFrame = false;
 			if (!sr.ValueObserved) {
@@ -1790,9 +1803,9 @@ namespace Index {
 				{
 					show = needed;
 				}
-				if (scene.IsValid(sbEntity)) {
-					scene.GetEntity(sbEntity).SetEnabled(show);
-				}
+				// Defer: SetEnabled toggles DisabledTag — a structural change to the
+				// pool scrollRectView excludes — so mutating it mid-iteration is UB.
+				deferredScrollbarEnable.emplace_back(sbEntity, show);
 			};
 			applyVisibility(sr.HorizontalScrollbar, sr.HorizontalScrollbarVisibility, true);
 			applyVisibility(sr.VerticalScrollbar,   sr.VerticalScrollbarVisibility,   false);
@@ -1803,6 +1816,13 @@ namespace Index {
 				sr.ValueChangedThisFrame = true;
 				sr.LastObservedNormalizedPosition = sr.NormalizedPosition;
 			}
+		}
+
+		// Apply scrollbar enable/disable now the scrollRectView iteration is done
+		// (SetEnabled toggles DisabledTag, which the view excludes). Mirrors the
+		// deferredCheckmarkEnable pattern in the toggle section below.
+		for (const auto& [scrollbar, desiredEnabled] : deferredScrollbarEnable) {
+			SetEntityEnabled(scene, scrollbar, desiredEnabled);
 		}
 
 		// ── 7. Toggles ───────────────────────────────────────────────
@@ -1832,8 +1852,7 @@ namespace Index {
 					InspectorEvents::DynamicArg dyn;
 					dyn.Kind = InspectorEventArgKind::Bool;
 					dyn.Encoded = toggle.IsOn ? "1" : "0";
-					InspectorEvents::FireAllWithDynamicArg(scene, entity,
-						toggle.OnValueChanged.Bindings, dyn);
+					deferredUiDispatches.push_back({ entity, toggle.OnValueChanged.Bindings, true, dyn });
 				}
 			}
 
@@ -2123,8 +2142,7 @@ namespace Index {
 					InspectorEvents::DynamicArg dyn;
 					dyn.Kind = InspectorEventArgKind::String;
 					dyn.Encoded = field.Text;
-					InspectorEvents::FireAllWithDynamicArg(scene, entity,
-						field.OnValueChanged.Bindings, dyn);
+					deferredUiDispatches.push_back({ entity, field.OnValueChanged.Bindings, true, dyn });
 				}
 				field.LastObservedText = field.Text;
 			}
@@ -2133,8 +2151,7 @@ namespace Index {
 				InspectorEvents::DynamicArg dyn;
 				dyn.Kind = InspectorEventArgKind::String;
 				dyn.Encoded = field.Text;
-				InspectorEvents::FireAllWithDynamicArg(scene, entity,
-					field.OnSubmitted.Bindings, dyn);
+				deferredUiDispatches.push_back({ entity, field.OnSubmitted.Bindings, true, dyn });
 			}
 		}
 
@@ -2178,7 +2195,22 @@ namespace Index {
 			}
 		}
 
-		// ── 10. Fan out UI events to managed subscribers ─────────────
+		// ── 10. Replay deferred script dispatches (no view is iterating now) ──
+		// Collected during the widget views above; firing them here means a handler
+		// that destroys an entity / mutates a tracked component can't corrupt an
+		// in-progress EnTT iteration. Re-validate each owner — an earlier handler in
+		// this same loop may have destroyed it.
+		for (const auto& d : deferredUiDispatches) {
+			if (!registry.valid(d.Entity)) continue;
+			if (d.HasArg) {
+				InspectorEvents::FireAllWithDynamicArg(scene, d.Entity, d.Bindings, d.Arg);
+			}
+			else {
+				InspectorEvents::FireAll(scene, d.Entity, d.Bindings);
+			}
+		}
+
+		// ── 11. Fan out UI events to managed subscribers ─────────────
 		ScriptEngine::RaiseUiEventDispatch();
 		} // end UIEvent.Widgets scope
 	}

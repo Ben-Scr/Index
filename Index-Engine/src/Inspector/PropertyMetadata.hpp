@@ -31,6 +31,13 @@ namespace Index {
 		double ClampMax = 0.0;
 		float DragSpeed = 0.1f;
 
+		// Soft clamp for the DRAG-field path: keeps a normal DragFloat (no slider) but
+		// clamps the dragged/typed value to [DragClampMin, DragClampMax]. Unlike HasClamp
+		// (which switches the widget to a slider), this only bounds the value.
+		bool HasDragClamp = false;
+		double DragClampMin = 0.0;
+		double DragClampMax = 0.0;
+
 		// Whether the field is read-only in the inspector.
 		bool ReadOnly = false;
 
@@ -73,6 +80,16 @@ namespace Index {
 		PropertyMetadata& WithDragSpeed(float speed) {
 			DragSpeed = speed;
 			return *this;
+		}
+		PropertyMetadata& WithDragClamp(double min, double max) {
+			HasDragClamp = true;
+			DragClampMin = min;
+			DragClampMax = max;
+			return *this;
+		}
+		// Min-only drag clamp (no slider); upper bound effectively unbounded.
+		PropertyMetadata& WithDragMin(double min) {
+			return WithDragClamp(min, 1.0e30);
 		}
 		PropertyMetadata& WithTooltip(std::string text) {
 			Tooltip = std::move(text);

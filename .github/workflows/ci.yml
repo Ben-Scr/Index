@@ -97,7 +97,7 @@ jobs:
           if errorlevel 1 exit /b %errorlevel%
           "@ | cmd /Q
 
-      - name: Windows Engine Tests
+      - name: Windows Engine + Editor Tests
         shell: pwsh
         run: scripts/RunTests.bat --release
 
@@ -207,10 +207,11 @@ jobs:
       - name: Build Linux Targets
         run: make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Runtime Index-Editor
 
-      - name: Linux Engine Tests
+      - name: Linux Engine + Editor Tests
         run: |
-          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests
+          make config=release verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine-Tests Index-Editor-Tests
           ./bin/Release-linux-x86_64/Index-Engine-Tests/Index-Engine-Tests
+          ./bin/Release-linux-x86_64/Index-Editor-Tests/Index-Editor-Tests
 
       - name: Build Linux Debug Targets
         run: make config=debug verbose=1 LDFLAGS="-fuse-ld=lld" -j"$(nproc)" Index-Engine Index-Runtime Index-Editor

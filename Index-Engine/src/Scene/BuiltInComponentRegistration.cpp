@@ -456,7 +456,7 @@ namespace Index {
 			},
 			[](Entity& e, ShapeType v) {
 				auto& ps = e.GetComponent<PSC>();
-				if (v == ShapeType::Circle) ps.Shape = CircleParams{ 1.0f, false };
+				if (v == ShapeType::Circle) ps.Shape = CircleParams{ 1.0f, false, 360.0f };
 				else if (v == ShapeType::Square) ps.Shape = SquareParams{ Vec2{ 1.0f, 1.0f } };
 				else ps.Shape = EdgeParams{ 1.0f };
 			},
@@ -467,9 +467,11 @@ namespace Index {
 							return std::get<CircleParams>(e.GetComponent<PSC>().Shape).Radius;
 						},
 						[](Entity& e, float v) {
-							std::get<CircleParams>(e.GetComponent<PSC>().Shape).Radius = v;
+							// Radius of 0 makes every particle spawn at the centre, so they all
+							// emit straight up; clamp to a tiny positive minimum.
+							std::get<CircleParams>(e.GetComponent<PSC>().Shape).Radius = std::max(v, 0.0001f);
 						},
-						Properties::Meta::DragSpeed(0.05f)),
+						Properties::Meta::DragSpeed(0.05f).WithDragMin(0.0001)),
 					Properties::MakeWith<bool>("OnCircleEdge", "On Circle Edge",
 						[](const Entity& e) {
 							return std::get<CircleParams>(e.GetComponent<PSC>().Shape).IsOnCircle;
@@ -477,6 +479,14 @@ namespace Index {
 						[](Entity& e, bool v) {
 							std::get<CircleParams>(e.GetComponent<PSC>().Shape).IsOnCircle = v;
 						}),
+					Properties::MakeWith<float>("Arc", "Arc",
+						[](const Entity& e) {
+							return std::get<CircleParams>(e.GetComponent<PSC>().Shape).Arc;
+						},
+						[](Entity& e, float v) {
+							std::get<CircleParams>(e.GetComponent<PSC>().Shape).Arc = v;
+						},
+						Properties::Meta::Clamp(0.0, 360.0, 1.0f)),
 				}),
 				Properties::Branch(ShapeType::Square, {
 					Properties::MakeWith<Vec2>("HalfExtents", "Half Extents",

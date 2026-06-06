@@ -674,6 +674,11 @@ namespace Index {
 			for (EntityHandle entity : subtree) {
 				Value entityValue = SerializeEntity(scene, entity);
 				RemovePrefabRuntimeIdentityMembers(entityValue);
+				// SerializeEntity already stamped live uuid/parentUuid; drop them so the
+				// source-id re-stamp below inserts cleanly instead of tripping AddMember's
+				// duplicate-key overwrite trace.
+				RemoveObjectMember(entityValue, "uuid");
+				RemoveObjectMember(entityValue, "parentUuid");
 
 				const uint64_t sourceId = sourceIds[static_cast<uint32_t>(entity)];
 				if (sourceId != 0) {
@@ -1209,6 +1214,22 @@ namespace Index {
 				particleValue.AddMember("useRandomColors", Value(particleSystem.ParticleSettings.UseRandomColors));
 				particleValue.AddMember("moveDirectionX", Value(particleSystem.ParticleSettings.MoveDirection.x));
 				particleValue.AddMember("moveDirectionY", Value(particleSystem.ParticleSettings.MoveDirection.y));
+				{
+					const auto& sol = particleSystem.ParticleSettings.ScaleOverLifetime;
+					particleValue.AddMember("scaleOverLifetimeEnabled", Value(sol.Enabled));
+					Value solKeys = Value::MakeArray();
+					for (const auto& key : sol.Curve.Keys) {
+						Value keyValue = Value::MakeObject();
+						keyValue.AddMember("x", Value(key.Pos.x));
+						keyValue.AddMember("y", Value(key.Pos.y));
+						keyValue.AddMember("inX", Value(key.InTangent.x));
+						keyValue.AddMember("inY", Value(key.InTangent.y));
+						keyValue.AddMember("outX", Value(key.OutTangent.x));
+						keyValue.AddMember("outY", Value(key.OutTangent.y));
+						solKeys.Append(std::move(keyValue));
+					}
+					particleValue.AddMember("scaleOverLifetimeKeys", std::move(solKeys));
+				}
 				particleValue.AddMember("emitOverTime", Value(static_cast<int>(particleSystem.EmissionSettings.EmitOverTime)));
 				particleValue.AddMember(
 					"rateOverDistance",
@@ -1222,6 +1243,7 @@ namespace Index {
 					const auto& circle = std::get<ParticleSystem2DComponent::CircleParams>(particleSystem.Shape);
 					particleValue.AddMember("radius", Value(circle.Radius));
 					particleValue.AddMember("isOnCircle", Value(circle.IsOnCircle));
+					particleValue.AddMember("arc", Value(circle.Arc));
 				}
 				else {
 					if (shapeType == 1) {

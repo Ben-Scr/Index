@@ -115,4 +115,27 @@ namespace Index {
 		return true;
 	}
 
+	void EntityPicker::PickEntitiesInRect(Scene& scene, const AABB& worldRect, std::vector<EntityHandle>& outEntities) {
+		outEntities.clear();
+
+		const float worldUIScale = GuiRenderer::ComputeWorldUIPixelScale();
+		auto& reg = scene.GetRegistry();
+
+		auto txView = reg.view<Transform2DComponent>();
+		for (auto entity : txView) {
+			AABB aabb;
+			if (!BuildEntityAABB(scene, entity, worldUIScale, aabb)) continue;
+			if (AABB::Intersects(aabb, worldRect)) outEntities.push_back(entity);
+		}
+
+		// UI-only entities (RectTransform without Transform2D) aren't in txView.
+		auto rectView = reg.view<RectTransform2DComponent>();
+		for (auto entity : rectView) {
+			if (reg.try_get<Transform2DComponent>(entity)) continue;
+			AABB aabb;
+			if (!BuildEntityAABB(scene, entity, worldUIScale, aabb)) continue;
+			if (AABB::Intersects(aabb, worldRect)) outEntities.push_back(entity);
+		}
+	}
+
 }

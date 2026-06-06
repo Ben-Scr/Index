@@ -161,7 +161,9 @@ namespace Index {
 	void EditorPreferencesPanel::RenderAppearanceTab() {
 		const bool showTheme = PreferenceSectionVisible("Theme", "appearance auto dark light custom color colors palette");
 		const bool showFont = PreferenceSectionVisible("Editor Font", "appearance editor font typeface google sans size zoom");
-		if (!showTheme && !showFont) return;
+		const bool showHierarchy = PreferenceSectionVisible("Entities Hierarchy",
+			"appearance entities hierarchy outliner row size scale height bigger larger smaller");
+		if (!showTheme && !showFont && !showHierarchy) return;
 
 		// ── Theme ───────────────────────────────────────────────────
 		if (showTheme) {
@@ -311,6 +313,32 @@ namespace Index {
 		if (ImGui::Button("Reset##EditorFontZoomReset")) {
 			EditorPreferences::SetEditorFontZoomPercent(
 				EditorPreferences::k_DefaultEditorFontZoomPercent);
+		}
+		ImGui::PopID();
+		}
+
+		// ── Entities Hierarchy ─────────────────────────────────────
+		if (showHierarchy) {
+		ImGui::Spacing();
+		ImGui::TextUnformatted("Entities Hierarchy");
+		ImGui::Separator();
+
+		ImGui::PushID("HierarchyRowScale");
+		float rowScale = EditorPreferences::GetHierarchyRowScale();
+		ImGui::SetNextItemWidth(280.0f);
+		if (ImGui::SliderFloat("Row Size", &rowScale,
+				EditorPreferences::k_MinHierarchyRowScale,
+				EditorPreferences::k_MaxHierarchyRowScale,
+				"%.2fx", ImGuiSliderFlags_AlwaysClamp)) {
+			EditorPreferences::SetHierarchyRowScale(rowScale);
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Scales the entity rows in the Entities panel.");
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Reset##HierarchyRowScaleReset")) {
+			EditorPreferences::SetHierarchyRowScale(
+				EditorPreferences::k_DefaultHierarchyRowScale);
 		}
 		ImGui::PopID();
 		}

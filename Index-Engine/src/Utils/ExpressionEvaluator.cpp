@@ -108,10 +108,15 @@ namespace Index::ExpressionEvaluator {
 
 		std::string expr;
 		if (OperatesOnCurrentValue(input[start])) {
-			// "/2" becomes "<current>/2". %.17g round-trips a double exactly.
+			// "/2" becomes "(<current>)/2". %.17g round-trips a double exactly.
+			// Parenthesize the substituted value: without it, "^2" on a negative
+			// current value composes "-8^2", which parses as -(8^2) because '^'
+			// binds tighter than unary minus — giving -64 instead of (-8)^2 = 64.
 			char currentBuf[32];
 			std::snprintf(currentBuf, sizeof(currentBuf), "%.17g", currentValue);
-			expr.assign(currentBuf);
+			expr.assign("(");
+			expr.append(currentBuf);
+			expr.append(")");
 			expr.append(input.substr(start));
 		}
 		else {

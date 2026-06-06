@@ -41,26 +41,34 @@ if not exist "Index.sln" (
     )
 )
 
-echo [INFO] Building Index-Engine-Tests (%CONFIG% x64)...
-"%MSBUILD%" "Tests\Index-Engine-Tests\Index-Engine-Tests.vcxproj" -p:Configuration=%CONFIG% -p:Platform=x64 -verbosity:minimal -nologo
-if errorlevel 1 (
-    echo [ERROR] Build failed.
-    popd
-    exit /b 1
-)
+REM Each Tests/<Name> ConsoleApp is built then run in turn. Add new C++ test
+REM projects to this list; the loop exits non-zero on the first failure.
+for %%P in (Index-Engine-Tests Index-Editor-Tests) do (
+    echo [INFO] Building %%P (%CONFIG% x64)...
+    "%MSBUILD%" "Tests\%%P\%%P.vcxproj" -p:Configuration=%CONFIG% -p:Platform=x64 -verbosity:minimal -nologo
+    if errorlevel 1 (
+        echo [ERROR] Build failed for %%P.
+        popd
+        exit /b 1
+    )
 
-set "TEST_EXE=bin\%CONFIG%-windows-x86_64\Index-Engine-Tests\Index-Engine-Tests.exe"
-if not exist "%TEST_EXE%" (
-    echo [ERROR] Test binary not produced: %TEST_EXE%
-    popd
-    exit /b 1
-)
+    set "TEST_EXE=bin\%CONFIG%-windows-x86_64\%%P\%%P.exe"
+    if not exist "!TEST_EXE!" (
+        echo [ERROR] Test binary not produced: !TEST_EXE!
+        popd
+        exit /b 1
+    )
 
-echo.
-echo [INFO] Running %TEST_EXE%...
-echo.
-"%TEST_EXE%" %2 %3 %4 %5 %6 %7 %8 %9
-set "RESULT=%ERRORLEVEL%"
+    echo.
+    echo [INFO] Running !TEST_EXE!...
+    echo.
+    "!TEST_EXE!" %2 %3 %4 %5 %6 %7 %8 %9
+    if errorlevel 1 (
+        echo [ERROR] Tests failed in %%P.
+        popd
+        exit /b 1
+    )
+)
 
 popd
-exit /b %RESULT%
+exit /b 0

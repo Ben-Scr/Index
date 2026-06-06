@@ -37,8 +37,12 @@ public struct Range<T> where T : struct, INumber<T>
     {
         if(min > max) throw new ArgumentOutOfRangeException($"Range({min},{max}) is wrong, min can't be more than max.");
 
-        Min = min;
-        Max = max;
+        // Assign the backing fields directly: the property setters cross-validate
+        // against the *other* bound, which is still default(T) (0) mid-construction,
+        // so going through them would reject any range with min > 0 (or max < 0).
+        // The min > max guard above already validated the pair.
+        this.min = min;
+        this.max = max;
     }
 
     public T Clamp(T value)

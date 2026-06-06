@@ -75,6 +75,13 @@ namespace Index {
 		IDX_CORE_ASSERT(IsPowerOfTwo(alignment),
 			"Arena::Allocate alignment must be a power of two");
 
+		// The assert no-ops in Dist builds; without this a non-power-of-two alignment
+		// makes AlignUp's (alignment-1) mask invalid and returns a misaligned pointer.
+		// Degrade to a safe failed allocation instead.
+		if (!IsPowerOfTwo(alignment)) {
+			return nullptr;
+		}
+
 		if (size == 0 || !m_Base) {
 			return nullptr;
 		}

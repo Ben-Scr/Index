@@ -1,7 +1,10 @@
 #pragma once
 #include "Core/Export.hpp"
 #include "Collections/Vec2.hpp"
+#include "Collections/AABB.hpp"
 #include "Scene/EntityHandle.hpp"
+
+#include <vector>
 
 namespace Index {
 	class Scene;
@@ -10,5 +13,9 @@ namespace Index {
 	class INDEX_API EntityPicker {
 	public:
 		static bool TryPickEntity(Scene& scene, const Vec2& worldPoint, EntityHandle& outEntity);
+
+		// Marquee query: append every entity whose bounds intersect the world-space
+		// rectangle to outEntities. Same bounds/space rules as TryPickEntity.
+		static void PickEntitiesInRect(Scene& scene, const AABB& worldRect, std::vector<EntityHandle>& outEntities);
 	};
 }

@@ -100,6 +100,12 @@ namespace Index {
 		if (outRuntimeIds == nullptr && header.entityCount > 0) {
 			return kEcbErrorOutputTooSmall;
 		}
+		// Reject negative maxOut explicitly: casting it to uint32_t below would wrap to
+		// a huge value, defeating the capacity guard and allowing an OOB write into a
+		// caller buffer that was declared negative-sized.
+		if (maxOut < 0) {
+			return kEcbErrorOutputTooSmall;
+		}
 		if (static_cast<uint32_t>(maxOut) < header.entityCount) {
 			return kEcbErrorOutputTooSmall;
 		}

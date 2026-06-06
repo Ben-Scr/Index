@@ -2,6 +2,10 @@
 #include "Systems/ImGuiEditorLayer.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
+#include <ImGuizmo.h>
+
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "Components/Forward.hpp"
 #include "Components/General/General.hpp"
@@ -321,7 +325,151 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::DrawSnapGrid(const AABB& viewBounds) {
+		const float gx = EditorPreferences::GetGridSizeX();
+		const float gy = EditorPreferences::GetGridSizeY();
+		if (gx <= 0.0f || gy <= 0.0f) return;
+
+		// Skip when the grid would be too dense to read (and a draw-call hazard).
+		constexpr float k_MaxLinesPerAxis = 220.0f;
+		if ((viewBounds.Max.x - viewBounds.Min.x) / gx > k_MaxLinesPerAxis) return;
+		if ((viewBounds.Max.y - viewBounds.Min.y) / gy > k_MaxLinesPerAxis) return;
+
+		const Color previousColor = Gizmo::GetColor();
+		const float previousLineWidth = Gizmo::GetLineWidth();
+		const GizmoLayer previousLayer = Gizmo::GetLayer();
+
+		Gizmo::SetLayer(GizmoLayer::EditorOnly);
+		Gizmo::SetLineWidth(1.0f);
+
+		Gizmo::SetColor(Color(0.55f, 0.55f, 0.62f, 0.16f));
+
+		// Cell boundaries sit half a cell off the snap points (which are multiples
+		// of the grid size), so an entity snapped to a multiple lands centered in a
+		// cell rather than straddling a line crossing.
+		const float startX = (std::ceil(viewBounds.Min.x / gx - 0.5f) + 0.5f) * gx;
+		for (float x = startX; x <= viewBounds.Max.x; x += gx) {
+			Gizmo::DrawLine(Vec2{ x, viewBounds.Min.y }, Vec2{ x, viewBounds.Max.y });
+		}
+		const float startY = (std::ceil(viewBounds.Min.y / gy - 0.5f) + 0.5f) * gy;
+		for (float y = startY; y <= viewBounds.Max.y; y += gy) {
+			Gizmo::DrawLine(Vec2{ viewBounds.Min.x, y }, Vec2{ viewBounds.Max.x, y });
+		}
+
+		Gizmo::SetColor(previousColor);
+		Gizmo::SetLineWidth(previousLineWidth);
+		Gizmo::SetLayer(previousLayer);
+	}
+
+	void ImGuiEditorLayer::DrawWorldAxes(const AABB& viewBounds) {
+		const Color previousColor = Gizmo::GetColor();
+		const float previousLineWidth = Gizmo::GetLineWidth();
+		const GizmoLayer previousLayer = Gizmo::GetLayer();
+
+		Gizmo::SetLayer(GizmoLayer::EditorOnly);
+		Gizmo::SetLineWidth(1.5f);
+
+		// X axis (horizontal, y = 0) in red; only emitted when the origin row is on-screen.
+		if (viewBounds.Min.y <= 0.0f && viewBounds.Max.y >= 0.0f) {
+			Gizmo::SetColor(Color(0.85f, 0.25f, 0.25f, 0.85f));
+			Gizmo::DrawLine(Vec2{ viewBounds.Min.x, 0.0f }, Vec2{ viewBounds.Max.x, 0.0f });
+		}
+		// Y axis (vertical, x = 0) in green; only emitted when the origin column is on-screen.
+		if (viewBounds.Min.x <= 0.0f && viewBounds.Max.x >= 0.0f) {
+			Gizmo::SetColor(Color(0.30f, 0.80f, 0.35f, 0.85f));
+			Gizmo::DrawLine(Vec2{ 0.0f, viewBounds.Min.y }, Vec2{ 0.0f, viewBounds.Max.y });
+		}
+
+		Gizmo::SetColor(previousColor);
+		Gizmo::SetLineWidth(previousLineWidth);
+		Gizmo::SetLayer(previousLayer);
+	}
+
 	void ImGuiEditorLayer::DrawEditorComponentGizmos(Scene& scene, bool componentGizmosEnabled) {
+		const Color previousColor = Gizmo::GetColor();
+		const float previousLineWidth = Gizmo::GetLineWidth();
+		const GizmoLayer previousLayer = Gizmo::GetLayer();
+		Gizmo::SetLayer(GizmoLayer::EditorOnly);
+
+		// Always-visible component gizmos (Camera frames, package components flagged
+		// drawEditorGizmoAlways): drawn for every matching entity, gated only on the
+		// editor-view gizmo toggle — independent of selection.
+		if (componentGizmosEnabled) {
+			DrawAlwaysVisibleComponentGizmos(scene);
+		}
+
+		// Selection-only gizmos: draw each selected entity's gizmos by reusing the
+		// single-entity path; m_SelectedEntity is that path's cursor, so save/restore
+		// it around the walk.
+		const std::vector<EntityHandle> selection = GetSelectedEntities(scene);
+
+		// RectTransform gizmos read resolved corners, so refresh the UI layout once
+		// here (it's a whole-scene pass) rather than once per selected entity.
+		for (EntityHandle entity : selection) {
+			if (entity != entt::null && scene.IsValid(entity)
+				&& scene.HasComponent<RectTransform2DComponent>(entity)) {
+				ComputeUILayout(scene);
+				break;
+			}
+		}
+
+		if (selection.size() <= 1) {
+			DrawComponentGizmosForActiveEntity(scene, componentGizmosEnabled);
+		}
+		else {
+			const EntityHandle activeEntity = m_SelectedEntity;
+			for (EntityHandle entity : selection) {
+				m_SelectedEntity = entity;
+				DrawComponentGizmosForActiveEntity(scene, componentGizmosEnabled);
+			}
+			m_SelectedEntity = activeEntity;
+		}
+
+		Gizmo::SetLayer(previousLayer);
+		Gizmo::SetColor(previousColor);
+		Gizmo::SetLineWidth(previousLineWidth);
+	}
+
+	void ImGuiEditorLayer::DrawAlwaysVisibleComponentGizmos(Scene& scene) {
+		// Built-in: Camera viewport frame for every camera in the scene.
+		auto camView = scene.GetRegistry().view<Camera2DComponent, Transform2DComponent>();
+		for (auto entity : camView) {
+			DrawCameraFrameGizmo(scene, entity);
+		}
+
+		// Package/registry components opted into always-draw via SetEditorGizmo(fn, true):
+		// run their gizmo for every entity that has the component.
+		auto* app = Application::GetInstance();
+		auto* sm = app ? app->GetSceneManager() : nullptr;
+		if (!sm) return;
+		auto allEntities = scene.GetRegistry().view<entt::entity>();
+		sm->GetComponentRegistry().ForEachComponentInfo(
+			[&](const std::type_index&, const ComponentInfo& info) {
+				if (!info.drawEditorGizmo || !info.drawEditorGizmoAlways || !info.has) return;
+				for (auto handle : allEntities) {
+					Entity entity = scene.GetEntity(handle);
+					if (info.has(entity)) info.drawEditorGizmo(entity);
+				}
+			});
+	}
+
+	void ImGuiEditorLayer::DrawCameraFrameGizmo(Scene& scene, EntityHandle entity) {
+		Transform2DComponent* transform = nullptr;
+		Camera2DComponent* camera = nullptr;
+		if (!scene.TryGetComponent<Transform2DComponent>(entity, transform) || !transform) return;
+		if (!scene.TryGetComponent<Camera2DComponent>(entity, camera) || !camera) return;
+
+		Gizmo::SetColor(Color::White());
+		Gizmo::SetLineWidth(1.5f);
+		// Frame at the configured Game View aspect, not the live window aspect — WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio → keep the window aspect.
+		Vec2 camFrame = camera->WorldViewPort();
+		const int gvAspectIdx = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
+		const float gvAspect = k_AspectRatioPresets[gvAspectIdx].Aspect;
+		if (gvAspect > 0.0f) camFrame.x = camFrame.y * gvAspect;
+		Gizmo::DrawSquare(transform->Position, camFrame, transform->GetRotationDegrees());
+	}
+
+	void ImGuiEditorLayer::DrawComponentGizmosForActiveEntity(Scene& scene, bool componentGizmosEnabled) {
 		if (m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) {
 			return;
 		}
@@ -363,17 +511,8 @@ namespace Index {
 				}
 			}
 
-			if (scene.HasComponent<Camera2DComponent>(m_SelectedEntity)) {
-				auto& camera = scene.GetComponent<Camera2DComponent>(m_SelectedEntity);
-				Gizmo::SetColor(Color::White());
-				Gizmo::SetLineWidth(1.5f);
-				// Frame at the configured Game View aspect, not the live window aspect — WorldViewPort() tracks m_Viewport (the OS window) here, so it overstates the camera's horizontal view. Free Aspect (0) has no fixed ratio → keep the window aspect.
-				Vec2 camFrame = camera.WorldViewPort();
-				const int gvAspectIdx = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
-				const float gvAspect = k_AspectRatioPresets[gvAspectIdx].Aspect;
-				if (gvAspect > 0.0f) camFrame.x = camFrame.y * gvAspect;
-				Gizmo::DrawSquare(transform.Position, camFrame, rotationDegrees);
-			}
+			// Camera frame is drawn for ALL cameras in DrawAlwaysVisibleComponentGizmos,
+			// not only the selected one.
 	
 			if (scene.HasComponent<BoxCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<BoxCollider2DComponent>(m_SelectedEntity);
@@ -451,7 +590,27 @@ namespace Index {
 					using T = std::decay_t<decltype(shape)>;
 					if constexpr (std::is_same_v<T, ParticleSystem2DComponent::CircleParams>) {
 						const float radius = shape.Radius * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
-						Gizmo::DrawCircle(transform.Position, radius);
+						const float arc = std::clamp(shape.Arc, 0.0f, 360.0f);
+						if (arc >= 359.999f) {
+							Gizmo::DrawCircle(transform.Position, radius);
+						}
+						else {
+							// Sector matching the emission range: sweep `arc` degrees from the
+							// entity's local +X (rotated by its rotation), plus the bounding radii.
+							const Vec2 center = transform.Position;
+							const float base = transform.Rotation;
+							const float sweep = arc * 0.01745329252f;
+							const int segments = std::max(2, static_cast<int>(arc / 6.0f) + 1);
+							Vec2 prev = center + FromAngle(base) * radius;
+							Gizmo::DrawLine(center, prev);
+							for (int seg = 1; seg <= segments; ++seg) {
+								const float a = base + sweep * (static_cast<float>(seg) / static_cast<float>(segments));
+								const Vec2 cur = center + FromAngle(a) * radius;
+								Gizmo::DrawLine(prev, cur);
+								prev = cur;
+							}
+							Gizmo::DrawLine(center, prev);
+						}
 					}
 					else if constexpr (std::is_same_v<T, ParticleSystem2DComponent::SquareParams>) {
 						const Vec2 size(
@@ -478,9 +637,8 @@ namespace Index {
 		} // end if (hasTransform)
 
 		if (hasRectTransform) {
-			// MUST precede gizmo corner reads: UILayoutSystem fires later in RenderEditorView, so force layout now for fresh resolved corners.
-			ComputeUILayout(scene);
-
+			// Layout is refreshed once up front by DrawEditorComponentGizmos (before
+			// the selection walk), so the resolved corners read below are current.
 			auto& rect = scene.GetComponent<RectTransform2DComponent>(m_SelectedEntity);
 
 			// Mirror RenderSceneIntoFBO's uiInWorldSpace=true scale so the outline lands on the rendered widget.
@@ -583,7 +741,9 @@ namespace Index {
 					Entity selected = scene.GetEntity(m_SelectedEntity);
 					sm->GetComponentRegistry().ForEachComponentInfo(
 						[&](const std::type_index&, const ComponentInfo& info) {
-							if (info.drawEditorGizmo && info.has && info.has(selected)) {
+							// Always-draw components are handled in DrawAlwaysVisibleComponentGizmos.
+							if (info.drawEditorGizmo && !info.drawEditorGizmoAlways
+								&& info.has && info.has(selected)) {
 								info.drawEditorGizmo(selected);
 							}
 						});
@@ -672,6 +832,12 @@ namespace Index {
 		}
 
 		{
+			// Vertical separator between toolbar button groups, to set them apart.
+			auto vsep = []() {
+				ImGui::SameLine();
+				ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+			};
+
 			constexpr const char* k_DrawModeLabels[] = { "Default", "Triangle", "Mixed" };
 			const int currentIndex = static_cast<int>(m_EditorViewDrawMode);
 			ImGui::AlignTextToFramePadding();
@@ -694,6 +860,7 @@ namespace Index {
 				ImGui::SetTooltip("Editor View draw mode (Default / Triangle wireframe / Mixed overlay)");
 			}
 
+			vsep();
 			ImGui::SameLine();
 			{
 				const bool active = m_ShowGizmos;
@@ -711,6 +878,45 @@ namespace Index {
 				}
 			}
 
+			vsep();
+			// Gizmo mode: None / Move / Rotate / Scale (icon buttons, text fallback).
+			{
+				struct GizmoModeButton { const char* Label; const char* Icon; const char* Tooltip; EditorGizmoMode Mode; };
+				const GizmoModeButton modeButtons[] = {
+					{ "None##GizmoMode",   nullptr,    "No gizmo",          EditorGizmoMode::None },
+					{ "Move##GizmoMode",   "move",     "Move (translate)",  EditorGizmoMode::Translate },
+					{ "Rotate##GizmoMode", "rotation", "Rotate",            EditorGizmoMode::Rotate },
+					{ "Scale##GizmoMode",  "scale",    "Scale",             EditorGizmoMode::Scale },
+				};
+				for (const GizmoModeButton& b : modeButtons) {
+					ImGui::SameLine();
+					const bool active = (m_GizmoMode == b.Mode);
+					if (active) {
+						ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+					}
+					const uint64_t icon = b.Icon ? EditorIcons::Get(b.Icon, 16) : 0;
+					bool clicked;
+					if (icon) {
+						const float side = ImGui::GetFontSize();
+						clicked = ImGui::ImageButton(b.Label,
+							static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
+							ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
+					} else {
+						clicked = ImGui::Button(b.Label);
+					}
+					if (clicked) {
+						m_GizmoMode = b.Mode;
+					}
+					if (active) {
+						ImGui::PopStyleColor();
+					}
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip("%s", b.Tooltip);
+					}
+				}
+			}
+
+			vsep();
 			ImGui::SameLine();
 			{
 				const bool active = m_ShowPostProcessing;
@@ -739,6 +945,7 @@ namespace Index {
 				}
 			}
 
+			vsep();
 			// Grid-snapping toggle + grid-size settings popup.
 			ImGui::SameLine();
 			{
@@ -833,6 +1040,34 @@ namespace Index {
 					}
 					ImGui::EndDisabled();
 
+					ImGui::Separator();
+
+					// Rotation snap: rotate in fixed-degree steps (gizmo Rotate mode).
+					bool rotSnap = EditorPreferences::GetRotationSnapEnabled();
+					if (ImGui::Checkbox("Snap rotation", &rotSnap)) {
+						EditorPreferences::SetRotationSnapEnabled(rotSnap);
+					}
+					ImGui::SameLine();
+					float rotDeg = EditorPreferences::GetRotationSnapDegrees();
+					ImGui::SetNextItemWidth(70.0f);
+					if (ImGui::DragFloat("##RotationSnap", &rotDeg, 0.5f,
+							EditorPreferences::k_MinRotationSnap, 360.0f, "%.1f")) {
+						EditorPreferences::SetRotationSnapDegrees(rotDeg);
+					}
+
+					// Scale snap: scale in fixed factor steps on X/Y (gizmo Scale mode).
+					bool sclSnap = EditorPreferences::GetScaleSnapEnabled();
+					if (ImGui::Checkbox("Snap scale", &sclSnap)) {
+						EditorPreferences::SetScaleSnapEnabled(sclSnap);
+					}
+					ImGui::SameLine();
+					float sclInc = EditorPreferences::GetScaleSnap();
+					ImGui::SetNextItemWidth(70.0f);
+					if (ImGui::DragFloat("##ScaleSnap", &sclInc, 0.01f,
+							EditorPreferences::k_MinScaleSnap, 100.0f, "%.3f")) {
+						EditorPreferences::SetScaleSnap(sclInc);
+					}
+
 					ImGui::EndPopup();
 				}
 			}
@@ -876,6 +1111,14 @@ namespace Index {
 				glm::mat4 vp = m_EditorCamera.GetViewProjectionMatrix();
 				AABB viewAABB = m_EditorCamera.GetViewportAABB();
 				Gizmo::SetViewportAABBOverride(viewAABB);
+				// Faint grid overlay aligned to the snap spacing, shown while snapping is on.
+				// Grid overlay also appears while Left Ctrl is held over the view, so the
+				// temporary Ctrl-snap has a visible grid to snap to.
+				if (EditorPreferences::GetGridSnapEnabled()
+					|| (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && m_IsEditorViewHovered)) {
+					DrawSnapGrid(viewAABB);
+				}
+				DrawWorldAxes(viewAABB);
 				DrawEditorComponentGizmos(*renderScene, m_ShowGizmos);
 
 				static const Color k_EditorClearColor(0.18f, 0.18f, 0.20f, 1.0f);
@@ -1191,97 +1434,276 @@ namespace Index {
 					// (No cursor restore — see comment above the loop.)
 				}
 
-				if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+				// -- ImGuizmo manipulation gizmo for the primary selection --
+				bool gizmoActive = false;
+				if (m_GizmoMode != EditorGizmoMode::None
+					&& m_SelectedEntity != entt::null
+					&& renderScene->IsValid(m_SelectedEntity)
+					&& renderScene->HasComponent<Transform2DComponent>(m_SelectedEntity))
+				{
+					TransformHierarchySystem::Propagate(*renderScene);
+					const Transform2DComponent& primary = renderScene->GetComponent<Transform2DComponent>(m_SelectedEntity);
+
+					// The gizmo sits at the centroid of the selection so it's centred on the
+					// whole group. Translate always uses the centroid; Rotate/Scale use it too
+					// once MULTIPLE entities are selected (group transform about the centre).
+					Vec2 gizmoCenter{ primary.Position.x, primary.Position.y };
+					Vec2 centerSum{ 0.0f, 0.0f };
+					int centerCount = 0;
+					for (EntityHandle handle : GetSelectedEntities(*renderScene)) {
+						Transform2DComponent* selectedTransform = nullptr;
+						if (renderScene->TryGetComponent<Transform2DComponent>(handle, selectedTransform) && selectedTransform) {
+							centerSum.x += selectedTransform->Position.x;
+							centerSum.y += selectedTransform->Position.y;
+							++centerCount;
+						}
+					}
+					if (centerCount > 0) {
+						gizmoCenter = { centerSum.x / static_cast<float>(centerCount),
+										centerSum.y / static_cast<float>(centerCount) };
+					}
+					const bool groupTransform = centerCount > 1;
+
+					// Multi-select uses an identity-oriented gizmo at the centroid (all modes).
+					// A single-entity Move carries the entity's rotation so the move arrows
+					// align to it; single Rotate/Scale carries the full transform.
+					glm::mat4 model;
+					if (groupTransform) {
+						model = glm::translate(glm::mat4(1.0f), glm::vec3(gizmoCenter.x, gizmoCenter.y, 0.0f));
+					}
+					else if (m_GizmoMode == EditorGizmoMode::Translate) {
+						model = glm::translate(glm::mat4(1.0f), glm::vec3(primary.Position.x, primary.Position.y, 0.0f)) *
+							glm::rotate(glm::mat4(1.0f), primary.Rotation, glm::vec3(0.0f, 0.0f, 1.0f));
+					}
+					else {
+						model = glm::translate(glm::mat4(1.0f), glm::vec3(primary.Position.x, primary.Position.y, 0.0f)) *
+							glm::rotate(glm::mat4(1.0f), primary.Rotation, glm::vec3(0.0f, 0.0f, 1.0f)) *
+							glm::scale(glm::mat4(1.0f), glm::vec3(primary.Scale.x, primary.Scale.y, 1.0f));
+					}
+
+					// ImGuizmo needs the camera off the entity plane (z=0) or its move-plane
+					// math degenerates; pull it back in z. The x/y ortho extents match the
+					// editor camera so the gizmo stays aligned with the sprites.
+					const AABB camAABB = m_EditorCamera.GetViewportAABB();
+					const float halfW = (camAABB.Max.x - camAABB.Min.x) * 0.5f;
+					const float halfH = (camAABB.Max.y - camAABB.Min.y) * 0.5f;
+					const Vec2 camPos = m_EditorCamera.GetPosition();
+					const glm::mat4 gizmoView = glm::translate(glm::mat4(1.0f), glm::vec3(-camPos.x, -camPos.y, -10.0f));
+					const glm::mat4 gizmoProj = glm::ortho(-halfW, halfW, -halfH, halfH, 0.01f, 1000.0f);
+
+					// Translate uses full TRANSLATE (X|Y|Z): the Z bit activates ImGuizmo's
+					// centre screen-move handle (the white circle) for free XY movement. The
+					// degenerate Z axis is masked and the XY plane quad (blue square) is dropped
+					// below, leaving just the X/Y arrows + the centre free-move circle.
+					ImGuizmo::OPERATION op = ImGuizmo::TRANSLATE;
+					// Translate uses LOCAL space so a single rotated entity's move arrows follow
+					// its rotation; group Translate has identity orientation so LOCAL == WORLD.
+					ImGuizmo::MODE gizmoSpace = ImGuizmo::LOCAL;
+					if (m_GizmoMode == EditorGizmoMode::Rotate) {
+						op = ImGuizmo::ROTATE_Z;
+						gizmoSpace = ImGuizmo::WORLD;
+					}
+					else if (m_GizmoMode == EditorGizmoMode::Scale) {
+						// Full SCALE (X|Y|Z) — the Z bit is what makes ImGuizmo's centre
+						// handle (MT_SCALE_XYZ) live, giving an even X+Y scale grip alongside
+						// the per-axis ones. Z itself is degenerate in our 2D ortho view
+						// (hidden) and ignored on apply (we only read the X/Y columns).
+						op = ImGuizmo::SCALE;
+						gizmoSpace = ImGuizmo::LOCAL;
+					}
+
+					// Required once per frame: resets ImGuizmo's per-frame hover state
+					// (mbOverGizmoHotspot). Without it the flag latches and dragging dies.
+					ImGuizmo::BeginFrame();
+					ImGuizmo::SetOrthographic(true);
+					ImGuizmo::SetDrawlist();
+					ImGuizmo::SetRect(imageTopLeft.x, imageTopLeft.y, viewportSize.x, viewportSize.y);
+					ImGuizmo::AllowAxisFlip(false);
+					// Suppress ImGuizmo's degenerate-Z handles in our 2D view. In Translate and
+					// Scale the Z axis is edge-on; masking it stops its invisible centre-grab
+					// (Translate's MT_MOVE_SCREEN and Scale's MT_SCALE_XYZ ignore the mask, so the
+					// centre handles stay live). Rotate keeps Z — it rotates about it. In Translate
+					// we also raise the plane-area limit so the XY plane quad (the blue square) is
+					// dropped entirely; free movement is the centre screen-move circle instead.
+					// mAxisMask/mAxisLimit are persistent global state (BeginFrame doesn't clear
+					// them), so set both every frame.
+					const bool isTranslate = (m_GizmoMode == EditorGizmoMode::Translate);
+					ImGuizmo::SetAxisMask(false, false, isTranslate || m_GizmoMode == EditorGizmoMode::Scale);
+					ImGuizmo::SetAxisLimit(isTranslate ? 1.0e6f : 0.0025f);
+
+					// Holding Left Ctrl temporarily forces snapping on for the duration of the
+					// manipulation; releasing it reverts to the toolbar snap toggles.
+					const bool snapOverride = ImGui::IsKeyDown(ImGuiKey_LeftCtrl);
+
+					// Rotation/scale snapping: ImGuizmo snaps the total angle/scale (snap[0] is
+					// degrees for Rotate, a factor increment for Scale) — works for single and
+					// group manipulation since both read back the snapped result.
+					float snapValues[3] = { 0.0f, 0.0f, 0.0f };
+					const float* snapPtr = nullptr;
+					if (m_GizmoMode == EditorGizmoMode::Rotate
+						&& (EditorPreferences::GetRotationSnapEnabled() || snapOverride)) {
+						snapValues[0] = snapValues[1] = snapValues[2] = EditorPreferences::GetRotationSnapDegrees();
+						snapPtr = snapValues;
+					}
+					else if (m_GizmoMode == EditorGizmoMode::Scale
+						&& (EditorPreferences::GetScaleSnapEnabled() || snapOverride)) {
+						snapValues[0] = snapValues[1] = snapValues[2] = EditorPreferences::GetScaleSnap();
+						snapPtr = snapValues;
+					}
+					ImGuizmo::Manipulate(&gizmoView[0][0], &gizmoProj[0][0], op, gizmoSpace, &model[0][0], nullptr, snapPtr);
+
+					gizmoActive = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
+
+					// Reset the per-frame scale accumulator whenever no drag is active so the
+					// next group-scale drag starts from a clean total.
+					if (!ImGuizmo::IsUsing()) {
+						m_GizmoGroupScalePrev = Vec2{ 1.0f, 1.0f };
+					}
+
+					if (ImGuizmo::IsUsing()) {
+						if (m_GizmoMode == EditorGizmoMode::Translate) {
+							// Gizmo is at the centroid: turn its motion into a world delta,
+							// re-anchored on the active entity. ApplyGizmoManipulation carries
+							// that delta across the whole selection; snap the active entity.
+							Vec2 newPos{
+								primary.Position.x + (model[3][0] - gizmoCenter.x),
+								primary.Position.y + (model[3][1] - gizmoCenter.y)
+							};
+							if (EditorPreferences::GetGridSnapEnabled() || snapOverride) {
+								const float gx = EditorPreferences::GetGridSizeX();
+								const float gy = EditorPreferences::GetGridSizeY();
+								if (gx > 0.0f) newPos.x = std::round(newPos.x / gx) * gx;
+								if (gy > 0.0f) newPos.y = std::round(newPos.y / gy) * gy;
+							}
+							ApplyGizmoManipulation(*renderScene, newPos, primary.Rotation, primary.Scale);
+						}
+						else if (groupTransform) {
+							// Multi-selection Rotate/Scale: apply the gizmo's motion about the
+							// centroid to every selected root (model was passed identity-oriented).
+							if (m_GizmoMode == EditorGizmoMode::Rotate) {
+								// ImGuizmo advances its rotation origin every frame, so the result's
+								// rotation is THIS frame's incremental angle.
+								const float deltaAngle = std::atan2(model[0][1], model[0][0]);
+								ApplyGroupRotationScale(*renderScene, gizmoCenter, deltaAngle, Vec2{ 1.0f, 1.0f });
+							}
+							else {
+								// ImGuizmo scale is the TOTAL since the drag started; divide by the
+								// previous total to get this frame's factor.
+								const Vec2 totalScale{
+									std::sqrt(model[0][0] * model[0][0] + model[0][1] * model[0][1]),
+									std::sqrt(model[1][0] * model[1][0] + model[1][1] * model[1][1])
+								};
+								const Vec2 factor{
+									m_GizmoGroupScalePrev.x != 0.0f ? totalScale.x / m_GizmoGroupScalePrev.x : 1.0f,
+									m_GizmoGroupScalePrev.y != 0.0f ? totalScale.y / m_GizmoGroupScalePrev.y : 1.0f
+								};
+								ApplyGroupRotationScale(*renderScene, gizmoCenter, 0.0f, factor);
+								m_GizmoGroupScalePrev = totalScale;
+							}
+						}
+						else {
+							const Vec2 newPos{ model[3][0], model[3][1] };
+							const float newRot = std::atan2(model[0][1], model[0][0]);
+							const Vec2 newScale{
+								std::sqrt(model[0][0] * model[0][0] + model[0][1] * model[0][1]),
+								std::sqrt(model[1][0] * model[1][0] + model[1][1] * model[1][1])
+							};
+							ApplyGizmoManipulation(*renderScene, newPos, newRot, newScale);
+						}
+					}
+				}
+
+				// Selection: a left-drag draws a marquee that box-selects every entity it
+				// touches; a plain click (press + release without dragging) selects the
+				// entity under the cursor, as before.
+				const AABB selectCamAABB = m_EditorCamera.GetViewportAABB();
+				auto screenToWorld = [&](float sx, float sy) -> Vec2 {
+					const float u = (sx - imageTopLeft.x) / std::max(1.0f, viewportSize.x);
+					const float v = (sy - imageTopLeft.y) / std::max(1.0f, viewportSize.y);
+					return Vec2{
+						selectCamAABB.Min.x + u * (selectCamAABB.Max.x - selectCamAABB.Min.x),
+						selectCamAABB.Max.y - v * (selectCamAABB.Max.y - selectCamAABB.Min.y)
+					};
+				};
+
+				// Begin on left-press inside the viewport image (not on a gizmo handle or
+				// other active item). The actual selection is deferred to release.
+				if (!gizmoActive
+					&& ImGui::IsMouseClicked(ImGuiMouseButton_Left)
 					&& ImGui::IsWindowHovered()
 					&& !ImGui::IsAnyItemActive())
 				{
-					const ImVec2 mousePos = ImGui::GetMousePos();
-					const float localX = mousePos.x - imageTopLeft.x;
-					const float localY = mousePos.y - imageTopLeft.y;
-					if (localX >= 0.0f && localX < viewportSize.x
-						&& localY >= 0.0f && localY < viewportSize.y)
-					{
-						// Screen → world via the editor camera's axis-aligned
-						// ortho view AABB. Y flips because the FBO's top row
-						// is screen-y=0 but world +y points up.
-						const AABB camAABB = m_EditorCamera.GetViewportAABB();
-						const float u = localX / std::max(1.0f, viewportSize.x);
-						const float v = localY / std::max(1.0f, viewportSize.y);
-						const Vec2 worldPoint{
-							camAABB.Min.x + u * (camAABB.Max.x - camAABB.Min.x),
-							camAABB.Max.y - v * (camAABB.Max.y - camAABB.Min.y)
+					const ImVec2 mp = ImGui::GetMousePos();
+					const float lx = mp.x - imageTopLeft.x;
+					const float ly = mp.y - imageTopLeft.y;
+					if (lx >= 0.0f && lx < viewportSize.x && ly >= 0.0f && ly < viewportSize.y) {
+						m_BoxSelectPending = true;
+						m_BoxSelectActive = false;
+						m_BoxSelectStartScreen = Vec2{ mp.x, mp.y };
+					}
+				}
+
+				// Promote to a box-select once the press drags past a small threshold.
+				if (m_BoxSelectPending && !m_BoxSelectActive
+					&& ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f)) {
+					m_BoxSelectActive = true;
+				}
+
+				// Draw the marquee on top of the viewport image while dragging.
+				if (m_BoxSelectActive) {
+					const ImVec2 cur = ImGui::GetMousePos();
+					const ImVec2 rMin{ std::min(m_BoxSelectStartScreen.x, cur.x), std::min(m_BoxSelectStartScreen.y, cur.y) };
+					const ImVec2 rMax{ std::max(m_BoxSelectStartScreen.x, cur.x), std::max(m_BoxSelectStartScreen.y, cur.y) };
+					ImDrawList* dl = ImGui::GetWindowDrawList();
+					dl->AddRectFilled(rMin, rMax, IM_COL32(90, 145, 230, 40));
+					dl->AddRect(rMin, rMax, IM_COL32(120, 170, 240, 220));
+				}
+
+				// Resolve on release: box-select if dragged, else single-click select.
+				if (m_BoxSelectPending && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+					const bool hasModifier = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+
+					if (m_BoxSelectActive) {
+						const ImVec2 cur = ImGui::GetMousePos();
+						const Vec2 w0 = screenToWorld(m_BoxSelectStartScreen.x, m_BoxSelectStartScreen.y);
+						const Vec2 w1 = screenToWorld(cur.x, cur.y);
+						const AABB worldRect{
+							Vec2{ std::min(w0.x, w1.x), std::min(w0.y, w1.y) },
+							Vec2{ std::max(w0.x, w1.x), std::max(w0.y, w1.y) }
 						};
-
-						EntityHandle picked = entt::null;
-						EntityPicker::TryPickEntity(*renderScene, worldPoint, picked);
-
-						const bool hasModifier =
-							ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
-						m_IsDraggingEntities = false;
-						m_EntityDragMoved = false;
-						m_EntityDragPicked = picked;
-						m_EntityDragModifier = hasModifier;
-						m_EntityDragStartPositions.clear();
-
-						if (picked != entt::null) {
-							if (hasModifier) {
-								ToggleEntitySelection(picked, -1);
+						// Bounds reads need current transforms + UI layout.
+						TransformHierarchySystem::Propagate(*renderScene);
+						ComputeUILayout(*renderScene);
+						std::vector<EntityHandle> inBox;
+						EntityPicker::PickEntitiesInRect(*renderScene, worldRect, inBox);
+						SelectEntitiesInBox(inBox, hasModifier);
+					}
+					else {
+						const ImVec2 mp = ImGui::GetMousePos();
+						const float lx = mp.x - imageTopLeft.x;
+						const float ly = mp.y - imageTopLeft.y;
+						if (lx >= 0.0f && lx < viewportSize.x && ly >= 0.0f && ly < viewportSize.y) {
+							const Vec2 worldPoint = screenToWorld(mp.x, mp.y);
+							EntityHandle picked = entt::null;
+							EntityPicker::TryPickEntity(*renderScene, worldPoint, picked);
+							if (picked != entt::null) {
+								if (hasModifier) ToggleEntitySelection(picked, -1);
+								else SetSingleEntitySelection(picked, -1);
 							}
-							else {
-								// Select an unselected entity immediately so it becomes the
-								// drag target; keep an existing (multi-)selection so the
-								// whole group can drag together.
-								if (!IsEntitySelected(picked)) {
-									SetSingleEntitySelection(picked, -1);
-								}
-								m_EntityDragStartWorld = worldPoint;
-								TransformHierarchySystem::Propagate(*renderScene);
-								for (EntityHandle handle : GetSelectedEntities(*renderScene)) {
-									Transform2DComponent* transform = nullptr;
-									if (renderScene->TryGetComponent<Transform2DComponent>(handle, transform) && transform) {
-										m_EntityDragStartPositions.emplace_back(handle, transform->Position);
-									}
-								}
-								m_IsDraggingEntities = !m_EntityDragStartPositions.empty();
+							else if (!hasModifier) {
+								ClearEntitySelection();
 							}
 						}
-						else if (!hasModifier) {
-							ClearEntitySelection();
-						}
 					}
+
+					m_BoxSelectPending = false;
+					m_BoxSelectActive = false;
 				}
 
-				// Drag UPDATE: once past the click threshold, move the armed
-				// entities by the world delta (grid-snapped when enabled).
-				if (m_IsDraggingEntities && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-					const AABB dragAABB = m_EditorCamera.GetViewportAABB();
-					const ImVec2 dragMouse = ImGui::GetMousePos();
-					const float du = (dragMouse.x - imageTopLeft.x) / std::max(1.0f, viewportSize.x);
-					const float dv = (dragMouse.y - imageTopLeft.y) / std::max(1.0f, viewportSize.y);
-					const Vec2 worldNow{
-						dragAABB.Min.x + du * (dragAABB.Max.x - dragAABB.Min.x),
-						dragAABB.Max.y - dv * (dragAABB.Max.y - dragAABB.Min.y)
-					};
-					ApplySnappedEntityDrag(*renderScene,
-						Vec2{ worldNow.x - m_EntityDragStartWorld.x,
-						      worldNow.y - m_EntityDragStartWorld.y });
-					m_EntityDragMoved = true;
-					ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-				}
-
-				// Drag END: on release, a press without a move collapses the
-				// selection to the clicked entity (plain click-select).
-				if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-					if (!m_EntityDragMoved && !m_EntityDragModifier
-						&& m_EntityDragPicked != entt::null
-						&& renderScene->IsValid(m_EntityDragPicked))
-					{
-						SetSingleEntitySelection(m_EntityDragPicked, -1);
-					}
-					m_IsDraggingEntities = false;
-					m_EntityDragMoved = false;
-					m_EntityDragPicked = entt::null;
-					m_EntityDragStartPositions.clear();
+				// Safety: drop a stale drag if the release was missed (e.g. panel lost focus).
+				if (m_BoxSelectPending && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+					m_BoxSelectPending = false;
+					m_BoxSelectActive = false;
 				}
 			}
 		}

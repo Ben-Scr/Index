@@ -18,14 +18,31 @@ namespace Index {
 		// E31: O(1) splice — moves the existing list node to the front without
 		// invalidating the iterator stored in the cache entry.
 		m_LRU.splice(m_LRU.begin(), m_LRU, it->second.LruIt);
+		// Mark used this frame so EnforceCapacity won't evict it while its texture
+		// view is still referenced by a live ImGui::Image draw command.
+		it->second.LastUsedFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
 	}
 
 	void ThumbnailCache::EnforceCapacity() {
-		// E31: evict least-recently-used (back of list) until under the cap.
-		while (m_Cache.size() > k_MaxEntries && !m_LRU.empty()) {
-			const std::string& victim = m_LRU.back();
-			m_Cache.erase(victim);
-			m_LRU.pop_back();
+		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
+		// Evict least-recently-used (back of list) until under the cap, but NEVER an
+		// entry accessed this frame: a directory with >k_MaxEntries images renders
+		// all tiles in one frame, and evicting an already-drawn tile here would
+		// destroy a WGPUTextureView still referenced by an ImGui::Image draw command
+		// — a GPU use-after-free at frame submit. Such entries are deferred to a
+		// later frame (when they're no longer touched), so the cache may transiently
+		// exceed the cap by the number of tiles drawn this frame.
+		auto it = m_LRU.end();
+		while (m_Cache.size() > k_MaxEntries && it != m_LRU.begin()) {
+			--it;
+			auto cacheIt = m_Cache.find(*it);
+			if (cacheIt != m_Cache.end() && cacheIt->second.LastUsedFrame == currentFrame) {
+				continue; // in use this frame — skip toward the front
+			}
+			if (cacheIt != m_Cache.end()) {
+				m_Cache.erase(cacheIt);
+			}
+			it = m_LRU.erase(it); // returns the element after the erased one (toward end)
 		}
 	}
 
@@ -57,16 +74,19 @@ namespace Index {
 		// E31: insert path at front of LRU first, then store the iterator on the
 		// cache entry so subsequent lookups can splice without re-finding.
 		auto lruIt = m_LRU.insert(m_LRU.begin(), absolutePath);
+		const uint64_t currentFrame = static_cast<uint64_t>(ImGui::GetFrameCount());
 
 		if (!tex->IsValid()) {
 			// Cache a null entry so we don't retry
-			m_Cache[absolutePath] = { nullptr, 0, lruIt };
+			m_Cache[absolutePath] = { nullptr, 0, lruIt, currentFrame };
 			EnforceCapacity();
 			return 0;
 		}
 
 		uint64_t handle = tex->GetHandle();
-		m_Cache[absolutePath] = { std::move(tex), handle, lruIt };
+		// Stamp the current frame: this tile draws the view THIS frame, so a later
+		// tile's GetThumbnail in the same frame must not evict it (would be a UAF).
+		m_Cache[absolutePath] = { std::move(tex), handle, lruIt, currentFrame };
 		EnforceCapacity();
 		return handle;
 	}

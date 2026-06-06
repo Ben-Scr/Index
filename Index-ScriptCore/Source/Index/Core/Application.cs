@@ -32,6 +32,15 @@ public static class Application
     /// <summary>Absolute path to the current project's <c>Assets</c> folder (e.g. <c>…/MyGame/Assets</c>); empty if no project is loaded.</summary>
     public static string DataPath => InternalCalls.Application_GetDataPath();
 
+    /// <summary>The application/executable name (Build settings "Output Name"); defaults to the project name. Empty if no project is loaded.</summary>
+    public static string Name => InternalCalls.Application_GetName();
+
+    /// <summary>The application version string from Build settings (e.g. "1.0.0"). Empty if no project is loaded.</summary>
+    public static string Version => InternalCalls.Application_GetVersion();
+
+    /// <summary>The company/publisher string from Build settings. Empty if unset or no project is loaded.</summary>
+    public static string Company => InternalCalls.Application_GetCompany();
+
     /// <summary>
     /// The temporary cache directory. Data here may be cleared by the OS.
     /// </summary>

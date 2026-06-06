@@ -616,28 +616,87 @@ namespace Index {
 		}
 	}
 
-	void ImGuiEditorLayer::ApplySnappedEntityDrag(Scene& scene, const Vec2& worldDelta) {
-		if (m_EntityDragStartPositions.empty()) return;
+	void ImGuiEditorLayer::ApplyGizmoManipulation(Scene& scene, const Vec2& newWorldPos,
+		float newWorldRotation, const Vec2& newWorldScale) {
+		if (m_SelectedEntity == entt::null || !scene.IsValid(m_SelectedEntity)) return;
 
-		const bool snap = EditorPreferences::GetGridSnapEnabled();
-		const float gx = EditorPreferences::GetGridSizeX();   // setter + Load clamp to >= k_MinGridSize
-		const float gy = EditorPreferences::GetGridSizeY();
+		TransformHierarchySystem::Propagate(scene);
+		Transform2DComponent* primary = nullptr;
+		if (!scene.TryGetComponent<Transform2DComponent>(m_SelectedEntity, primary) || !primary) return;
 
-		// Resolve current world transforms so a parent's world Position is up to
-		// date before we convert each snapped target back into local space.
+		const Vec2 worldDelta{ newWorldPos.x - primary->Position.x, newWorldPos.y - primary->Position.y };
+
+		const std::vector<EntityHandle> roots = FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene));
+		bool primaryIsRoot = false;
+		for (EntityHandle handle : roots) {
+			if (handle == m_SelectedEntity) { primaryIsRoot = true; break; }
+		}
+
+		// Full transform on the gizmo's entity (the primary). When the primary is a
+		// descendant of another selected root, that root's move already carries it,
+		// so keep its world position and apply only rotation/scale here — otherwise
+		// it would translate twice (explicitly + via the ancestor).
+		{
+			Transform2DComponent* parentTransform = nullptr;
+			const Entity parent = scene.GetEntity(m_SelectedEntity).GetParent();
+			if (parent.IsValid()) {
+				scene.TryGetComponent<Transform2DComponent>(parent.GetHandle(), parentTransform);
+			}
+			const Vec2 primaryTarget = primaryIsRoot
+				? newWorldPos
+				: Vec2{ primary->Position.x, primary->Position.y };
+			SetLocalTransformFromWorld(*primary, parentTransform, primaryTarget, newWorldRotation, newWorldScale);
+		}
+
+		// Translation delta carries the rest of the selection (rotate/scale stay on
+		// the primary). Move only roots; descendants follow through the hierarchy.
+		if (worldDelta.x != 0.0f || worldDelta.y != 0.0f) {
+			for (EntityHandle handle : roots) {
+				if (handle == m_SelectedEntity) continue;
+				Transform2DComponent* transform = nullptr;
+				if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
+				Transform2DComponent* parentTransform = nullptr;
+				const Entity parent = scene.GetEntity(handle).GetParent();
+				if (parent.IsValid()) {
+					scene.TryGetComponent<Transform2DComponent>(parent.GetHandle(), parentTransform);
+				}
+				const Vec2 target{ transform->Position.x + worldDelta.x, transform->Position.y + worldDelta.y };
+				SetLocalTransformFromWorld(*transform, parentTransform, target, transform->Rotation, transform->Scale);
+			}
+		}
+
+		TransformHierarchySystem::Propagate(scene);
+		scene.MarkDirty();
+	}
+
+	void ImGuiEditorLayer::ApplyGroupRotationScale(Scene& scene, const Vec2& pivot,
+		float deltaAngle, const Vec2& scaleFactor) {
+		const bool hasScale = (scaleFactor.x != 1.0f || scaleFactor.y != 1.0f);
+		const bool hasRotation = (deltaAngle != 0.0f);
+		if (!hasScale && !hasRotation) return;
+
 		TransformHierarchySystem::Propagate(scene);
 
-		for (const auto& [handle, startWorld] : m_EntityDragStartPositions) {
-			if (!scene.IsValid(handle)) continue;
+		// Transform every selected root about the pivot; descendants follow rigidly
+		// via the hierarchy, so a selected child of a selected parent isn't moved
+		// twice. Scale is along world axes — exact for unrotated entities and for
+		// uniform scale; rotated entities get a reasonable approximation.
+		for (EntityHandle handle : FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene))) {
 			Transform2DComponent* transform = nullptr;
 			if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
 
-			// Move by the same world delta, then snap each entity's final world
-			// position to the grid independently so every entity lands on-grid.
-			Vec2 target{ startWorld.x + worldDelta.x, startWorld.y + worldDelta.y };
-			if (snap) {
-				target.x = std::round(target.x / gx) * gx;
-				target.y = std::round(target.y / gy) * gy;
+			Vec2 worldPos = transform->Position;
+			float worldRot = transform->Rotation;
+			Vec2 worldScale = transform->Scale;
+
+			if (hasScale) {
+				worldPos = { pivot.x + (worldPos.x - pivot.x) * scaleFactor.x,
+							 pivot.y + (worldPos.y - pivot.y) * scaleFactor.y };
+				worldScale = { worldScale.x * scaleFactor.x, worldScale.y * scaleFactor.y };
+			}
+			if (hasRotation) {
+				worldPos = pivot + Rotate(worldPos - pivot, deltaAngle);
+				worldRot += deltaAngle;
 			}
 
 			Transform2DComponent* parentTransform = nullptr;
@@ -645,7 +704,7 @@ namespace Index {
 			if (parent.IsValid()) {
 				scene.TryGetComponent<Transform2DComponent>(parent.GetHandle(), parentTransform);
 			}
-			SetLocalTransformFromWorld(*transform, parentTransform, target, transform->Rotation, transform->Scale);
+			SetLocalTransformFromWorld(*transform, parentTransform, worldPos, worldRot, worldScale);
 		}
 
 		TransformHierarchySystem::Propagate(scene);
@@ -1730,6 +1789,28 @@ namespace Index {
 		m_IsSceneNodeSelected = false;
 	}
 
+	void ImGuiEditorLayer::SelectEntitiesInBox(const std::vector<EntityHandle>& entities, bool additive) {
+		ResetEditorFocusCycle();
+		if (!additive) {
+			m_SelectedEntities.clear();
+			m_SelectedEntitySet.clear();
+			m_SelectedEntity = entt::null;
+		}
+		for (EntityHandle entity : entities) {
+			if (entity == entt::null) continue;
+			if (m_SelectedEntitySet.insert(entity).second) {
+				m_SelectedEntities.push_back(entity);
+				m_SelectedEntity = entity;
+			}
+		}
+		if (!m_SelectedEntities.empty()) {
+			m_AssetBrowser.ClearSelection();
+		}
+		++m_SelectionVersion;
+		m_LastEntitySelectionIndex = -1;
+		m_IsSceneNodeSelected = false;
+	}
+
 	void ImGuiEditorLayer::SelectEntityRange(int index) {
 		ResetEditorFocusCycle();
 		const auto& order = !m_VisibleEntityOrder.empty() ? m_VisibleEntityOrder : m_EntityOrder;
@@ -2118,11 +2199,36 @@ namespace Index {
 		}
 
 		bool anyUnpacked = false;
-		for (EntityHandle entity : selectedEntities) {
-			if (!scene.IsValid(entity)) continue;
-			if (!scene.HasComponent<PrefabInstanceComponent>(entity)) continue;
-			scene.SetEntityMetaData(entity, EntityOrigin::Scene);
-			anyUnpacked = true;
+		for (EntityHandle selected : selectedEntities) {
+			if (!scene.IsValid(selected)) continue;
+			if (!scene.HasComponent<PrefabInstanceComponent>(selected)) continue;
+
+			// Unpack the whole instance, not just the selected node: every entity in the
+			// subtree carries Origin::Prefab + the same GUID, so clearing only the root left
+			// children rendering as prefab instances. Resolve to the instance root so it works
+			// regardless of which node is selected; stop at a different GUID so a nested,
+			// separately-instanced child prefab stays an instance (matches GetPrefabInstanceRoot).
+			const EntityHandle root = SceneSerializer::GetPrefabInstanceRoot(scene, selected);
+			const EntityHandle start = (root != entt::null) ? root : selected;
+			const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(start));
+
+			std::vector<EntityHandle> stack{ start };
+			while (!stack.empty()) {
+				const EntityHandle current = stack.back();
+				stack.pop_back();
+				if (!scene.IsValid(current)) continue;
+				if (scene.GetEntityOrigin(current) != EntityOrigin::Prefab) continue;
+				if (static_cast<uint64_t>(scene.GetPrefabGUID(current)) != prefabGuid) continue;
+
+				if (scene.HasComponent<HierarchyComponent>(current)) {
+					for (EntityHandle child : scene.GetComponent<HierarchyComponent>(current).Children) {
+						stack.push_back(child);
+					}
+				}
+
+				scene.SetEntityMetaData(current, EntityOrigin::Scene);
+				anyUnpacked = true;
+			}
 		}
 		if (anyUnpacked) {
 			scene.MarkDirty();
@@ -2954,6 +3060,18 @@ namespace Index {
 		INDEX_PROFILE_SCOPE("Hierarchy Panel");
 		ImGui::Begin("Entities");
 
+		// Scale the whole panel by the user's row-size preference. FontSizeBase already
+		// folds in the global font zoom + DPI, so this composes; icons/arrows/row heights
+		// all derive from the text line height and grow together. PopFont before End().
+		// Capture the unscaled base first: PushFont overwrites style.FontSizeBase, so right-click
+		// popups reset to this captured value (via ScopedPopupFontReset) to stay normal-sized.
+		const float hierarchyRowScale = EditorPreferences::GetHierarchyRowScale();
+		const bool scaleHierarchyFont = hierarchyRowScale > 1.001f || hierarchyRowScale < 0.999f;
+		const float hierarchyBaseFontSize = ImGui::GetStyle().FontSizeBase;
+		if (scaleHierarchyFont) {
+			ImGui::PushFont(nullptr, hierarchyBaseFontSize * hierarchyRowScale);
+		}
+
 		if (IsInPrefabEditMode()) {
 			// Mirror IsDirty onto m_PrefabEditDirty so callers (e.g. breadcrumb) read the canonical dirty state.
 			m_PrefabEditDirty = m_PrefabEditScene->IsDirty();
@@ -2989,8 +3107,13 @@ namespace Index {
 		// Right-click on empty space: create entities in the active scene
 		if (activeScene && ImGui::BeginPopupContextWindow("EntityCreateContext", ImGuiPopupFlags_MouseButtonRight | ImGuiPopupFlags_NoOpenOverItems))
 		{
+			// Right-click menus stay at the normal size even when the rows are drawn scaled
+			// (the scaled font otherwise leaks into the popup); pop before EndPopup so the
+			// popup window's font stack stays balanced.
+			if (scaleHierarchyFont) ImGui::PushFont(nullptr, hierarchyBaseFontSize);
 			Scene& scene = *activeScene;
 			RenderCreateEntityMenu(scene, Entity::Null);
+			if (scaleHierarchyFont) ImGui::PopFont();
 			ImGui::EndPopup();
 		}
 
@@ -3153,6 +3276,7 @@ namespace Index {
 				// Right-click context menu on scene tree node. "Remove"
 				// only makes sense with more than one scene loaded.
 				if (ImGui::BeginPopupContextItem()) {
+					if (scaleHierarchyFont) ImGui::PushFont(nullptr, hierarchyBaseFontSize); // popup at normal size; pop before EndPopup
 					const bool canRemove = scenesToShow.size() > 1;
 					if (canRemove) {
 						if (ImGui::MenuItem("Remove")) {
@@ -3173,6 +3297,7 @@ namespace Index {
 					if (ImGui::MenuItem("Move Down", nullptr, false, canMoveDown)) {
 						pendingSceneReorder = PendingSceneReorder{ scene.GetName(), sceneIdx + 1 };
 					}
+					if (scaleHierarchyFont) ImGui::PopFont();
 					ImGui::EndPopup();
 				}
 			}
@@ -3687,6 +3812,7 @@ namespace Index {
 
 					if (ImGui::BeginPopupContextItem())
 					{
+						if (scaleHierarchyFont) ImGui::PushFont(nullptr, hierarchyBaseFontSize); // popup at normal size; pop before EndPopup
 						RenderCreateEntityMenu(scene, entity);
 
 
@@ -3734,6 +3860,7 @@ namespace Index {
 							}
 						}
 
+						if (scaleHierarchyFont) ImGui::PopFont();
 						ImGui::EndPopup();
 					}
 
@@ -3929,6 +4056,9 @@ namespace Index {
 		}
 
 		m_IsEntitiesPanelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+		if (scaleHierarchyFont) {
+			ImGui::PopFont();
+		}
 		ImGui::End();
 	}
 

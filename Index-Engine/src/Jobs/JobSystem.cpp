@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -29,6 +30,16 @@ namespace Index {
 		enum class PoolState : uint8_t { Uninit = 0, Running = 1, ShuttingDown = 2 };
 		std::atomic<PoolState>           s_State{ PoolState::Uninit };
 		std::vector<std::thread>         s_Workers;
+
+		// Hot-path readers (GetWorkerCount on the render thread, ParallelFor) must
+		// NOT touch s_Workers — a concurrent Reconfigure/Shutdown mutates the vector.
+		// Mirror the size into an atomic instead.
+		std::atomic<int>                 s_WorkerCount{ 0 };
+
+		// Serializes the multi-step structural transitions (Initialize/Shutdown/
+		// Reconfigure) against each other. Reconfigure re-enters Shutdown+Initialize,
+		// so this is recursive. Hot-path readers stay lock-free via s_State/s_WorkerCount.
+		std::recursive_mutex             s_LifecycleMutex;
 
 		thread_local int                 t_WorkerIndex = -1;
 
@@ -93,6 +104,7 @@ namespace Index {
 	} // namespace
 
 	void JobSystem::Initialize(const JobSystemSpec& spec) {
+		std::lock_guard<std::recursive_mutex> lifecycle(s_LifecycleMutex);
 		if (s_State.load(std::memory_order_acquire) != PoolState::Uninit) {
 			IDX_CORE_WARN_TAG("JobSystem", "Initialize called twice — ignoring second call");
 			return;
@@ -107,11 +119,13 @@ namespace Index {
 		for (int i = 0; i < workerCount; ++i) {
 			s_Workers.emplace_back(WorkerMain, i);
 		}
+		s_WorkerCount.store(workerCount, std::memory_order_release);
 
 		IDX_CORE_INFO_TAG("JobSystem", "Started with {} worker thread(s)", workerCount);
 	}
 
 	void JobSystem::Shutdown() {
+		std::lock_guard<std::recursive_mutex> lifecycle(s_LifecycleMutex);
 		if (s_State.load(std::memory_order_acquire) != PoolState::Running) {
 			return;
 		}
@@ -130,6 +144,7 @@ namespace Index {
 			}
 		}
 		s_Workers.clear();
+		s_WorkerCount.store(0, std::memory_order_release);
 
 		std::function<void()> sink;
 		while (s_Queue.try_dequeue(sink)) { /* discard */ }
@@ -139,6 +154,7 @@ namespace Index {
 	}
 
 	int JobSystem::Reconfigure(int workerCount) {
+		std::lock_guard<std::recursive_mutex> lifecycle(s_LifecycleMutex);
 		Shutdown();
 		JobSystemSpec spec;
 		spec.WorkerCount = workerCount;
@@ -151,7 +167,9 @@ namespace Index {
 	}
 
 	int JobSystem::GetWorkerCount() {
-		return static_cast<int>(s_Workers.size());
+		// Lock-free read of the mirrored count; never touches s_Workers (which a
+		// concurrent Reconfigure/Shutdown may be mutating).
+		return s_WorkerCount.load(std::memory_order_acquire);
 	}
 
 	bool JobSystem::IsCallerWorker() {

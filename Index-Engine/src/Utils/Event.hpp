@@ -50,7 +50,16 @@ namespace Index {
         }
 
         void Invoke(Args... args) {
-            std::shared_lock lock(m_Mutex);
+            // std::shared_mutex is NOT recursive: a thread that already holds the
+            // shared lock and re-enters Invoke (e.g. a Log::OnLog listener that logs)
+            // would take a second lock_shared on the same mutex — UB, and a hard
+            // deadlock against any queued writer. On re-entry the outer Invoke still
+            // holds the lock, so m_Listeners is already protected; iterate without
+            // re-locking. (Add/Remove/Clear stay barred from inside a callback.)
+            const bool reentrant = CallerIsDispatchingThisEvent();
+            std::shared_lock<std::shared_mutex> lock(m_Mutex, std::defer_lock);
+            if (!reentrant)
+                lock.lock();
             auto& depths = DispatchDepth();
             ++depths[this];
             // RAII so the depth is decremented even if a listener throws.

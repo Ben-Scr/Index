@@ -160,9 +160,10 @@ namespace Index {
 		if (filter == Filter::Default) filter = Filter::Bilinear;
 
 		TextureHandle existing = FindTextureByPath(pathStr, filter, u, v);
-		if (existing.index != 0 || (existing.generation != 0)) {
-			if (IsValid(existing)) return existing;
-		}
+		// IsValid already rejects the {0xFFFF,0} miss handle (index out of range), so
+		// the prior index/generation precheck was wrong: it skipped the legitimate
+		// slot-0/generation-0 texture (the first one ever loaded), duplicating it.
+		if (IsValid(existing)) return existing;
 
 		uint16_t idx;
 		if (!s_FreeIndices.empty()) {

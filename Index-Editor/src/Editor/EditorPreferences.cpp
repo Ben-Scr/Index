@@ -38,6 +38,7 @@ namespace Index {
 
 			uint64_t EditorFontAssetId = k_DefaultFontAssetId;
 			int EditorFontZoomPercent = EditorPreferences::k_DefaultEditorFontZoomPercent;
+			float HierarchyRowScale = EditorPreferences::k_DefaultHierarchyRowScale;
 
 			bool RunInBackground = true;
 			bool ShowFileExtensions = false;
@@ -53,6 +54,11 @@ namespace Index {
 			float GridSizeX = EditorPreferences::k_DefaultGridSize;
 			float GridSizeY = EditorPreferences::k_DefaultGridSize;
 			bool GridSnapLinkXY = true;
+
+			bool RotationSnapEnabled = false;
+			float RotationSnapDegrees = EditorPreferences::k_DefaultRotationSnap;
+			bool ScaleSnapEnabled = false;
+			float ScaleSnap = EditorPreferences::k_DefaultScaleSnap;
 
 			bool Loaded = false;
 			bool FreshlyCreated = false;
@@ -102,6 +108,12 @@ namespace Index {
 
 			const int step = EditorPreferences::k_EditorFontZoomStepPercent;
 			return ((percent + step / 2) / step) * step;
+		}
+
+		float ClampHierarchyRowScale(float scale) {
+			if (scale < EditorPreferences::k_MinHierarchyRowScale) return EditorPreferences::k_MinHierarchyRowScale;
+			if (scale > EditorPreferences::k_MaxHierarchyRowScale) return EditorPreferences::k_MaxHierarchyRowScale;
+			return scale;
 		}
 
 #ifdef _WIN32
@@ -235,6 +247,10 @@ namespace Index {
 			const int percent = static_cast<int>(std::lround((size / k_IndexImGuiFontSize) * 100.0f));
 			s.EditorFontZoomPercent = NormalizeFontZoomPercent(percent);
 		}
+		if (const Json::Value* v = root.FindMember("HierarchyRowScale")) {
+			s.HierarchyRowScale = ClampHierarchyRowScale(
+				static_cast<float>(v->AsDoubleOr(k_DefaultHierarchyRowScale)));
+		}
 		if (const Json::Value* v = root.FindMember("ShowFileExtensions")) {
 			s.ShowFileExtensions = v->AsBoolOr(false);
 		}
@@ -277,6 +293,20 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("GridSnapLinkXY")) {
 			s.GridSnapLinkXY = v->AsBoolOr(true);
 		}
+		if (const Json::Value* v = root.FindMember("RotationSnapEnabled")) {
+			s.RotationSnapEnabled = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("RotationSnapDegrees")) {
+			s.RotationSnapDegrees = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultRotationSnap));
+			if (s.RotationSnapDegrees < EditorPreferences::k_MinRotationSnap) s.RotationSnapDegrees = EditorPreferences::k_MinRotationSnap;
+		}
+		if (const Json::Value* v = root.FindMember("ScaleSnapEnabled")) {
+			s.ScaleSnapEnabled = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("ScaleSnap")) {
+			s.ScaleSnap = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultScaleSnap));
+			if (s.ScaleSnap < EditorPreferences::k_MinScaleSnap) s.ScaleSnap = EditorPreferences::k_MinScaleSnap;
+		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
 			ImGuiStyle tempStyle;
@@ -314,6 +344,7 @@ namespace Index {
 		root.AddMember("Theme", Json::Value(std::string(ThemeModeToString(s.Theme))));
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
 		root.AddMember("EditorFontZoomPercent", Json::Value(s.EditorFontZoomPercent));
+		root.AddMember("HierarchyRowScale", Json::Value(static_cast<double>(s.HierarchyRowScale)));
 		root.AddMember("RunInBackground", Json::Value(s.RunInBackground));
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoRecompileScripts", Json::Value(s.AutoRecompileScripts));
@@ -327,6 +358,10 @@ namespace Index {
 		root.AddMember("GridSizeX", Json::Value(static_cast<double>(s.GridSizeX)));
 		root.AddMember("GridSizeY", Json::Value(static_cast<double>(s.GridSizeY)));
 		root.AddMember("GridSnapLinkXY", Json::Value(s.GridSnapLinkXY));
+		root.AddMember("RotationSnapEnabled", Json::Value(s.RotationSnapEnabled));
+		root.AddMember("RotationSnapDegrees", Json::Value(static_cast<double>(s.RotationSnapDegrees)));
+		root.AddMember("ScaleSnapEnabled", Json::Value(s.ScaleSnapEnabled));
+		root.AddMember("ScaleSnap", Json::Value(static_cast<double>(s.ScaleSnap)));
 
 		// Always serialize CustomColors once seeded — the user can return
 		// to the saved set after experimenting with Dark/Light/System.
@@ -447,6 +482,17 @@ namespace Index {
 		S().EditorFontZoomPercent = normalized;
 		Save();
 		ImGuiContextLayer::ApplyEditorFontSize();
+	}
+
+	float EditorPreferences::GetHierarchyRowScale() {
+		return S().HierarchyRowScale;
+	}
+
+	void EditorPreferences::SetHierarchyRowScale(float value) {
+		const float clamped = ClampHierarchyRowScale(value);
+		if (S().HierarchyRowScale == clamped) return;
+		S().HierarchyRowScale = clamped;
+		Save();
 	}
 
 	bool EditorPreferences::GetRunInBackground() {
@@ -581,6 +627,48 @@ namespace Index {
 	void EditorPreferences::SetGridSnapLinkXY(bool value) {
 		if (S().GridSnapLinkXY == value) return;
 		S().GridSnapLinkXY = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetRotationSnapEnabled() {
+		return S().RotationSnapEnabled;
+	}
+
+	void EditorPreferences::SetRotationSnapEnabled(bool value) {
+		if (S().RotationSnapEnabled == value) return;
+		S().RotationSnapEnabled = value;
+		Save();
+	}
+
+	float EditorPreferences::GetRotationSnapDegrees() {
+		return S().RotationSnapDegrees;
+	}
+
+	void EditorPreferences::SetRotationSnapDegrees(float value) {
+		const float clamped = (value < k_MinRotationSnap) ? k_MinRotationSnap : value;
+		if (S().RotationSnapDegrees == clamped) return;
+		S().RotationSnapDegrees = clamped;
+		Save();
+	}
+
+	bool EditorPreferences::GetScaleSnapEnabled() {
+		return S().ScaleSnapEnabled;
+	}
+
+	void EditorPreferences::SetScaleSnapEnabled(bool value) {
+		if (S().ScaleSnapEnabled == value) return;
+		S().ScaleSnapEnabled = value;
+		Save();
+	}
+
+	float EditorPreferences::GetScaleSnap() {
+		return S().ScaleSnap;
+	}
+
+	void EditorPreferences::SetScaleSnap(float value) {
+		const float clamped = (value < k_MinScaleSnap) ? k_MinScaleSnap : value;
+		if (S().ScaleSnap == clamped) return;
+		S().ScaleSnap = clamped;
 		Save();
 	}
 

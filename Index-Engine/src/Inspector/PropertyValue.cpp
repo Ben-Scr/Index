@@ -22,6 +22,18 @@ namespace Index {
 			return std::string(buf, ptr);
 		}
 
+		// Format a float through to_chars(float) so the result is the SHORTEST string
+		// that round-trips to that float. Formatting a float's double-promotion instead
+		// (e.g. 0.2f stored as 0.20000000298…) prints spurious trailing digits.
+		std::string FormatFloat(float v) {
+			char buf[64];
+			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::general);
+			if (ec != std::errc{}) {
+				return {};
+			}
+			return std::string(buf, ptr);
+		}
+
 		std::string FormatInt(int v) {
 			char buf[32];
 			auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v);
@@ -129,6 +141,9 @@ namespace Index {
 			if (StringValue == "prefab" && UIntValue != 0) return "prefab:" + std::to_string(UIntValue);
 			return UIntValue != 0 ? std::to_string(UIntValue) : std::string();
 		case PropertyType::Float:
+			// Narrow to float first so we emit the shortest float-round-tripping string,
+			// not the noisy double expansion of the promoted value.
+			return FormatFloat(static_cast<float>(FloatValue));
 		case PropertyType::Double:
 			return FormatFloat(FloatValue);
 		case PropertyType::String:
@@ -206,6 +221,14 @@ namespace Index {
 			v.IntValue = ToInt64(text);
 			// Clamp narrower signed types so an out-of-range string can't
 			// poison the in-memory value with bits the field can't hold.
+			// Int64/Enum/FlagEnum intentionally keep full 64-bit width: a
+			// C#-authored enum may be long/ulong-backed (or carry a flag bit
+			// above bit 31), and ToString/Box/Unbox are all 64-bit-clean, so
+			// clamping to int32 here would silently truncate it. Unbox's
+			// static_cast<TEnum> narrows to the field's real underlying type.
+			// Value-range validation against EnumDescriptor::Options stays
+			// drawer-authoritative — the descriptor isn't plumbed through to
+			// PropertyValue at this layer.
 			switch (type) {
 			case PropertyType::Int8:
 				v.IntValue = std::clamp<int64_t>(v.IntValue, INT8_MIN, INT8_MAX);
@@ -214,19 +237,6 @@ namespace Index {
 				v.IntValue = std::clamp<int64_t>(v.IntValue, INT16_MIN, INT16_MAX);
 				break;
 			case PropertyType::Int32:
-				v.IntValue = std::clamp<int64_t>(v.IntValue, INT32_MIN, INT32_MAX);
-				break;
-			case PropertyType::Enum:
-				// TODO: validate against EnumDescriptor::Options when the
-				// descriptor is plumbed through to PropertyValue. For now
-				// clamp to int32 range — the typical underlying type.
-				v.IntValue = std::clamp<int64_t>(v.IntValue, INT32_MIN, INT32_MAX);
-				break;
-			case PropertyType::FlagEnum:
-				// TODO: mask against the OR of EnumDescriptor::Options[].Value
-				// when the descriptor is plumbed through to PropertyValue,
-				// to reject undeclared bits. The drawer-side mask is the
-				// authoritative gate today.
 				v.IntValue = std::clamp<int64_t>(v.IntValue, INT32_MIN, INT32_MAX);
 				break;
 			default:

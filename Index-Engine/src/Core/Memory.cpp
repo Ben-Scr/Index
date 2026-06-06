@@ -128,14 +128,20 @@ namespace Index {
 		s_IsShutdown.store(true, std::memory_order_release);
 		s_Data.store(nullptr, std::memory_order_release);
 
-		// Acquire the mutex as a quiescence barrier — ensures any thread already past the gate load has finished.
+		// Drain in-flight lock holders, then INTENTIONALLY LEAK `data`.
+		// A thread that already loaded `data` in Allocate/Free but is still inside
+		// std::malloc has NOT yet reached scoped_lock(data->m_Mutex); destroying and
+		// freeing `data` here would make that later lock a use-after-free. Acquiring
+		// the mutex only serializes threads that hold/will-hold it, so it cannot order
+		// against a thread parked in malloc. Since this is a process-lifetime allocator,
+		// leaking the small AllocatorData is the standard, race-free shutdown: the
+		// mutex stays valid forever and the post-lock s_IsShutdown re-check in
+		// Allocate/Free makes late lockers no-op safely.
 		{
 			std::scoped_lock<std::mutex> quiesceLock(data->m_Mutex);
 			(void)quiesceLock;
 		}
-
-		data->~AllocatorData();
-		free(data);
+		// data deliberately not destroyed/freed — see above.
 	}
 
 	void* Allocator::AllocateRaw(size_t size)

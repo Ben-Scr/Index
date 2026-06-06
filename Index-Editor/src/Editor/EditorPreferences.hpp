@@ -59,6 +59,15 @@ namespace Index {
 		static constexpr int k_EditorFontZoomStepPercent = 25;
 		static constexpr int k_DefaultEditorFontZoomPercent = 100;
 
+		// Multiplies the font size used to draw the Entities panel rows so the
+		// hierarchy can be made larger/smaller independent of the global font.
+		static constexpr float k_MinHierarchyRowScale = 0.75f;
+		static constexpr float k_MaxHierarchyRowScale = 2.0f;
+		static constexpr float k_DefaultHierarchyRowScale = 1.2f;
+		static float GetHierarchyRowScale();
+		// Clamped to [k_MinHierarchyRowScale, k_MaxHierarchyRowScale].
+		static void SetHierarchyRowScale(float value);
+
 		// ── Behavior (migrated from IndexProject) ─────────────────
 		static bool GetRunInBackground();
 		static void SetRunInBackground(bool value);
@@ -104,6 +113,24 @@ namespace Index {
 		// When true, editing one axis mirrors into the other.
 		static bool  GetGridSnapLinkXY();
 		static void  SetGridSnapLinkXY(bool value);
+
+		// Rotation snapping (gizmo): rotate in fixed-degree increments.
+		static constexpr float k_DefaultRotationSnap = 15.0f;
+		static constexpr float k_MinRotationSnap = 1e-3f;
+		static bool  GetRotationSnapEnabled();
+		static void  SetRotationSnapEnabled(bool value);
+		static float GetRotationSnapDegrees();
+		// Clamped to >= k_MinRotationSnap.
+		static void  SetRotationSnapDegrees(float value);
+
+		// Scale snapping (gizmo): scale in fixed factor increments on X and Y.
+		static constexpr float k_DefaultScaleSnap = 0.1f;
+		static constexpr float k_MinScaleSnap = 1e-4f;
+		static bool  GetScaleSnapEnabled();
+		static void  SetScaleSnapEnabled(bool value);
+		static float GetScaleSnap();
+		// Clamped to >= k_MinScaleSnap.
+		static void  SetScaleSnap(float value);
 	};
 
 }

@@ -1940,8 +1940,14 @@ namespace Index {
 						if (IsTaskRunning(m_NativeRebuildTask) || !instance.HasNativeInstance()) return true;
 						NativeScript* nativeInstance = instance.GetNativePtr();
 						if (!nativeInstance) return true;
-						// TODO: native OnFixedUpdate hook
-						(void)fixedDt;
+						if (!TryInvokeNativeScript(instance, "FixedUpdate", [nativeInstance, fixedDt]() {
+							nativeInstance->FixedUpdate(fixedDt);
+						})) {
+							m_NativeHost.DestroyInstance(nativeInstance);
+							// Rebind before Unbind — user FixedUpdate may have realloc'd Scripts.
+							ScriptInstance* rebound = FindNativeScriptInstance(scene, entity, nativeInstance);
+							if (rebound) rebound->Unbind();
+						}
 					}
 					return true;
 				});

@@ -58,6 +58,10 @@ namespace Index {
 		// Empty = use project Name. Stored without extension; build step appends the platform extension.
 		std::string ExecutableName;
 
+		// Free-form display strings surfaced to scripting via Application.Version / Application.Company.
+		std::string BuildVersion = "1.0.0";
+		std::string BuildCompany;
+
 		// UIScaleMatch (0..1): 0.0 = width-only, 1.0 = height-only, 0.5 = geometric mean (default).
 		int UIReferenceWidth = 1920;
 		int UIReferenceHeight = 1080;

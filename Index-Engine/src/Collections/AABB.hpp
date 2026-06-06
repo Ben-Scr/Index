@@ -12,7 +12,10 @@ namespace Index {
 		Vec2 Min;
 		Vec2 Max;
 
-		AABB() = default;
+		// Zero-init explicitly: glm's vec2 default ctor does NOT zero unless
+		// GLM_FORCE_CTOR_INIT is defined (it isn't), so `AABB a;` would otherwise
+		// leave Min/Max as garbage and feed NaN into culling/zoom math.
+		AABB() : Min(0.0f), Max(0.0f) {}
 		AABB(Vec2 min, Vec2 max) : Min(min), Max(max) {}
 
 		static AABB Create(const Vec2& center, const Vec2& halfExtents, float degrees)

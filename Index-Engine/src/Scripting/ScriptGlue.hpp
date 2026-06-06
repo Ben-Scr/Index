@@ -965,6 +965,11 @@ namespace Index {
 		// ── DataAsset (appended for binary compat) ──
 		// Triggers DataAssetManager::Load; returns 1 if a managed instance now exists for the GUID.
 		int (*DataAsset_EnsureLoaded)(uint64_t guid);
+
+		// ── Application name/version/company (appended for binary compat; keep in lock-step with NativeBindingsStruct) ──
+		int (*Application_GetNameBuffer)(char* outBuffer, int capacity);
+		int (*Application_GetVersionBuffer)(char* outBuffer, int capacity);
+		int (*Application_GetCompanyBuffer)(char* outBuffer, int capacity);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

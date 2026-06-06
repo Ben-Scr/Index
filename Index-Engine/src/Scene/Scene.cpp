@@ -1234,6 +1234,25 @@ namespace Index {
 		m_Registry.on_destroy<FastCircleCollider2DComponent>().connect<&Scene::OnFastCircleCollider2DDestroy>(this);
 	}
 
+	Scene::~Scene()
+	{
+		// Empty the registry while every Scene member is still alive. Otherwise the
+		// implicit dtor destroys m_Registry last, firing on_destroy hooks (camera,
+		// transform, physics) that read/write already-destroyed members — UB. The
+		// teardown gate stops the Camera2D hook from scanning a dying registry.
+		// Normal scenes are already cleared by SceneManager::ReleaseScene (no-op here);
+		// detached scenes (prefab inspector) reach this path with live entities.
+		m_TearingDown = true;
+		m_MainCameraEntity = entt::null;
+		try {
+			m_Registry.clear();
+		}
+		catch (...) {
+			// A destructor must not throw; destroy hooks are individually guarded,
+			// but swallow defensively so teardown always completes.
+		}
+	}
+
 	void Scene::MarkTransformDirty(EntityHandle entity)
 	{
 		m_TransformHierarchyDirty = true;

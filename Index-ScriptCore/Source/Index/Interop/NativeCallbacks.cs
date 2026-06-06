@@ -904,6 +904,11 @@ internal unsafe struct NativeBindingsStruct
 
     // ── DataAsset (appended for binary compat) ──
     public delegate* unmanaged<ulong, int> DataAsset_EnsureLoaded;
+
+    // ── Application name/version/company (appended for binary compat; keep in lock-step with C++ NativeBindings) ──
+    public delegate* unmanaged<byte*, int, int> Application_GetNameBuffer;
+    public delegate* unmanaged<byte*, int, int> Application_GetVersionBuffer;
+    public delegate* unmanaged<byte*, int, int> Application_GetCompanyBuffer;
 }
 
 internal static unsafe class NativeCallbacks

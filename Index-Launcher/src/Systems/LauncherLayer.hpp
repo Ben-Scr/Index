@@ -134,6 +134,7 @@ namespace Index {
 			float Progress = 0.0f;        // 0..1; per-stage for Downloading
 			std::string Error;
 			std::string TargetProjectPath; // populated once Importing succeeds
+			std::string FinalName;         // resolved project name; registry add happens on the render thread
 			bool Running = false;
 			bool Finished = false;
 			bool Success = false;
@@ -226,7 +227,7 @@ namespace Index {
 		// Asset library: fetch index, queue downloads, poll worker.
 		void StartFetchAssetLibraryIndex();
 		void StartAssetLibraryDownload(const AssetLibraryEntry& entry);
-		void AssetLibraryDownloadWorkerBody(AssetLibraryEntry entry);
+		void AssetLibraryDownloadWorkerBody(AssetLibraryEntry entry, std::string baseDir);
 		void PollAssetLibraryTask();
 		// Returns the cached entry by id, or nullptr if no longer present.
 		const AssetLibraryEntry* FindAssetLibraryEntry(std::string_view id) const;

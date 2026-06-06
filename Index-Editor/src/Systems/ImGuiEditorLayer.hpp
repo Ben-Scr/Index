@@ -50,6 +50,14 @@ namespace Index {
 		Mixed,
 	};
 
+	// Active Editor View manipulation gizmo. None hides the gizmo entirely.
+	enum class EditorGizmoMode : uint8_t {
+		None = 0,
+		Translate,
+		Rotate,
+		Scale,
+	};
+
 	class ImGuiEditorLayer : public Layer {
 	public:
 		using Layer::Layer;
@@ -130,6 +138,9 @@ namespace Index {
 		void SetSingleEntitySelection(EntityHandle entity, int index);
 		void ToggleEntitySelection(EntityHandle entity, int index);
 		void SelectEntityRange(int index);
+		// Marquee box-select: select every entity whose bounds intersect the drag
+		// rectangle; additive (Ctrl/Shift) adds to the selection instead of replacing.
+		void SelectEntitiesInBox(const std::vector<EntityHandle>& entities, bool additive);
 
 		void RebuildSelectionSet();
 		void RecomputeInspectorSelectionCache(Scene& scene);
@@ -176,6 +187,11 @@ namespace Index {
 
 		bool HasEntityShortcutFocus() const;
 		void DrawEditorComponentGizmos(Scene& scene, bool componentGizmosEnabled);
+		void DrawComponentGizmosForActiveEntity(Scene& scene, bool componentGizmosEnabled);
+		// Always-visible component gizmos (Camera frames + components flagged
+		// drawEditorGizmoAlways), drawn for every matching entity, not just selected.
+		void DrawAlwaysVisibleComponentGizmos(Scene& scene);
+		void DrawCameraFrameGizmo(Scene& scene, EntityHandle entity);
 		const Texture2D* GetPreviewTexture(const std::filesystem::path& path);
 		void TrimPreviewTextureCache();
 		void ClearPreviewTextureCache();
@@ -195,6 +211,11 @@ namespace Index {
 		EntityHandle m_PressedEntity = entt::null;
 		std::vector<EntityHandle> m_SelectedEntities;
 		std::unordered_set<EntityHandle> m_SelectedEntitySet;
+		// Editor View marquee box-select drag state. Start is stored in screen space
+		// so the rectangle is drawn WYSIWYG; both corners convert to world on release.
+		bool m_BoxSelectPending = false;
+		bool m_BoxSelectActive = false;
+		Vec2 m_BoxSelectStartScreen{ 0.0f, 0.0f };
 		// Bumped every time the selection mutates. Inspector / future
 		// consumers compare against their own cached snapshot to decide
 		// whether their derived state is still valid.
@@ -273,17 +294,24 @@ namespace Index {
 		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
 		bool m_ShowGizmos = true;
 		bool m_ShowPostProcessing = true;
+		EditorGizmoMode m_GizmoMode = EditorGizmoMode::Translate;
+		// Running total scale read from ImGuizmo during a group-scale drag, used to
+		// derive the per-frame factor applied to the selection. Reset between drags.
+		Vec2 m_GizmoGroupScalePrev{ 1.0f, 1.0f };
 
-		// Editor View entity drag-to-move (transient, per-drag session state).
-		bool m_IsDraggingEntities = false;
-		bool m_EntityDragMoved = false;
-		bool m_EntityDragModifier = false;
-		EntityHandle m_EntityDragPicked = entt::null;
-		Vec2 m_EntityDragStartWorld{ 0.0f, 0.0f };
-		std::vector<std::pair<EntityHandle, Vec2>> m_EntityDragStartPositions;
-		// Applies a world-space drag delta to every armed entity, grid-snapping
-		// each final world position when EditorPreferences::GridSnapEnabled.
-		void ApplySnappedEntityDrag(Scene& scene, const Vec2& worldDelta);
+		// Applies the ImGuizmo gizmo result: the full transform (pos/rot/scale)
+		// goes to the primary selected entity; the translation delta also moves
+		// the other selected hierarchy roots (descendants follow via hierarchy).
+		void ApplyGizmoManipulation(Scene& scene, const Vec2& newWorldPos,
+			float newWorldRotation, const Vec2& newWorldScale);
+		// Group rotate/scale for multi-selection: transforms every selected root
+		// about `pivot` (the selection centroid); descendants follow via hierarchy.
+		void ApplyGroupRotationScale(Scene& scene, const Vec2& pivot,
+			float deltaAngle, const Vec2& scaleFactor);
+		// Draws a faint EditorOnly grid at the snap spacing across the visible view.
+		void DrawSnapGrid(const AABB& viewBounds);
+		// Draws the world X (red) and Y (green) axis lines through the origin.
+		void DrawWorldAxes(const AABB& viewBounds);
 		bool m_EditorCameraFocusActive = false;
 		Vec2 m_EditorCameraFocusTarget{ 0.0f, 0.0f };
 		float m_EditorCameraFocusOrthoSize = 5.0f;

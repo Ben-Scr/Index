@@ -38,6 +38,12 @@ internal static unsafe class InternalCalls
     internal static int Application_GetProcessorCount() => NativeCallbacks.Bindings.Application_GetProcessorCount();
     internal static string Application_GetDataPath()
         => ReadNativeString(NativeCallbacks.Bindings.Application_GetDataPathBuffer);
+    internal static string Application_GetName()
+        => ReadNativeString(NativeCallbacks.Bindings.Application_GetNameBuffer);
+    internal static string Application_GetVersion()
+        => ReadNativeString(NativeCallbacks.Bindings.Application_GetVersionBuffer);
+    internal static string Application_GetCompany()
+        => ReadNativeString(NativeCallbacks.Bindings.Application_GetCompanyBuffer);
     internal static int JobSystem_Reconfigure(int workerCount) => NativeCallbacks.Bindings.JobSystem_Reconfigure(workerCount);
 
     // ── Window ──────────────────────────────────────────────────────
