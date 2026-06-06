@@ -267,6 +267,7 @@ project "Index-Engine"
     filter "system:linux"
         pic "On"
         defines { "IDX_PLATFORM_LINUX" }
+        linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
 
     filter {}
 
@@ -325,3 +326,5 @@ project "Index-Engine"
     -- Per-config libdirs for webgpu_dawn.lib. See ApplyDawnLibDirs in
     -- the root premake5.lua for the runtime-mismatch (LNK2038) rationale.
     ApplyDawnLibDirs("../")
+
+    if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end

@@ -664,11 +664,48 @@ namespace Index {
 		return nullptr;
 	}
 
+	static std::string s_PendingRevealAssetPath;
+
+	static std::string NormalizeAssetBrowserPath(const std::filesystem::path& path) {
+		std::error_code ec;
+		std::filesystem::path normalized = std::filesystem::weakly_canonical(path, ec);
+		if (ec) {
+			normalized = path.lexically_normal();
+		}
+		return normalized.make_preferred().string();
+	}
+
+	static bool IsAssetBrowserPathInsideRoot(const std::string& path, const std::string& root) {
+		if (path.empty() || root.empty()) {
+			return false;
+		}
+
+		std::error_code ec;
+		const std::filesystem::path relative = std::filesystem::relative(
+			NormalizeAssetBrowserPath(path),
+			NormalizeAssetBrowserPath(root),
+			ec);
+		if (ec || relative.is_absolute()) {
+			return false;
+		}
+
+		for (const auto& part : relative) {
+			if (part.string() == "..") {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	void AssetBrowser::Initialize(const std::string& rootDirectory) {
 		m_RootDirectory = rootDirectory;
 		m_CurrentDirectory = rootDirectory;
 		m_Thumbnails.Initialize();
 		m_NeedsRefresh = true;
+	}
+
+	void AssetBrowser::RequestRevealAsset(const std::string& path) {
+		s_PendingRevealAssetPath = path;
 	}
 
 #ifdef IDX_PLATFORM_WINDOWS
@@ -1148,6 +1185,14 @@ namespace Index {
 		}
 
 		ImGui::Begin("Project");
+
+		if (!s_PendingRevealAssetPath.empty()) {
+			std::string revealPath = std::move(s_PendingRevealAssetPath);
+			s_PendingRevealAssetPath.clear();
+			if (!RevealAssetInBrowser(revealPath)) {
+				IDX_CORE_WARN_TAG("AssetBrowser", "Could not reveal asset in browser: '{}'", revealPath);
+			}
+		}
 
 		if (m_NeedsRefresh) {
 			Refresh();
@@ -1634,6 +1679,11 @@ namespace Index {
 
 		ImGui::EndGroup();
 
+		if (!m_PendingScrollToPath.empty() && entry.Path == m_PendingScrollToPath) {
+			ImGui::SetScrollHereY(0.5f);
+			m_PendingScrollToPath.clear();
+		}
+
 		if (isCut) {
 			ImGui::PopStyleVar();
 		}
@@ -1778,6 +1828,51 @@ namespace Index {
 #endif
 	}
 
+	bool AssetBrowser::RevealAssetInBrowser(const std::string& path) {
+		if (path.empty() || m_RootDirectory.empty()) {
+			return false;
+		}
+
+		std::error_code ec;
+		std::filesystem::path targetPath(path);
+		if (!targetPath.is_absolute()) {
+			targetPath = std::filesystem::absolute(targetPath, ec);
+			if (ec) {
+				targetPath = path;
+				ec.clear();
+			}
+		}
+
+		const std::string target = NormalizeAssetBrowserPath(targetPath);
+		if (!std::filesystem::exists(target, ec) || ec) {
+			return false;
+		}
+		if (!IsAssetBrowserPathInsideRoot(target, m_RootDirectory)) {
+			return false;
+		}
+
+		std::filesystem::path parent = std::filesystem::path(target).parent_path();
+		if (parent.empty()) {
+			parent = m_RootDirectory;
+		}
+		if (!IsAssetBrowserPathInsideRoot(parent.string(), m_RootDirectory)) {
+			return false;
+		}
+
+		NavigateTo(parent.string());
+		Refresh();
+
+		for (int i = 0; i < static_cast<int>(m_Entries.size()); ++i) {
+			if (NormalizeAssetBrowserPath(m_Entries[static_cast<std::size_t>(i)].Path) == target) {
+				SetSingleSelection(m_Entries[static_cast<std::size_t>(i)].Path, i);
+				m_PendingScrollToPath = m_Entries[static_cast<std::size_t>(i)].Path;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 
 	void AssetBrowser::RenderGridContextMenu() {
 		if (!m_ItemRightClicked &&
@@ -1786,6 +1881,7 @@ namespace Index {
 		{
 			ImGui::OpenPopup("##AssetGridCtx");
 		}
+		
 
 		if (ImGui::BeginPopup("##AssetGridCtx")) {
 			if (!m_AssetClipboardPaths.empty()) {
@@ -1799,152 +1895,177 @@ namespace Index {
 				CreateEntityPrefab(m_CurrentDirectory);
 			}
 
-			if (ImGui::BeginMenu("Texture")) {
-				if (ImGui::MenuItem("Square")) {
-					CreateDefaultTexture(m_CurrentDirectory, "Square.png", "Square");
-				}
-				if (ImGui::MenuItem("Circle")) {
-					CreateDefaultTexture(m_CurrentDirectory, "circle.png", "Circle");
-				}
-				if (ImGui::MenuItem("Capsule")) {
-					CreateDefaultTexture(m_CurrentDirectory, "Capsule.png", "Capsule");
-				}
-				if (ImGui::MenuItem("9-Sliced")) {
-					CreateDefaultTexture(m_CurrentDirectory, "9Sliced.png", "9Sliced");
-				}
-				if (ImGui::MenuItem("Hexagon (Flat-Top)")) {
-					CreateDefaultTexture(m_CurrentDirectory, "HexagonFlatTop.png", "HexagonFlatTop");
-				}
-				if (ImGui::MenuItem("Hexagon (Pointed-Top)")) {
-					CreateDefaultTexture(m_CurrentDirectory, "HexagonPointedTop.png", "HexagonPointedTop");
-				}
-				if (ImGui::MenuItem("Isometric Diamond")) {
-					CreateDefaultTexture(m_CurrentDirectory, "IsometricDiamond.png", "IsometricDiamond");
-				}
-				if (ImGui::MenuItem("Pixel")) {
-					CreateDefaultTexture(m_CurrentDirectory, "Pixel.png", "Pixel");
-				}
-				if (ImGui::MenuItem("Invisible")) {
-					CreateDefaultTexture(m_CurrentDirectory, "Invisible.png", "Invisible");
-				}
-				ImGui::EndMenu();
-			}
-
-			if (ImGui::BeginMenu("Scripting")) {
+			if (ImGui::BeginMenu("Create")) {
 				if (ImGui::MenuItem("EntityScript")) {
 					CreateScript(m_CurrentDirectory);
 				}
-				if (ImGui::MenuItem("Component")) {
-					CreateManagedCSharpComponent(m_CurrentDirectory);
-				}
-				if (ImGui::MenuItem("Native Component")) {
-					CreateNativeCSharpComponent(m_CurrentDirectory);
-				}
-				if (ImGui::MenuItem("SceneSystem")) {
-					CreateSceneSystem(m_CurrentDirectory);
-				}
-				if (ImGui::MenuItem("GlobalSystem")) {
-					CreateGlobalSystem(m_CurrentDirectory);
-				}
-				ImGui::EndMenu();
-			}
-			if (ImGui::BeginMenu("Data Asset")) {
-				std::vector<char> typesBuf(8192);
-				int required = ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
-				if (required > static_cast<int>(typesBuf.size())) {
-					typesBuf.resize(static_cast<std::size_t>(required));
-					ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
-				}
 
-				// Build a submenu tree from each type's '/'-separated menu path
-				// ("Gameplay/Item Data" -> Gameplay > Item Data). The last segment
-				// is the creatable leaf; the earlier ones are nested submenus.
-				struct MenuNode {
-					std::string Label;
-					std::string TypeName; // non-empty => creatable leaf
-					std::vector<MenuNode> Children;
-					MenuNode* FindGroup(const std::string& label) {
-						for (auto& c : Children)
-							if (c.TypeName.empty() && c.Label == label) return &c;
-						return nullptr;
+				ImGui::Separator();
+
+				if (ImGui::BeginMenu("Texture")) {
+					if (ImGui::MenuItem("Square")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Square.png", "Square");
 					}
-				};
-
-				MenuNode root;
-				bool anyType = false;
-				Json::Value parsed;
-				if (typesBuf[0] != '\0' && Json::TryParse(typesBuf.data(), parsed) && parsed.IsArray()) {
-					for (const Json::Value& item : parsed.GetArray()) {
-						if (!item.IsObject()) continue;
-						const Json::Value* typeMember = item.FindMember("type");
-						if (!typeMember) continue;
-						const std::string typeName = typeMember->AsStringOr();
-						if (typeName.empty()) continue;
-						const Json::Value* menuMember = item.FindMember("menu");
-						std::string menuPath = menuMember ? menuMember->AsStringOr(typeName) : typeName;
-						if (menuPath.empty()) menuPath = typeName;
-						anyType = true;
-
-						MenuNode* cur = &root;
-						std::size_t start = 0;
-						while (true) {
-							const std::size_t slash = menuPath.find('/', start);
-							std::string seg = (slash == std::string::npos)
-								? menuPath.substr(start)
-								: menuPath.substr(start, slash - start);
-							if (slash == std::string::npos) {
-								if (seg.empty()) seg = typeName;
-								cur->Children.push_back(MenuNode{ seg, typeName, {} });
-								break;
-							}
-							if (!seg.empty()) {
-								MenuNode* group = cur->FindGroup(seg);
-								if (!group) {
-									cur->Children.push_back(MenuNode{ seg, std::string(), {} });
-									group = &cur->Children.back();
-								}
-								cur = group;
-							}
-							start = slash + 1;
-						}
+					if (ImGui::MenuItem("Circle")) {
+						CreateDefaultTexture(m_CurrentDirectory, "circle.png", "Circle");
 					}
+					if (ImGui::MenuItem("Capsule")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Capsule.png", "Capsule");
+					}
+					if (ImGui::MenuItem("9-Sliced")) {
+						CreateDefaultTexture(m_CurrentDirectory, "9Sliced.png", "9Sliced");
+					}
+					if (ImGui::MenuItem("Hexagon (Flat-Top)")) {
+						CreateDefaultTexture(m_CurrentDirectory, "HexagonFlatTop.png", "HexagonFlatTop");
+					}
+					if (ImGui::MenuItem("Hexagon (Pointed-Top)")) {
+						CreateDefaultTexture(m_CurrentDirectory, "HexagonPointedTop.png", "HexagonPointedTop");
+					}
+					if (ImGui::MenuItem("Isometric Diamond")) {
+						CreateDefaultTexture(m_CurrentDirectory, "IsometricDiamond.png", "IsometricDiamond");
+					}
+					if (ImGui::MenuItem("Pixel")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Pixel.png", "Pixel");
+					}
+					if (ImGui::MenuItem("Invisible")) {
+						CreateDefaultTexture(m_CurrentDirectory, "Invisible.png", "Invisible");
+					}
+					ImGui::EndMenu();
 				}
 
-				if (!anyType) {
-					ImGui::TextDisabled("No DataAsset types");
+				if (ImGui::BeginMenu("Scripting")) {
+					if (ImGui::MenuItem("EntityScript")) {
+						CreateScript(m_CurrentDirectory);
+					}
+					if (ImGui::MenuItem("SceneSystem")) {
+						CreateSceneSystem(m_CurrentDirectory);
+					}
+					if (ImGui::MenuItem("GlobalSystem")) {
+						CreateGlobalSystem(m_CurrentDirectory);
+					}
+					if (ImGui::MenuItem("Empty C# Script")) {
+						CreateEmptyScript(m_CurrentDirectory);
+					}
+					ImGui::Separator();
+					if (ImGui::MenuItem("Component")) {
+						CreateManagedCSharpComponent(m_CurrentDirectory);
+					}
+					if (ImGui::MenuItem("Native Component")) {
+						CreateNativeCSharpComponent(m_CurrentDirectory);
+					}
+					ImGui::Separator();
+					if (ImGui::MenuItem("DataAsset")) {
+						CreateDataAssetScript(m_CurrentDirectory);
+					}
+					ImGui::EndMenu();
 				}
-				else {
-					std::function<void(const MenuNode&)> renderNode = [&](const MenuNode& node) {
-						for (const MenuNode& child : node.Children) {
-							if (!child.TypeName.empty()) {
-								if (ImGui::MenuItem(child.Label.c_str()))
-									CreateDataAsset(m_CurrentDirectory, child.TypeName);
-							}
-							else if (ImGui::BeginMenu(child.Label.c_str())) {
-								renderNode(child);
-								ImGui::EndMenu();
-							}
+
+				if (ImGui::BeginMenu("Data Assets")) {
+					std::vector<char> typesBuf(8192);
+					int required = ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
+					if (required > static_cast<int>(typesBuf.size())) {
+						typesBuf.resize(static_cast<std::size_t>(required));
+						ScriptEngine::GetDataAssetTypes(typesBuf.data(), static_cast<int>(typesBuf.size()));
+					}
+
+					// Build a submenu tree from each type's '/'-separated menu path
+					// ("Gameplay/Item Data" -> Gameplay > Item Data). The last segment
+					// is the creatable leaf; the earlier ones are nested submenus.
+					struct MenuNode {
+						std::string Label;
+						std::string TypeName; // non-empty => creatable leaf
+						std::vector<MenuNode> Children;
+						MenuNode* FindGroup(const std::string& label) {
+							for (auto& c : Children)
+								if (c.TypeName.empty() && c.Label == label) return &c;
+							return nullptr;
 						}
 					};
-					renderNode(root);
+
+					MenuNode root;
+					bool anyType = false;
+					Json::Value parsed;
+					if (typesBuf[0] != '\0' && Json::TryParse(typesBuf.data(), parsed) && parsed.IsArray()) {
+						for (const Json::Value& item : parsed.GetArray()) {
+							if (!item.IsObject()) continue;
+							const Json::Value* typeMember = item.FindMember("type");
+							if (!typeMember) continue;
+							const std::string typeName = typeMember->AsStringOr();
+							if (typeName.empty()) continue;
+							const Json::Value* menuMember = item.FindMember("menu");
+							std::string menuPath = menuMember ? menuMember->AsStringOr(typeName) : typeName;
+							if (menuPath.empty()) menuPath = typeName;
+							anyType = true;
+
+							MenuNode* cur = &root;
+							std::size_t start = 0;
+							while (true) {
+								const std::size_t slash = menuPath.find('/', start);
+								std::string seg = (slash == std::string::npos)
+									? menuPath.substr(start)
+									: menuPath.substr(start, slash - start);
+								if (slash == std::string::npos) {
+									if (seg.empty()) seg = typeName;
+									cur->Children.push_back(MenuNode{ seg, typeName, {} });
+									break;
+								}
+								if (!seg.empty()) {
+									MenuNode* group = cur->FindGroup(seg);
+									if (!group) {
+										cur->Children.push_back(MenuNode{ seg, std::string(), {} });
+										group = &cur->Children.back();
+									}
+									cur = group;
+								}
+								start = slash + 1;
+							}
+						}
+					}
+
+					if (!anyType) {
+						ImGui::TextDisabled("No DataAsset types");
+					}
+					else {
+						std::function<void(const MenuNode&)> renderNode = [&](const MenuNode& node) {
+							for (const MenuNode& child : node.Children) {
+								if (!child.TypeName.empty()) {
+									if (ImGui::MenuItem(child.Label.c_str()))
+										CreateDataAsset(m_CurrentDirectory, child.TypeName);
+								}
+								else if (ImGui::BeginMenu(child.Label.c_str())) {
+									renderNode(child);
+									ImGui::EndMenu();
+								}
+							}
+							};
+						renderNode(root);
+					}
+					ImGui::EndMenu();
 				}
+				if (ImGui::BeginMenu("File")) {
+					if (ImGui::MenuItem("Empty File")) {
+						CreateFile(m_CurrentDirectory, "NewFile", "", "");
+					}
+					if (ImGui::MenuItem("Text File")) {
+						CreateFile(m_CurrentDirectory, "NewFile", ".txt", "");
+					}
+					if (ImGui::MenuItem("Binary File")) {
+						CreateFile(m_CurrentDirectory, "NewFile", ".bin", "");
+					}
+					if (ImGui::MenuItem("JSON File")) {
+						CreateFile(m_CurrentDirectory, "NewFile", ".json", "{\n}\n");
+					}
+					ImGui::EndMenu();
+				}
+
 				ImGui::EndMenu();
 			}
-			if (ImGui::BeginMenu("File")) {
-				if (ImGui::MenuItem("Empty File")) {
-					CreateFile(m_CurrentDirectory, "NewFile", "", "");
-				}
-				if (ImGui::MenuItem("Text File")) {
-					CreateFile(m_CurrentDirectory, "NewFile", ".txt", "");
-				}
-				if (ImGui::MenuItem("Binary File")) {
-					CreateFile(m_CurrentDirectory, "NewFile", ".bin", "");
-				}
-				if (ImGui::MenuItem("JSON File")) {
-					CreateFile(m_CurrentDirectory, "NewFile", ".json", "{\n}\n");
-				}
-				ImGui::EndMenu();
+
+			if (ImGui::MenuItem("Show in Explorer")) {
+				RevealAssetInExplorer(m_CurrentDirectory);
 			}
+
+
 			ImGui::Separator();
 			if (ImGui::MenuItem("New Scene")) {
 				CreateScene(m_CurrentDirectory);
@@ -1982,7 +2103,7 @@ namespace Index {
 				ImGui::EndPopup();
 				return;
 			}
-			if (ImGui::MenuItem("Open in Explorer")) {
+			if (ImGui::MenuItem("Show in Explorer")) {
 				RevealAssetInExplorer(entry.Path);
 			}
 			ImGui::Separator();

@@ -320,15 +320,19 @@ namespace Index {
 		if (m_PendingScriptType != PendingScriptType::None) {
 			std::string className = newName;
 			const bool isCSharp = m_PendingScriptType == PendingScriptType::CSharp
+				|| m_PendingScriptType == PendingScriptType::CSharpEmpty
 				|| m_PendingScriptType == PendingScriptType::CSharpComponent
 				|| m_PendingScriptType == PendingScriptType::CSharpNativeComponent
 				|| m_PendingScriptType == PendingScriptType::CSharpSceneSystem
-				|| m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
+				|| m_PendingScriptType == PendingScriptType::CSharpGlobalSystem
+				|| m_PendingScriptType == PendingScriptType::CSharpDataAsset;
 
 			const bool isComponent = m_PendingScriptType == PendingScriptType::CSharpComponent;
 			const bool isNativeComponent = m_PendingScriptType == PendingScriptType::CSharpNativeComponent;
 			const bool isSceneSystem = m_PendingScriptType == PendingScriptType::CSharpSceneSystem;
 			const bool isGlobalSystem = m_PendingScriptType == PendingScriptType::CSharpGlobalSystem;
+			const bool isEmpty = m_PendingScriptType == PendingScriptType::CSharpEmpty;
+			const bool isDataAsset = m_PendingScriptType == PendingScriptType::CSharpDataAsset;
 			std::string ext = isCSharp ? ".cs" : (isComponent ? ".hpp" : ".cpp");
 
 			if (!className.empty() && className.find('.') == std::string::npos) {
@@ -344,6 +348,7 @@ namespace Index {
 			                                    : isNativeComponent ? "NewNativeComponent"
 			                                    : isSceneSystem      ? "NewSceneSystem"
 			                                    : isGlobalSystem    ? "NewGlobalSystem"
+			                                    : isDataAsset       ? "NewDataAsset"
 			                                                        : "NewScript";
 			className = EditorScriptDiscovery::SanitizeIdentifier(className, classNameFallback);
 
@@ -415,6 +420,24 @@ namespace Index {
 						"    public override void OnUpdate()\n"
 						"    {\n"
 						"    }\n"
+						"}\n";
+				}
+				else if (isDataAsset) {
+					boilerplate =
+						"using Index;\n"
+						"\n"
+						"[CreateDataAsset(\"" + className + "\")]\n"
+						"public class " + className + " : DataAsset\n"
+						"{\n"
+						"    public float Value = 0.0f;\n"
+						"}\n";
+				}
+				else if (isEmpty) {
+					boilerplate =
+						"using Index;\n"
+						"\n"
+						"public class " + className + "\n"
+						"{\n"
 						"}\n";
 				}
 				else {
@@ -942,6 +965,32 @@ namespace Index {
 		CreateAssetWithCollisionCheck(preferred,
 			[this, parentDir](const std::filesystem::path& finalPath) {
 				m_PendingScriptType = PendingScriptType::CSharpGlobalSystem;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
+	}
+
+	void AssetBrowser::CreateEmptyScript(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewScript.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharpEmpty;
+				m_PendingScriptDir = parentDir;
+				m_NeedsRefresh = true;
+				Refresh();
+				m_SelectedPath = finalPath.string();
+				BeginRename(finalPath.string(), finalPath.stem().string());
+			});
+	}
+
+	void AssetBrowser::CreateDataAssetScript(const std::string& parentDir) {
+		const std::filesystem::path preferred = std::filesystem::path(parentDir) / "NewDataAsset.cs";
+		CreateAssetWithCollisionCheck(preferred,
+			[this, parentDir](const std::filesystem::path& finalPath) {
+				m_PendingScriptType = PendingScriptType::CSharpDataAsset;
 				m_PendingScriptDir = parentDir;
 				m_NeedsRefresh = true;
 				Refresh();

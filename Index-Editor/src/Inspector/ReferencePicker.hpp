@@ -53,7 +53,8 @@ namespace Index {
 		std::optional<std::string> ConsumeSelection(const std::string& fieldKey);
 
 		bool DrawReferenceField(const char* label, const std::string& displayValue,
-			const std::string& secondary, bool missing, bool mixed, bool& outHovered);
+			const std::string& secondary, bool missing, bool mixed, bool& outHovered,
+			float reservedTrailingWidth = 0.0f);
 
 		std::string ResolveAssetDisplay(uint64_t assetId, AssetKind expectedKind,
 			bool& outMissing, std::string* outSecondary);

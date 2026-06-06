@@ -2,6 +2,8 @@
 #include "Inspector/PropertyDrawer.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Gui/AssetBrowser.hpp"
+#include "Gui/EditorIcons.hpp"
 #include "Gui/HierarchyDragData.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Gui/SpriteSliceDragPayload.hpp"
@@ -22,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Index::PropertyDrawer {
@@ -152,6 +155,47 @@ namespace Index::PropertyDrawer {
 				ImGui::EndPopup();
 			}
 			return cleared;
+		}
+
+		bool DrawAssetLocateButton(bool enabled) {
+			const float buttonSize = ImGui::GetFrameHeight();
+			const ImVec2 size(buttonSize, buttonSize);
+			if (!enabled) {
+				ImGui::BeginDisabled();
+			}
+
+			const bool clicked = ImGui::Button("##LocateAssetInBrowser", size);
+			const ImVec2 min = ImGui::GetItemRectMin();
+			const ImVec2 max = ImGui::GetItemRectMax();
+			const float iconSize = std::min(16.0f, std::max(8.0f, buttonSize - ImGui::GetStyle().FramePadding.y * 2.0f));
+			const ImVec2 iconPos(
+				min.x + (max.x - min.x - iconSize) * 0.5f,
+				min.y + (max.y - min.y - iconSize) * 0.5f);
+			const ImU32 tint = ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+			ImDrawList* drawList = ImGui::GetWindowDrawList();
+			const uint64_t icon = EditorIcons::Get("circle_dot", static_cast<int>(iconSize));
+			if (icon != 0) {
+				drawList->AddImage(
+					static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
+					iconPos,
+					ImVec2(iconPos.x + iconSize, iconPos.y + iconSize),
+					ImVec2(0.0f, 1.0f),
+					ImVec2(1.0f, 0.0f),
+					tint);
+			}
+			else {
+				const ImVec2 center(iconPos.x + iconSize * 0.5f, iconPos.y + iconSize * 0.5f);
+				drawList->AddCircle(center, iconSize * 0.38f, tint, 0, std::max(1.0f, iconSize * 0.11f));
+				drawList->AddCircleFilled(center, std::max(1.0f, iconSize * 0.12f), tint);
+			}
+
+			if (!enabled) {
+				ImGui::EndDisabled();
+			}
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+				ImGui::SetTooltip("%s", enabled ? "Select in Asset Browser" : "No asset selected");
+			}
+			return clicked && enabled;
 		}
 
 		uint64_t ResolveDroppedAssetId(const ImGuiPayload* payload) {
@@ -747,11 +791,12 @@ namespace Index::PropertyDrawer {
 		// Generic reference-type drawer. `displayResolver` produces the
 		// button text and tooltip; `pickerOpener` builds the picker entries
 		// and opens the popup; `payloadAccept` handles drag-drop targets.
-		template <typename DisplayResolver, typename PickerOpener, typename PayloadAccept>
+		template <typename DisplayResolver, typename PickerOpener, typename PayloadAccept, typename LocatePathResolver>
 		bool DrawReference(std::span<const Entity> entities, const PropertyDescriptor& d,
 			const std::string& fieldKey, PropertyType valueType,
 			DisplayResolver&& displayResolver, PickerOpener&& pickerOpener,
-			PayloadAccept&& payloadAccept)
+			PayloadAccept&& payloadAccept, bool showLocateButton,
+			LocatePathResolver&& locatePathResolver)
 		{
 			PropertyValue v;
 			const bool uniform = SampleUniform(entities, d, v);
@@ -759,10 +804,16 @@ namespace Index::PropertyDrawer {
 			std::string secondary;
 			std::string display = uniform ? displayResolver(v, missing, secondary)
 				: std::string("\xe2\x80\x94");
+			std::string locatePath;
+			if (showLocateButton && uniform && !missing) {
+				locatePath = locatePathResolver(v);
+			}
 
 			bool hovered = false;
+			const float locateButtonWidth = showLocateButton ? ImGui::GetFrameHeight() : 0.0f;
 			const bool clicked = ReferencePicker::DrawReferenceField(
-				d.DisplayName.c_str(), display, secondary, missing, !uniform, hovered);
+				d.DisplayName.c_str(), display, secondary, missing, !uniform, hovered,
+				locateButtonWidth);
 
 			bool changed = false;
 			if (clicked) {
@@ -783,6 +834,14 @@ namespace Index::PropertyDrawer {
 				}
 				ImGui::EndDragDropTarget();
 			}
+			if (showLocateButton) {
+				ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
+				ImGui::PushID(fieldKey.c_str());
+				if (DrawAssetLocateButton(!locatePath.empty())) {
+					AssetBrowser::RequestRevealAsset(locatePath);
+				}
+				ImGui::PopID();
+			}
 			if (auto pending = ReferencePicker::ConsumeSelection(fieldKey); pending) {
 				PropertyValue out = PropertyValue::FromString(valueType, *pending);
 				WriteAll(entities, d, out);
@@ -790,6 +849,20 @@ namespace Index::PropertyDrawer {
 			}
 			(void)hovered;
 			return changed;
+		}
+
+		template <typename DisplayResolver, typename PickerOpener, typename PayloadAccept>
+		bool DrawReference(std::span<const Entity> entities, const PropertyDescriptor& d,
+			const std::string& fieldKey, PropertyType valueType,
+			DisplayResolver&& displayResolver, PickerOpener&& pickerOpener,
+			PayloadAccept&& payloadAccept)
+		{
+			return DrawReference(entities, d, fieldKey, valueType,
+				std::forward<DisplayResolver>(displayResolver),
+				std::forward<PickerOpener>(pickerOpener),
+				std::forward<PayloadAccept>(payloadAccept),
+				/*showLocateButton=*/false,
+				[](const PropertyValue&) { return std::string(); });
 		}
 
 		bool DrawAssetRefByKind(std::span<const Entity> entities, const PropertyDescriptor& d,
@@ -845,6 +918,16 @@ namespace Index::PropertyDrawer {
 						}
 					}
 					return false;
+				},
+				/*showLocateButton=*/true,
+				[kind](const PropertyValue& v) {
+					if (v.UIntValue == 0) {
+						return std::string();
+					}
+					if (kind != AssetKind::Unknown && AssetRegistry::GetKind(v.UIntValue) != kind) {
+						return std::string();
+					}
+					return AssetRegistry::ResolvePath(v.UIntValue);
 				});
 		}
 

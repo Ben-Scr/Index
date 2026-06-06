@@ -169,9 +169,9 @@ jobs:
       # equivalent comment in the windows-build job for the C1083 root cause.
 
       # See the windows-build job for why CI builds Dawn. On Linux SetupDawn.sh
-      # is single-config: the lib lands at .../native/libwebgpu_dawn.a (no
-      # Release/ subfolder), and the Release .a links into both the Release and
-      # Debug engine builds (libstdc++ has no _ITERATOR_DEBUG_LEVEL ABI split).
+      # is single-config: the shared lib lands at .../native/libwebgpu_dawn.so
+      # (no Release/ subfolder). Keeping Dawn shared avoids pulling its large
+      # monolithic archive into libIndex-Engine.so during the CI link.
       - name: Restore Dawn cache
         id: cache-dawn
         uses: actions/cache/restore@v4
@@ -179,8 +179,8 @@ jobs:
           path: |
             External/dawn/include
             External/dawn/build/gen/include
-            External/dawn/build/src/dawn/native/libwebgpu_dawn.a
-          key: dawn-v1-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh') }}
+            External/dawn/build/src/dawn/native/libwebgpu_dawn.so
+          key: dawn-v2-${{ runner.os }}-${{ hashFiles('scripts/dawn/dawn-revision.txt', 'scripts/dawn/SetupDawn.sh') }}
 
       - name: Build Dawn (cache miss only)
         if: steps.cache-dawn.outputs.cache-hit != 'true'
@@ -195,7 +195,7 @@ jobs:
           path: |
             External/dawn/include
             External/dawn/build/gen/include
-            External/dawn/build/src/dawn/native/libwebgpu_dawn.a
+            External/dawn/build/src/dawn/native/libwebgpu_dawn.so
           key: ${{ steps.cache-dawn.outputs.cache-primary-key }}
 
       - name: Generate Makefiles

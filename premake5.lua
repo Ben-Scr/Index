@@ -477,7 +477,22 @@ end
 
 -- Shared postbuild command: copy the engine SharedLib next to each consumer executable
 -- so it resolves at runtime without depending on PATH.
+local function DawnSharedLibFileName()
+    if os.target() == "macosx" then
+        return "libwebgpu_dawn.dylib"
+    end
+
+    return "libwebgpu_dawn.so"
+end
+
 CopyIndexEngineDll = CopySharedLib("Index-Engine")
+CopyDawnSharedLib = ""
+if IndexModules.Render and os.target() ~= "windows" then
+    local dawnSharedLib = DawnSharedLibFileName()
+    CopyDawnSharedLib = '{COPYFILE} "' ..
+        path.join(ROOT_DIR, "External/dawn/build/src/dawn/native", dawnSharedLib) ..
+        '" "%{cfg.targetdir}/' .. dawnSharedLib .. '"'
+end
 
 -- The Index-GameComponents sidecar DLL is removed — user components now
 -- register at runtime via DynamicComponentRegistrar in Index-ScriptCore.

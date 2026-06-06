@@ -63,6 +63,7 @@ project "Index-Runtime"
         CopyGlfwDll,
         CopyGladDll
     }
+    if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     if os.target() == "windows" then postbuildcommands { CopyScriptCoreDll } end
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
 
@@ -80,6 +81,7 @@ project "Index-Runtime"
 
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
+        linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
 
     filter "configurations:Debug"
         runtime "Debug"

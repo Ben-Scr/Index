@@ -90,6 +90,26 @@ namespace Index::ReferencePicker {
 			return "Entity " + std::to_string(entityId);
 		}
 
+		const char* GetAssetKindDisplayName(AssetKind kind) {
+			switch (kind) {
+				case AssetKind::Texture: return "Texture";
+				case AssetKind::Audio: return "Audio";
+				case AssetKind::Scene: return "Scene";
+				case AssetKind::Prefab: return "Prefab";
+				case AssetKind::Script: return "Script";
+				case AssetKind::Font: return "Font";
+				case AssetKind::Shader: return "Shader";
+				case AssetKind::DataAsset: return "Data Asset";
+				case AssetKind::Unknown:
+				case AssetKind::Other:
+				default: return "Asset";
+			}
+		}
+
+		std::string GetNoneAssetLabel(AssetKind kind) {
+			return "None (" + std::string(GetAssetKindDisplayName(kind)) + ")";
+		}
+
 		// AssetRegistry is header-only with inline statics, so the editor EXE has its own copy that the engine DLL never populates; this re-registers built-ins into the EXE's copy.
 		// TODO: export AssetRegistry properly (INDEX_API) to remove this duplication.
 		void EnsureBuiltInsRegisteredInEditor() {
@@ -146,7 +166,7 @@ namespace Index::ReferencePicker {
 		};
 
 		std::vector<Entry> entries;
-		entries.push_back({ k_NoneLabel, "", "(none)", "", "__none__", false });
+		entries.push_back({ GetNoneAssetLabel(kind), "", "(none)", "", "__none__", false });
 		const auto records = AssetRegistry::GetAssetsByKind(kind);
 #ifndef NDEBUG
 		if (records.empty()) {
@@ -587,12 +607,20 @@ namespace Index::ReferencePicker {
 	}
 
 	bool DrawReferenceField(const char* label, const std::string& displayValue,
-		const std::string& secondary, bool missing, bool mixed, bool& outHovered)
+		const std::string& secondary, bool missing, bool mixed, bool& outHovered,
+		float reservedTrailingWidth)
 	{
 		ImGui::PushID(label);
 		ImGuiUtils::BeginInspectorFieldRow(label);
-		const float buttonWidth = std::max(ImGui::GetContentRegionAvail().x, 120.0f);
 		const ImGuiStyle& style = ImGui::GetStyle();
+		const float availableWidth = ImGui::GetContentRegionAvail().x;
+		float buttonWidth = availableWidth;
+		if (reservedTrailingWidth > 0.0f) {
+			buttonWidth = std::max(1.0f, availableWidth - reservedTrailingWidth - style.ItemSpacing.x);
+		}
+		else {
+			buttonWidth = std::max(buttonWidth, 120.0f);
+		}
 
 		if (missing) {
 			ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.30f, 0.12f, 0.12f, 1.0f));
@@ -612,7 +640,8 @@ namespace Index::ReferencePicker {
 
 		const std::string buttonLabel = mixed ? std::string("\xe2\x80\x94") : displayValue;  // em-dash
 		bool truncated = false;
-		const std::string buttonText = ImGuiUtils::Ellipsize(buttonLabel, buttonWidth - style.FramePadding.x * 2.0f, &truncated);
+		const float textMaxWidth = std::max(1.0f, buttonWidth - style.FramePadding.x * 2.0f);
+		const std::string buttonText = ImGuiUtils::Ellipsize(buttonLabel, textMaxWidth, &truncated);
 		const bool clicked = ImGui::Button((buttonText + "##ReferenceValue").c_str(), ImVec2(buttonWidth, 0.0f));
 		outHovered = ImGui::IsItemHovered();
 		if (outHovered && !mixed && (truncated || !secondary.empty())) {
@@ -634,7 +663,7 @@ namespace Index::ReferencePicker {
 	{
 		outMissing = false;
 		if (outSecondary) outSecondary->clear();
-		if (assetId == 0) return k_NoneLabel;
+		if (assetId == 0) return GetNoneAssetLabel(expectedKind);
 
 		EnsureBuiltInsRegisteredInEditor();
 
@@ -666,7 +695,7 @@ namespace Index::ReferencePicker {
 	{
 		outMissing = false;
 		if (outSecondary) outSecondary->clear();
-		if (prefabId == 0) return k_NoneLabel;
+		if (prefabId == 0) return GetNoneAssetLabel(AssetKind::Prefab);
 		if (AssetRegistry::GetKind(prefabId) != AssetKind::Prefab) {
 			outMissing = true;
 			return "(Missing Prefab)";

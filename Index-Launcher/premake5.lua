@@ -44,6 +44,7 @@ project "Index-Launcher"
     if os.target() == "windows" then dependson { "Index-ScriptCore" } end
 
     postbuildcommands { CopyIndexAssets, CopyIndexEngineDll, CopyGlfwDll, CopyGladDll, CopyEngineSdk }
+    if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
     if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
 
     filter "system:windows"
@@ -60,6 +61,7 @@ project "Index-Launcher"
 
     filter "system:linux"
         defines { "IDX_PLATFORM_LINUX" }
+        linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
 
     filter "configurations:Debug"
         runtime "Debug"

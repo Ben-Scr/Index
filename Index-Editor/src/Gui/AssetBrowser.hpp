@@ -19,6 +19,7 @@ namespace Index {
 		void Shutdown();
 		void Render();
 		void RequestRefresh() { m_NeedsRefresh = true; }
+		static void RequestRevealAsset(const std::string& path);
 
 		// Drop every cached thumbnail. Called by the editor's hot-reload
 		// callback after image files on disk change so the asset-tile
@@ -99,6 +100,7 @@ namespace Index {
 		void OpenAssetExternal(const DirectoryEntry& entry);
 		void OpenAssetPath(const std::string& path);
 		void RevealAssetInExplorer(const std::string& path);
+		bool RevealAssetInBrowser(const std::string& path);
 
 		void ClearAssetSelection();
 		bool IsPathSelected(const std::string& path) const;
@@ -125,6 +127,8 @@ namespace Index {
 		void CreateNativeCSharpComponent(const std::string& parentDir);
 		void CreateSceneSystem(const std::string& parentDir);
 		void CreateGlobalSystem(const std::string& parentDir);
+		void CreateEmptyScript(const std::string& parentDir);
+		void CreateDataAssetScript(const std::string& parentDir);
 		void CreateScene(const std::string& parentDir);
 		void CreateDataAsset(const std::string& parentDir, const std::string& typeName);
 		void CreateEntityPrefab(const std::string& parentDir, EntityHandle sourceEntity = entt::null);
@@ -146,6 +150,7 @@ namespace Index {
 		std::vector<std::string> m_SelectedPaths;
 		int m_LastSelectionIndex = -1;
 		std::string m_PressedPath;
+		std::string m_PendingScrollToPath;
 #ifdef IDX_PLATFORM_WINDOWS
 		std::vector<std::string> m_ExternalDragPaths;
 		int m_ExternalDragStartScreenX = 0;
@@ -170,7 +175,7 @@ namespace Index {
 		bool m_AssetClipboardCut = false;
 
 		// Deferred script creation - boilerplate/project script is written after rename is committed.
-		enum class PendingScriptType { None, CSharp, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, EntityPrefab };
+		enum class PendingScriptType { None, CSharp, CSharpEmpty, CSharpComponent, CSharpNativeComponent, CSharpSceneSystem, CSharpGlobalSystem, CSharpDataAsset, EntityPrefab };
 		PendingScriptType m_PendingScriptType = PendingScriptType::None;
 		std::string m_PendingScriptDir;  // parent directory for the new script
 		EntityHandle m_PendingPrefabSourceEntity = entt::null;

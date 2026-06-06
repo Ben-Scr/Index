@@ -3,7 +3,7 @@
 # SetupDawn.sh  ---  Linux/macOS counterpart to SetupDawn.bat.
 #
 # See SetupDawn.bat for full prose. Builds Dawn's monolithic webgpu_dawn
-# static library under External/dawn/build/. Run once; subsequent engine
+# shared library under External/dawn/build/. Run once; subsequent engine
 # builds link the result.
 # ============================================================================
 set -euo pipefail
@@ -63,7 +63,7 @@ CMAKE_ARGS=(
     -S "${DAWN_DIR}" -B "${DAWN_BUILD_DIR}"
     -DCMAKE_BUILD_TYPE=Release
     -DDAWN_FETCH_DEPENDENCIES=ON
-    -DDAWN_BUILD_MONOLITHIC_LIBRARY=STATIC
+    -DDAWN_BUILD_MONOLITHIC_LIBRARY=SHARED
     -DDAWN_ENABLE_INSTALL=OFF
     -DDAWN_BUILD_SAMPLES=OFF
     -DTINT_BUILD_TESTS=OFF
@@ -87,7 +87,7 @@ echo "  Dawn build complete."
 echo "============================================"
 echo "Headers : ${DAWN_DIR}/include"
 echo "Headers : ${DAWN_BUILD_DIR}/gen/include"
-echo "Library : ${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.a"
+echo "Library : ${DAWN_BUILD_DIR}/src/dawn/native/libwebgpu_dawn.so"
 echo
 echo "Next: regenerate the engine project files with --rhi=webgpu, e.g."
 echo "  premake5 gmake2 --rhi=webgpu"
