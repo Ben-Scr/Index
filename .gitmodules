@@ -35,3 +35,6 @@
 [submodule "External/Index-Physics"]
 	path = External/Index-Physics
 	url = https://github.com/Ben-Scr/Index-Physics.git
+[submodule "External/ImGuizmo"]
+	path = External/ImGuizmo
+	url = https://github.com/CedricGuillemet/ImGuizmo.git
