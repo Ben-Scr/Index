@@ -24,8 +24,8 @@ if exist "%INDEX_BUILD_ENV%" call "%INDEX_BUILD_ENV%"
 set "MSBUILD=%MSBUILD_PATH%"
 if not defined MSBUILD set "MSBUILD=C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
 
-if not exist "%MSBUILD%" (
-    echo [ERROR] MSBuild not found at: %MSBUILD%
+if not exist "!MSBUILD!" (
+    echo [ERROR] MSBuild not found at: !MSBUILD!
     echo         Run "python scripts\Setup.py" to detect MSBuild via vswhere,
     echo         or install Visual Studio 2022 with the C++ workload.
     popd
@@ -44,15 +44,15 @@ if not exist "Index.sln" (
 REM Each Tests/<Name> ConsoleApp is built then run in turn. Add new C++ test
 REM projects to this list; the loop exits non-zero on the first failure.
 for %%P in (Index-Engine-Tests Index-Editor-Tests) do (
-    echo [INFO] Building %%P (%CONFIG% x64)...
-    "%MSBUILD%" "Tests\%%P\%%P.vcxproj" -p:Configuration=%CONFIG% -p:Platform=x64 -verbosity:minimal -nologo
+    echo [INFO] Building %%P ^(!CONFIG! x64^)...
+    "!MSBUILD!" "Tests\%%P\%%P.vcxproj" -p:Configuration=!CONFIG! -p:Platform=x64 -verbosity:minimal -nologo
     if errorlevel 1 (
         echo [ERROR] Build failed for %%P.
         popd
         exit /b 1
     )
 
-    set "TEST_EXE=bin\%CONFIG%-windows-x86_64\%%P\%%P.exe"
+    set "TEST_EXE=bin\!CONFIG!-windows-x86_64\%%P\%%P.exe"
     if not exist "!TEST_EXE!" (
         echo [ERROR] Test binary not produced: !TEST_EXE!
         popd
