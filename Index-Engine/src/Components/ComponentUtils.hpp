@@ -3,6 +3,8 @@
 #include <Core/Assert.hpp>
 
 #include <string>
+#include <type_traits>
+#include <utility>
 
 namespace Index {
 	class ComponentUtils {

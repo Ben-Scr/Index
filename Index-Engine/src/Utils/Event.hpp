@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cassert>
 #include <functional>
+#include <string>
 #include <vector>
 #include <cstdint>
 #include <algorithm>

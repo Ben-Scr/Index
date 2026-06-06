@@ -4,6 +4,8 @@
 #include "Base.hpp"
 #include "Core/Export.hpp"
 #include "Core/UUID32.hpp"
+#include <cstddef>
+#include <functional>
 
 namespace Index {
 

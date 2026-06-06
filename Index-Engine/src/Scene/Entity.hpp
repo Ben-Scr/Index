@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 namespace Index {
 	class Scene;

@@ -3,6 +3,7 @@
 #include "Collections/Color.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/TextureHandle.hpp"
+#include <cstdint>
 
 namespace Index {
     struct Instance44 {

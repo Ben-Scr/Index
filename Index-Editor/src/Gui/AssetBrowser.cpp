@@ -725,6 +725,7 @@ namespace Index {
 		m_CurrentDirectory = directory;
 		ClearAssetSelection();
 		CancelRename();
+		m_SearchBuffer[0] = '\0';
 		m_NeedsRefresh = true;
 	}
 
@@ -745,7 +746,83 @@ namespace Index {
 		AssetRegistry::Sync();
 		m_Entries = Directory::GetEntries(m_CurrentDirectory);
 		RebuildSliceCache();
+		if (m_SearchBuffer[0] != '\0')
+			RebuildSearchResults(); // the tree may have changed under an active search
 		m_NeedsRefresh = false;
+	}
+
+	// Walk the entire Assets/ tree and collect entries (files + folders) whose
+	// name contains the current query (ASCII case-insensitive). Cached in
+	// m_SearchResults; rebuilt only when the query changes or assets refresh —
+	// never per frame. Capped so a one-character query can't flood the grid.
+	void AssetBrowser::RebuildSearchResults() {
+		m_SearchResults.clear();
+		m_SearchTruncated = false;
+		if (m_SearchBuffer[0] == '\0')
+			return;
+
+		constexpr std::size_t kMaxSearchResults = 1000;
+		constexpr std::size_t kMaxEntriesExamined = 200000; // bound the walk on huge trees
+
+		const auto toLower = [](char c) -> char {
+			return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c;
+		};
+		std::string query;
+		for (const char* p = m_SearchBuffer; *p; ++p)
+			query.push_back(toLower(*p));
+
+		const auto matches = [&](const std::string& name) {
+			if (query.size() > name.size()) return false;
+			for (std::size_t i = 0; i + query.size() <= name.size(); ++i) {
+				std::size_t j = 0;
+				for (; j < query.size(); ++j)
+					if (toLower(name[i + j]) != query[j]) break;
+				if (j == query.size()) return true;
+			}
+			return false;
+		};
+
+		std::error_code ec;
+		const std::filesystem::path root(m_RootDirectory);
+		if (m_RootDirectory.empty() || !std::filesystem::exists(root, ec) || ec)
+			return;
+
+		// Directory symlinks are not followed (follow_directory_symlink is unset,
+		// the default), so the walk can't cycle. The examined cap bounds it anyway.
+		std::size_t examined = 0;
+		for (std::filesystem::recursive_directory_iterator
+				it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
+			it != end && !ec; it.increment(ec)) {
+			if (++examined > kMaxEntriesExamined) {
+				m_SearchTruncated = true;
+				break;
+			}
+			const std::filesystem::directory_entry& de = *it;
+
+			DirectoryEntry e;
+			e.Path = de.path().string();
+			e.Name = de.path().filename().string();
+			std::error_code dirEc;
+			e.IsDirectory = de.is_directory(dirEc) && !dirEc;
+
+			if (!e.IsDirectory && AssetRegistry::IsMetaFilePath(e.Path))
+				continue;
+			if (!matches(e.Name))
+				continue;
+
+			m_SearchResults.push_back(std::move(e));
+			if (m_SearchResults.size() >= kMaxSearchResults) {
+				m_SearchTruncated = true;
+				break;
+			}
+		}
+
+		// Directories first, then alphabetical — same order as Directory::GetEntries.
+		std::sort(m_SearchResults.begin(), m_SearchResults.end(),
+			[](const DirectoryEntry& a, const DirectoryEntry& b) {
+				if (a.IsDirectory != b.IsDirectory) return a.IsDirectory > b.IsDirectory;
+				return a.Name < b.Name;
+			});
 	}
 
 	void AssetBrowser::RebuildSliceCache() {
@@ -1217,6 +1294,23 @@ namespace Index {
 		ImGui::End();
 	}
 
+	// Rendered inline on the breadcrumb row, between the path and the
+	// right-aligned refresh button (whose width is reserved here).
+	void AssetBrowser::RenderSearchBar() {
+		const ImGuiStyle& style = ImGui::GetStyle();
+		Icons::TextIcon(Icons::Type::Search);
+		const float refreshReserve = 30.0f + style.ItemSpacing.x;
+		ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - refreshReserve));
+		if (ImGui::InputTextWithHint("##AssetBrowserSearch", "Search assets...",
+			m_SearchBuffer, sizeof(m_SearchBuffer))) {
+			// A changed query reshuffles the visible list; drop the range-select
+			// anchor so a later shift-click doesn't span stale indices, then
+			// rebuild the recursive match set from the whole Assets/ tree.
+			m_LastSelectionIndex = -1;
+			RebuildSearchResults();
+		}
+	}
+
 	void AssetBrowser::RenderBreadcrumb() {
 		// Build the full segment list: [Assets, intermediate..., current].
 		// Each entry holds the visible label and the absolute path the entry
@@ -1259,7 +1353,11 @@ namespace Index {
 		// re-computes which segments fit.
 		const ImGuiStyle& style = ImGui::GetStyle();
 		const float refreshButtonReserved = 30.0f + style.ItemSpacing.x;
-		const float available = std::max(0.0f, ImGui::GetContentRegionAvail().x - refreshButtonReserved);
+		// Reserve room for the inline search box too, so a deep path truncates
+		// (shows "...") instead of squeezing the search field to nothing.
+		const float searchBarReserved = 140.0f + style.ItemSpacing.x;
+		const float available = std::max(0.0f,
+			ImGui::GetContentRegionAvail().x - refreshButtonReserved - searchBarReserved);
 
 		auto buttonWidth = [&style](const std::string& label) -> float {
 			return ImGui::CalcTextSize(label.c_str()).x + style.FramePadding.x * 2.0f;
@@ -1377,6 +1475,10 @@ namespace Index {
 			}
 		}
 
+		// Search bar fills the gap between the breadcrumb and the refresh button.
+		ImGui::SameLine();
+		RenderSearchBar();
+
 		// Refresh button (right-aligned, unchanged).
 		ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 30.0f);
 		{
@@ -1432,6 +1534,14 @@ namespace Index {
 			visibleEntriesPtr = &entriesWithPending;
 		}
 
+		// Active search shows recursive results from the whole Assets/ tree,
+		// rebuilt on query change / refresh in RebuildSearchResults(). Pointing
+		// visibleEntriesPtr at the cached results keeps m_VisibleEntryPaths, the
+		// render loop, and slice tiles index-aligned. Skipped when a pending-rename
+		// override already replaced the list (script creation in the current dir).
+		if (m_SearchBuffer[0] != '\0' && visibleEntriesPtr == &m_Entries)
+			visibleEntriesPtr = &m_SearchResults;
+
 		const std::vector<DirectoryEntry>& visibleEntries = *visibleEntriesPtr;
 		m_VisibleEntryPaths.clear();
 		m_VisibleEntryPaths.reserve(visibleEntries.size());
@@ -1463,7 +1573,13 @@ namespace Index {
 		}
 
 		if (visibleEntries.empty()) {
-			ImGui::TextDisabled("Empty folder");
+			if (m_SearchBuffer[0] != '\0')
+				ImGui::TextDisabled("No assets match \"%s\"", m_SearchBuffer);
+			else
+				ImGui::TextDisabled("Empty folder");
+		}
+		else if (m_SearchBuffer[0] != '\0' && m_SearchTruncated) {
+			ImGui::TextDisabled("Too many matches - showing a subset. Refine your search.");
 		}
 
 		RenderGridContextMenu();

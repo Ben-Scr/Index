@@ -1,0 +1,88 @@
+project "Index-Editor-Tests"
+    location "."
+    kind "ConsoleApp"
+    language "C++"
+    cppdialect "C++20"
+    staticruntime "off"
+    warnings "Extra"
+
+    targetdir ("../../bin/" .. outputdir .. "/%{prj.name}")
+    objdir ("../../bin-int/" .. outputdir .. "/%{prj.name}")
+
+    files
+    {
+        "src/**.cpp",
+        "src/**.hpp",
+        "src/**.h"
+    }
+
+    -- Editor logic under test that lives in a .cpp (not header-only). The
+    -- editor builds as an executable, not a lib, so its translation units
+    -- can't be linked; instead we compile the specific, GPU/ImGui-free
+    -- source files we exercise directly into the test binary.
+    -- EditorCamera.cpp is pure glm math (no ImGui); its `#include "pch.hpp"`
+    -- resolves through the engine include dir below.
+    files
+    {
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/EditorCamera.cpp")
+    }
+
+    -- Link the engine SharedLib (same set the editor uses) so calls into
+    -- Index:: resolve, then add the editor's own src dir so editor headers
+    -- like "Editor/EditorCamera.hpp" and "Scripting/ScriptDiscovery.hpp"
+    -- (header-only) include cleanly.
+    UseDependencySet(Dependency.EditorRuntimeCommon)
+    defines(GetIndexModuleDefines())
+    ApplyIndexEditorModuleDefine()
+    defines { "IDX_IMPORT_DLL" }
+    includedirs { path.join(ROOT_DIR, "Index-Editor/src") }
+
+    -- doctest is a single-header lib at External/doctest/doctest/doctest.h.
+    includedirs { path.join(ROOT_DIR, "External/doctest") }
+
+    -- Same DLL-copying postbuild as the engine tests so the exe finds
+    -- Index-Engine.dll (and friends) next to it at run time.
+    postbuildcommands
+    {
+        CopyIndexEngineDll,
+        CopyGlfwDll,
+        CopyGladDll
+    }
+    if CopyDawnSharedLib ~= "" then postbuildcommands { CopyDawnSharedLib } end
+    if IndexProfiler.Enabled then postbuildcommands { CopyTracyDll } end
+
+    filter "system:windows"
+        flags { "MultiProcessorCompile" }
+        buildoptions { "/utf-8", "/FS", "/Zc:preprocessor" }
+        systemversion "latest"
+        defines { "IDX_PLATFORM_WINDOWS" }
+        postbuildcommands {
+            '{COPYFILE} "' .. path.join(ROOT_DIR, "External/dotnet/lib/nethost.dll") .. '" "%{cfg.targetdir}/nethost.dll"'
+        }
+
+    filter "system:linux"
+        defines { "IDX_PLATFORM_LINUX" }
+        linkoptions { "-Wl,-rpath,'$$ORIGIN'" }
+
+    filter "configurations:Debug"
+        runtime "Debug"
+        symbols "On"
+        defines { "IDX_DEBUG", "_DEBUG" }
+
+    filter "configurations:Release"
+        runtime "Release"
+        optimize "On"
+        symbols "On"
+        defines { "IDX_RELEASE", "NDEBUG" }
+
+    filter "configurations:Dist"
+        runtime "Release"
+        optimize "Full"
+        symbols "Off"
+        defines { "IDX_DIST", "NDEBUG" }
+
+    filter {}
+
+    -- Per-config libdirs for webgpu_dawn.lib. Tests/ sits one level deeper
+    -- than the top-level project folders so the rel-prefix is "../../".
+    ApplyDawnLibDirs("../../")

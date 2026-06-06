@@ -88,6 +88,22 @@ namespace Index {
 		// (Entities hierarchy) raises a confirmation dialog first.
 		static bool GetConfirmOnDelete();
 		static void SetConfirmOnDelete(bool value);
+
+		// ── Viewport / Snapping ───────────────────────────────────
+		// When enabled, entities dragged in the Editor View snap their world
+		// position to a grid of GridSizeX/GridSizeY world units.
+		static constexpr float k_DefaultGridSize = 0.5f;
+		static constexpr float k_MinGridSize = 1e-4f;
+		static bool  GetGridSnapEnabled();
+		static void  SetGridSnapEnabled(bool value);
+		static float GetGridSizeX();
+		// Clamped to >= k_MinGridSize so snapping never divides by zero.
+		static void  SetGridSizeX(float value);
+		static float GetGridSizeY();
+		static void  SetGridSizeY(float value);
+		// When true, editing one axis mirrors into the other.
+		static bool  GetGridSnapLinkXY();
+		static void  SetGridSnapLinkXY(bool value);
 	};
 
 }

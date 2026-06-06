@@ -273,6 +273,17 @@ namespace Index {
 		EditorViewDrawMode m_EditorViewDrawMode = EditorViewDrawMode::Default;
 		bool m_ShowGizmos = true;
 		bool m_ShowPostProcessing = true;
+
+		// Editor View entity drag-to-move (transient, per-drag session state).
+		bool m_IsDraggingEntities = false;
+		bool m_EntityDragMoved = false;
+		bool m_EntityDragModifier = false;
+		EntityHandle m_EntityDragPicked = entt::null;
+		Vec2 m_EntityDragStartWorld{ 0.0f, 0.0f };
+		std::vector<std::pair<EntityHandle, Vec2>> m_EntityDragStartPositions;
+		// Applies a world-space drag delta to every armed entity, grid-snapping
+		// each final world position when EditorPreferences::GridSnapEnabled.
+		void ApplySnappedEntityDrag(Scene& scene, const Vec2& worldDelta);
 		bool m_EditorCameraFocusActive = false;
 		Vec2 m_EditorCameraFocusTarget{ 0.0f, 0.0f };
 		float m_EditorCameraFocusOrthoSize = 5.0f;

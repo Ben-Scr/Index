@@ -49,6 +49,11 @@ namespace Index {
 			bool AutoSavePrefabs = true;
 			bool ConfirmOnDelete = true;
 
+			bool GridSnapEnabled = false;
+			float GridSizeX = EditorPreferences::k_DefaultGridSize;
+			float GridSizeY = EditorPreferences::k_DefaultGridSize;
+			bool GridSnapLinkXY = true;
+
 			bool Loaded = false;
 			bool FreshlyCreated = false;
 			bool HasAppliedTheme = false;
@@ -258,6 +263,20 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("ConfirmOnDelete")) {
 			s.ConfirmOnDelete = v->AsBoolOr(true);
 		}
+		if (const Json::Value* v = root.FindMember("GridSnapEnabled")) {
+			s.GridSnapEnabled = v->AsBoolOr(false);
+		}
+		if (const Json::Value* v = root.FindMember("GridSizeX")) {
+			s.GridSizeX = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultGridSize));
+			if (s.GridSizeX < EditorPreferences::k_MinGridSize) s.GridSizeX = EditorPreferences::k_MinGridSize;
+		}
+		if (const Json::Value* v = root.FindMember("GridSizeY")) {
+			s.GridSizeY = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultGridSize));
+			if (s.GridSizeY < EditorPreferences::k_MinGridSize) s.GridSizeY = EditorPreferences::k_MinGridSize;
+		}
+		if (const Json::Value* v = root.FindMember("GridSnapLinkXY")) {
+			s.GridSnapLinkXY = v->AsBoolOr(true);
+		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
 			ImGuiStyle tempStyle;
@@ -304,6 +323,10 @@ namespace Index {
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
 		root.AddMember("AutoSavePrefabs", Json::Value(s.AutoSavePrefabs));
 		root.AddMember("ConfirmOnDelete", Json::Value(s.ConfirmOnDelete));
+		root.AddMember("GridSnapEnabled", Json::Value(s.GridSnapEnabled));
+		root.AddMember("GridSizeX", Json::Value(static_cast<double>(s.GridSizeX)));
+		root.AddMember("GridSizeY", Json::Value(static_cast<double>(s.GridSizeY)));
+		root.AddMember("GridSnapLinkXY", Json::Value(s.GridSnapLinkXY));
 
 		// Always serialize CustomColors once seeded — the user can return
 		// to the saved set after experimenting with Dark/Light/System.
@@ -516,6 +539,48 @@ namespace Index {
 	void EditorPreferences::SetConfirmOnDelete(bool value) {
 		if (S().ConfirmOnDelete == value) return;
 		S().ConfirmOnDelete = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetGridSnapEnabled() {
+		return S().GridSnapEnabled;
+	}
+
+	void EditorPreferences::SetGridSnapEnabled(bool value) {
+		if (S().GridSnapEnabled == value) return;
+		S().GridSnapEnabled = value;
+		Save();
+	}
+
+	float EditorPreferences::GetGridSizeX() {
+		return S().GridSizeX;
+	}
+
+	void EditorPreferences::SetGridSizeX(float value) {
+		const float clamped = (value < k_MinGridSize) ? k_MinGridSize : value;
+		if (S().GridSizeX == clamped) return;
+		S().GridSizeX = clamped;
+		Save();
+	}
+
+	float EditorPreferences::GetGridSizeY() {
+		return S().GridSizeY;
+	}
+
+	void EditorPreferences::SetGridSizeY(float value) {
+		const float clamped = (value < k_MinGridSize) ? k_MinGridSize : value;
+		if (S().GridSizeY == clamped) return;
+		S().GridSizeY = clamped;
+		Save();
+	}
+
+	bool EditorPreferences::GetGridSnapLinkXY() {
+		return S().GridSnapLinkXY;
+	}
+
+	void EditorPreferences::SetGridSnapLinkXY(bool value) {
+		if (S().GridSnapLinkXY == value) return;
+		S().GridSnapLinkXY = value;
 		Save();
 	}
 

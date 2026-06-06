@@ -7,11 +7,13 @@
 #include "Serialization/Path.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <queue>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Index {

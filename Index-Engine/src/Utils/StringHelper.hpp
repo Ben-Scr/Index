@@ -1,9 +1,12 @@
 #pragma once
+#include <cstddef>
 #include <string>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <string_view>
+#include <utility>
 
 namespace Index {
 	class INDEX_API StringHelper {

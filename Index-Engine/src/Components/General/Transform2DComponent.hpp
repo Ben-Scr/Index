@@ -3,6 +3,7 @@
 #include "Collections/Vec2.hpp"
 #include "Math/Trigonometry.hpp"
 #include "Scene/EntityHandle.hpp"
+#include <cmath>
 #include <glm/glm.hpp>
 
 // Forward-declared to avoid pulling Box2D headers into non-physics consumers; full def in Transform2DComponent.cpp.

@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
 
 namespace Index {
 	class INDEX_API Path {

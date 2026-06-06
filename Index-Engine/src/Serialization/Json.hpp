@@ -2,9 +2,11 @@
 
 #include "Core/Export.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Index::Json {

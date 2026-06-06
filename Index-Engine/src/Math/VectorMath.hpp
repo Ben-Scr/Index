@@ -3,6 +3,7 @@
 #include "Random.hpp"
 #include "Trigonometry.hpp"
 
+#include <cmath>
 #include <glm/glm.hpp>
 
 namespace Index {

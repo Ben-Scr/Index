@@ -4,6 +4,7 @@
 #include "Graphics/Filter.hpp"
 #include "Graphics/Wrap.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>

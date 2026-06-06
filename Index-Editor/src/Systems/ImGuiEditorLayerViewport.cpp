@@ -38,6 +38,7 @@
 #include "Math/VectorMath.hpp"
 #include "Project/ProjectManager.hpp"
 #include "Scene/ComponentInfo.hpp"
+#include "Editor/EditorPreferences.hpp"
 #include "Scene/EntityPicker.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
@@ -737,6 +738,104 @@ namespace Index {
 					ImGui::SetTooltip("Toggle post-processing effects (bloom, vignette, ...) in the Editor View");
 				}
 			}
+
+			// Grid-snapping toggle + grid-size settings popup.
+			ImGui::SameLine();
+			{
+				const bool snapActive = EditorPreferences::GetGridSnapEnabled();
+				if (snapActive) {
+					ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+				}
+				const uint64_t gridIcon = EditorIcons::Get("grid", 16);
+				bool snapToggled;
+				if (gridIcon) {
+					const float side = ImGui::GetFontSize();
+					snapToggled = ImGui::ImageButton("##GridSnapEditorView",
+						static_cast<ImTextureID>(static_cast<intptr_t>(gridIcon)),
+						ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
+				} else {
+					snapToggled = ImGui::Button("Snap##EditorView");
+				}
+				if (snapToggled) {
+					EditorPreferences::SetGridSnapEnabled(!EditorPreferences::GetGridSnapEnabled());
+				}
+				if (snapActive) {
+					ImGui::PopStyleColor();
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("Toggle grid snapping for entities dragged in the Editor View");
+				}
+
+				ImGui::SameLine(0.0f, 2.0f);
+				if (ImGui::ArrowButton("##GridSnapSettings", ImGuiDir_Down)) {
+					ImGui::OpenPopup("##GridSnapPopup");
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip("Grid snapping settings");
+				}
+
+				if (ImGui::BeginPopup("##GridSnapPopup")) {
+					bool enabled = EditorPreferences::GetGridSnapEnabled();
+					if (ImGui::Checkbox("Snap to grid", &enabled)) {
+						EditorPreferences::SetGridSnapEnabled(enabled);
+					}
+
+					bool linked = EditorPreferences::GetGridSnapLinkXY();
+					float gridX = EditorPreferences::GetGridSizeX();
+					float gridY = EditorPreferences::GetGridSizeY();
+
+					ImGui::TextUnformatted("Grid Size");
+
+					// Link toggle: chain icon if present, else a labelled button.
+					if (linked) {
+						ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+					}
+					const uint64_t linkIcon = EditorIcons::Get("link", 16);
+					bool linkToggled;
+					if (linkIcon) {
+						const float side = ImGui::GetFontSize();
+						linkToggled = ImGui::ImageButton("##GridSnapLink",
+							static_cast<ImTextureID>(static_cast<intptr_t>(linkIcon)),
+							ImVec2(side, side), ImVec2(0, 1), ImVec2(1, 0));
+					} else {
+						linkToggled = ImGui::Button(linked ? "Linked##GridSnapLink" : "Unlinked##GridSnapLink");
+					}
+					if (linked) {
+						ImGui::PopStyleColor();
+					}
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip("Link X and Y so they share one grid size");
+					}
+					if (linkToggled) {
+						linked = !linked;
+						EditorPreferences::SetGridSnapLinkXY(linked);
+						if (linked) {
+							EditorPreferences::SetGridSizeY(EditorPreferences::GetGridSizeX());
+						}
+					}
+
+					ImGui::SameLine();
+					ImGui::SetNextItemWidth(70.0f);
+					if (ImGui::DragFloat("X##GridSizeX", &gridX, 0.05f,
+							EditorPreferences::k_MinGridSize, 1000.0f, "%.3f")) {
+						EditorPreferences::SetGridSizeX(gridX);
+						if (linked) {
+							EditorPreferences::SetGridSizeY(gridX);
+						}
+					}
+
+					ImGui::SameLine();
+					ImGui::BeginDisabled(linked);
+					ImGui::SetNextItemWidth(70.0f);
+					if (ImGui::DragFloat("Y##GridSizeY", &gridY, 0.05f,
+							EditorPreferences::k_MinGridSize, 1000.0f, "%.3f")) {
+						EditorPreferences::SetGridSizeY(gridY);
+					}
+					ImGui::EndDisabled();
+
+					ImGui::EndPopup();
+				}
+			}
 		}
 
 		Scene* renderScene = IsInPrefabEditMode() ? m_PrefabEditScene.get() : &scene;
@@ -1118,18 +1217,71 @@ namespace Index {
 
 						const bool hasModifier =
 							ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeyShift;
+						m_IsDraggingEntities = false;
+						m_EntityDragMoved = false;
+						m_EntityDragPicked = picked;
+						m_EntityDragModifier = hasModifier;
+						m_EntityDragStartPositions.clear();
+
 						if (picked != entt::null) {
 							if (hasModifier) {
 								ToggleEntitySelection(picked, -1);
 							}
 							else {
-								SetSingleEntitySelection(picked, -1);
+								// Select an unselected entity immediately so it becomes the
+								// drag target; keep an existing (multi-)selection so the
+								// whole group can drag together.
+								if (!IsEntitySelected(picked)) {
+									SetSingleEntitySelection(picked, -1);
+								}
+								m_EntityDragStartWorld = worldPoint;
+								TransformHierarchySystem::Propagate(*renderScene);
+								for (EntityHandle handle : GetSelectedEntities(*renderScene)) {
+									Transform2DComponent* transform = nullptr;
+									if (renderScene->TryGetComponent<Transform2DComponent>(handle, transform) && transform) {
+										m_EntityDragStartPositions.emplace_back(handle, transform->Position);
+									}
+								}
+								m_IsDraggingEntities = !m_EntityDragStartPositions.empty();
 							}
 						}
 						else if (!hasModifier) {
 							ClearEntitySelection();
 						}
 					}
+				}
+
+				// Drag UPDATE: once past the click threshold, move the armed
+				// entities by the world delta (grid-snapped when enabled).
+				if (m_IsDraggingEntities && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+					const AABB dragAABB = m_EditorCamera.GetViewportAABB();
+					const ImVec2 dragMouse = ImGui::GetMousePos();
+					const float du = (dragMouse.x - imageTopLeft.x) / std::max(1.0f, viewportSize.x);
+					const float dv = (dragMouse.y - imageTopLeft.y) / std::max(1.0f, viewportSize.y);
+					const Vec2 worldNow{
+						dragAABB.Min.x + du * (dragAABB.Max.x - dragAABB.Min.x),
+						dragAABB.Max.y - dv * (dragAABB.Max.y - dragAABB.Min.y)
+					};
+					ApplySnappedEntityDrag(*renderScene,
+						Vec2{ worldNow.x - m_EntityDragStartWorld.x,
+						      worldNow.y - m_EntityDragStartWorld.y });
+					m_EntityDragMoved = true;
+					ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+				}
+
+				// Drag END: on release, a press without a move collapses the
+				// selection to the clicked entity (plain click-select).
+				if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+					if (!m_EntityDragMoved && !m_EntityDragModifier
+						&& m_EntityDragPicked != entt::null
+						&& renderScene->IsValid(m_EntityDragPicked))
+					{
+						SetSingleEntitySelection(m_EntityDragPicked, -1);
+					}
+					m_IsDraggingEntities = false;
+					m_EntityDragMoved = false;
+					m_EntityDragPicked = entt::null;
+					m_EntityDragStartPositions.clear();
 				}
 			}
 		}

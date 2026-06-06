@@ -5,6 +5,7 @@
 #include "Scene/Entity.hpp"
 #include "Serialization/Json.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <string>

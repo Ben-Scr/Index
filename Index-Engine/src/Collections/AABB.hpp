@@ -2,6 +2,7 @@
 #include "Vec2.hpp"
 #include "Mat2.hpp"
 #include "Core/Export.hpp"
+#include <algorithm>
 #include <ostream>
 
 namespace Index {

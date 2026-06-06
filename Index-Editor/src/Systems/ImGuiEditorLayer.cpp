@@ -616,6 +616,42 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::ApplySnappedEntityDrag(Scene& scene, const Vec2& worldDelta) {
+		if (m_EntityDragStartPositions.empty()) return;
+
+		const bool snap = EditorPreferences::GetGridSnapEnabled();
+		const float gx = EditorPreferences::GetGridSizeX();   // setter + Load clamp to >= k_MinGridSize
+		const float gy = EditorPreferences::GetGridSizeY();
+
+		// Resolve current world transforms so a parent's world Position is up to
+		// date before we convert each snapped target back into local space.
+		TransformHierarchySystem::Propagate(scene);
+
+		for (const auto& [handle, startWorld] : m_EntityDragStartPositions) {
+			if (!scene.IsValid(handle)) continue;
+			Transform2DComponent* transform = nullptr;
+			if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
+
+			// Move by the same world delta, then snap each entity's final world
+			// position to the grid independently so every entity lands on-grid.
+			Vec2 target{ startWorld.x + worldDelta.x, startWorld.y + worldDelta.y };
+			if (snap) {
+				target.x = std::round(target.x / gx) * gx;
+				target.y = std::round(target.y / gy) * gy;
+			}
+
+			Transform2DComponent* parentTransform = nullptr;
+			const Entity parent = scene.GetEntity(handle).GetParent();
+			if (parent.IsValid()) {
+				scene.TryGetComponent<Transform2DComponent>(parent.GetHandle(), parentTransform);
+			}
+			SetLocalTransformFromWorld(*transform, parentTransform, target, transform->Rotation, transform->Scale);
+		}
+
+		TransformHierarchySystem::Propagate(scene);
+		scene.MarkDirty();
+	}
+
 
 
 	// ──────────────────────────────────────────────

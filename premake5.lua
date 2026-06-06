@@ -816,6 +816,7 @@ group ""
 -- explorer and trivial to disable by commenting out this block.
 group "Tests"
     include "Tests/Index-Engine-Tests"
+    include "Tests/Index-Editor-Tests"
 group ""
 
 -- Load any index-package.lua manifests under packages/ and register their projects.

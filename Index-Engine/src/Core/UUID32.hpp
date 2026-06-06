@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Base.hpp"
+#include <cstddef>
+#include <functional>
 
 namespace Index {
 

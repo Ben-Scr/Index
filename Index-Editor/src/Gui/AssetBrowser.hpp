@@ -62,6 +62,8 @@ namespace Index {
 		void Refresh();
 
 		void RenderBreadcrumb();
+		void RenderSearchBar();
+		void RebuildSearchResults();
 		void RenderGrid();
 		void RenderAssetTile(const DirectoryEntry& entry, int index);
 
@@ -164,6 +166,14 @@ namespace Index {
 		std::string m_RenamePath;
 		char m_RenameBuffer[256]{};
 		int m_RenameFrameCounter = 0;
+
+		// Asset search filter (case-insensitive substring on file name). When
+		// non-empty the grid shows m_SearchResults — matches from the whole
+		// Assets/ tree — instead of the current folder. Rebuilt only on query
+		// change / refresh, never per frame.
+		char m_SearchBuffer[256]{};
+		std::vector<DirectoryEntry> m_SearchResults;
+		bool m_SearchTruncated = false;
 
 		float m_TileSize = 80.0f;
 		float m_TilePadding = 8.0f;

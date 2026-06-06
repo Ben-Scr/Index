@@ -6,6 +6,7 @@
 #include "Graphics/Wrap.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace Index {
