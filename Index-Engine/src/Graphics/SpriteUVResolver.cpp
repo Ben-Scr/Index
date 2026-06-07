@@ -21,7 +21,6 @@ namespace Index {
 		struct CachedEntry {
 			uint64_t                 BuiltAtEpoch = 0;
 			std::vector<SpriteSlice> Slices;
-			TextureCrop              Crop;
 		};
 
 		std::unordered_map<uint64_t, CachedEntry> g_Cache;
@@ -35,7 +34,7 @@ namespace Index {
 		std::unordered_set<std::string> g_WarnedRefs;
 		std::mutex g_WarnMutex; // guards g_WarnedRefs; always taken after g_CacheMutex
 
-		// Slice/crop rect (texture pixels) → UV, with a half-texel inset to
+		// Slice rect (texture pixels) → UV, with a half-texel inset to
 		// stop adjacent-slice bleed under Bilinear filtering.
 		SpriteUVRect RectToUV(int x, int y, int w, int h, int texPxW, int texPxH) {
 			const float fW = static_cast<float>(texPxW);
@@ -67,12 +66,8 @@ namespace Index {
 		SpriteUVRect ExtractUVLocked(const CachedEntry& entry, UUID textureAssetId,
 			std::string_view spriteName, int texPxW, int texPxH)
 		{
-			// Empty name = "single sprite": fall back to the per-texture crop if
-			// one is authored, else the full texture.
+			// Empty name = "single sprite": use the full texture.
 			if (spriteName.empty()) {
-				if (entry.Crop.Enabled && entry.Crop.W > 0 && entry.Crop.H > 0) {
-					return RectToUV(entry.Crop.X, entry.Crop.Y, entry.Crop.W, entry.Crop.H, texPxW, texPxH);
-				}
 				return SpriteUVRect{};
 			}
 
@@ -117,11 +112,9 @@ namespace Index {
 			const std::string path = AssetRegistry::ResolvePath(key);
 			entry.BuiltAtEpoch = epoch;
 			entry.Slices.clear();
-			entry.Crop = TextureCrop{};
 			if (!path.empty()) {
 				TextureMeta meta = AssetRegistry::ReadTextureMeta(path);
 				entry.Slices = std::move(meta.Sprites);
-				entry.Crop   = meta.Crop;
 			}
 		}
 		return ExtractUVLocked(entry, textureAssetId, spriteName, texPxW, texPxH);

@@ -1702,6 +1702,56 @@ namespace Index {
 		}
 	}
 
+	EntityHandle ImGuiEditorLayer::SpawnAssetEntityAt(Scene& scene, const std::string& assetPath, const Vec2& worldPos) {
+		std::string ext = std::filesystem::path(assetPath).extension().string();
+		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+		EntityHandle created = entt::null;
+
+		if (ext == ".prefab") {
+			const EntityHandle loaded = SceneSerializer::LoadEntityFromFile(scene, assetPath);
+			if (loaded != entt::null) {
+				Transform2DComponent* transform = nullptr;
+				if (scene.TryGetComponent<Transform2DComponent>(loaded, transform) && transform) {
+					transform->SetPosition(worldPos); // override the prefab's authored root position
+				}
+				EnsureEditorUniqueEntityNames(scene, { loaded });
+				created = loaded;
+			}
+		}
+		else if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
+			const std::string entityName = std::filesystem::path(assetPath).stem().string();
+			Entity newEntity = scene.CreateEntity(entityName);
+			auto& transform = newEntity.GetComponent<Transform2DComponent>();
+			transform.SetPosition(worldPos);
+
+			auto& sr = newEntity.AddComponent<SpriteRendererComponent>();
+			// Asset id drives serialization + the editor's precise selection outline;
+			// the handle is what the renderer samples this session.
+			sr.TextureAssetId = AssetRegistry::GetOrCreateAssetUUID(assetPath);
+			sr.TextureHandle = TextureManager::LoadTexture(assetPath);
+
+			Texture2D* tex = TextureManager::GetTexture(sr.TextureHandle);
+			if (tex && tex->IsValid() && tex->GetHeight() > 0) {
+				const float aspect = static_cast<float>(tex->GetWidth()) / static_cast<float>(tex->GetHeight());
+				transform.SetScale({ aspect, 1.0f });
+			}
+
+			EnsureEditorUniqueEntityNames(scene, { newEntity.GetHandle() });
+			created = newEntity.GetHandle();
+		}
+
+		if (created != entt::null) {
+			TransformHierarchySystem::Propagate(scene); // root world transform now matches the drop point this frame
+			SelectEntity(created);
+			scene.MarkDirty();
+			m_EntityOrder.clear();
+			m_EntityOrderDirty = true;
+			++m_SelectionVersion;
+		}
+		return created;
+	}
+
 	void ImGuiEditorLayer::ClearEntitySelection() {
 		ResetEditorFocusCycle();
 		m_SelectedEntity = entt::null;
@@ -3102,6 +3152,22 @@ namespace Index {
 			ImGui::Separator();
 		}
 
+		// Hierarchy search bar: a non-empty query filters the entity rows below
+		// to name matches (applied by the per-scene filter pass before rendering).
+		Icons::TextIcon(Icons::Type::Search);
+		ImGui::SetNextItemWidth(-1);
+		if (ImGui::InputTextWithHint("##HierarchySearch", "Search entities...",
+			m_HierarchySearchBuffer, sizeof(m_HierarchySearchBuffer))) {
+			// Clearing the query must restore the unfiltered (collapse-pruned)
+			// list, which only the rebuild produces — so force one this frame.
+			m_EntityOrderDirty = true;
+			// The query redefines what m_VisibleEntityOrder *is*, so a stored
+			// range-select anchor (an index into it) is now meaningless — drop
+			// it so the next shift-click re-derives the anchor from m_SelectedEntity.
+			m_LastEntitySelectionIndex = -1;
+		}
+		ImGui::Separator();
+
 		Scene* activeScene = GetContextScene();
 
 		// Right-click on empty space: create entities in the active scene
@@ -3401,6 +3467,38 @@ namespace Index {
 					m_EntityOrderDirty = false;
 				}
 
+				// Hierarchy search: a non-empty query flattens the view to the
+				// entities whose name matches (case-insensitive substring), drawn
+				// at depth 0 with no fold arrows. Filtered from m_EntityOrder (the
+				// full DFS list) so matches inside collapsed parents still surface.
+				// Overwriting the visible lists routes the clipper, range-select,
+				// and arrow-key nav through the filtered set automatically.
+				const bool hierarchySearchActive = m_HierarchySearchBuffer[0] != '\0';
+				if (hierarchySearchActive) {
+					// ToLowerCopy casts to unsigned char first — raw ::tolower on a
+					// signed char is UB for the >=0x80 bytes of UTF-8 entity names.
+					const std::string needle = ToLowerCopy(m_HierarchySearchBuffer);
+
+					std::vector<entt::entity> filtered;
+					std::vector<int> filteredDepths;
+					filtered.reserve(m_EntityOrder.size());
+					filteredDepths.reserve(m_EntityOrder.size());
+					for (EntityHandle e : m_EntityOrder) {
+						if (!scene.IsValid(e)) continue;
+						const std::string name = ToLowerCopy(scene.GetEntity(e).GetName());
+						if (name.find(needle) != std::string::npos) {
+							filtered.push_back(e);
+							filteredDepths.push_back(0);
+						}
+					}
+					m_VisibleEntityOrder = std::move(filtered);
+					m_VisibleEntityDepths = std::move(filteredDepths);
+
+					if (m_VisibleEntityOrder.empty()) {
+						ImGui::TextDisabled("No matching entities");
+					}
+				}
+
 				const ImVec2 defaultItemSpacing = ImGui::GetStyle().ItemSpacing;
 				ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(defaultItemSpacing.x, 1.0f));
 
@@ -3430,7 +3528,7 @@ namespace Index {
 					bool isCollapsed = m_CollapsedHierarchyEntities.contains(static_cast<uint32_t>(entityHandle));
 					{
 						const float arrowSize = ImGui::GetTextLineHeight();
-						if (hasChildren) {
+						if (hasChildren && !hierarchySearchActive) {
 							const ImVec2 arrowTopLeft = ImGui::GetCursorScreenPos();
 							if (ImGui::InvisibleButton("##fold", ImVec2(arrowSize, arrowSize))) {
 								if (isCollapsed) {

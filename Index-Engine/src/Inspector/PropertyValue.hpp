@@ -92,6 +92,9 @@ namespace Index {
 			case PropertyType::ComponentRef:
 				return UIntValue == other.UIntValue
 					&& StringValue == other.StringValue;
+			case PropertyType::Graph:
+				// Curve keys ride encoded in StringValue.
+				return StringValue == other.StringValue;
 			}
 			return false;
 		}

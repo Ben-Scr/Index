@@ -4,6 +4,9 @@
 #include "Core/Log.hpp"
 #include "Graphics/Backend/WebGPUBackend.hpp"
 #include "Graphics/Shader.hpp"
+#include "Graphics/Text/Font.hpp"
+#include "Graphics/Text/FontManager.hpp"
+#include "Graphics/Text/TextRenderer.hpp"
 #include "Memory/FrameArenas.hpp"
 
 #include <webgpu/webgpu_cpp.h>
@@ -22,6 +25,7 @@ namespace Index {
 	// Static class members (declared in GizmoRenderer.hpp) ────────────────────
 	bool                           GizmoRenderer2D::m_IsInitialized = false;
 	std::unique_ptr<Shader>        GizmoRenderer2D::m_GizmoShader;
+	std::unique_ptr<TextRenderer>  GizmoRenderer2D::m_TextRenderer;
 	std::vector<uint32_t>          GizmoRenderer2D::m_GizmoIndices;
 	std::vector<GizmoUploadVertex> GizmoRenderer2D::s_UploadBuffer;
 	uint16_t                       GizmoRenderer2D::m_GizmoViewId = 1;
@@ -41,12 +45,20 @@ namespace Index {
 		wgpu::BindGroup       g_BindGroup;
 		wgpu::Buffer          g_VertexBuffer;
 		uint32_t              g_VertexBufferCapacityBytes = 0;
-		// Pipeline cache keyed by (colorFormat << 1) | hasDepth, same scheme
-		// SpriteResources / TextRenderer use.
+		// Filled (triangle-list) geometry rides its own buffer: a single submission
+		// flushes ALL WriteBuffer calls before ANY pass runs, so the line pass and
+		// the filled pass must not share a vertex buffer or the second write aliases
+		// the first. (See WebGPUApi.cpp FlushFrameCommands.)
+		wgpu::Buffer          g_FilledVertexBuffer;
+		uint32_t              g_FilledVertexBufferCapacityBytes = 0;
+		// Pipeline cache keyed by (colorFormat << 2) | (hasDepth << 1) | triangleTopology,
+		// same scheme SpriteResources / TextRenderer use (extended with a topology bit).
 		std::unordered_map<uint32_t, wgpu::RenderPipeline> g_PipelineCache;
 
-		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth) {
-			return (static_cast<uint32_t>(fmt) << 1) | (hasDepth ? 1u : 0u);
+		uint32_t MakePipelineKey(wgpu::TextureFormat fmt, bool hasDepth, bool triangleTopology) {
+			return (static_cast<uint32_t>(fmt) << 2)
+				| (hasDepth ? 2u : 0u)
+				| (triangleTopology ? 1u : 0u);
 		}
 
 		uint32_t PackRgba(const Color& c) {
@@ -70,6 +82,17 @@ namespace Index {
 			out[cursor++] = PosColorVertex{ x0, y0, 0.0f, rgba };
 			out[cursor++] = PosColorVertex{ x1, y1, 0.0f, rgba };
 		}
+
+		inline void EmitTri(PosColorVertex* out, std::size_t& cursor,
+			float x0, float y0, float x1, float y1, float x2, float y2, uint32_t rgba)
+		{
+			out[cursor++] = PosColorVertex{ x0, y0, 0.0f, rgba };
+			out[cursor++] = PosColorVertex{ x1, y1, 0.0f, rgba };
+			out[cursor++] = PosColorVertex{ x2, y2, 0.0f, rgba };
+		}
+
+		// Scratch for gizmo text commands; capacity persists across frames.
+		std::vector<TextDrawCmd> g_GizmoTextCmds;
 
 		// ── GPU resource helpers ────────────────────────────────────────────
 
@@ -99,7 +122,7 @@ namespace Index {
 
 		wgpu::RenderPipeline BuildGizmoPipeline(wgpu::Device device,
 			wgpu::ShaderModule module, wgpu::PipelineLayout layout,
-			wgpu::TextureFormat colorFormat, bool hasDepth)
+			wgpu::TextureFormat colorFormat, bool hasDepth, bool triangleTopology)
 		{
 			wgpu::VertexAttribute attrs[2] = {};
 			attrs[0].format         = wgpu::VertexFormat::Float32x3;
@@ -135,11 +158,15 @@ namespace Index {
 			fragState.targets     = &colorTarget;
 
 			wgpu::PrimitiveState prim{};
-			prim.topology         = wgpu::PrimitiveTopology::LineList;
-			// LineList topology doesn't need a strip-index-format (only used
-			// by *Strip topologies); explicit Undefined matches the spec.
+			prim.topology         = triangleTopology
+				? wgpu::PrimitiveTopology::TriangleList
+				: wgpu::PrimitiveTopology::LineList;
+			// List topologies don't need a strip-index-format (only used by
+			// *Strip topologies); explicit Undefined matches the spec.
 			prim.stripIndexFormat = wgpu::IndexFormat::Undefined;
 			prim.frontFace        = wgpu::FrontFace::CCW;
+			// Filled gizmos are authored CCW above but a caller may pass a
+			// mirrored transform; never cull so a flipped winding still fills.
 			prim.cullMode         = wgpu::CullMode::None;
 
 			wgpu::DepthStencilState depthState{};
@@ -168,15 +195,15 @@ namespace Index {
 			return device.CreateRenderPipeline(&desc);
 		}
 
-		wgpu::RenderPipeline GetOrBuildPipeline(wgpu::TextureFormat colorFormat, bool hasDepth) {
+		wgpu::RenderPipeline GetOrBuildPipeline(wgpu::TextureFormat colorFormat, bool hasDepth, bool triangleTopology) {
 			if (!g_Module || !g_PipelineLayout) return nullptr;
-			const uint32_t key = MakePipelineKey(colorFormat, hasDepth);
+			const uint32_t key = MakePipelineKey(colorFormat, hasDepth, triangleTopology);
 			auto it = g_PipelineCache.find(key);
 			if (it != g_PipelineCache.end()) return it->second;
 			wgpu::Device device = WebGPUBackend::GetDevice();
 			if (!device) return nullptr;
 			wgpu::RenderPipeline pipeline = BuildGizmoPipeline(
-				device, g_Module, g_PipelineLayout, colorFormat, hasDepth);
+				device, g_Module, g_PipelineLayout, colorFormat, hasDepth, triangleTopology);
 			if (!pipeline) return nullptr;
 			g_PipelineCache.emplace(key, pipeline);
 			return pipeline;
@@ -211,21 +238,23 @@ namespace Index {
 			return static_cast<bool>(g_BindGroup);
 		}
 
-		bool EnsureVertexBuffer(wgpu::Device device, uint32_t neededBytes) {
-			if (g_VertexBufferCapacityBytes >= neededBytes && g_VertexBuffer) return true;
-			uint32_t cap = g_VertexBufferCapacityBytes > 0
-				? g_VertexBufferCapacityBytes
+		bool EnsureVertexBuffer(wgpu::Device device, wgpu::Buffer& buffer,
+			uint32_t& capacityBytes, uint32_t neededBytes, const char* label)
+		{
+			if (capacityBytes >= neededBytes && buffer) return true;
+			uint32_t cap = capacityBytes > 0
+				? capacityBytes
 				: 4096u;  // 256 lines × 16 bytes = 4 KB initial
 			while (cap < neededBytes) cap *= 2;
 
 			wgpu::BufferDescriptor desc{};
 			desc.size  = cap;
 			desc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
-			desc.label = "gizmo-vertex-buffer";
+			desc.label = label;
 			wgpu::Buffer buf = device.CreateBuffer(&desc);
 			if (!buf) return false;
-			g_VertexBuffer              = std::move(buf);
-			g_VertexBufferCapacityBytes = cap;
+			buffer        = std::move(buf);
+			capacityBytes = cap;
 			return true;
 		}
 	}  // anonymous namespace
@@ -271,15 +300,31 @@ namespace Index {
 			return false;
 		}
 
+		// Private TextRenderer for Gizmo::DrawText. A failed init just means no
+		// gizmo text — line/filled gizmos still work, so don't fail the whole renderer.
+		m_TextRenderer = std::make_unique<TextRenderer>();
+		m_TextRenderer->Initialize();
+		if (!m_TextRenderer->IsInitialized()) {
+			IDX_CORE_WARN_TAG("GizmoRenderer",
+				"Gizmo text renderer failed to initialize — Gizmo::DrawText disabled");
+			m_TextRenderer.reset();
+		}
+
 		m_IsInitialized = true;
 		return true;
 	}
 
 	void GizmoRenderer2D::Shutdown() {
 		if (!m_IsInitialized) return;
+		if (m_TextRenderer) {
+			m_TextRenderer->Shutdown();
+			m_TextRenderer.reset();
+		}
 		g_PipelineCache.clear();
-		g_VertexBuffer              = nullptr;
-		g_VertexBufferCapacityBytes = 0;
+		g_VertexBuffer                    = nullptr;
+		g_VertexBufferCapacityBytes       = 0;
+		g_FilledVertexBuffer              = nullptr;
+		g_FilledVertexBufferCapacityBytes = 0;
 		g_BindGroup                 = nullptr;
 		g_UniformBuffer             = nullptr;
 		g_PipelineLayout            = nullptr;
@@ -319,8 +364,10 @@ namespace Index {
 
 	void GizmoRenderer2D::RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask) {
 		if (!m_IsInitialized) return;
-		std::span<const PosColorVertex> verts = BuildGeometry(layerMask);
-		FlushGizmosImpl(vp, verts);
+		// Filled first so wireframe / lines paint on top of fills, then text on top of all.
+		FlushGizmosImpl(vp, BuildFilledGeometry(layerMask), /*filled=*/true);
+		FlushGizmosImpl(vp, BuildGeometry(layerMask),       /*filled=*/false);
+		RenderGizmoText(vp, layerMask);
 		// NOTE: do NOT clear here — see GizmoRenderer2D::EndFrame above.
 	}
 
@@ -402,8 +449,101 @@ namespace Index {
 		return buf.first(cursor);
 	}
 
+	std::span<const PosColorVertex>
+	GizmoRenderer2D::BuildFilledGeometry(GizmoLayerMask layerMask) {
+		std::size_t cap = Gizmo::s_FilledSquares.size() * 6   // 2 tris × 3 verts
+		                + Gizmo::s_ThickLines.size()   * 6;  // 2 tris per thick segment
+		for (const Circle& ci : Gizmo::s_FilledCircles) {
+			if (ci.Segments >= 3) {
+				cap += static_cast<std::size_t>(ci.Segments) * 3;  // fan: Segments tris × 3 verts
+			}
+		}
+		if (cap == 0) return {};
+
+		std::span<PosColorVertex> buf =
+			FrameArenas::Frame().CreateArray<PosColorVertex>(cap);
+		if (buf.empty()) {
+			static bool s_OverflowLogged = false;
+			if (!s_OverflowLogged) {
+				IDX_CORE_WARN_TAG("GizmoRenderer",
+					"Frame arena exhausted (filled): {} verts requested ({} bytes). "
+					"Increase ApplicationConfig::FrameArenaCapacityBytes.",
+					cap, cap * sizeof(PosColorVertex));
+				s_OverflowLogged = true;
+			}
+			return {};
+		}
+
+		PosColorVertex* out = buf.data();
+		std::size_t cursor = 0;
+
+		for (const Square& sq : Gizmo::s_FilledSquares) {
+			if (!HasAnyLayer(sq.Layer, layerMask)) continue;
+			const uint32_t rgba = PackRgba(sq.Color);
+			const float cx = sq.Center.x;
+			const float cy = sq.Center.y;
+			const float hx = sq.HalfExtents.x;
+			const float hy = sq.HalfExtents.y;
+			const float c  = std::cos(sq.Radiant);
+			const float s  = std::sin(sq.Radiant);
+			auto corner = [&](float lx, float ly) {
+				return std::pair<float, float>{
+					cx + lx * c - ly * s,
+					cy + lx * s + ly * c
+				};
+			};
+			const auto [x0, y0] = corner(-hx, -hy);
+			const auto [x1, y1] = corner(+hx, -hy);
+			const auto [x2, y2] = corner(+hx, +hy);
+			const auto [x3, y3] = corner(-hx, +hy);
+			EmitTri(out, cursor, x0, y0, x1, y1, x2, y2, rgba);
+			EmitTri(out, cursor, x0, y0, x2, y2, x3, y3, rgba);
+		}
+
+		for (const Circle& ci : Gizmo::s_FilledCircles) {
+			if (!HasAnyLayer(ci.Layer, layerMask)) continue;
+			if (ci.Segments < 3) continue;
+			const uint32_t rgba = PackRgba(ci.Color);
+			const float step = 6.28318530717958647692f / static_cast<float>(ci.Segments);
+			float prevX = ci.Center.x + ci.Radius;
+			float prevY = ci.Center.y;
+			for (int i = 1; i <= ci.Segments; ++i) {
+				const float a = static_cast<float>(i) * step;
+				const float nx = ci.Center.x + std::cos(a) * ci.Radius;
+				const float ny = ci.Center.y + std::sin(a) * ci.Radius;
+				EmitTri(out, cursor, ci.Center.x, ci.Center.y, prevX, prevY, nx, ny, rgba);
+				prevX = nx;
+				prevY = ny;
+			}
+		}
+
+		// Thick lines last so the selection outline paints over filled gizmos.
+		// Each segment expands to a quad whose ends are extended by HalfWidth
+		// (square caps), so segments sharing an endpoint overlap into a
+		// continuous outline.
+		for (const ThickLine& tl : Gizmo::s_ThickLines) {
+			if (!HasAnyLayer(tl.Layer, layerMask)) continue;
+			const uint32_t rgba = PackRgba(tl.Color);
+			float dx = tl.End.x - tl.Start.x;
+			float dy = tl.End.y - tl.Start.y;
+			float len = std::sqrt(dx * dx + dy * dy);
+			if (len < 1e-12f) { dx = 1.0f; dy = 0.0f; len = 1.0f; } // degenerate → tiny square
+			const float inv = 1.0f / len;
+			const float ux = dx * inv * tl.HalfWidth;   // dir * halfWidth (end extension)
+			const float uy = dy * inv * tl.HalfWidth;
+			const float nx = -uy;                         // perpendicular * halfWidth
+			const float ny = ux;
+			const float ax = tl.Start.x - ux, ay = tl.Start.y - uy;
+			const float bx = tl.End.x + ux,   by = tl.End.y + uy;
+			EmitTri(out, cursor, ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny, rgba);
+			EmitTri(out, cursor, ax + nx, ay + ny, bx - nx, by - ny, ax - nx, ay - ny, rgba);
+		}
+
+		return buf.first(cursor);
+	}
+
 	void GizmoRenderer2D::FlushGizmosImpl(const glm::mat4& vp,
-		std::span<const PosColorVertex> verts)
+		std::span<const PosColorVertex> verts, bool filled)
 	{
 		if (verts.empty()) return;
 
@@ -414,11 +554,11 @@ namespace Index {
 		wgpu::Queue  queue  = WebGPUBackend::GetQueue();
 		if (!device || !queue) return;
 
-		wgpu::RenderPipeline pipeline = GetOrBuildPipeline(target.ColorFormat, target.HasDepth);
+		wgpu::RenderPipeline pipeline = GetOrBuildPipeline(target.ColorFormat, target.HasDepth, filled);
 		if (!pipeline) {
 			IDX_CORE_WARN_TAG("GizmoRenderer",
-				"No pipeline for color-format {} hasDepth={} — gizmos not submitted",
-				static_cast<int>(target.ColorFormat), target.HasDepth);
+				"No pipeline for color-format {} hasDepth={} filled={} — gizmos not submitted",
+				static_cast<int>(target.ColorFormat), target.HasDepth, filled);
 			return;
 		}
 
@@ -426,10 +566,16 @@ namespace Index {
 		if (!EnsureBindGroup(device))    return;
 		queue.WriteBuffer(g_UniformBuffer, 0, glm::value_ptr(vp), 64);
 
+		// Distinct buffers per topology: a single submission flushes all WriteBuffer
+		// calls before any pass runs, so line and filled passes must not share one.
+		wgpu::Buffer& vertexBuffer  = filled ? g_FilledVertexBuffer : g_VertexBuffer;
+		uint32_t&     capacityBytes = filled ? g_FilledVertexBufferCapacityBytes : g_VertexBufferCapacityBytes;
+		const char*   label         = filled ? "gizmo-filled-vertex-buffer" : "gizmo-vertex-buffer";
+
 		const uint32_t numVerts = static_cast<uint32_t>(verts.size());
 		const uint32_t totalBytes = numVerts * static_cast<uint32_t>(sizeof(PosColorVertex));
-		if (!EnsureVertexBuffer(device, totalBytes)) return;
-		queue.WriteBuffer(g_VertexBuffer, 0, verts.data(), totalBytes);
+		if (!EnsureVertexBuffer(device, vertexBuffer, capacityBytes, totalBytes, label)) return;
+		queue.WriteBuffer(vertexBuffer, 0, verts.data(), totalBytes);
 
 		wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
 		if (!encoder) return;
@@ -450,7 +596,7 @@ namespace Index {
 		}
 
 		wgpu::RenderPassDescriptor passDesc{};
-		passDesc.label                  = "gizmo-pass";
+		passDesc.label                  = filled ? "gizmo-filled-pass" : "gizmo-pass";
 		passDesc.colorAttachmentCount   = 1;
 		passDesc.colorAttachments       = &colorAtt;
 		passDesc.depthStencilAttachment = target.HasDepth ? &depthAtt : nullptr;
@@ -459,13 +605,48 @@ namespace Index {
 		WebGPUBackend::ApplyCachedViewportToPass(pass);
 		pass.SetPipeline(pipeline);
 		pass.SetBindGroup(0, g_BindGroup);
-		pass.SetVertexBuffer(0, g_VertexBuffer);
+		pass.SetVertexBuffer(0, vertexBuffer);
 		pass.Draw(numVerts, /*instanceCount=*/1, /*firstVertex=*/0, /*firstInstance=*/0);
 		pass.End();
 
 		if (target.IsSwapChain) {
 			WebGPUBackend::MarkSwapChainRendered();
 		}
+	}
+
+	void GizmoRenderer2D::RenderGizmoText(const glm::mat4& vp, GizmoLayerMask layerMask) {
+		if (!m_TextRenderer || !m_TextRenderer->IsInitialized() || Gizmo::s_Texts.empty())
+			return;
+
+		Font* font = FontManager::GetFont(FontManager::GetDefaultFont());
+		if (!font || !font->IsLoaded()) return;
+
+		const float bakedSize = font->GetPixelSize() > 0.0f ? font->GetPixelSize() : 32.0f;
+
+		g_GizmoTextCmds.clear();
+		g_GizmoTextCmds.reserve(Gizmo::s_Texts.size());
+		for (const GizmoText& t : Gizmo::s_Texts) {
+			if (!HasAnyLayer(t.Layer, layerMask)) continue;
+			if (t.Text.empty()) continue;
+
+			// Mirror entity-text world sizing: FontSize(px) → world units.
+			const float drawScale = (t.Size / bakedSize) / k_TextPixelsPerWorldUnit;
+
+			TextDrawCmd cmd;
+			cmd.FontPtr  = font;
+			cmd.Text     = std::string_view(t.Text);
+			cmd.X        = t.Position.x;
+			cmd.Y        = t.Position.y;
+			cmd.Scale    = drawScale;
+			cmd.Tint     = t.Color;
+			cmd.Align    = TextAlignment::Center;
+			cmd.Rotation = t.Radiant;     // already radians (Gizmo::DrawText converted from degrees)
+			cmd.Pivot    = t.Position;    // rotate about the anchor
+			g_GizmoTextCmds.push_back(cmd);
+		}
+
+		if (!g_GizmoTextCmds.empty())
+			m_TextRenderer->RenderInstances(g_GizmoTextCmds, vp);
 	}
 
 }  // namespace Index

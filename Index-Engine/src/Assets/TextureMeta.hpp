@@ -22,17 +22,6 @@ namespace Index {
 		float PivotY = 0.5f;
 	};
 
-	// Per-texture crop in texture pixels. Applies when a renderer uses this
-	// texture with an empty SpriteName (the "single sprite" case) — lets a
-	// lone sprite be trimmed without authoring a named slice.
-	struct INDEX_API TextureCrop {
-		bool Enabled = false;
-		int  X = 0;
-		int  Y = 0;
-		int  W = 0;
-		int  H = 0;
-	};
-
 	struct INDEX_API TextureImportSettings {
 		Filter FilterMode = Filter::Bilinear;
 		Wrap   WrapU      = Wrap::Clamp;
@@ -43,7 +32,6 @@ namespace Index {
 	struct INDEX_API TextureMeta {
 		TextureImportSettings Import;
 		std::vector<SpriteSlice> Sprites;
-		TextureCrop Crop;
 		bool HasImportBlock = false;
 
 		const SpriteSlice* FindByName(std::string_view name) const {

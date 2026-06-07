@@ -64,6 +64,10 @@ namespace Index {
 		EntityRef,
 		PrefabRef,
 		ComponentRef,
+
+		// Inline animation curve (C# Index.Graph). The keys ride in StringValue as the
+		// shared ';'/',' codec; drawn with the curve editor, not a reference picker.
+		Graph,
 	};
 
 	struct EnumOption {
@@ -113,6 +117,7 @@ namespace Index {
 		case PropertyType::EntityRef:    return "entity";
 		case PropertyType::PrefabRef:    return "prefab";
 		case PropertyType::ComponentRef: return "component";
+		case PropertyType::Graph:        return "graph";
 		}
 		return "none";
 	}
@@ -150,6 +155,7 @@ namespace Index {
 		if (text == "entity")      return PropertyType::EntityRef;
 		if (text == "prefab")      return PropertyType::PrefabRef;
 		if (text == "component")   return PropertyType::ComponentRef;
+		if (text == "graph")       return PropertyType::Graph;
 		return PropertyType::None;
 	}
 

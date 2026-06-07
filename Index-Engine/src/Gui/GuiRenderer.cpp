@@ -194,8 +194,7 @@ namespace Index {
 		{
 			Texture2D* tex = TextureManager::GetTexture(image.TextureHandle);
 			if (!tex) return;
-			// Resolve even when the name is empty: the texture may carry a
-			// per-texture crop that applies to the whole "single sprite".
+			// Empty name resolves to the full texture; a named sprite to its slice rect.
 			inst.UvRect = ResolveSpriteUVRect(image.TextureAssetId,
 				image.SpriteName,
 				static_cast<int>(tex->GetWidth()),

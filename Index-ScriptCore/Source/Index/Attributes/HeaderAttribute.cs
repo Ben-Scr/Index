@@ -11,6 +11,6 @@ public class HeaderAttribute : Attribute
     public HeaderAttribute(string content = "", int size = 5)
     {
         Content = content;
-        Size = size;
+        Size = Math.Clamp(size, 1, 100);
     }
 }

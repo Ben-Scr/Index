@@ -141,6 +141,7 @@
     <Compile Include="Source\Index\Jobs\WriteOnlyAttribute.cs" />
     <Compile Include="Source\Index\Math\AABB.cs" />
     <Compile Include="Source\Index\Math\Color.cs" />
+    <Compile Include="Source\Index\Math\Graph.cs" />
     <Compile Include="Source\Index\Math\Mathf.cs" />
     <Compile Include="Source\Index\Math\ParallelRandom.cs" />
     <Compile Include="Source\Index\Math\PerlinNoise2D.cs" />

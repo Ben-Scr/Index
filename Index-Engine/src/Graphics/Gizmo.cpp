@@ -5,6 +5,10 @@ namespace Index {
 	std::vector<Square> Gizmo::s_Squares;
 	std::vector<Circle> Gizmo::s_Circles;
 	std::vector<Line> Gizmo::s_Lines;
+	std::vector<ThickLine> Gizmo::s_ThickLines;
+	std::vector<Square> Gizmo::s_FilledSquares;
+	std::vector<Circle> Gizmo::s_FilledCircles;
+	std::vector<GizmoText> Gizmo::s_Texts;
 	size_t Gizmo::s_MaxVertices = 100000;
 	size_t Gizmo::s_RegisteredVertices = 0;
 	float Gizmo::s_LineWidth = 1.0f;
@@ -16,7 +20,7 @@ namespace Index {
 	GizmoLayer Gizmo::s_Layer = GizmoLayer::Shared;
 	Color Gizmo::s_Color = { 0.f, 1.f, 0.f, 1.f };
 
-	void Gizmo::DrawCircle(const Vec2& center, float radius, int segments) {
+	void Gizmo::DrawWireCircle(const Vec2& center, float radius, int segments) {
 		if (!s_IsEnabled || s_RegisteredVertices + segments >= s_MaxVertices)
 			return;
 
@@ -24,12 +28,40 @@ namespace Index {
 		s_Circles.emplace_back(Circle{ center, radius, segments, s_Color, s_Layer });
 	}
 
-	void Gizmo::DrawSquare(const Vec2& center, const Vec2& scale, float degrees) {
+	void Gizmo::DrawWireSquare(const Vec2& center, const Vec2& scale, float degrees) {
 		if (!s_IsEnabled || s_RegisteredVertices + k_BoxVertices >= s_MaxVertices)
 			return;
 
 		s_RegisteredVertices += k_BoxVertices;
 		s_Squares.emplace_back(Square{ center, scale / 2.f, Radians<float>(degrees), s_Color, s_Layer });
+	}
+
+	void Gizmo::DrawCircle(const Vec2& center, float radius, int segments) {
+		if (!s_IsEnabled || s_RegisteredVertices + segments >= s_MaxVertices)
+			return;
+
+		s_RegisteredVertices += segments;
+		s_FilledCircles.emplace_back(Circle{ center, radius, segments, s_Color, s_Layer });
+	}
+
+	void Gizmo::DrawSquare(const Vec2& center, const Vec2& scale, float degrees) {
+		if (!s_IsEnabled || s_RegisteredVertices + k_BoxVertices >= s_MaxVertices)
+			return;
+
+		s_RegisteredVertices += k_BoxVertices;
+		s_FilledSquares.emplace_back(Square{ center, scale / 2.f, Radians<float>(degrees), s_Color, s_Layer });
+	}
+
+	void Gizmo::DrawText(const std::string& text, const Vec2& position, float rotation, float size) {
+		if (!s_IsEnabled || text.empty())
+			return;
+		// Budget proxy: one "vertex" per character (a glyph is a quad; this just bounds runaway text).
+		const size_t cost = text.size();
+		if (s_RegisteredVertices + cost >= s_MaxVertices)
+			return;
+
+		s_RegisteredVertices += cost;
+		s_Texts.emplace_back(GizmoText{ position, Radians<float>(rotation), size, text, s_Color, s_Layer });
 	}
 
 	void Gizmo::DrawLine(const Vec2& start, const Vec2& end) {
@@ -40,10 +72,22 @@ namespace Index {
 		s_Lines.emplace_back(Line{ start, end, s_Color, s_Layer });
 	}
 
+	void Gizmo::DrawThickLine(const Vec2& start, const Vec2& end, float width) {
+		if (!s_IsEnabled || s_RegisteredVertices + k_ThickLineVertices >= s_MaxVertices)
+			return;
+
+		s_RegisteredVertices += k_ThickLineVertices;
+		s_ThickLines.emplace_back(ThickLine{ start, end, Max(0.0001f, width * 0.5f), s_Color, s_Layer });
+	}
+
 	void Gizmo::Clear() {
 		s_Squares.clear();
-		s_Lines.clear(); 
+		s_Lines.clear();
+		s_ThickLines.clear();
 		s_Circles.clear();
-		s_RegisteredVertices = 0; 
+		s_FilledSquares.clear();
+		s_FilledCircles.clear();
+		s_Texts.clear();
+		s_RegisteredVertices = 0;
 	}
 }

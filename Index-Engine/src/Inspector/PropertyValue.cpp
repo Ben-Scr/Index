@@ -198,6 +198,9 @@ namespace Index {
 		case PropertyType::ComponentRef:
 			if (UIntValue == 0) return std::string();
 			return std::to_string(UIntValue) + ":" + StringValue;
+		case PropertyType::Graph:
+			// Curve keys are carried verbatim in StringValue (shared ';'/',' codec).
+			return StringValue;
 		}
 		return {};
 	}
@@ -373,6 +376,10 @@ namespace Index {
 			}
 			break;
 		}
+		case PropertyType::Graph:
+			// Curve keys are carried verbatim in StringValue (shared ';'/',' codec).
+			v.StringValue = text;
+			break;
 		case PropertyType::List:
 			break;
 		}

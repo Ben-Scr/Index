@@ -24,7 +24,7 @@ namespace Index::ImGuiUtils {
 		constexpr float kYMin = 0.0f, kYMax = 2.0f;
 		constexpr float kKeyR = 5.0f;   // key handle radius
 		constexpr float kTanR = 4.0f;   // tangent handle radius
-		constexpr float kSnap = 0.15f;  // Left-Ctrl drag-snap increment
+		constexpr float kSnap = 0.1f;   // Left-Ctrl drag-snap increment
 		ImGui::PushID(id);
 		bool changed = false;
 
@@ -39,8 +39,6 @@ namespace Index::ImGuiUtils {
 		const ImVec2 p0(outer.x + kPad, outer.y + kPad);
 		const ImVec2 p1(outer.x + fullSize.x - kPad, outer.y + fullSize.y - kPad);
 		const ImVec2 size(p1.x - p0.x, p1.y - p0.y);
-		const ImVec2 btnMin = outer;
-		const ImVec2 btnMax(outer.x + fullSize.x, outer.y + fullSize.y);
 		const bool hovered = enabled && ImGui::IsItemHovered();
 		ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -72,22 +70,28 @@ namespace Index::ImGuiUtils {
 		auto inHandle  = [](const Key& k) { return Vec2{ k.Pos.x + k.InTangent.x,  k.Pos.y + k.InTangent.y }; };
 		auto outHandle = [](const Key& k) { return Vec2{ k.Pos.x + k.OutTangent.x, k.Pos.y + k.OutTangent.y }; };
 
-		// Tangent handles draw at a fixed, short screen length along the tangent direction,
-		// ray-clamped to the widget so they stay on-screen and grabbable. Drag sets the
-		// tangent's angle; the handle keeps this constant compact length.
+		// Tangent handles draw at a fixed, short screen length along the tangent direction.
+		// They are NOT clamped to the bounds — a handle runs its full length in its true
+		// direction and the graph square (p0..p1) just clips the drawing, acting as a mask.
+		// Drag sets the tangent's angle; the handle keeps this constant compact length.
 		const float kHandleLen = 28.0f;
 		auto handleDot = [&](const ImVec2& keyS, const Vec2& off) -> ImVec2 {
 			float dx = off.x * size.x;
 			float dy = -off.y / (kYMax - kYMin) * size.y;
 			float len = std::sqrt(dx * dx + dy * dy);
 			if (len < 1e-4f) { dx = (off.x < 0.0f) ? -1.0f : 1.0f; dy = 0.0f; len = 1.0f; }
-			dx = dx / len * kHandleLen;
-			dy = dy / len * kHandleLen;
+			return ImVec2(keyS.x + dx / len * kHandleLen, keyS.y + dy / len * kHandleLen);
+		};
+		// The same handle ray, but stopped where it exits the square. Used for hit-testing so
+		// a handle stays grabbable at its visible edge even when its dot is masked off-graph.
+		auto handleGrab = [&](const ImVec2& keyS, const Vec2& off) -> ImVec2 {
+			const ImVec2 full = handleDot(keyS, off);
+			const float dx = full.x - keyS.x, dy = full.y - keyS.y;
 			float t = 1.0f;
-			if (dx >  1e-4f)      t = std::min(t, (btnMax.x - keyS.x) / dx);
-			else if (dx < -1e-4f) t = std::min(t, (btnMin.x - keyS.x) / dx);
-			if (dy >  1e-4f)      t = std::min(t, (btnMax.y - keyS.y) / dy);
-			else if (dy < -1e-4f) t = std::min(t, (btnMin.y - keyS.y) / dy);
+			if (dx >  1e-4f)      t = std::min(t, (p1.x - keyS.x) / dx);
+			else if (dx < -1e-4f) t = std::min(t, (p0.x - keyS.x) / dx);
+			if (dy >  1e-4f)      t = std::min(t, (p1.y - keyS.y) / dy);
+			else if (dy < -1e-4f) t = std::min(t, (p0.y - keyS.y) / dy);
 			t = std::clamp(t, 0.0f, 1.0f);
 			return ImVec2(keyS.x + dx * t, keyS.y + dy * t);
 		};
@@ -115,6 +119,9 @@ namespace Index::ImGuiUtils {
 		static int s_DragKey = -1;
 		static int s_DragPart = -1;
 		static int s_CtxKey = -1;
+		// Curve-space position the context menu was opened at, so "Add Point" can
+		// insert where the user right-clicked rather than where the menu item sits.
+		static Vec2 s_CtxPos{ 0.5f, 1.0f };
 		if (s_OwnerKeys != static_cast<const void*>(&curve)) {
 			s_OwnerKeys = static_cast<const void*>(&curve);
 			s_Selected = s_DragKey = s_DragPart = s_CtxKey = -1;
@@ -130,12 +137,56 @@ namespace Index::ImGuiUtils {
 				return dx * dx + dy * dy <= (r + 3.0f) * (r + 3.0f);
 			};
 
+			// Insert a key at curve-x `mx` WITHOUT changing the curve shape: find the bezier
+			// segment spanning mx, solve t for x(t)=mx, then De Casteljau-split it so the new
+			// key lands on the curve and the rewritten neighbour handles reproduce the original
+			// two halves exactly. The user only alters the shape by dragging afterwards.
+			// Returns the new key's index, or -1 if mx isn't strictly between the endpoints.
+			auto insertKeyPreservingShape = [&](float mx) -> int {
+				if (keys.size() < 2) return -1;
+				if (mx <= keys.front().Pos.x + 1e-4f || mx >= keys.back().Pos.x - 1e-4f) return -1;
+				// Segment [i-1, i] with keys[i-1].Pos.x < mx <= keys[i].Pos.x.
+				std::size_t i = 1;
+				while (i < keys.size() - 1 && keys[i].Pos.x < mx) ++i;
+				Key& a = keys[i - 1];
+				Key& b = keys[i];
+				const Vec2 p0 = a.Pos;
+				const Vec2 p1{ a.Pos.x + a.OutTangent.x, a.Pos.y + a.OutTangent.y };
+				const Vec2 p2{ b.Pos.x + b.InTangent.x,  b.Pos.y + b.InTangent.y };
+				const Vec2 p3 = b.Pos;
+				// x is monotonic in t (handle x is clamped on drag): bisect for t(mx).
+				float lo = 0.0f, hi = 1.0f;
+				for (int iter = 0; iter < 24; ++iter) {
+					const float mid = 0.5f * (lo + hi);
+					if (Curve::BezierPoint(p0, p1, p2, p3, mid).x < mx) lo = mid; else hi = mid;
+				}
+				const float t = 0.5f * (lo + hi);
+				auto lerp2 = [](const Vec2& u, const Vec2& v, float s) {
+					return Vec2{ u.x + (v.x - u.x) * s, u.y + (v.y - u.y) * s };
+				};
+				const Vec2 A = lerp2(p0, p1, t);
+				const Vec2 B = lerp2(p1, p2, t);
+				const Vec2 C = lerp2(p2, p3, t);
+				const Vec2 D = lerp2(A, B, t);
+				const Vec2 E = lerp2(B, C, t);
+				const Vec2 F = lerp2(D, E, t);   // split point — lies exactly on the curve
+				// Rewrite handles so the two sub-segments equal the original halves.
+				a.OutTangent = Vec2{ A.x - p0.x, A.y - p0.y };
+				b.InTangent  = Vec2{ C.x - p3.x, C.y - p3.y };
+				Key nk;
+				nk.Pos        = F;
+				nk.InTangent  = Vec2{ D.x - F.x, D.y - F.y };
+				nk.OutTangent = Vec2{ E.x - F.x, E.y - F.y };
+				keys.insert(keys.begin() + static_cast<std::ptrdiff_t>(i), nk);
+				return static_cast<int>(i);
+			};
+
 			int hitKey = -1, hitPart = -1;
 			if (s_Selected >= 0 && s_Selected < static_cast<int>(keys.size())) {
 				const Key& k = keys[s_Selected];
 				const ImVec2 keyS = toScreen(k.Pos);
-				if (s_Selected > 0 && withinR(handleDot(keyS, k.InTangent), kTanR)) { hitKey = s_Selected; hitPart = 1; }
-				else if (s_Selected < static_cast<int>(keys.size()) - 1 && withinR(handleDot(keyS, k.OutTangent), kTanR)) { hitKey = s_Selected; hitPart = 2; }
+				if (s_Selected > 0 && (withinR(handleDot(keyS, k.InTangent), kTanR) || withinR(handleGrab(keyS, k.InTangent), kTanR))) { hitKey = s_Selected; hitPart = 1; }
+				else if (s_Selected < static_cast<int>(keys.size()) - 1 && (withinR(handleDot(keyS, k.OutTangent), kTanR) || withinR(handleGrab(keyS, k.OutTangent), kTanR))) { hitKey = s_Selected; hitPart = 2; }
 			}
 			if (hitPart < 0) {
 				for (std::size_t i = 0; i < keys.size(); ++i) {
@@ -176,33 +227,48 @@ namespace Index::ImGuiUtils {
 					const float l = std::sqrt(dx * dx + dy * dy);
 					if (l > 1e-4f) { dx /= l; dy /= l; }
 					const bool isIn = (s_DragPart == 1);
-					const float segW = isIn
-						? (s_DragKey > 0 ? k.Pos.x - keys[s_DragKey - 1].Pos.x : 0.5f)
-						: (s_DragKey < static_cast<int>(keys.size()) - 1 ? keys[s_DragKey + 1].Pos.x - k.Pos.x : 0.5f);
-					const float mag = 0.45f * std::max(0.05f, segW);
-					Vec2 off{ dx * mag, dy * mag };
-					off.x = isIn ? std::clamp(off.x, -segW, 0.0f) : std::clamp(off.x, 0.0f, segW);
-					if (ctrlSnap) { off.x = snap(off.x); off.y = snap(off.y); }
-					if (isIn) k.InTangent = off; else k.OutTangent = off;
+					// Build a tangent offset for the given side from a unit direction: magnitude
+					// scales with that side's segment, x clamped to the side's half-plane.
+					auto makeTangent = [&](float ux, float uy, bool in) -> Vec2 {
+						const float segW = in
+							? (s_DragKey > 0 ? k.Pos.x - keys[s_DragKey - 1].Pos.x : 0.5f)
+							: (s_DragKey < static_cast<int>(keys.size()) - 1 ? keys[s_DragKey + 1].Pos.x - k.Pos.x : 0.5f);
+						const float mag = 0.45f * std::max(0.05f, segW);
+						Vec2 off{ ux * mag, uy * mag };
+						off.x = in ? std::clamp(off.x, -segW, 0.0f) : std::clamp(off.x, 0.0f, segW);
+						return off;
+					};
+					// Dragged handle follows the mouse (snapped under Ctrl).
+					Vec2 dragged = makeTangent(dx, dy, isIn);
+					if (ctrlSnap) { dragged.x = snap(dragged.x); dragged.y = snap(dragged.y); }
+					// Opposite handle stays collinear (antiparallel) so the tangent line through
+					// the key remains smooth/aligned — move one side, the other mirrors it.
+					float ndx = dragged.x, ndy = dragged.y;
+					const float nl = std::sqrt(ndx * ndx + ndy * ndy);
+					if (nl > 1e-4f) { ndx /= nl; ndy /= nl; }
+					else { ndx = isIn ? -1.0f : 1.0f; ndy = 0.0f; }
+					const Vec2 mirrored = makeTangent(-ndx, -ndy, !isIn);
+					if (isIn) { k.InTangent = dragged; k.OutTangent = mirrored; }
+					else      { k.OutTangent = dragged; k.InTangent = mirrored; }
 					changed = true;
 				}
 			}
 
 			if (hovered && hitPart < 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
 				Vec2 m = fromScreen(mouse);
-				if (ctrlSnap) { m.x = snap(m.x); m.y = snap(m.y); }
-				if (m.x > 1e-3f && m.x < 1.0f - 1e-3f) {
-					Key nk; nk.Pos = m;
-					auto it = std::lower_bound(keys.begin(), keys.end(), m.x,
-						[](const Key& k, float x) { return k.Pos.x < x; });
-					s_Selected = static_cast<int>(it - keys.begin());
-					keys.insert(it, nk);
+				if (ctrlSnap) m.x = snap(m.x);   // y comes from the curve so the shape is preserved
+				const int newIdx = insertKeyPreservingShape(m.x);
+				if (newIdx >= 0) {
+					s_Selected = newIdx;
 					changed = true;
 				}
 			}
 			if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
 				s_CtxKey = (hitPart == 0) ? hitKey : -1;
 				if (hitPart == 0) s_Selected = hitKey;
+				Vec2 ctx = fromScreen(mouse);
+				if (ctrlSnap) { ctx.x = snap(ctx.x); ctx.y = snap(ctx.y); }
+				s_CtxPos = ctx;
 			}
 
 			// Shared clipboard so curve values can be copy/pasted across any graphs.
@@ -227,6 +293,15 @@ namespace Index::ImGuiUtils {
 					s_CtxKey = -1;
 					changed = true;
 				}
+				ImGui::Separator();
+				// Endpoints are pinned at x=0/1; only the open interval can take a new point.
+				const bool canAddPoint = s_CtxPos.x > 1e-3f && s_CtxPos.x < 1.0f - 1e-3f;
+				if (ImGui::MenuItem("Add Point", nullptr, false, canAddPoint)) {
+					const int newIdx = insertKeyPreservingShape(s_CtxPos.x);
+					if (newIdx >= 0) s_Selected = newIdx;
+					s_CtxKey = -1;
+					changed = true;
+				}
 				const bool canDelete = s_CtxKey > 0 && s_CtxKey < static_cast<int>(keys.size()) - 1;
 				if (ImGui::MenuItem("Delete point", nullptr, false, canDelete)) {
 					keys.erase(keys.begin() + s_CtxKey);
@@ -238,10 +313,12 @@ namespace Index::ImGuiUtils {
 			}
 		}
 
-		// Tangent handles for the selected key (drawn only while enabled).
+		// Tangent handles for the selected key (drawn only while enabled). Clipped to the
+		// graph square so a handle that runs past an edge is masked off rather than clamped.
 		if (enabled && s_Selected >= 0 && s_Selected < static_cast<int>(keys.size())) {
 			const Key& k = keys[s_Selected];
 			const ImVec2 kp = toScreen(k.Pos);
+			dl->PushClipRect(p0, p1, true);
 			if (s_Selected > 0) {
 				const ImVec2 hp = handleDot(kp, k.InTangent);
 				dl->AddLine(kp, hp, col(255, 200, 120, 200), 1.5f);
@@ -252,6 +329,7 @@ namespace Index::ImGuiUtils {
 				dl->AddLine(kp, hp, col(255, 200, 120, 200), 1.5f);
 				dl->AddCircleFilled(hp, kTanR, col(255, 200, 120, 255));
 			}
+			dl->PopClipRect();
 		}
 
 		// Key points.

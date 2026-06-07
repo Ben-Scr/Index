@@ -1382,6 +1382,7 @@ internal static class ScriptInstanceManager
         if (t == typeof(Vector3Int)) return "vector3Int";
         if (t == typeof(Vector4)) return "vector4";
         if (t == typeof(Vector4Int)) return "vector4Int";
+        if (t == typeof(Graph)) return "graph";
 
         if (t.IsEnum)
         {
@@ -1500,6 +1501,8 @@ internal static class ScriptInstanceManager
             var v = (Vector4Int)val;
             return $"{v.X.ToString(ic)},{v.Y.ToString(ic)},{v.Z.ToString(ic)},{v.W.ToString(ic)}";
         }
+        if (t == typeof(Graph))
+            return ((Graph)val).Serialize();
 
         if (t.IsSubclassOf(typeof(DataAsset)))
             return val is DataAsset dataAsset && dataAsset.UUID != 0 ? dataAsset.UUID.ToString(ic) : "";
@@ -1634,6 +1637,11 @@ internal static class ScriptInstanceManager
                         int.Parse(parts[2], ic),
                         int.Parse(parts[3], ic));
                 return null;
+            }
+            if (t == typeof(Graph))
+            {
+                // Total parser (never throws / never null) — return it directly.
+                return Graph.Deserialize(s);
             }
             if (t == typeof(Entity))
             {

@@ -150,7 +150,7 @@ namespace Index::ImGuiUtils {
 	// Reusable editable curve graph for Index::Curve. Draggable keys + per-key in/out
 	// tangent handles, double-click to add a point, right-click context menu
 	// (reset / delete / copy / paste values — the clipboard is shared so values copy
-	// between any graphs). Hold Left-Ctrl while dragging to snap to 0.15 increments.
+	// between any graphs). Hold Left-Ctrl while dragging to snap to 0.1 increments.
 	// When 'enabled' is false the graph is drawn greyed-out and non-interactive (so a
 	// disabled feature still shows its curve instead of vanishing). Returns true if
 	// the curve was edited this frame.

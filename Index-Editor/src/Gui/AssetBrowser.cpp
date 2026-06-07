@@ -585,6 +585,50 @@ namespace Index {
 			return (dx * dx + dy * dy) > (threshold * threshold);
 		}
 
+		bool DoNativeFileDrag(std::vector<std::wstring> paths)
+		{
+			auto* dataObject = new FileDropDataObject(std::move(paths));
+			auto* dropSource = new FileDropSource();
+			DWORD effect = 0;
+			const HRESULT dragResult = DoDragDrop(
+				dataObject,
+				dropSource,
+				DROPEFFECT_COPY,
+				&effect);
+			dropSource->Release();
+			dataObject->Release();
+
+			const bool dropped = dragResult == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0;
+			if (FAILED(dragResult)) {
+				IDX_CORE_WARN_TAG("AssetBrowser", "DoDragDrop failed for native file drag: HRESULT 0x{:08X}",
+					static_cast<unsigned int>(dragResult));
+			}
+			return dropped;
+		}
+
+		bool DoNativeFileDragOnStaThread(std::vector<std::wstring> paths)
+		{
+			bool dropped = false;
+			HRESULT oleResult = E_UNEXPECTED;
+
+			std::thread dragThread([paths = std::move(paths), &dropped, &oleResult]() mutable {
+				oleResult = OleInitialize(nullptr);
+				if (FAILED(oleResult)) {
+					return;
+				}
+
+				dropped = DoNativeFileDrag(std::move(paths));
+				OleUninitialize();
+			});
+			dragThread.join();
+
+			if (FAILED(oleResult)) {
+				IDX_CORE_WARN_TAG("AssetBrowser", "OleInitialize failed on native file drag STA thread: HRESULT 0x{:08X}",
+					static_cast<unsigned int>(oleResult));
+			}
+			return dropped;
+		}
+
 		bool StartNativeFileDrag(const std::vector<std::string>& paths)
 		{
 			std::vector<std::wstring> widePaths;
@@ -613,29 +657,19 @@ namespace Index {
 			}
 
 			const HRESULT oleResult = OleInitialize(nullptr);
+			if (oleResult == RPC_E_CHANGED_MODE) {
+				// Shell drag/drop requires STA; fall back if this thread is already MTA.
+				return DoNativeFileDragOnStaThread(std::move(widePaths));
+			}
+
 			if (FAILED(oleResult)) {
 				IDX_CORE_WARN_TAG("AssetBrowser", "OleInitialize failed for native file drag: HRESULT 0x{:08X}",
 					static_cast<unsigned int>(oleResult));
 				return false;
 			}
 
-			auto* dataObject = new FileDropDataObject(std::move(widePaths));
-			auto* dropSource = new FileDropSource();
-			DWORD effect = 0;
-			const HRESULT dragResult = DoDragDrop(
-				dataObject,
-				dropSource,
-				DROPEFFECT_COPY,
-				&effect);
-			dropSource->Release();
-			dataObject->Release();
+			const bool dropped = DoNativeFileDrag(std::move(widePaths));
 			OleUninitialize();
-
-			const bool dropped = dragResult == DRAGDROP_S_DROP && (effect & DROPEFFECT_COPY) != 0;
-			if (FAILED(dragResult)) {
-				IDX_CORE_WARN_TAG("AssetBrowser", "DoDragDrop failed for native file drag: HRESULT 0x{:08X}",
-					static_cast<unsigned int>(dragResult));
-			}
 			return dropped;
 		}
 #endif
@@ -961,16 +995,6 @@ namespace Index {
 			return;
 		}
 
-		// TEMP EXT-DRAG DIAG — remove after debugging
-		{
-			const bool diagLbtn = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-			const bool diagPast = IsScreenDragPastThreshold(m_ExternalDragStartScreenX, m_ExternalDragStartScreenY);
-			const bool diagInside = IsCursorInsideAnyEditorWindow();
-			IDX_CORE_INFO_TAG("ExtDragDiag",
-				"tracking paths={} lbtnDown={} pastThreshold={} insideEditor={}",
-				m_ExternalDragPaths.size(), diagLbtn, diagPast, diagInside);
-		}
-
 		if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0) {
 			ClearExternalFileDrag();
 			return;
@@ -990,9 +1014,7 @@ namespace Index {
 			}
 			m_ExternalDragCaptureWindow = nullptr;
 		}
-		IDX_CORE_INFO_TAG("ExtDragDiag", "FIRING StartNativeFileDrag for {} paths", paths.size());
-		const bool diagDragOk = StartNativeFileDrag(paths);
-		IDX_CORE_INFO_TAG("ExtDragDiag", "StartNativeFileDrag returned {}", diagDragOk);
+		StartNativeFileDrag(paths);
 	}
 #endif
 
@@ -1275,6 +1297,7 @@ namespace Index {
 			Refresh();
 		}
 
+		RenderSearchBar();
 		RenderBreadcrumb();
 		ImGui::Separator();
 		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
@@ -1294,13 +1317,11 @@ namespace Index {
 		ImGui::End();
 	}
 
-	// Rendered inline on the breadcrumb row, between the path and the
-	// right-aligned refresh button (whose width is reserved here).
+	// Full-width row above the breadcrumb/refresh row. The leading magnifier
+	// sits inline (TextIcon ends with SameLine); the input fills the rest.
 	void AssetBrowser::RenderSearchBar() {
-		const ImGuiStyle& style = ImGui::GetStyle();
 		Icons::TextIcon(Icons::Type::Search);
-		const float refreshReserve = 30.0f + style.ItemSpacing.x;
-		ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - refreshReserve));
+		ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
 		if (ImGui::InputTextWithHint("##AssetBrowserSearch", "Search assets...",
 			m_SearchBuffer, sizeof(m_SearchBuffer))) {
 			// A changed query reshuffles the visible list; drop the range-select
@@ -1353,11 +1374,8 @@ namespace Index {
 		// re-computes which segments fit.
 		const ImGuiStyle& style = ImGui::GetStyle();
 		const float refreshButtonReserved = 30.0f + style.ItemSpacing.x;
-		// Reserve room for the inline search box too, so a deep path truncates
-		// (shows "...") instead of squeezing the search field to nothing.
-		const float searchBarReserved = 140.0f + style.ItemSpacing.x;
 		const float available = std::max(0.0f,
-			ImGui::GetContentRegionAvail().x - refreshButtonReserved - searchBarReserved);
+			ImGui::GetContentRegionAvail().x - refreshButtonReserved);
 
 		auto buttonWidth = [&style](const std::string& label) -> float {
 			return ImGui::CalcTextSize(label.c_str()).x + style.FramePadding.x * 2.0f;
@@ -1475,11 +1493,7 @@ namespace Index {
 			}
 		}
 
-		// Search bar fills the gap between the breadcrumb and the refresh button.
-		ImGui::SameLine();
-		RenderSearchBar();
-
-		// Refresh button (right-aligned, unchanged).
+		// Refresh button (right-aligned on the breadcrumb row).
 		ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 30.0f);
 		{
 			uint64_t refreshIcon = EditorIcons::Get("reset", 16);

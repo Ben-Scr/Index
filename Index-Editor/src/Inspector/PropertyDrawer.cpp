@@ -2,9 +2,11 @@
 #include "Inspector/PropertyDrawer.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Collections/Curve.hpp"
 #include "Gui/AssetBrowser.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/HierarchyDragData.hpp"
+#include "Gui/ImGuiFonts.hpp"
 #include "Gui/ImGuiUtils.hpp"
 #include "Gui/SpriteSliceDragPayload.hpp"
 #include "Inspector/PropertyType.hpp"
@@ -19,11 +21,14 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -513,49 +518,23 @@ namespace Index::PropertyDrawer {
 			const float componentSpacing = style.ItemInnerSpacing.x;
 			const float componentWidth = std::max(1.0f,
 				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
-			const bool showSteppers = !d.Metadata.HideStepperButtons;
-			const float buttonWidth = showSteppers
-				? std::min(22.0f, std::max(16.0f, componentWidth * 0.22f))
-				: 0.0f;
-			const bool showAxisLabels = d.Metadata.ShowAxisLabels;
+			// Each channel is prefixed with its axis name (Transform-style); no +/- steppers.
 			static constexpr const char* axisLabels[4] = { "X", "Y", "Z", "W" };
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
-				float channelWidth = componentWidth;
-				if (showAxisLabels) {
-					ImGui::AlignTextToFramePadding();
-					ImGui::TextUnformatted(axisLabels[c]);
-					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-					channelWidth = std::max(1.0f, componentWidth
-						- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
-				}
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted(axisLabels[c]);
+				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				const float channelWidth = std::max(1.0f, componentWidth
+					- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
 				const float pre = values[c];
 				float channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%.3f";
-				bool channelChanged = false;
-				if (showSteppers) {
-					if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
-						channel -= speed;
-						channelChanged = true;
-					}
-					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				}
-				const float inputWidth = showSteppers
-					? std::max(1.0f, channelWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
-					: channelWidth;
-				ImGui::SetNextItemWidth(inputWidth);
-				channelChanged |= ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
-				if (showSteppers) {
-					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-					if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
-						channel += speed;
-						channelChanged = true;
-					}
-				}
-				const bool changed = channelChanged && channel != pre;
-				if (changed) {
+				ImGui::SetNextItemWidth(channelWidth);
+				const bool channelChanged = ImGui::DragFloat("##c", &channel, speed, 0.0f, 0.0f, fmt);
+				if (channelChanged && channel != pre) {
 					WriteFloatChannel(entities, d, static_cast<std::size_t>(c), channel);
 					any = true;
 				}
@@ -578,50 +557,23 @@ namespace Index::PropertyDrawer {
 			const float componentSpacing = style.ItemInnerSpacing.x;
 			const float componentWidth = std::max(1.0f,
 				(fullWidth - componentSpacing * static_cast<float>(N - 1)) / static_cast<float>(N));
-			const bool showSteppers = !d.Metadata.HideStepperButtons;
-			const float buttonWidth = showSteppers
-				? std::min(22.0f, std::max(16.0f, componentWidth * 0.22f))
-				: 0.0f;
-			const bool showAxisLabels = d.Metadata.ShowAxisLabels;
+			// Each channel is prefixed with its axis name (Transform-style); no +/- steppers.
 			static constexpr const char* axisLabels[4] = { "X", "Y", "Z", "W" };
 			bool any = false;
 			for (int c = 0; c < static_cast<int>(N); ++c) {
 				if (c > 0) ImGui::SameLine(0.0f, componentSpacing);
 				ImGui::PushID(c);
-				float channelWidth = componentWidth;
-				if (showAxisLabels) {
-					ImGui::AlignTextToFramePadding();
-					ImGui::TextUnformatted(axisLabels[c]);
-					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-					channelWidth = std::max(1.0f, componentWidth
-						- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
-				}
-				// C7: same per-channel delta gate as DrawFloatVec.
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted(axisLabels[c]);
+				ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+				const float channelWidth = std::max(1.0f, componentWidth
+					- ImGui::CalcTextSize(axisLabels[c]).x - style.ItemInnerSpacing.x);
 				const int pre = values[c];
 				int channel = pre;
 				const char* fmt = mixed[c] ? "-" : "%d";
-				bool channelChanged = false;
-				if (showSteppers) {
-					if (ImGui::Button("-", ImVec2(buttonWidth, 0.0f))) {
-						channel -= std::max(1, static_cast<int>(speed));
-						channelChanged = true;
-					}
-					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-				}
-				const float inputWidth = showSteppers
-					? std::max(1.0f, channelWidth - buttonWidth * 2.0f - style.ItemInnerSpacing.x * 2.0f)
-					: channelWidth;
-				ImGui::SetNextItemWidth(inputWidth);
-				channelChanged |= ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
-				if (showSteppers) {
-					ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
-					if (ImGui::Button("+", ImVec2(buttonWidth, 0.0f))) {
-						channel += std::max(1, static_cast<int>(speed));
-						channelChanged = true;
-					}
-				}
-				const bool changed = channelChanged && channel != pre;
-				if (changed) {
+				ImGui::SetNextItemWidth(channelWidth);
+				const bool channelChanged = ImGui::DragInt("##c", &channel, speed, 0, 0, fmt);
+				if (channelChanged && channel != pre) {
 					WriteIntChannel(entities, d, static_cast<std::size_t>(c), channel);
 					any = true;
 				}
@@ -631,7 +583,8 @@ namespace Index::PropertyDrawer {
 			return any;
 		}
 
-		bool DrawColor(std::span<const Entity> entities, const PropertyDescriptor& d) {
+		bool DrawColor(std::span<const Entity> entities, const PropertyDescriptor& d,
+			const std::string& fieldKey) {
 			std::array<float, 4> values{};
 			std::array<bool, 4> mixed{};
 			SampleFloatChannels<4>(entities, d, values, mixed);
@@ -640,11 +593,28 @@ namespace Index::PropertyDrawer {
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			bool anyChanged = false;
 			if (!anyMixed) {
-				float editVals[4] = { values[0], values[1], values[2], values[3] };
-				if (ImGui::ColorEdit4("##Value", editVals)) {
+				// Persistent edit buffer so ImGui's ColorPicker reads back its OWN exact
+				// float output each frame. Re-seeding from the stored value (which round-trips
+				// through the property Get/Set) makes ImGui's lossy RGB<->HSV hue backup
+				// mismatch, jumping the hue bar. The buffer must stay ImGui-owned for the WHOLE
+				// edit session — not just while an item is active — otherwise the re-seed on the
+				// frame the SV square is released still jumps the hue.
+				static std::unordered_map<std::string, std::array<float, 4>> s_Working;
+				std::array<float, 4>& work = s_Working[fieldKey];
+
+				// Is this field's picker popup open? ColorEdit4 does PushID(label) then
+				// OpenPopup("picker"), so re-enter that exact ID scope to query it.
+				ImGui::PushID("##Value");
+				const bool pickerOpen = ImGui::IsPopupOpen("picker", ImGuiPopupFlags_AnyPopupLevel);
+				ImGui::PopID();
+
+				// Re-seed from storage only when fully idle: picker closed AND nothing active.
+				if (!pickerOpen && !ImGui::IsAnyItemActive()) work = values;
+
+				if (ImGui::ColorEdit4("##Value", work.data())) {
 					for (int c = 0; c < 4; ++c) {
-						if (editVals[c] != values[c]) {
-							WriteFloatChannel(entities, d, static_cast<std::size_t>(c), editVals[c]);
+						if (work[c] != values[c]) {
+							WriteFloatChannel(entities, d, static_cast<std::size_t>(c), work[c]);
 							anyChanged = true;
 						}
 					}
@@ -668,6 +638,94 @@ namespace Index::PropertyDrawer {
 			}
 			ImGui::PopID();
 			return anyChanged;
+		}
+
+		// Curve <-> string codec, matching the C# Index.Graph wire format verbatim:
+		// keys ';'-joined, each key's six floats ','-joined as posX,posY,inX,inY,outX,outY.
+		std::string EncodeCurve(const Curve& c) {
+			std::string out;
+			char buf[64];
+			auto app = [&](float f) {
+				auto [p, ec] = std::to_chars(buf, buf + sizeof(buf), f, std::chars_format::general);
+				if (ec == std::errc{}) out.append(buf, p); else out.push_back('0');
+			};
+			for (std::size_t i = 0; i < c.Keys.size(); ++i) {
+				if (i) out.push_back(';');
+				const Curve::Key& k = c.Keys[i];
+				app(k.Pos.x);        out.push_back(',');
+				app(k.Pos.y);        out.push_back(',');
+				app(k.InTangent.x);  out.push_back(',');
+				app(k.InTangent.y);  out.push_back(',');
+				app(k.OutTangent.x); out.push_back(',');
+				app(k.OutTangent.y);
+			}
+			return out;
+		}
+
+		Curve DecodeCurve(const std::string& s) {
+			Curve c; // DefaultKeys
+			if (s.empty()) return c;
+
+			auto toFloat = [](std::string_view sv) -> float {
+				float r = 0.0f;
+				std::from_chars(sv.data(), sv.data() + sv.size(), r);
+				return r;
+			};
+			std::vector<Curve::Key> keys;
+			std::size_t start = 0;
+			while (start <= s.size()) {
+				const std::size_t semi = s.find(';', start);
+				const std::string_view part(s.data() + start,
+					(semi == std::string::npos ? s.size() : semi) - start);
+				float f[6] = { 0, 0, 0, 0, 0, 0 };
+				int n = 0;
+				std::size_t fstart = 0;
+				while (n < 6) {
+					const std::size_t comma = part.find(',', fstart);
+					const std::string_view field = part.substr(fstart,
+						(comma == std::string_view::npos ? part.size() : comma) - fstart);
+					f[n++] = toFloat(field);
+					if (comma == std::string_view::npos) break;
+					fstart = comma + 1;
+				}
+				if (n >= 6) {
+					keys.push_back(Curve::Key{ Vec2{ f[0], f[1] }, Vec2{ f[2], f[3] }, Vec2{ f[4], f[5] } });
+				}
+				if (semi == std::string::npos) break;
+				start = semi + 1;
+			}
+			if (keys.size() >= 2) c.Keys = std::move(keys);
+			return c;
+		}
+
+		bool DrawGraph(std::span<const Entity> entities, const PropertyDescriptor& d,
+			const std::string& fieldKey) {
+			PropertyValue v;
+			const bool uniform = SampleUniform(entities, d, v);
+
+			ImGui::PushID(d.Name.c_str());
+			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
+
+			// DrawCurveEditor keeps selection/drag state keyed by the Curve's address, so the
+			// working copy must persist across frames. Keyed by fieldKey (unique per field);
+			// reseeded from the stored value only while nothing is being dragged, so an
+			// in-progress edit isn't clobbered by the round-tripped value.
+			static std::unordered_map<std::string, Curve> s_Working;
+			Curve& work = s_Working[fieldKey];
+			if (!ImGui::IsAnyItemActive()) {
+				work = DecodeCurve(uniform ? v.StringValue : std::string());
+			}
+
+			const bool changed = ImGuiUtils::DrawCurveEditor("##Value", work, uniform);
+			ImGui::PopID();
+
+			if (changed) {
+				PropertyValue out;
+				out.Type = PropertyType::Graph;
+				out.StringValue = EncodeCurve(work);
+				WriteAll(entities, d, out);
+			}
+			return changed;
 		}
 
 		bool DrawEnum(std::span<const Entity> entities, const PropertyDescriptor& d) {
@@ -1299,7 +1357,25 @@ namespace Index::PropertyDrawer {
 		// Header / spacer / read-only style come from metadata.
 		if (!d.Metadata.HeaderContent.empty()) {
 			ImGui::Spacing();
+			// HeaderSize is a "points over base" bump ([Header]/WithHeader default 5).
+			const bool bigHeader = d.Metadata.HeaderSize > 0;
+			if (bigHeader) {
+				// Bump is clamped to [1,100] (mirrors the [Header] attribute) so a bad value
+				// can't blow up the font / layout, whatever the source.
+				const int headerSize = std::clamp(d.Metadata.HeaderSize, 1, 100);
+				// FontSizeBase is the editor base font (zoom + DPI already folded in). Scale the
+				// bump by base/design so the header keeps the same prominence at any zoom/DPI.
+				// Fall back to the unscaled design size — never GetFontSize(), which is post-scale
+				// and double-applies global scale when fed to PushFont (see imgui.h PushFont docs).
+				const float baseFont = ImGui::GetStyle().FontSizeBase > 0.0f
+					? ImGui::GetStyle().FontSizeBase
+					: k_IndexImGuiFontSize;
+				const float bump = static_cast<float>(headerSize)
+					* (baseFont / k_IndexImGuiFontSize);
+				ImGui::PushFont(nullptr, baseFont + bump);
+			}
 			ImGui::TextUnformatted(d.Metadata.HeaderContent.c_str());
+			if (bigHeader) ImGui::PopFont();
 			ImGui::Separator();
 			ImGui::Spacing();
 		}
@@ -1335,7 +1411,7 @@ namespace Index::PropertyDrawer {
 		case PropertyType::IntVec2: changed = DrawIntVec<2>(entities, d); break;
 		case PropertyType::IntVec3: changed = DrawIntVec<3>(entities, d); break;
 		case PropertyType::IntVec4: changed = DrawIntVec<4>(entities, d); break;
-		case PropertyType::Color:   changed = DrawColor(entities, d); break;
+		case PropertyType::Color:   changed = DrawColor(entities, d, fieldKey); break;
 		case PropertyType::Enum:    changed = DrawEnum(entities, d); break;
 		case PropertyType::FlagEnum:changed = DrawFlagEnum(entities, d); break;
 		case PropertyType::TextureRef:
@@ -1359,6 +1435,7 @@ namespace Index::PropertyDrawer {
 				d.Metadata.AssetKindFilter == AssetKind::DataAsset ? "Select Data Asset" : "Select Asset"); break;
 		case PropertyType::EntityRef:    changed = DrawEntityRef(entities, d, fieldKey); break;
 		case PropertyType::ComponentRef: changed = DrawComponentRef(entities, d, fieldKey); break;
+		case PropertyType::Graph:        changed = DrawGraph(entities, d, fieldKey); break;
 		}
 
 		if (readOnly) ImGui::EndDisabled();

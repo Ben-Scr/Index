@@ -2513,8 +2513,11 @@ namespace Index {
 	// ── Gizmos ──────────────────────────────────────────────────────────
 
 	static void Index_Gizmo_DrawLine(float x1, float y1, float x2, float y2) { Gizmo::DrawLine({ x1, y1 }, { x2, y2 }); }
+	static void Index_Gizmo_DrawWireSquare(float cx, float cy, float sx, float sy, float degrees) { Gizmo::DrawWireSquare({ cx, cy }, { sx, sy }, degrees); }
+	static void Index_Gizmo_DrawWireCircle(float cx, float cy, float radius, int segments) { Gizmo::DrawWireCircle({ cx, cy }, radius, segments); }
 	static void Index_Gizmo_DrawSquare(float cx, float cy, float sx, float sy, float degrees) { Gizmo::DrawSquare({ cx, cy }, { sx, sy }, degrees); }
 	static void Index_Gizmo_DrawCircle(float cx, float cy, float radius, int segments) { Gizmo::DrawCircle({ cx, cy }, radius, segments); }
+	static void Index_Gizmo_DrawText(const char* text, float x, float y, float rotation, float size) { Gizmo::DrawText(text ? text : "", { x, y }, rotation, size); }
 	static void Index_Gizmo_SetColor(float r, float g, float b, float a) { Gizmo::SetColor(Color(r, g, b, a)); }
 	static void Index_Gizmo_GetColor(float* r, float* g, float* b, float* a) { Color c = Gizmo::GetColor(); *r = c.r; *g = c.g; *b = c.b; *a = c.a; }
 	static float Index_Gizmo_GetLineWidth() { return Gizmo::GetLineWidth(); }
@@ -3737,8 +3740,11 @@ namespace Index {
 		b.ParticleSystem2D_Emit = &Index_ParticleSystem2D_Emit;
 
 		b.Gizmo_DrawLine = &Index_Gizmo_DrawLine;
+		b.Gizmo_DrawWireSquare = &Index_Gizmo_DrawWireSquare;
+		b.Gizmo_DrawWireCircle = &Index_Gizmo_DrawWireCircle;
 		b.Gizmo_DrawSquare = &Index_Gizmo_DrawSquare;
 		b.Gizmo_DrawCircle = &Index_Gizmo_DrawCircle;
+		b.Gizmo_DrawText = &Index_Gizmo_DrawText;
 		b.Gizmo_SetColor = &Index_Gizmo_SetColor;
 		b.Gizmo_GetColor = &Index_Gizmo_GetColor;
 		b.Gizmo_GetLineWidth = &Index_Gizmo_GetLineWidth;

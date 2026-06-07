@@ -98,6 +98,8 @@ public sealed class Random
         return min + (NextFloat() * (max - min));
     }
 
+    public Color NextColor() => new Color(NextFloat(), NextFloat(), NextFloat());
+
     public string NextString(int length = 10, string? charset = null)
     {
         charset ??= TextUtils.Letters;
@@ -118,35 +120,34 @@ public sealed class Random
             int result = NextInt();
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(float))
+        else if (typeof(T) == typeof(float))
         {
             float result = NextFloat();
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(double))
+        else if (typeof(T) == typeof(double))
         {
             double result = NextDouble();
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(byte))
+        else if(typeof(T) == typeof(byte))
         {
             byte result = NextByte();
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(bool))
+        else if (typeof(T) == typeof(bool))
         {
             bool result = NextBool();
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(string))
+        else if(typeof(T) == typeof(string))
         {
             string result = NextString();
             return (T)(object)result;
+        }
+        else if (typeof(T) == typeof(Color))
+        {
+            return (T)(object)new Color(NextFloat(), NextFloat(), NextFloat());
         }
 
         throw new NotSupportedException($"Type '{typeof(T)}' is not supported.");
@@ -188,20 +189,17 @@ public sealed class Random
             int result = NextInt(Convert.ToInt32(min), Convert.ToInt32(max));
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(float))
+        else if (typeof(T) == typeof(float))
         {
             float result = NextFloat(Convert.ToSingle(min), Convert.ToSingle(max));
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(double))
+        else if(typeof(T) == typeof(double))
         {
             double result = NextDouble(Convert.ToDouble(min), Convert.ToDouble(max));
             return (T)(object)result;
         }
-
-        if (typeof(T) == typeof(byte))
+        else if (typeof(T) == typeof(byte))
         {
             byte result = NextByte(Convert.ToByte(min), Convert.ToByte(max));
             return (T)(object)result;

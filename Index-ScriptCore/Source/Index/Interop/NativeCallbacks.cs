@@ -299,8 +299,8 @@ internal unsafe struct NativeBindingsStruct
 
     // ── Gizmos ───────────────────────────────────────────────────
     public delegate* unmanaged<float, float, float, float, void> Gizmo_DrawLine;
-    public delegate* unmanaged<float, float, float, float, float, void> Gizmo_DrawSquare;
-    public delegate* unmanaged<float, float, float, int, void> Gizmo_DrawCircle;
+    public delegate* unmanaged<float, float, float, float, float, void> Gizmo_DrawWireSquare;
+    public delegate* unmanaged<float, float, float, int, void> Gizmo_DrawWireCircle;
     public delegate* unmanaged<float, float, float, float, void> Gizmo_SetColor;
     public delegate* unmanaged<float*, float*, float*, float*, void> Gizmo_GetColor;
     public delegate* unmanaged<float> Gizmo_GetLineWidth;
@@ -909,6 +909,11 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<byte*, int, int> Application_GetNameBuffer;
     public delegate* unmanaged<byte*, int, int> Application_GetVersionBuffer;
     public delegate* unmanaged<byte*, int, int> Application_GetCompanyBuffer;
+
+    // ── Gizmos: filled + text (appended for binary compat; keep in lock-step with C++ NativeBindings) ──
+    public delegate* unmanaged<float, float, float, float, float, void> Gizmo_DrawSquare;
+    public delegate* unmanaged<float, float, float, int, void> Gizmo_DrawCircle;
+    public delegate* unmanaged<byte*, float, float, float, float, void> Gizmo_DrawText;
 }
 
 internal static unsafe class NativeCallbacks

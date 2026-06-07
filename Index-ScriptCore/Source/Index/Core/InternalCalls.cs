@@ -853,8 +853,15 @@ internal static unsafe class InternalCalls
     // ── Gizmos ──────────────────────────────────────────────────────
 
     internal static void Gizmo_DrawLine(float x1, float y1, float x2, float y2) => NativeCallbacks.Bindings.Gizmo_DrawLine(x1, y1, x2, y2);
+    internal static void Gizmo_DrawWireSquare(float cx, float cy, float sx, float sy, float deg) => NativeCallbacks.Bindings.Gizmo_DrawWireSquare(cx, cy, sx, sy, deg);
+    internal static void Gizmo_DrawWireCircle(float cx, float cy, float r, int seg) => NativeCallbacks.Bindings.Gizmo_DrawWireCircle(cx, cy, r, seg);
     internal static void Gizmo_DrawSquare(float cx, float cy, float sx, float sy, float deg) => NativeCallbacks.Bindings.Gizmo_DrawSquare(cx, cy, sx, sy, deg);
     internal static void Gizmo_DrawCircle(float cx, float cy, float r, int seg) => NativeCallbacks.Bindings.Gizmo_DrawCircle(cx, cy, r, seg);
+    internal static void Gizmo_DrawText(string text, float x, float y, float rotation, float size)
+    {
+        byte[] buf = EncodeUtf8Z(text);
+        fixed (byte* ptr = buf) NativeCallbacks.Bindings.Gizmo_DrawText(ptr, x, y, rotation, size);
+    }
     internal static void Gizmo_SetColor(float r, float g, float b, float a) => NativeCallbacks.Bindings.Gizmo_SetColor(r, g, b, a);
     internal static void Gizmo_GetColor(out float r, out float g, out float b, out float a) { float cr, cg, cb, ca; NativeCallbacks.Bindings.Gizmo_GetColor(&cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static float Gizmo_GetLineWidth() => NativeCallbacks.Bindings.Gizmo_GetLineWidth();

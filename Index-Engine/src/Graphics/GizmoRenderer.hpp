@@ -13,6 +13,7 @@
 namespace Index {
     class Camera2DComponent;
     class Shader;
+    class TextRenderer;
 
     // Internal upload-format vertex (declared here so the static buffer
     // member can be defined in the .cpp). The class doesn't expose this
@@ -35,14 +36,20 @@ namespace Index {
     private:
         // Returned span is backed by FrameArenas::Frame() and is invalidated
         // by the next Application::EndFrame. Do not cache across frames.
+        // BuildGeometry → line list (wire + DrawLine); BuildFilledGeometry → triangle list (filled).
         static std::span<const PosColorVertex> BuildGeometry(GizmoLayerMask layerMask);
+        static std::span<const PosColorVertex> BuildFilledGeometry(GizmoLayerMask layerMask);
         // Draw the built geometry through `vp`. No fallback to a global
         // camera — if you don't have a VP, you don't have a draw.
+        // filled=true uses the triangle-list pipeline + filled vertex buffer; false the line-list path.
         static void FlushGizmosImpl(const glm::mat4& vp,
-            std::span<const PosColorVertex> verts);
+            std::span<const PosColorVertex> verts, bool filled);
+        // World-space gizmo text, drawn on top via a private TextRenderer.
+        static void RenderGizmoText(const glm::mat4& vp, GizmoLayerMask layerMask);
 
         static bool m_IsInitialized;
         static std::unique_ptr<Shader> m_GizmoShader;
+        static std::unique_ptr<TextRenderer> m_TextRenderer;
         // 32-bit indices: Gizmo::s_MaxVertices is 100k; uint16_t would silently alias indices 65536+ onto early vertices.
         static std::vector<uint32_t> m_GizmoIndices;
         static std::vector<GizmoUploadVertex> s_UploadBuffer;

@@ -318,8 +318,8 @@ namespace Index {
 
 		// ── Gizmos ───────────────────────────────────────────────────
 		void (*Gizmo_DrawLine)(float x1, float y1, float x2, float y2);
-		void (*Gizmo_DrawSquare)(float cx, float cy, float sx, float sy, float degrees);
-		void (*Gizmo_DrawCircle)(float cx, float cy, float radius, int segments);
+		void (*Gizmo_DrawWireSquare)(float cx, float cy, float sx, float sy, float degrees);
+		void (*Gizmo_DrawWireCircle)(float cx, float cy, float radius, int segments);
 		void (*Gizmo_SetColor)(float r, float g, float b, float a);
 		void (*Gizmo_GetColor)(float* r, float* g, float* b, float* a);
 		float (*Gizmo_GetLineWidth)();
@@ -970,6 +970,11 @@ namespace Index {
 		int (*Application_GetNameBuffer)(char* outBuffer, int capacity);
 		int (*Application_GetVersionBuffer)(char* outBuffer, int capacity);
 		int (*Application_GetCompanyBuffer)(char* outBuffer, int capacity);
+
+		// ── Gizmos: filled + text (appended for binary compat; keep in lock-step with NativeBindingsStruct) ──
+		void (*Gizmo_DrawSquare)(float cx, float cy, float sx, float sy, float degrees);
+		void (*Gizmo_DrawCircle)(float cx, float cy, float radius, int segments);
+		void (*Gizmo_DrawText)(const char* text, float x, float y, float rotation, float size);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

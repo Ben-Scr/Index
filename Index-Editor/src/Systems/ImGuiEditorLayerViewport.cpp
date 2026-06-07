@@ -64,12 +64,15 @@ namespace Index {
 	namespace {
 		// ── Sprite selection outline ────────────────────────────────────────
 		// The editor selection gizmo traces a sprite's opaque silhouette rather
-		// than its rectangular quad. We compute the convex hull of the texture's
-		// non-transparent texels once per (texture asset, sprite slice), in the
-		// renderer's unit-quad local space ([-0.5, 0.5]²), and cache it. Each
-		// frame the gizmo transforms those points by the entity transform, so the
-		// outline hugs the texture and follows rotation/scale. Full-bleed textures
-		// collapse to the four quad corners, matching the old behaviour.
+		// than its rectangular quad. We extract the texture's alpha contour —
+		// outer edge AND interior holes — via marching squares once per (texture
+		// asset, sprite slice), in the renderer's unit-quad local space
+		// ([-0.5, 0.5]²), and cache it as a flat segment list (pairs: [0]-[1],
+		// [2]-[3], …). Each frame the gizmo transforms those points by the entity
+		// transform, so the outline hugs the texture and follows rotation/scale.
+		// Adjacent segments share endpoints, so drawn as thick quads they merge
+		// into a continuous line. Textures with no opaque texels fall back to the
+		// quad.
 
 		struct SpriteOutlineKey {
 			uint64_t AssetId;
@@ -86,9 +89,9 @@ namespace Index {
 
 		// Empty vector = "no silhouette" (fully transparent / undecodable); the
 		// caller then falls back to the rectangular quad.
-		std::unordered_map<SpriteOutlineKey, std::vector<Vec2>, SpriteOutlineKeyHash> g_SpriteOutlineCache;
+		std::unordered_map<SpriteOutlineKey, std::vector<Vec2>, SpriteOutlineKeyHash> g_SpriteContourCache;
 
-		std::vector<Vec2> BuildSpriteOutline(Texture2D& tex, const SpriteRendererComponent& sprite) {
+		std::vector<Vec2> BuildSpriteContours(Texture2D& tex, const SpriteRendererComponent& sprite) {
 			std::unique_ptr<ImageData> image = tex.GetImageData();
 			if (!image || image->Width <= 0 || image->Height <= 0 || !image->Pixels) return {};
 
@@ -101,108 +104,114 @@ namespace Index {
 			const float vSpan = uv.V1 - uv.V0;
 			if (std::abs(uSpan) < 1e-6f || std::abs(vSpan) < 1e-6f) return {};
 
+			// Sampling resolution = slice texel size, capped so build cost and the
+			// emitted vertex count stay bounded.
+			constexpr int kCap = 192;
+			const int sliceW = std::max(1, static_cast<int>(std::lround(std::abs(uSpan) * w)));
+			const int sliceH = std::max(1, static_cast<int>(std::lround(std::abs(vSpan) * h)));
+			const int mw = std::min(sliceW, kCap);
+			const int mh = std::min(sliceH, kCap);
+
 			auto clampi = [](int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); };
-			const int sx0 = clampi(static_cast<int>(std::floor(std::min(uv.U0, uv.U1) * w)), 0, w);
-			const int sx1 = clampi(static_cast<int>(std::ceil (std::max(uv.U0, uv.U1) * w)), 0, w);
-			const int sy0 = clampi(static_cast<int>(std::floor(std::min(uv.V0, uv.V1) * h)), 0, h);
-			const int sy1 = clampi(static_cast<int>(std::ceil (std::max(uv.V0, uv.V1) * h)), 0, h);
-			if (sx1 <= sx0 || sy1 <= sy0) return {};
 
-			// Stride-sample large textures so selecting never hitches.
-			const int stride = std::max(1, std::max(sx1 - sx0, sy1 - sy0) / 512);
-			constexpr unsigned char kAlphaThreshold = 16;
-
-			// Per-row L/R and per-column T/B opaque extremes: their convex hull
-			// equals the hull of every opaque texel, at only O(W + H) points.
-			std::vector<int> rowMinX(h, -1), rowMaxX(h, -1);
-			std::vector<int> colMinY(w, -1), colMaxY(w, -1);
+			// Alpha sample grid with a 1-cell transparent border so edge-opaque
+			// pixels still produce a closed contour at the slice boundary.
+			const int gw = mw + 2;
+			const int gh = mh + 2;
+			std::vector<float> A(static_cast<size_t>(gw) * static_cast<size_t>(gh), 0.0f);
 			bool any = false;
-			for (int y = sy0; y < sy1; y += stride) {
-				const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(w);
-				for (int x = sx0; x < sx1; x += stride) {
-					if (px[(rowBase + static_cast<size_t>(x)) * 4u + 3u] < kAlphaThreshold) continue;
-					any = true;
-					if (rowMinX[y] < 0 || x < rowMinX[y]) rowMinX[y] = x;
-					if (x > rowMaxX[y]) rowMaxX[y] = x;
-					if (colMinY[x] < 0 || y < colMinY[x]) colMinY[x] = y;
-					if (y > colMaxY[x]) colMaxY[x] = y;
+			for (int my = 0; my < mh; ++my) {
+				const float baseY = (static_cast<float>(my) + 0.5f) / static_cast<float>(mh);
+				const float v = uv.V0 + baseY * vSpan;
+				const int ty = clampi(static_cast<int>(v * static_cast<float>(h)), 0, h - 1);
+				const size_t rowBase = static_cast<size_t>(ty) * static_cast<size_t>(w);
+				for (int mx = 0; mx < mw; ++mx) {
+					const float baseX = (static_cast<float>(mx) + 0.5f) / static_cast<float>(mw);
+					const float u = uv.U0 + baseX * uSpan;
+					const int tx = clampi(static_cast<int>(u * static_cast<float>(w)), 0, w - 1);
+					const float a = static_cast<float>(px[(rowBase + static_cast<size_t>(tx)) * 4u + 3u]);
+					A[static_cast<size_t>(my + 1) * gw + (mx + 1)] = a;
+					if (a >= 16.0f) any = true;
 				}
 			}
 			if (!any) return {};
 
-			struct P { long long x, y; };
-			std::vector<P> pts;
-			for (int y = sy0; y < sy1; ++y) {
-				if (rowMinX[y] < 0) continue;
-				pts.push_back({ rowMinX[y], y });
-				pts.push_back({ rowMaxX[y], y });
-			}
-			for (int x = sx0; x < sx1; ++x) {
-				if (colMinY[x] < 0) continue;
-				pts.push_back({ x, colMinY[x] });
-				pts.push_back({ x, colMaxY[x] });
-			}
+			constexpr float kThreshold = 16.0f;
+			auto at = [&](int gx, int gy) -> float { return A[static_cast<size_t>(gy) * gw + gx]; };
+			// Grid point → unit-quad local space. Interior cell mx maps to grid
+			// point gx = mx+1 at baseX (mx+0.5)/mw, i.e. baseX = (gxf-0.5)/mw.
+			auto gridToLocal = [&](float gxf, float gyf) -> Vec2 {
+				const float baseX = (gxf - 0.5f) / static_cast<float>(mw);
+				const float baseY = (gyf - 0.5f) / static_cast<float>(mh);
+				return Vec2{ baseX - 0.5f, 0.5f - baseY };
+			};
 
-			std::sort(pts.begin(), pts.end(),
-				[](const P& a, const P& b) { return a.x < b.x || (a.x == b.x && a.y < b.y); });
-			pts.erase(std::unique(pts.begin(), pts.end(),
-				[](const P& a, const P& b) { return a.x == b.x && a.y == b.y; }), pts.end());
+			std::vector<Vec2> segs;
+			for (int gy = 0; gy < gh - 1; ++gy) {
+				for (int gx = 0; gx < gw - 1; ++gx) {
+					const float aTL = at(gx,     gy);
+					const float aTR = at(gx + 1, gy);
+					const float aBR = at(gx + 1, gy + 1);
+					const float aBL = at(gx,     gy + 1);
+					int c = 0;
+					if (aTL >= kThreshold) c |= 1;
+					if (aTR >= kThreshold) c |= 2;
+					if (aBR >= kThreshold) c |= 4;
+					if (aBL >= kThreshold) c |= 8;
+					if (c == 0 || c == 15) continue;
 
-			// Andrew's monotone-chain convex hull (integer math, exact).
-			const int n = static_cast<int>(pts.size());
-			std::vector<P> hull;
-			if (n < 3) {
-				hull = pts;
-			}
-			else {
-				auto cross = [](const P& o, const P& a, const P& b) -> long long {
-					return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-				};
-				hull.resize(static_cast<size_t>(2 * n));
-				int k = 0;
-				for (int i = 0; i < n; ++i) {
-					while (k >= 2 && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
-					hull[k++] = pts[i];
+					// Edge crossing points (interpolated at the threshold) in grid
+					// coords. Only edges with a sign change are queried per case.
+					auto frac = [&](float a0, float a1) { return (kThreshold - a0) / (a1 - a0); };
+					auto top    = [&] { return Vec2{ static_cast<float>(gx) + frac(aTL, aTR), static_cast<float>(gy) }; };
+					auto right  = [&] { return Vec2{ static_cast<float>(gx + 1), static_cast<float>(gy) + frac(aTR, aBR) }; };
+					auto bottom = [&] { return Vec2{ static_cast<float>(gx) + frac(aBL, aBR), static_cast<float>(gy + 1) }; };
+					auto left   = [&] { return Vec2{ static_cast<float>(gx), static_cast<float>(gy) + frac(aTL, aBL) }; };
+
+					auto emit = [&](Vec2 g0, Vec2 g1) {
+						segs.push_back(gridToLocal(g0.x, g0.y));
+						segs.push_back(gridToLocal(g1.x, g1.y));
+					};
+
+					switch (c) {
+					case 1:  emit(left(),   top());    break;
+					case 2:  emit(top(),    right());  break;
+					case 3:  emit(left(),   right());  break;
+					case 4:  emit(right(),  bottom()); break;
+					case 5:  emit(left(),   top());    emit(right(), bottom()); break; // saddle
+					case 6:  emit(top(),    bottom()); break;
+					case 7:  emit(left(),   bottom()); break;
+					case 8:  emit(left(),   bottom()); break;
+					case 9:  emit(top(),    bottom()); break;
+					case 10: emit(top(),    right());  emit(left(),  bottom()); break; // saddle
+					case 11: emit(right(),  bottom()); break;
+					case 12: emit(left(),   right());  break;
+					case 13: emit(top(),    right());  break;
+					case 14: emit(left(),   top());    break;
+					default: break;
+					}
 				}
-				for (int i = n - 2, t = k + 1; i >= 0; --i) {
-					while (k >= t && cross(hull[k - 2], hull[k - 1], pts[i]) <= 0) k--;
-					hull[k++] = pts[i];
-				}
-				hull.resize(static_cast<size_t>(k - 1));
 			}
-			if (hull.size() < 3) return {};
-
-			// Invert the sprite shader: baseUV = (lx + 0.5, 0.5 - ly);
-			// uv = mix(UvRect.xy, UvRect.zw, baseUV). Texel centres → local space.
-			std::vector<Vec2> local;
-			local.reserve(hull.size());
-			for (const P& p : hull) {
-				const float u = (static_cast<float>(p.x) + 0.5f) / static_cast<float>(w);
-				const float v = (static_cast<float>(p.y) + 0.5f) / static_cast<float>(h);
-				const float baseX = (u - uv.U0) / uSpan;
-				const float baseY = (v - uv.V0) / vSpan;
-				local.push_back(Vec2{ baseX - 0.5f, 0.5f - baseY });
-			}
-			return local;
+			return segs;
 		}
 
-		// Returns the cached outline, building it on first use. nullptr means
-		// "no silhouette this frame" (texture not resolved yet, or transparent) —
-		// the caller draws the rectangular quad instead.
-		const std::vector<Vec2>* GetSpriteSelectionOutline(const SpriteRendererComponent& sprite) {
+		// Returns the cached contour segment list, building it on first use.
+		// nullptr means "no silhouette this frame" (texture not resolved yet, or
+		// transparent) — the caller draws the rectangular quad instead.
+		const std::vector<Vec2>* GetSpriteSelectionContours(const SpriteRendererComponent& sprite) {
 			if (static_cast<uint64_t>(sprite.TextureAssetId) == 0) return nullptr;
 
 			const SpriteOutlineKey key{
 				static_cast<uint64_t>(sprite.TextureAssetId),
 				std::hash<std::string>{}(sprite.SpriteName) };
 
-			auto it = g_SpriteOutlineCache.find(key);
-			if (it == g_SpriteOutlineCache.end()) {
+			auto it = g_SpriteContourCache.find(key);
+			if (it == g_SpriteContourCache.end()) {
 				Texture2D* tex = TextureManager::GetTexture(sprite.TextureHandle);
 				if (!tex || !tex->IsValid()) return nullptr; // not ready — retry next frame, don't cache
-				it = g_SpriteOutlineCache.emplace(key, BuildSpriteOutline(*tex, sprite)).first;
+				it = g_SpriteContourCache.emplace(key, BuildSpriteContours(*tex, sprite)).first;
 			}
-			return it->second.size() >= 3 ? &it->second : nullptr;
+			return it->second.size() >= 2 ? &it->second : nullptr;
 		}
 	}
 
@@ -466,7 +475,7 @@ namespace Index {
 		const int gvAspectIdx = std::clamp(m_GameViewAspectPresetIndex, 0, static_cast<int>(k_AspectRatioPresets.size()) - 1);
 		const float gvAspect = k_AspectRatioPresets[gvAspectIdx].Aspect;
 		if (gvAspect > 0.0f) camFrame.x = camFrame.y * gvAspect;
-		Gizmo::DrawSquare(transform->Position, camFrame, transform->GetRotationDegrees());
+		Gizmo::DrawWireSquare(transform->Position, camFrame, transform->GetRotationDegrees());
 	}
 
 	void ImGuiEditorLayer::DrawComponentGizmosForActiveEntity(Scene& scene, bool componentGizmosEnabled) {
@@ -491,24 +500,44 @@ namespace Index {
 	
 			if (scene.HasComponent<SpriteRendererComponent>(m_SelectedEntity)) {
 				const auto& sprite = scene.GetComponent<SpriteRendererComponent>(m_SelectedEntity);
-				Gizmo::SetColor(Color(1.0f, 0.65f, 0.10f, 1.0f));
-				Gizmo::SetLineWidth(2.0f);
 
-				// Outline the texture's opaque silhouette (cached, in unit-quad
-				// local space); TransformPoint folds in Scale/Rotation/Position so
-				// it tracks the rendered sprite. Fall back to the quad when the
-				// texture has no silhouette (procedural, transparent, or loading).
-				if (const std::vector<Vec2>* outline = GetSpriteSelectionOutline(sprite)) {
-					const std::vector<Vec2>& pts = *outline;
-					for (size_t i = 0; i < pts.size(); ++i) {
-						const Vec2 a = transform.TransformPoint(pts[i]);
-						const Vec2 b = transform.TransformPoint(pts[(i + 1) % pts.size()]);
-						Gizmo::DrawLine(a, b);
+				// Outline thickness is constant in screen pixels (converted to world
+				// units via the editor camera's world-per-pixel), so it reads the
+				// same at any zoom. A dark halo under a bright core keeps the line
+				// clearly visible on both light and dark sprites.
+				const AABB outlineCamAABB = m_EditorCamera.GetViewportAABB();
+				const float outlineWorldPerPx = outlineCamAABB.Scale().x / std::max(1.0f, static_cast<float>(m_EditorViewFBO.GetWidth()));
+				const float coreWidth = 1.5f * outlineWorldPerPx;
+				const float haloWidth = 3.0f * outlineWorldPerPx;
+
+				// Trace the texture's opaque silhouette (outer edge + interior holes,
+				// cached, in unit-quad local space); TransformPoint folds in
+				// Scale/Rotation/Position so it tracks the rendered sprite. Fall back
+				// to the quad when the texture has no silhouette (procedural,
+				// transparent, or still loading).
+				const std::vector<Vec2>* contours = GetSpriteSelectionContours(sprite);
+				auto drawSpriteOutline = [&](const Color& color, float width) {
+					Gizmo::SetColor(color);
+					if (contours) {
+						const std::vector<Vec2>& segs = *contours;
+						for (size_t i = 0; i + 1 < segs.size(); i += 2) {
+							Gizmo::DrawThickLine(transform.TransformPoint(segs[i]),
+								transform.TransformPoint(segs[i + 1]), width);
+						}
 					}
-				}
-				else {
-					Gizmo::DrawSquare(transform.Position, transform.Scale, rotationDegrees);
-				}
+					else {
+						const Vec2 c0 = transform.TransformPoint(Vec2{ -0.5f, -0.5f });
+						const Vec2 c1 = transform.TransformPoint(Vec2{  0.5f, -0.5f });
+						const Vec2 c2 = transform.TransformPoint(Vec2{  0.5f,  0.5f });
+						const Vec2 c3 = transform.TransformPoint(Vec2{ -0.5f,  0.5f });
+						Gizmo::DrawThickLine(c0, c1, width);
+						Gizmo::DrawThickLine(c1, c2, width);
+						Gizmo::DrawThickLine(c2, c3, width);
+						Gizmo::DrawThickLine(c3, c0, width);
+					}
+				};
+				drawSpriteOutline(Color(0.02f, 0.02f, 0.02f, 0.85f), haloWidth); // halo (under)
+				drawSpriteOutline(Color(1.0f, 0.65f, 0.10f, 1.0f), coreWidth);   // bright core (on top)
 			}
 
 			// Camera frame is drawn for ALL cameras in DrawAlwaysVisibleComponentGizmos,
@@ -520,7 +549,7 @@ namespace Index {
 					const Vec2 center = transform.Position + Rotated(collider.GetCenter(), transform.Rotation);
 					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
 					Gizmo::SetLineWidth(2.0f);
-					Gizmo::DrawSquare(center, collider.GetScale(), rotationDegrees);
+					Gizmo::DrawWireSquare(center, collider.GetScale(), rotationDegrees);
 				}
 			}
 	
@@ -530,7 +559,7 @@ namespace Index {
 					const Vec2 center = transform.Position + Rotated(collider.GetCenter(), transform.Rotation);
 					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
 					Gizmo::SetLineWidth(2.0f);
-					Gizmo::DrawCircle(center, collider.GetRadius());
+					Gizmo::DrawWireCircle(center, collider.GetRadius());
 				}
 			}
 	
@@ -566,7 +595,7 @@ namespace Index {
 				const Vec2 worldSize(std::abs(he.x) * 2.0f, std::abs(he.y) * 2.0f);
 				Gizmo::SetColor(Color(0.10f, 0.85f, 0.85f, 1.0f));
 				Gizmo::SetLineWidth(2.0f);
-				Gizmo::DrawSquare(transform.Position, worldSize, rotationDegrees);
+				Gizmo::DrawWireSquare(transform.Position, worldSize, rotationDegrees);
 			}
 
 			if (scene.HasComponent<FastCircleCollider2DComponent>(m_SelectedEntity)) {
@@ -578,7 +607,7 @@ namespace Index {
 					: collider.Radius * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
 				Gizmo::SetColor(Color(0.10f, 0.85f, 0.85f, 1.0f));
 				Gizmo::SetLineWidth(2.0f);
-				Gizmo::DrawCircle(transform.Position, worldRadius);
+				Gizmo::DrawWireCircle(transform.Position, worldRadius);
 			}
 	
 			if (scene.HasComponent<ParticleSystem2DComponent>(m_SelectedEntity)) {
@@ -592,7 +621,7 @@ namespace Index {
 						const float radius = shape.Radius * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
 						const float arc = std::clamp(shape.Arc, 0.0f, 360.0f);
 						if (arc >= 359.999f) {
-							Gizmo::DrawCircle(transform.Position, radius);
+							Gizmo::DrawWireCircle(transform.Position, radius);
 						}
 						else {
 							// Sector matching the emission range: sweep `arc` degrees from the
@@ -616,7 +645,7 @@ namespace Index {
 						const Vec2 size(
 							std::abs(shape.HalfExtends.x * transform.Scale.x) * 2.0f,
 							std::abs(shape.HalfExtends.y * transform.Scale.y) * 2.0f);
-						Gizmo::DrawSquare(transform.Position, size, rotationDegrees);
+						Gizmo::DrawWireSquare(transform.Position, size, rotationDegrees);
 					}
 					else if constexpr (std::is_same_v<T, ParticleSystem2DComponent::EdgeParams>) {
 						const float halfLength = shape.Length * 0.5f;
@@ -681,10 +710,10 @@ namespace Index {
 			const Vec2 outerMidR{ (corners[1].x + corners[2].x) * 0.5f, (corners[1].y + corners[2].y) * 0.5f };
 			const Vec2 outerMidB{ (corners[0].x + corners[1].x) * 0.5f, (corners[0].y + corners[1].y) * 0.5f };
 			const Vec2 outerMidT{ (corners[2].x + corners[3].x) * 0.5f, (corners[2].y + corners[3].y) * 0.5f };
-			Gizmo::DrawSquare(outerMidL, rectHandleSize, rectHandleRotationDegrees);
-			Gizmo::DrawSquare(outerMidR, rectHandleSize, rectHandleRotationDegrees);
-			Gizmo::DrawSquare(outerMidB, rectHandleSize, rectHandleRotationDegrees);
-			Gizmo::DrawSquare(outerMidT, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawWireSquare(outerMidL, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawWireSquare(outerMidR, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawWireSquare(outerMidB, rectHandleSize, rectHandleRotationDegrees);
+			Gizmo::DrawWireSquare(outerMidT, rectHandleSize, rectHandleRotationDegrees);
 
 			if (componentGizmosEnabled && scene.HasComponent<TextRendererComponent>(m_SelectedEntity)) {
 				const auto& text = scene.GetComponent<TextRendererComponent>(m_SelectedEntity);
@@ -728,10 +757,10 @@ namespace Index {
 				const Vec2 midR{ (inner[1].x + inner[2].x) * 0.5f, (inner[1].y + inner[2].y) * 0.5f };
 				const Vec2 midB{ (inner[0].x + inner[1].x) * 0.5f, (inner[0].y + inner[1].y) * 0.5f };
 				const Vec2 midT{ (inner[2].x + inner[3].x) * 0.5f, (inner[2].y + inner[3].y) * 0.5f };
-				Gizmo::DrawSquare(midL, handleSize, rectRotDeg);
-				Gizmo::DrawSquare(midR, handleSize, rectRotDeg);
-				Gizmo::DrawSquare(midB, handleSize, rectRotDeg);
-				Gizmo::DrawSquare(midT, handleSize, rectRotDeg);
+				Gizmo::DrawWireSquare(midL, handleSize, rectRotDeg);
+				Gizmo::DrawWireSquare(midR, handleSize, rectRotDeg);
+				Gizmo::DrawWireSquare(midB, handleSize, rectRotDeg);
+				Gizmo::DrawWireSquare(midT, handleSize, rectRotDeg);
 			}
 		}
 
@@ -1144,6 +1173,61 @@ namespace Index {
 					viewportSize);
 
 				ImVec2 imageTopLeft = ImGui::GetItemRectMin();
+
+				// Drag-and-drop: drop a texture or prefab from the Asset Browser onto
+				// the viewport to spawn it at the cursor. While a payload hovers we
+				// draw a crosshaired-ring placement marker (no text) and create the
+				// entity at the drop point on release. Disabled in prefab-edit mode
+				// (would add a second root to the single-root prefab scene).
+				if (renderScene && !IsInPrefabEditMode()) {
+					const ImRect dropRect(imageTopLeft,
+						ImVec2(imageTopLeft.x + viewportSize.x, imageTopLeft.y + viewportSize.y));
+					if (ImGui::BeginDragDropTargetCustom(dropRect, ImGui::GetID("##EditorViewAssetDrop"))) {
+						const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM",
+							ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+						if (payload && payload->Data) {
+							// Only show the marker / spawn for asset types SpawnAssetEntityAt
+							// handles (textures + prefabs); other drops (scenes, scripts) pass through.
+							const std::string droppedPath(static_cast<const char*>(payload->Data));
+							const size_t dot = droppedPath.find_last_of('.');
+							std::string ext = (dot == std::string::npos) ? std::string() : droppedPath.substr(dot);
+							std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+							const bool spawnable = (ext == ".prefab" || ext == ".png" || ext == ".jpg"
+								|| ext == ".jpeg" || ext == ".bmp" || ext == ".tga");
+
+							if (spawnable) {
+								const ImVec2 mp = ImGui::GetMousePos();
+								ImDrawList* dl = ImGui::GetWindowDrawList();
+								constexpr float kRing = 12.0f;
+								constexpr float kTick = 6.0f;
+								const ImU32 cBright = IM_COL32(120, 230, 140, 240);
+								const ImU32 cDark = IM_COL32(0, 0, 0, 150);
+								auto drawMarker = [&](ImU32 col, float th) {
+									dl->AddCircle(mp, kRing, col, 32, th);
+									dl->AddLine(ImVec2(mp.x - kRing - kTick, mp.y), ImVec2(mp.x - kRing, mp.y), col, th);
+									dl->AddLine(ImVec2(mp.x + kRing, mp.y), ImVec2(mp.x + kRing + kTick, mp.y), col, th);
+									dl->AddLine(ImVec2(mp.x, mp.y - kRing - kTick), ImVec2(mp.x, mp.y - kRing), col, th);
+									dl->AddLine(ImVec2(mp.x, mp.y + kRing), ImVec2(mp.x, mp.y + kRing + kTick), col, th);
+								};
+								drawMarker(cDark, 4.0f);    // dark halo for contrast on any background
+								drawMarker(cBright, 2.0f);
+								dl->AddCircleFilled(mp, 2.5f, cBright);
+
+								if (payload->IsDelivery()) {
+									const AABB dropCamAABB = m_EditorCamera.GetViewportAABB();
+									const float u = (mp.x - imageTopLeft.x) / std::max(1.0f, viewportSize.x);
+									const float v = (mp.y - imageTopLeft.y) / std::max(1.0f, viewportSize.y);
+									const Vec2 dropWorld{
+										dropCamAABB.Min.x + u * (dropCamAABB.Max.x - dropCamAABB.Min.x),
+										dropCamAABB.Max.y - v * (dropCamAABB.Max.y - dropCamAABB.Min.y)
+									};
+									SpawnAssetEntityAt(*renderScene, droppedPath, dropWorld);
+								}
+							}
+						}
+						ImGui::EndDragDropTarget();
+					}
+				}
 
 				if (m_SelectedEntity != entt::null
 					&& renderScene->IsValid(m_SelectedEntity)
@@ -1684,14 +1768,41 @@ namespace Index {
 						const float ly = mp.y - imageTopLeft.y;
 						if (lx >= 0.0f && lx < viewportSize.x && ly >= 0.0f && ly < viewportSize.y) {
 							const Vec2 worldPoint = screenToWorld(mp.x, mp.y);
-							EntityHandle picked = entt::null;
-							EntityPicker::TryPickEntity(*renderScene, worldPoint, picked);
-							if (picked != entt::null) {
-								if (hasModifier) ToggleEntitySelection(picked, -1);
-								else SetSingleEntitySelection(picked, -1);
+							// Pixel-precise hit testing reads current transforms + UI layout.
+							TransformHierarchySystem::Propagate(*renderScene);
+							ComputeUILayout(*renderScene);
+							std::vector<EntityHandle> stack;
+							EntityPicker::PickEntitiesAtPoint(*renderScene, worldPoint, stack, /*pixelPrecise*/ true);
+
+							if (stack.empty()) {
+								if (!hasModifier) ClearEntitySelection();
+								m_PickCycleStack.clear();
 							}
-							else if (!hasModifier) {
-								ClearEntitySelection();
+							else if (hasModifier) {
+								// Ctrl/Shift-click toggles the topmost entity; no cycling.
+								ToggleEntitySelection(stack.front(), -1);
+								m_PickCycleStack.clear();
+							}
+							else {
+								// Plain click selects the topmost entity. A repeat click at
+								// the same spot over the same overlap set advances to the
+								// entity beneath the current one (wrapping), so stacked
+								// entities are all reachable.
+								EntityHandle pick = stack.front();
+								const float dx = mp.x - m_PickCycleScreenPos.x;
+								const float dy = mp.y - m_PickCycleScreenPos.y;
+								constexpr float k_PickCycleTolPx = 3.0f;
+								const bool sameSpot = (dx * dx + dy * dy) <= (k_PickCycleTolPx * k_PickCycleTolPx);
+								if (sameSpot && stack == m_PickCycleStack) {
+									auto it = std::find(stack.begin(), stack.end(), m_SelectedEntity);
+									if (it != stack.end()) {
+										const size_t next = (static_cast<size_t>(it - stack.begin()) + 1) % stack.size();
+										pick = stack[next];
+									}
+								}
+								SetSingleEntitySelection(pick, -1);
+								m_PickCycleScreenPos = Vec2{ mp.x, mp.y };
+								m_PickCycleStack = std::move(stack);
 							}
 						}
 					}

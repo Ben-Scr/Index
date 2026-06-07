@@ -165,6 +165,10 @@ namespace Index {
 		void PasteEntities(Scene& scene);
 		EntityHandle FinishCreatedEditorEntity(Scene& scene, Entity parent, Entity created);
 		EntityHandle RenderCreateEntityMenu(Scene& scene, Entity parent);
+		// Spawns an entity from a dropped asset path (image → sprite, .prefab →
+		// instance) with its root placed at worldPos, and selects it. Returns the
+		// new root, or entt::null if the asset type isn't spawnable.
+		EntityHandle SpawnAssetEntityAt(Scene& scene, const std::string& assetPath, const Vec2& worldPos);
 		std::string MakeEditorUniqueEntityName(Scene& scene, std::string_view baseName, EntityHandle ignoreEntity = entt::null) const;
 		void EnsureEditorUniqueEntityName(Scene& scene, EntityHandle entity);
 		void EnsureEditorUniqueEntityNames(Scene& scene, const std::vector<EntityHandle>& roots);
@@ -216,6 +220,12 @@ namespace Index {
 		bool m_BoxSelectPending = false;
 		bool m_BoxSelectActive = false;
 		Vec2 m_BoxSelectStartScreen{ 0.0f, 0.0f };
+		// Click-to-cycle selection: repeated plain clicks at the same screen spot step
+		// through entities stacked under the cursor (topmost → beneath → wrap), so
+		// entities hidden behind others stay reachable. Reset when the cursor leaves
+		// the spot or the overlap set changes.
+		Vec2 m_PickCycleScreenPos{ 0.0f, 0.0f };
+		std::vector<EntityHandle> m_PickCycleStack;
 		// Bumped every time the selection mutates. Inspector / future
 		// consumers compare against their own cached snapshot to decide
 		// whether their derived state is still valid.
@@ -257,6 +267,9 @@ namespace Index {
 		std::vector<int> m_RenderedEntityDepths;
 		std::vector<entt::entity> m_VisibleEntityOrder;
 		std::vector<int> m_VisibleEntityDepths;
+		// Hierarchy search: a non-empty query flattens the rendered rows to the
+		// name-matching entities (the visible lists above become the filtered set).
+		char m_HierarchySearchBuffer[128]{};
 		// Detects scene swaps that don't flip m_EntityOrderDirty; stale handles from a prior scene cause ImGui to assert if not caught here.
 		// Scene* (not sceneId): two loaded scenes can collide on sceneId — a duplicated .scene file keeps its serialized id, and an
 		// additively loaded script-only scene starts at the UUID default. Scene* is always distinct among currently-loaded scenes.
