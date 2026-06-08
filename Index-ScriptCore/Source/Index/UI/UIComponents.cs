@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Index;
 using Index.Interop;
 using static System.Net.Mime.MediaTypeNames;
@@ -104,6 +106,60 @@ public class RectTransform : Component
             InternalCalls.RectTransform_GetResolvedSize(id, out float w, out float h);
             return new Vector2(w, h);
         }
+    }
+
+    public new Entity? Entity
+    {
+        get
+        {
+            ulong entityId = InternalCalls.Transform2D_GetEntity(RequireComponent<Transform2D>());
+            return entityId != 0 ? new Entity(entityId) : null;
+        }
+    }
+
+    public Entity? Child => GetChildAt(0);
+
+    public Entity? Parent
+    {
+        get
+        {
+            ulong parentId = InternalCalls.Transform2D_GetParent(RequireComponent<Transform2D>());
+            return parentId != 0 ? new Entity(parentId) : null;
+        }
+    }
+
+    public int ChildCount => InternalCalls.Transform2D_GetChildCount(RequireComponent<Transform2D>());
+
+    public Entity[] GetChildren()
+    {
+        ulong entityId = RequireComponent<Transform2D>();
+        int count = InternalCalls.Transform2D_GetChildCount(entityId);
+        if (count <= 0) return Array.Empty<Entity>();
+
+        ulong[] ids = new ulong[count];
+        int actual = InternalCalls.Transform2D_GetChildren(entityId, ids);
+
+        var result = new List<Entity>(actual);
+        for (int i = 0; i < actual; i++)
+        {
+            if (ids[i] == 0) continue;
+            result.Add(new Entity(ids[i]));
+        }
+        return result.ToArray();
+    }
+
+    public Entity? GetChildAt(int index)
+    {
+        if (index < 0) return null;
+        ulong childId = InternalCalls.Transform2D_GetChildAt(RequireComponent<Transform2D>(), index);
+        return childId != 0 ? new Entity(childId) : null;
+    }
+
+    public bool SetParent(Entity? newParent)
+    {
+        ulong entityId = RequireComponent<Transform2D>();
+        ulong parentId = newParent != null && newParent != Entity.Invalid ? newParent.ID : 0;
+        return InternalCalls.Transform2D_SetParent(entityId, parentId);
     }
 }
 

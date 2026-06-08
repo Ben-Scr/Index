@@ -71,6 +71,7 @@
 #include "Scripting/ScriptComponentInspector.hpp"
 #include "Systems/TransformHierarchySystem.hpp"
 #include "Systems/UILayoutSystem.hpp"
+#include "Undo/InspectorUndoRecorder.hpp"
 #include "Math/VectorMath.hpp"
 #include <algorithm>
 #include <array>
@@ -711,6 +712,106 @@ namespace Index {
 		scene.MarkDirty();
 	}
 
+	void ImGuiEditorLayer::BeginGizmoTransformDrag(Scene& scene) {
+		// Recording during play is pointless — those edits are discarded on Stop.
+		if (Application::GetIsPlaying()) return;
+
+		m_GizmoDragActive = true;
+		m_GizmoDragBefore.clear();
+		for (EntityHandle handle : GetSelectedEntities(scene)) {
+			Transform2DComponent* transform = nullptr;
+			if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
+			const uint64_t id = scene.GetEntityPersistentID(handle);
+			if (id == 0) continue;
+			m_GizmoDragBefore.push_back({ id, TransformSnapshot{
+				transform->Position, transform->Scale, transform->Rotation,
+				transform->LocalPosition, transform->LocalScale, transform->LocalRotation } });
+		}
+	}
+
+	void ImGuiEditorLayer::CommitGizmoTransformDrag(Scene& scene) {
+		m_GizmoDragActive = false;
+		if (m_GizmoDragBefore.empty()) return;
+
+		std::vector<TransformEditCommand::Entry> entries;
+		entries.reserve(m_GizmoDragBefore.size());
+		for (const auto& [id, before] : m_GizmoDragBefore) {
+			EntityHandle handle = entt::null;
+			if (!scene.TryResolveEntityRef(id, handle)) continue;
+			Transform2DComponent* transform = nullptr;
+			if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
+			TransformEditCommand::Entry entry;
+			entry.PersistentId = id;
+			entry.Before = before;
+			entry.After = TransformSnapshot{
+				transform->Position, transform->Scale, transform->Rotation,
+				transform->LocalPosition, transform->LocalScale, transform->LocalRotation };
+			entries.push_back(entry);
+		}
+		m_GizmoDragBefore.clear();
+
+		const char* label = m_GizmoMode == EditorGizmoMode::Rotate ? "Rotate"
+			: m_GizmoMode == EditorGizmoMode::Scale ? "Scale" : "Move";
+		auto command = std::make_unique<TransformEditCommand>(std::move(entries), label);
+		if (command->HasChange()) {
+			m_UndoStack.Push(std::move(command));
+		}
+	}
+
+	void ImGuiEditorLayer::ShowUndoToast(const std::string& action, bool redo) {
+		if (action.empty()) return;
+		m_UndoToastText = (redo ? "Redo: " : "Undo: ") + action;
+		m_UndoToastRedo = redo;
+		m_UndoToastElapsed = 0.0f;
+		m_UndoToastActive = true;
+	}
+
+	void ImGuiEditorLayer::DrawUndoToast() {
+		if (!m_UndoToastActive || m_EditorViewImageW <= 0.0f) return;
+
+		constexpr float fadeIn = 0.15f, hold = 1.3f, fadeOut = 0.5f;
+		const float total = fadeIn + hold + fadeOut;
+		const float t = m_UndoToastElapsed;
+		float alpha = 1.0f;
+		if (t < fadeIn) alpha = t / fadeIn;
+		else if (t < fadeIn + hold) alpha = 1.0f;
+		else if (t < total) alpha = 1.0f - (t - fadeIn - hold) / fadeOut;
+		else alpha = 0.0f;
+		alpha = std::clamp(alpha, 0.0f, 1.0f);
+		if (alpha <= 0.0f) return;
+
+		ImDrawList* dl = ImGui::GetForegroundDrawList();
+
+		constexpr float iconSize = 18.0f;
+		constexpr float padX = 12.0f, padY = 8.0f, gap = 8.0f;
+		const ImVec2 textSize = ImGui::CalcTextSize(m_UndoToastText.c_str());
+		const float boxW = iconSize + gap + textSize.x + padX * 2.0f;
+		const float boxH = std::max(iconSize, textSize.y) + padY * 2.0f;
+		const float boxX = m_EditorViewImageX + (m_EditorViewImageW - boxW) * 0.5f;
+		const float boxY = m_EditorViewImageY + 18.0f;
+
+		const int a = static_cast<int>(255.0f * alpha);
+		const ImU32 bg = IM_COL32(26, 27, 31, static_cast<int>(230.0f * alpha));
+		const ImU32 border = IM_COL32(85, 87, 96, static_cast<int>(170.0f * alpha));
+		const ImU32 textCol = IM_COL32(236, 237, 240, a);
+		const ImU32 tint = IM_COL32(255, 255, 255, a);
+
+		dl->AddRectFilled(ImVec2(boxX, boxY), ImVec2(boxX + boxW, boxY + boxH), bg, 6.0f);
+		dl->AddRect(ImVec2(boxX, boxY), ImVec2(boxX + boxW, boxY + boxH), border, 6.0f);
+
+		const float iconX = boxX + padX;
+		const float iconY = boxY + (boxH - iconSize) * 0.5f;
+		const uint64_t icon = EditorIcons::Get(m_UndoToastRedo ? "redo" : "undo", 16);
+		if (icon != 0) {
+			dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
+				ImVec2(iconX, iconY), ImVec2(iconX + iconSize, iconY + iconSize),
+				ImVec2(0, 1), ImVec2(1, 0), tint);
+		}
+		const float textX = iconX + iconSize + gap;
+		const float textY = boxY + (boxH - textSize.y) * 0.5f;
+		dl->AddText(ImVec2(textX, textY), textCol, m_UndoToastText.c_str());
+	}
+
 
 
 	// ──────────────────────────────────────────────
@@ -953,6 +1054,23 @@ namespace Index {
 		if (!selectionContextScene) selectionContextScene = activeScene;
 		Scene& selectionScene = *selectionContextScene;
 
+		// Drop the undo history when the editing context changes (scene switch,
+		// prefab-edit enter/exit) — its commands reference the previous scene.
+		if (m_UndoStackSceneId != selectionContextScene) {
+			m_UndoStack.Clear();
+			InspectorUndoRecorder::Reset();
+			m_UndoStackSceneId = selectionContextScene;
+		}
+
+		// Commit any inspector edit gesture that ended this frame (one step per drag).
+		InspectorUndoRecorder::Flush(m_UndoStack);
+
+		// Advance the undo/redo toast fade (fade-in 0.15 + hold 1.3 + fade-out 0.5).
+		if (m_UndoToastActive) {
+			m_UndoToastElapsed += dt;
+			if (m_UndoToastElapsed >= 1.95f) m_UndoToastActive = false;
+		}
+
 		if (m_SelectedEntity != entt::null && !selectionScene.IsValid(m_SelectedEntity)) {
 			m_SelectedEntity = entt::null;
 		}
@@ -988,6 +1106,22 @@ namespace Index {
 		}
 		if (m_RenamingEntity != entt::null || io.WantTextInput || ImGui::IsAnyItemActive()) {
 			return;
+		}
+
+		// Undo/redo. After the text-input guards so ImGui's own Ctrl+Z in InputText
+		// fields is left untouched; blocked during play since those edits are dropped
+		// on Stop. Ctrl+Y and Ctrl+Shift+Z both redo.
+		if (!Application::GetIsPlaying() && io.KeyCtrl) {
+			const bool redo = ImGui::IsKeyPressed(ImGuiKey_Y, false)
+				|| (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false));
+			if (redo) {
+				ShowUndoToast(m_UndoStack.Redo(shortcutScene), true);
+				return;
+			}
+			if (!io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+				ShowUndoToast(m_UndoStack.Undo(shortcutScene), false);
+				return;
+			}
 		}
 
 		if (io.KeyShift && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper
@@ -1266,6 +1400,17 @@ namespace Index {
 		// presets, external script editor, asset-browser / auto-save
 		// toggles). All routed through EditorPreferencesPanel.
 		if (ImGui::BeginMenu("Edit")) {
+			// Operate on the context scene (prefab-edit aware), matching the
+			// keyboard handler in OnUpdate. Disabled during play.
+			Scene* undoScene = GetContextScene();
+			const bool canEditHistory = undoScene && !Application::GetIsPlaying();
+			if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canEditHistory && m_UndoStack.CanUndo())) {
+				ShowUndoToast(m_UndoStack.Undo(*undoScene), false);
+			}
+			if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canEditHistory && m_UndoStack.CanRedo())) {
+				ShowUndoToast(m_UndoStack.Redo(*undoScene), true);
+			}
+			ImGui::Separator();
 			if (ImGui::MenuItem("Preferences...")) {
 				m_ShowEditorPreferences = true;
 			}
@@ -1288,6 +1433,10 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::BeginPlayModeRequest(Scene& scene) {
+		// Play-mode entry recycles entity handles in place; edit-mode undo entries
+		// would resolve onto play entities, so reset the history here.
+		m_UndoStack.Clear();
+		InspectorUndoRecorder::Reset();
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (project) {
 			// Snapshot every loaded scene (not just active): restore reloads each from disk, so all must be current at play-entry.
@@ -1557,6 +1706,8 @@ namespace Index {
 	}
 
 	void ImGuiEditorLayer::RestoreEditorSceneAfterPlaymode() {
+		m_UndoStack.Clear();
+		InspectorUndoRecorder::Reset();
 		// Reset before reload: m_PressedEntity holds a play-mode handle that entt may recycle, causing a stale click on the restored entity.
 		m_PressedEntity = entt::null;
 
@@ -3872,6 +4023,12 @@ namespace Index {
 									EntityHandle loaded = SceneSerializer::LoadEntityFromFile(scene, droppedPath);
 									if (loaded != entt::null) {
 										EnsureEditorUniqueEntityNames(scene, { loaded });
+										// Drop ONTO an entity row parents the prefab under that entity (mirrors the
+										// HIERARCHY_ENTITY reparent handler above); without this the instance stayed a root.
+										SetEntityParentPreservingWorld(scene, loaded, entity);
+										m_CollapsedHierarchyEntities.erase(static_cast<uint32_t>(entityHandle));
+										SelectEntity(loaded);
+										scene.MarkDirty();
 									}
 									m_EntityOrder.clear(); m_EntityOrderDirty = true;
 								}

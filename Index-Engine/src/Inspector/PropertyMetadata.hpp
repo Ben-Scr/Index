@@ -60,6 +60,12 @@ namespace Index {
 		// (e.g. DataAsset). Unknown = any asset.
 		AssetKind AssetKindFilter = AssetKind::Unknown;
 
+		// TextureRef / List<TextureRef> only: hide sprite-sheet slice sub-entries
+		// from the picker. Slices can't round-trip through a value that only
+		// carries a UUID (script fields), so offering them would silently collapse
+		// the pick to the full texture.
+		bool SuppressTextureSlices = false;
+
 		// For PropertyType::List — the PropertyType of each list item. The
 		// drawer dispatches per-row through the matching primitive widget.
 		PropertyType ListItemType = PropertyType::None;
@@ -128,6 +134,10 @@ namespace Index {
 		}
 		PropertyMetadata& WithResetSection(std::function<void(Entity&)> reset) {
 			ResetSectionFn = std::move(reset);
+			return *this;
+		}
+		PropertyMetadata& WithSuppressTextureSlices(bool suppress = true) {
+			SuppressTextureSlices = suppress;
 			return *this;
 		}
 	};

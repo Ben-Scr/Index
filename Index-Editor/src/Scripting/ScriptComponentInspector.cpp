@@ -44,6 +44,7 @@ namespace Index {
 			std::string Name;
 			std::string DisplayName;
 			std::string TypeTag;             // "float", "enum", "component:Foo", ...
+			std::string ItemTypeTag;         // for TypeTag == "list": the element's wire tag
 			std::string ComponentTypeName;   // populated when TypeTag starts with "component:"
 			std::string Value;                // current value as a string (PropertyValue::FromString accepts this)
 			std::string Tooltip;
@@ -126,6 +127,7 @@ namespace Index {
 				if (const Json::Value* v = item.FindMember("name"))           rec.Name = v->AsStringOr();
 				if (const Json::Value* v = item.FindMember("displayName"))    rec.DisplayName = v->AsStringOr();
 				if (const Json::Value* v = item.FindMember("type"))           rec.TypeTag = v->AsStringOr();
+				if (const Json::Value* v = item.FindMember("itemType"))       rec.ItemTypeTag = v->AsStringOr();
 				if (const Json::Value* v = item.FindMember("value"))          rec.Value = v->AsStringOr();
 				if (const Json::Value* v = item.FindMember("readOnly"))       rec.ReadOnly = v->AsBoolOr(false);
 				if (const Json::Value* v = item.FindMember("hasClamp"))       rec.HasClamp = v->AsBoolOr(false);
@@ -145,9 +147,11 @@ namespace Index {
 					rec.ComponentTypeName = rec.TypeTag.substr(10);
 				}
 
-				if (rec.TypeTag == "enum" || rec.TypeTag == "flagenum") {
+				const bool isEnumField = (rec.TypeTag == "enum" || rec.TypeTag == "flagenum");
+				const bool isEnumItem  = (rec.ItemTypeTag == "enum" || rec.ItemTypeTag == "flagenum");
+				if (isEnumField || isEnumItem) {
 					rec.Enum = std::make_shared<EnumDescriptor>();
-					rec.Enum->IsFlags = (rec.TypeTag == "flagenum");
+					rec.Enum->IsFlags = (rec.TypeTag == "flagenum" || rec.ItemTypeTag == "flagenum");
 					if (const Json::Value* flagsValue = item.FindMember("enumIsFlags")) {
 						rec.Enum->IsFlags = flagsValue->AsBoolOr(rec.Enum->IsFlags);
 					}
@@ -287,6 +291,94 @@ namespace Index {
 			};
 		}
 
+		// ── List field codec ─────────────────────────────────────────
+		// Script list fields ride the single-string wire as their items, each
+		// prefixed by a '\n' marker with embedded backslash/newline escaped. The
+		// leading marker makes an empty list ("") distinct from a one-element list
+		// whose element is empty ("\n") — without it, "+ Add" then leaving a None
+		// reference (or "") would collapse back to zero elements on the next
+		// round-trip. Must match the C# producer (EncodeListString) byte-for-byte.
+		// The item type lives in PropertyMetadata::ListItemType, so the codec needs
+		// it explicitly (PropertyValue::FromString can't infer it).
+		PropertyType ResolveListItemType(const std::string& itemTag,
+			std::string& outComponentName, AssetKind& outAssetKind)
+		{
+			outComponentName.clear();
+			outAssetKind = AssetKind::Unknown;
+			if (itemTag.rfind("component:", 0) == 0) { outComponentName = itemTag.substr(10); return PropertyType::ComponentRef; }
+			if (itemTag.rfind("dataasset:", 0) == 0) { outAssetKind = AssetKind::DataAsset; return PropertyType::AssetRef; }
+			if (itemTag == "entity") return PropertyType::EntityRef;
+			return PropertyTypeFromString(itemTag);
+		}
+
+		std::string EncodeScriptList(const std::vector<PropertyValue>& items) {
+			std::string out;
+			for (const PropertyValue& item : items) {
+				out.push_back('\n');
+				for (char c : item.ToString()) {
+					if (c == '\\') out.append("\\\\");
+					else if (c == '\n') out.append("\\n");
+					else out.push_back(c);
+				}
+			}
+			return out;
+		}
+
+		std::vector<PropertyValue> DecodeScriptList(const std::string& text, PropertyType itemType) {
+			std::vector<PropertyValue> items;
+			if (text.empty()) return items;
+			// Non-empty payload always opens with the '\n' element marker; skip it.
+			std::size_t start = (text[0] == '\n') ? 1 : 0;
+			std::string current;
+			for (std::size_t i = start; i < text.size(); ++i) {
+				char c = text[i];
+				if (c == '\\' && i + 1 < text.size()) {
+					char next = text[i + 1];
+					if (next == 'n')  { current.push_back('\n'); ++i; continue; }
+					if (next == '\\') { current.push_back('\\'); ++i; continue; }
+				}
+				if (c == '\n') { items.push_back(PropertyValue::FromString(itemType, current)); current.clear(); continue; }
+				current.push_back(c);
+			}
+			items.push_back(PropertyValue::FromString(itemType, current));
+			return items;
+		}
+
+		PropertyValue MakeListPropertyValue(const std::string& encoded, PropertyType itemType) {
+			PropertyValue v;
+			v.Type = PropertyType::List;
+			v.ListValue = DecodeScriptList(encoded, itemType);
+			return v;
+		}
+
+		PropertyValue LookupPerEntityListValue(const std::shared_ptr<ScriptFieldValueMap>& perEntity,
+			const Entity& entity, const std::string& fieldName,
+			const std::string& defaultValue, PropertyType itemType)
+		{
+			std::string raw = defaultValue;
+			if (perEntity) {
+				auto eIt = perEntity->find(static_cast<uint32_t>(entity.GetHandle()));
+				if (eIt != perEntity->end()) {
+					auto fIt = eIt->second.find(fieldName);
+					if (fIt != eIt->second.end()) raw = fIt->second;
+				}
+			}
+			return MakeListPropertyValue(raw, itemType);
+		}
+
+		// When d is a list, resolve item metadata (ListItemType + per-item
+		// component/asset filter) and return the item type; None otherwise.
+		PropertyType ConfigureListItemMetadata(PropertyDescriptor& d, const EditorFieldRecord& rec) {
+			if (d.Type != PropertyType::List) return PropertyType::None;
+			std::string itemComp;
+			AssetKind itemKind = AssetKind::Unknown;
+			const PropertyType itemType = ResolveListItemType(rec.ItemTypeTag, itemComp, itemKind);
+			d.Metadata.ListItemType = itemType;
+			if (itemType == PropertyType::ComponentRef) d.Metadata.ComponentTypeName = itemComp;
+			if (itemType == PropertyType::AssetRef)     d.Metadata.AssetKindFilter = itemKind;
+			return itemType;
+		}
+
 		// Build a PropertyDescriptor for a [ShowInEditor] field; Get reads the per-entity snapshot, Set propagates through SetScriptField + PendingFieldValues.
 		PropertyDescriptor BuildScriptFieldDescriptor(EditorFieldRecord rec,
 			const std::string& className, std::size_t scriptIndex,
@@ -310,8 +402,22 @@ namespace Index {
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			d.Metadata.SuppressTextureSlices = true;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
 				d.Metadata.EnabledIfFn = std::move(pred);
+			}
+
+			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
+				d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, itemType]
+					(const Entity& e) -> PropertyValue {
+						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType);
+					};
+				d.Set = [className, fieldName = rec.Name, scriptIndex, isPlaying]
+					(Entity& entity, const PropertyValue& v) {
+						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, EncodeScriptList(v.ListValue), isPlaying);
+					};
+				return d;
 			}
 
 			d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, type = d.Type]
@@ -349,8 +455,21 @@ namespace Index {
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			d.Metadata.SuppressTextureSlices = true;
 			if (auto pred = BuildScriptEnabledIfPredicate(rec, siblingRecords, perEntityValues)) {
 				d.Metadata.EnabledIfFn = std::move(pred);
+			}
+
+			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
+				d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, itemType]
+					(const Entity& e) -> PropertyValue {
+						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType);
+					};
+				d.Set = [className, fieldName = rec.Name](Entity& entity, const PropertyValue& v) {
+					ApplyManagedComponentFieldEdit(entity, className, fieldName, EncodeScriptList(v.ListValue));
+				};
+				return d;
 			}
 
 			d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, type = d.Type]
@@ -546,6 +665,24 @@ namespace Index {
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			d.Metadata.SuppressTextureSlices = true;
+
+			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
+				d.Get = [value = rec.Value, itemType](const Entity&) -> PropertyValue {
+					return MakeListPropertyValue(value, itemType);
+				};
+				d.Set = [scene, className, fieldName = rec.Name](Entity&, const PropertyValue& v) {
+					if (!scene) return;
+					const std::string s = EncodeScriptList(v.ListValue);
+					scene->SetSceneSystemFieldValue(className, fieldName, s);
+					uint32_t handle = scene->GetSceneSystemHandle(className);
+					if (handle != 0) {
+						ScriptEngine::SetSceneSystemField(handle, fieldName.c_str(), s.c_str());
+					}
+				};
+				return d;
+			}
 
 			d.Get = [value = rec.Value, type = d.Type](const Entity&) -> PropertyValue {
 				return PropertyValue::FromString(type, value);
@@ -584,6 +721,19 @@ namespace Index {
 			d.Metadata.Enum = rec.Enum;
 			d.Metadata.ComponentTypeName = rec.ComponentTypeName;
 			d.Metadata.AssetKindFilter = (rec.TypeTag.rfind("dataasset:", 0) == 0) ? AssetKind::DataAsset : AssetKind::Unknown;
+			// Script TextureRefs carry only a UUID — slices can't round-trip, so keep them out of the picker.
+			d.Metadata.SuppressTextureSlices = true;
+
+			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
+				d.Get = [value = rec.Value, itemType](const Entity&) -> PropertyValue {
+					return MakeListPropertyValue(value, itemType);
+				};
+				d.Set = [guid, fieldName = rec.Name](Entity&, const PropertyValue& v) {
+					DataAssetManager::SetField(guid, fieldName, EncodeScriptList(v.ListValue));
+					DataAssetManager::Save(guid);
+				};
+				return d;
+			}
 
 			d.Get = [value = rec.Value, type = d.Type](const Entity&) -> PropertyValue {
 				return PropertyValue::FromString(type, value);

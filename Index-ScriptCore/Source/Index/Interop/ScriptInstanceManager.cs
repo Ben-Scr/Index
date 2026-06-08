@@ -1352,6 +1352,26 @@ internal static class ScriptInstanceManager
         return NullTerminated(sb.ToString());
     }
 
+    // Element type of a List<T> or single-rank T[] the inspector can render as
+    // a list; null for non-collections or unsupported element types.
+    private static Type? GetListElementType(Type t)
+    {
+        if (t.IsArray && t.GetArrayRank() == 1) return t.GetElementType();
+        if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>))
+            return t.GetGenericArguments()[0];
+        return null;
+    }
+
+    // Wire tag for a list element type, or null when the element can't be a list
+    // item (nested collection, struct, Graph, or otherwise unsupported).
+    private static string? MapListItemType(Type elem)
+    {
+        if (GetListElementType(elem) != null) return null;  // no nested lists
+        string tag = MapFieldType(elem);
+        if (tag == "unsupported" || tag == "graph") return null;
+        return tag;
+    }
+
     private static string MapFieldType(Type t)
     {
         // Primitve types
@@ -1407,6 +1427,11 @@ internal static class ScriptInstanceManager
                 ? "component:" + nativeName
                 : "unsupported";
         }
+
+        // List<T> / T[] of a supported element type → generic inspector list.
+        if (GetListElementType(t) is Type listElem && MapListItemType(listElem) != null)
+            return "list";
+
         return "unsupported";
     }
 
@@ -1524,6 +1549,17 @@ internal static class ScriptInstanceManager
             // works for both single-value and [Flags] enums.
             return Convert.ToInt64(val, ic).ToString(ic);
         }
+
+        // List<T> / T[]: each element formatted by its own type, joined with the
+        // newline+backslash codec the editor's list drawer decodes.
+        if (GetListElementType(t) is Type listElem)
+        {
+            var parts = new List<string>();
+            if (val is System.Collections.IEnumerable en)
+                foreach (var item in en) parts.Add(FormatFieldValue(listElem, item));
+            return EncodeListString(parts);
+        }
+
         return val.ToString() ?? "";
     }
 
@@ -1680,12 +1716,82 @@ internal static class ScriptInstanceManager
                 long parsed = string.IsNullOrWhiteSpace(s) ? 0 : long.Parse(s, ic);
                 return Enum.ToObject(t, parsed);
             }
+
+            if (GetListElementType(t) is Type listElem)
+            {
+                var pieces = DecodeListString(s);
+                if (t.IsArray)
+                {
+                    Array arr = Array.CreateInstance(listElem, pieces.Count);
+                    for (int i = 0; i < pieces.Count; i++)
+                        arr.SetValue(ParseListElement(listElem, pieces[i]), i);
+                    return arr;
+                }
+                var list = (System.Collections.IList)Activator.CreateInstance(
+                    typeof(List<>).MakeGenericType(listElem))!;
+                foreach (var piece in pieces) list.Add(ParseListElement(listElem, piece));
+                return list;
+            }
         }
         catch (Exception ex) when (ex is FormatException || ex is OverflowException || ex is ArgumentException)
         {
             Log.Warn($"Failed to parse script field value '{s}' as {t.Name}: {ex.Message}");
         }
         return null;
+    }
+
+    // Container codec for list fields. Each element is prefixed by a '\n' marker
+    // (so an empty list is "" while a one-element list whose element is empty is
+    // "\n" — the two are distinguishable); embedded backslash/newline in each
+    // element are escaped. Must match the editor-side DecodeScriptList byte-for-
+    // byte so values round-trip C# <-> native and survive scene save/load.
+    private static string EncodeListString(List<string> parts)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var part in parts)
+        {
+            sb.Append('\n');
+            foreach (char c in part)
+            {
+                if (c == '\\') sb.Append("\\\\");
+                else if (c == '\n') sb.Append("\\n");
+                else sb.Append(c);
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static List<string> DecodeListString(string s)
+    {
+        var items = new List<string>();
+        if (string.IsNullOrEmpty(s)) return items;
+        // A non-empty payload always opens with the '\n' element marker; skip it
+        // so the first element isn't read as a spurious leading empty entry.
+        int start = (s[0] == '\n') ? 1 : 0;
+        var current = new System.Text.StringBuilder();
+        for (int i = start; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '\\' && i + 1 < s.Length)
+            {
+                char next = s[i + 1];
+                if (next == 'n') { current.Append('\n'); i++; continue; }
+                if (next == '\\') { current.Append('\\'); i++; continue; }
+            }
+            if (c == '\n') { items.Add(current.ToString()); current.Clear(); continue; }
+            current.Append(c);
+        }
+        items.Add(current.ToString());
+        return items;
+    }
+
+    // Parse one list element; value types fall back to default() on parse failure
+    // so a malformed piece can't null a List<int>/array slot.
+    private static object? ParseListElement(Type elem, string piece)
+    {
+        object? parsed = ParseFieldValue(elem, piece);
+        if (parsed == null && elem.IsValueType) parsed = Activator.CreateInstance(elem);
+        return parsed;
     }
 
     private static string EscapeJson(string s)
@@ -1888,6 +1994,31 @@ internal static class ScriptInstanceManager
                   .Append('}');
             }
             sb.Append(']');
+        }
+
+        // List<T> / T[]: emit the element wire type (and enum options for
+        // List<enum>) so the editor's list drawer picks the per-row widget.
+        if (GetListElementType(member.ValueType) is Type listElem)
+        {
+            sb.Append(",\"itemType\":\"").Append(EscapeJson(MapListItemType(listElem) ?? "")).Append('"');
+            if (listElem.IsEnum)
+            {
+                bool isFlags = listElem.GetCustomAttribute<FlagsAttribute>() != null;
+                sb.Append(",\"enumIsFlags\":").Append(isFlags ? "true" : "false");
+                sb.Append(",\"enumOptions\":[");
+                bool firstOpt = true;
+                foreach (var name in Enum.GetNames(listElem))
+                {
+                    object enumValue = Enum.Parse(listElem, name);
+                    long underlying = Convert.ToInt64(enumValue, ic);
+                    if (!firstOpt) sb.Append(',');
+                    firstOpt = false;
+                    sb.Append("{\"name\":\"").Append(EscapeJson(name))
+                      .Append("\",\"value\":").Append(underlying.ToString(ic))
+                      .Append('}');
+                }
+                sb.Append(']');
+            }
         }
 
         sb.Append("}");

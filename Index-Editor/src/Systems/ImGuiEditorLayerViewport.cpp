@@ -1174,6 +1174,12 @@ namespace Index {
 
 				ImVec2 imageTopLeft = ImGui::GetItemRectMin();
 
+				// Cache the viewport image rect (screen space) for the undo/redo toast overlay.
+				m_EditorViewImageX = imageTopLeft.x;
+				m_EditorViewImageY = imageTopLeft.y;
+				m_EditorViewImageW = viewportSize.x;
+				m_EditorViewImageH = viewportSize.y;
+
 				// Drag-and-drop: drop a texture or prefab from the Asset Browser onto
 				// the viewport to spawn it at the cursor. While a payload hovers we
 				// draw a crosshaired-ring placement marker (no text) and create the
@@ -1644,6 +1650,11 @@ namespace Index {
 						m_GizmoGroupScalePrev = Vec2{ 1.0f, 1.0f };
 					}
 
+					// Snapshot the selection's transforms on the drag's first frame.
+					if (ImGuizmo::IsUsing() && !m_GizmoDragActive) {
+						BeginGizmoTransformDrag(*renderScene);
+					}
+
 					if (ImGuizmo::IsUsing()) {
 						if (m_GizmoMode == EditorGizmoMode::Translate) {
 							// Gizmo is at the centroid: turn its motion into a world delta,
@@ -1694,6 +1705,11 @@ namespace Index {
 							};
 							ApplyGizmoManipulation(*renderScene, newPos, newRot, newScale);
 						}
+					}
+
+					// Commit one undo step for the whole drag once it releases.
+					if (!ImGuizmo::IsUsing() && m_GizmoDragActive) {
+						CommitGizmoTransformDrag(*renderScene);
 					}
 				}
 
@@ -1824,6 +1840,8 @@ namespace Index {
 
 		m_IsEditorViewHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows);
 		m_IsEditorViewFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+		DrawUndoToast();
 		ImGui::End();
 	}
 

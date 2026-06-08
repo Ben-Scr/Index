@@ -578,6 +578,31 @@ namespace Index {
 			return look.Valid ? look.ColorView : nullptr;
 		}
 
+		// Clear a target to transparent via an empty load-clear render pass. Effect
+		// passes write with LoadOp::Load + alpha blend, so a ping-pong reused across
+		// frames must be zeroed first — otherwise a transparent (alpha-0) scene
+		// background blends against the previous frame's contents and smears.
+		void ClearViewTransparent(wgpu::TextureView view) {
+			if (!view) return;
+			wgpu::CommandEncoder encoder = WebGPUBackend::GetFrameEncoder();
+			if (!encoder) return;
+
+			wgpu::RenderPassColorAttachment colorAtt{};
+			colorAtt.view       = view;
+			colorAtt.loadOp     = wgpu::LoadOp::Clear;
+			colorAtt.storeOp    = wgpu::StoreOp::Store;
+			colorAtt.clearValue = wgpu::Color{ 0.0, 0.0, 0.0, 0.0 };
+			colorAtt.depthSlice = wgpu::kDepthSliceUndefined;
+
+			wgpu::RenderPassDescriptor passDesc{};
+			passDesc.label                = "postprocess-pingpong-clear";
+			passDesc.colorAttachmentCount = 1;
+			passDesc.colorAttachments     = &colorAtt;
+
+			wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&passDesc);
+			pass.End();
+		}
+
 		bool EnsurePingPongFbos(PostProcessor::Impl& impl, uint32_t w, uint32_t h) {
 			const int iw = static_cast<int>(w);
 			const int ih = static_cast<int>(h);
@@ -1104,6 +1129,12 @@ namespace Index {
 				Blit(src, dstView, dstFormat, dstWidth, dstHeight);
 				return;
 			}
+			// Ping-pong FBOs persist across frames and are written with LoadOp::Load
+			// + alpha blend; zero them so a transparent scene background (e.g. the
+			// editor's wireframe draw mode) doesn't blend against the previous frame
+			// and accumulate. Opaque scenes overwrite these regardless.
+			ClearViewTransparent(ViewOf(m_Impl->PingPongA));
+			ClearViewTransparent(ViewOf(m_Impl->PingPongB));
 		}
 
 		float currentTime = 0.0f;

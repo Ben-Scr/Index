@@ -24,6 +24,8 @@
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureHandle.hpp"
 #include "Serialization/FileWatcher.hpp"
+#include "Undo/UndoStack.hpp"
+#include "Undo/TransformEditCommand.hpp"
 
 
 #include <atomic>
@@ -312,6 +314,29 @@ namespace Index {
 		// derive the per-frame factor applied to the selection. Reset between drags.
 		Vec2 m_GizmoGroupScalePrev{ 1.0f, 1.0f };
 
+		// Editor undo/redo. Commands are recorded already-applied. The history is
+		// dropped whenever the context scene changes (tracked by m_UndoStackSceneId)
+		// and at play-mode boundaries — its commands reference the prior scene.
+		UndoStack m_UndoStack;
+		const Scene* m_UndoStackSceneId = nullptr;
+		// Transforms captured on the gizmo-drag rising edge; one undo step covering
+		// the whole drag is committed on the falling edge.
+		bool m_GizmoDragActive = false;
+		std::vector<std::pair<uint64_t, TransformSnapshot>> m_GizmoDragBefore;
+
+		// Unreal-style transient toast: fades in/out over the editor view to show
+		// the last undone/redone action. Rect is captured during RenderEditorView.
+		void ShowUndoToast(const std::string& action, bool redo);
+		void DrawUndoToast();
+		std::string m_UndoToastText;
+		float m_UndoToastElapsed = 0.0f;
+		bool m_UndoToastActive = false;
+		bool m_UndoToastRedo = false;
+		float m_EditorViewImageX = 0.0f;
+		float m_EditorViewImageY = 0.0f;
+		float m_EditorViewImageW = 0.0f;
+		float m_EditorViewImageH = 0.0f;
+
 		// Applies the ImGuizmo gizmo result: the full transform (pos/rot/scale)
 		// goes to the primary selected entity; the translation delta also moves
 		// the other selected hierarchy roots (descendants follow via hierarchy).
@@ -321,6 +346,8 @@ namespace Index {
 		// about `pivot` (the selection centroid); descendants follow via hierarchy.
 		void ApplyGroupRotationScale(Scene& scene, const Vec2& pivot,
 			float deltaAngle, const Vec2& scaleFactor);
+		void BeginGizmoTransformDrag(Scene& scene);
+		void CommitGizmoTransformDrag(Scene& scene);
 		// Draws a faint EditorOnly grid at the snap spacing across the visible view.
 		void DrawSnapGrid(const AABB& viewBounds);
 		// Draws the world X (red) and Y (green) axis lines through the origin.

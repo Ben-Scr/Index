@@ -15,6 +15,7 @@
 #include "Scene/ComponentRegistry.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
+#include "Undo/InspectorUndoRecorder.hpp"
 #include "Utils/ExpressionEvaluator.hpp"
 
 #include <imgui.h>
@@ -29,6 +30,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -123,32 +125,38 @@ namespace Index::PropertyDrawer {
 		void WriteAll(std::span<const Entity> entities, const PropertyDescriptor& d,
 			const PropertyValue& value)
 		{
+			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				d.Set(const_cast<Entity&>(e), value);
 				MarkSceneDirty(e);
 			}
+			InspectorUndoRecorder::CaptureAfter(entities, d);
 		}
 
 		// Per-channel writes: only the edited channel is broadcast, so multi-select doesn't clobber other channels.
 		void WriteFloatChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, float newValue)
 		{
+			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				PropertyValue current = d.Get(e);
 				current.FloatVec[channel] = newValue;
 				d.Set(const_cast<Entity&>(e), current);
 				MarkSceneDirty(e);
 			}
+			InspectorUndoRecorder::CaptureAfter(entities, d);
 		}
 		void WriteIntChannel(std::span<const Entity> entities,
 			const PropertyDescriptor& d, std::size_t channel, int32_t newValue)
 		{
+			InspectorUndoRecorder::CaptureBefore(entities, d);
 			for (const Entity& e : entities) {
 				PropertyValue current = d.Get(e);
 				current.IntVec[channel] = newValue;
 				d.Set(const_cast<Entity&>(e), current);
 				MarkSceneDirty(e);
 			}
+			InspectorUndoRecorder::CaptureAfter(entities, d);
 		}
 
 		// Right-click "Clear" context menu for reference rows. Returns true
@@ -942,14 +950,15 @@ namespace Index::PropertyDrawer {
 			const ReferencePicker::Style style = (kind == AssetKind::Texture)
 				? ReferencePicker::Style::Thumbnails
 				: ReferencePicker::Style::Plain;
+			const bool includeSlices = !d.Metadata.SuppressTextureSlices;
 
 			return DrawReference(entities, d, fieldKey, valueType,
 				[kind](const PropertyValue& v, bool& missing, std::string& secondary) {
 					return ReferencePicker::ResolveAssetDisplay(v.UIntValue, kind, missing, &secondary);
 				},
-				[kind, pickerTitle, style](const std::string& key) {
+				[kind, pickerTitle, style, includeSlices](const std::string& key) {
 					ReferencePicker::OpenForFieldKey(key, pickerTitle,
-						ReferencePicker::CollectAssetsByKind(kind), style);
+						ReferencePicker::CollectAssetsByKind(kind, includeSlices), style);
 				},
 				[kind](PropertyValue& outValue) {
 					// Check sprite-slice payload before ASSET_BROWSER_ITEM so a slice drag sets both UUID and slice name rather than falling into the texture-only branch.
@@ -1094,7 +1103,179 @@ namespace Index::PropertyDrawer {
 				});
 		}
 
-		bool DrawList(std::span<const Entity> entities, const PropertyDescriptor& d) {
+		// Per-row reference widget for DrawList's reference item types. Mutates
+		// `item`; returns true on change. `rowKey` must be unique per row so the
+		// shared ReferencePicker routes its selection back to the right element.
+		bool DrawReferenceListItem(PropertyType itemType, const PropertyMetadata& meta,
+			PropertyValue& item, const std::string& rowKey, float buttonWidth)
+		{
+			item.Type = itemType;
+
+			const auto assetKindFor = [&]() -> AssetKind {
+				switch (itemType) {
+				case PropertyType::TextureRef: return AssetKind::Texture;
+				case PropertyType::AudioRef:   return AssetKind::Audio;
+				case PropertyType::FontRef:    return AssetKind::Font;
+				case PropertyType::SceneRef:   return AssetKind::Scene;
+				case PropertyType::PrefabRef:  return AssetKind::Prefab;
+				case PropertyType::AssetRef:   return meta.AssetKindFilter;
+				default:                       return AssetKind::Unknown;
+				}
+			};
+
+			bool missing = false;
+			std::string secondary;
+			std::string display;
+			switch (itemType) {
+			case PropertyType::EntityRef:
+				display = (item.StringValue == "prefab")
+					? ReferencePicker::ResolvePrefabDisplay(item.UIntValue, missing, &secondary)
+					: ReferencePicker::ResolveEntityDisplay(item.UIntValue, missing, &secondary);
+				break;
+			case PropertyType::ComponentRef:
+				display = ReferencePicker::ResolveComponentRefDisplay(item.UIntValue,
+					meta.ComponentTypeName, missing, &secondary);
+				break;
+			default:
+				display = ReferencePicker::ResolveAssetDisplay(item.UIntValue, assetKindFor(), missing, &secondary);
+				break;
+			}
+
+			const ImGuiStyle& style = ImGui::GetStyle();
+			if (missing) {
+				ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.30f, 0.12f, 0.12f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.38f, 0.16f, 0.16f, 1.0f));
+				ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.26f, 0.10f, 0.10f, 1.0f));
+			}
+			else {
+				ImGui::PushStyleColor(ImGuiCol_Button,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+				ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+				ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
+			}
+			bool truncated = false;
+			const float textMaxWidth = std::max(1.0f, buttonWidth - style.FramePadding.x * 2.0f);
+			const std::string buttonText = ImGuiUtils::Ellipsize(display, textMaxWidth, &truncated);
+			const bool clicked = ImGui::Button((buttonText + "##v").c_str(), ImVec2(buttonWidth, 0.0f));
+			if (ImGui::IsItemHovered() && (truncated || !secondary.empty())) {
+				ImGui::BeginTooltip();
+				ImGui::TextUnformatted(display.c_str());
+				if (!secondary.empty()) { ImGui::Separator(); ImGui::TextDisabled("%s", secondary.c_str()); }
+				ImGui::EndTooltip();
+			}
+			ImGui::PopStyleColor(3);
+
+			bool changed = false;
+
+			if (clicked) {
+				switch (itemType) {
+				case PropertyType::EntityRef:
+					ReferencePicker::OpenForFieldKey(rowKey, "Select Entity",
+						ReferencePicker::CollectEntities(), ReferencePicker::Style::Plain, /*useEntityTabs=*/true);
+					break;
+				case PropertyType::ComponentRef:
+					ReferencePicker::OpenForFieldKey(rowKey, "Select " + meta.ComponentTypeName,
+						ReferencePicker::CollectComponentTargets(meta.ComponentTypeName));
+					break;
+				default: {
+					const AssetKind kind = assetKindFor();
+					const ReferencePicker::Style pickerStyle = (kind == AssetKind::Texture)
+						? ReferencePicker::Style::Thumbnails : ReferencePicker::Style::Plain;
+					ReferencePicker::OpenForFieldKey(rowKey, "Select",
+						ReferencePicker::CollectAssetsByKind(kind, !meta.SuppressTextureSlices), pickerStyle);
+					break;
+				}
+				}
+			}
+
+			if (DrawReferenceContextMenu("##RefListCtx")) {
+				PropertyValue cleared;
+				cleared.Type = itemType;
+				item = cleared;
+				changed = true;
+			}
+
+			if (ImGui::BeginDragDropTarget()) {
+				if (itemType == PropertyType::EntityRef) {
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY")) {
+						if (payload->DataSize == sizeof(HierarchyDragData)) {
+							const auto* data = static_cast<const HierarchyDragData*>(payload->Data);
+							const EntityHandle handle = static_cast<EntityHandle>(data->EntityHandle);
+							const Scene* scene = ResolveHierarchyPayloadScene(*data);
+							if (scene && scene->IsValid(handle)) {
+								const uint64_t id = scene->GetEntityPersistentID(handle);
+								if (id != 0) { item.UIntValue = id; item.StringValue.clear(); changed = true; }
+							}
+						}
+					}
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+						const uint64_t assetId = ResolveDroppedAssetId(payload);
+						if (assetId != 0 && AssetRegistry::GetKind(assetId) == AssetKind::Prefab) {
+							item.UIntValue = assetId; item.StringValue = "prefab"; changed = true;
+						}
+					}
+				}
+				else if (itemType == PropertyType::ComponentRef) {
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("COMPONENT_REF")) {
+						std::string refStr(static_cast<const char*>(payload->Data), static_cast<size_t>(payload->DataSize));
+						if (!refStr.empty() && refStr.back() == '\0') refStr.pop_back();
+						const std::size_t sep = refStr.find(':');
+						if (sep != std::string::npos && refStr.substr(sep + 1) == meta.ComponentTypeName) {
+							item.UIntValue = std::strtoull(refStr.substr(0, sep).c_str(), nullptr, 10);
+							item.StringValue = meta.ComponentTypeName;
+							changed = item.UIntValue != 0;
+						}
+					}
+				}
+				else {
+					const AssetKind kind = assetKindFor();
+					if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_BROWSER_ITEM")) {
+						const uint64_t assetId = ResolveDroppedAssetId(payload);
+						if (assetId != 0 && AssetRegistry::GetKind(assetId) == kind) {
+							item.UIntValue = assetId; item.StringValue.clear(); changed = true;
+						}
+					}
+				}
+				ImGui::EndDragDropTarget();
+			}
+
+			if (auto pending = ReferencePicker::ConsumeSelection(rowKey); pending) {
+				item = PropertyValue::FromString(itemType, *pending);
+				changed = true;
+			}
+
+			return changed;
+		}
+
+		// Persistent multi-selection for a list field's rows (keyed by fieldKey),
+		// driving the Remove-selected button plus Ctrl-toggle and Shift-range picks.
+		// Survives across frames; stale indices are pruned/guarded at use.
+		struct ListSelectionState {
+			std::unordered_set<int> Selected;
+			int LastClicked = -1;
+		};
+		std::unordered_map<std::string, ListSelectionState> s_ListSelection;
+
+		// Square, icon-only button (UV-flipped like the rest of the editor). Returns
+		// true on click; greys out and swallows clicks when !enabled.
+		bool IconButton(const char* id, const char* iconName, float size, bool enabled) {
+			if (!enabled) ImGui::BeginDisabled();
+			const uint64_t icon = EditorIcons::Get(iconName, 16);
+			bool clicked = false;
+			if (icon) {
+				const float img = ImGui::GetFontSize();
+				clicked = ImGui::ImageButton(id,
+					static_cast<ImTextureID>(static_cast<intptr_t>(icon)),
+					ImVec2(img, img), ImVec2(0, 1), ImVec2(1, 0));
+			}
+			else {
+				clicked = ImGui::Button(id, ImVec2(size, size));
+			}
+			if (!enabled) ImGui::EndDisabled();
+			return clicked && enabled;
+		}
+
+		bool DrawList(std::span<const Entity> entities, const PropertyDescriptor& d,
+			const std::string& fieldKey) {
 			PropertyValue v;
 			const bool uniform = SampleUniform(entities, d, v);
 			std::vector<PropertyValue> items = v.ListValue;
@@ -1110,21 +1291,98 @@ namespace Index::PropertyDrawer {
 					items.size() == 1 ? "item" : "items");
 			}
 
+			// Selection is per (field, inspected-entity-set): fieldKey alone is reused
+			// across entities (same script class + slot), so without the entity
+			// identity a selection — and a Remove — would carry onto the wrong
+			// entity's list when the inspected entity changes.
+			std::size_t entityHash = entities.size();
+			for (const Entity& e : entities) {
+				entityHash = entityHash * 1099511628211ull
+					^ static_cast<std::size_t>(static_cast<uint32_t>(e.GetHandle()));
+			}
+			ListSelectionState& sel = s_ListSelection[fieldKey + "@" + std::to_string(entityHash)];
+			// Prune selection to the current row range (the list may have shrunk since
+			// last frame, or this field key may be reused for a shorter list).
+			std::erase_if(sel.Selected, [&](int k) { return k < 0 || k >= static_cast<int>(items.size()); });
+			if (sel.LastClicked >= static_cast<int>(items.size())) sel.LastClicked = -1;
+
 			bool changed = false;
-			int removeIndex = -1;
+			int moveFrom = -1, moveTo = -1;
+
+			ImDrawList* dl = ImGui::GetWindowDrawList();
+			const ImGuiStyle& style = ImGui::GetStyle();
+			const ImU32 colNormal   = ImGui::GetColorU32(ImGuiCol_FrameBg);
+			const ImU32 colHovered  = ImGui::GetColorU32(ImGuiCol_FrameBgHovered);
+			const ImU32 colSelected = ImGui::GetColorU32(ImGuiCol_Header);
+			const float rounding = std::max(style.FrameRounding, 3.0f);
+			const float rowH = ImGui::GetFrameHeight();
+			const float handleW = ImGui::GetFrameHeight();
 
 			for (std::size_t i = 0; i < items.size(); ++i) {
 				ImGui::PushID(static_cast<int>(i));
+				const int idx = static_cast<int>(i);
+				const bool isSel = sel.Selected.count(idx) != 0;
 
-				ImGui::AlignTextToFramePadding();
-				ImGui::Text("%2zu", i);
-				ImGui::SameLine();
+				// Rounded "tab" card behind the row, drawn first so the widgets sit on top.
+				const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+				const float fullW = ImGui::GetContentRegionAvail().x;
+				const ImVec2 rowMax(rowMin.x + fullW, rowMin.y + rowH);
+				// AND the window-hover test so the card doesn't light up under an open
+				// combo/picker popup or an overlapping window (IsMouseHoveringRect is
+				// pure geometry and ignores z-order).
+				const bool rowHovered = ImGui::IsMouseHoveringRect(rowMin, rowMax)
+					&& ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+				dl->AddRectFilled(rowMin, rowMax,
+					isSel ? colSelected : (rowHovered ? colHovered : colNormal), rounding);
+				if (isSel) dl->AddRect(rowMin, rowMax, ImGui::GetColorU32(ImGuiCol_NavHighlight), rounding);
 
-				const float deleteButtonWidth = ImGui::CalcTextSize("Remove").x
-					+ ImGui::GetStyle().FramePadding.x * 2.0f;
-				const float availWidth = ImGui::GetContentRegionAvail().x;
-				const float spacing = ImGui::GetStyle().ItemSpacing.x;
-				const float widgetWidth = std::max(40.0f, availWidth - deleteButtonWidth - spacing);
+				// Drag handle: click selects (Ctrl toggles, Shift selects a range); drag reorders.
+				ImGui::InvisibleButton("##handle", ImVec2(handleW, rowH));
+				if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+					const ImGuiIO& io = ImGui::GetIO();
+					if (io.KeyShift && sel.LastClicked >= 0 && sel.LastClicked < static_cast<int>(items.size())) {
+						sel.Selected.clear();
+						const int a = std::min(sel.LastClicked, idx);
+						const int b = std::max(sel.LastClicked, idx);
+						for (int k = a; k <= b; ++k) sel.Selected.insert(k);
+					}
+					else if (io.KeyCtrl) {
+						if (isSel) sel.Selected.erase(idx); else sel.Selected.insert(idx);
+						sel.LastClicked = idx;
+					}
+					else {
+						sel.Selected.clear();
+						sel.Selected.insert(idx);
+						sel.LastClicked = idx;
+					}
+				}
+				if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+					ImGui::SetDragDropPayload("LIST_ITEM_REORDER", &idx, sizeof(int));
+					ImGui::TextUnformatted("Move item");
+					ImGui::EndDragDropSource();
+				}
+				if (ImGui::BeginDragDropTarget()) {
+					if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("LIST_ITEM_REORDER")) {
+						moveFrom = *static_cast<const int*>(p->Data);
+						moveTo = idx;
+					}
+					ImGui::EndDragDropTarget();
+				}
+				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to reorder \xc2\xb7 click to select");
+				if (const uint64_t gripIcon = EditorIcons::Get("move", 16)) {
+					const ImVec2 hMin = ImGui::GetItemRectMin();
+					const ImVec2 hMax = ImGui::GetItemRectMax();
+					const float gs = std::min(14.0f, rowH - 6.0f);
+					const ImVec2 c((hMin.x + hMax.x) * 0.5f, (hMin.y + hMax.y) * 0.5f);
+					dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(gripIcon)),
+						ImVec2(c.x - gs * 0.5f, c.y - gs * 0.5f),
+						ImVec2(c.x + gs * 0.5f, c.y + gs * 0.5f),
+						ImVec2(0, 1), ImVec2(1, 0),
+						ImGui::GetColorU32(ImGuiCol_TextDisabled));
+				}
+
+				ImGui::SameLine(0.0f, style.ItemSpacing.x);
+				const float widgetWidth = std::max(40.0f, ImGui::GetContentRegionAvail().x);
 				ImGui::SetNextItemWidth(widgetWidth);
 
 				PropertyValue& item = items[i];
@@ -1154,6 +1412,31 @@ namespace Index::PropertyDrawer {
 						item.UIntValue = static_cast<uint64_t>(std::max(tmp, 0));
 						itemChanged = true;
 					}
+					break;
+				}
+				case PropertyType::Int64: {
+					int64_t tmp = item.IntValue;
+					if (ImGui::InputScalar("##v", ImGuiDataType_S64, &tmp)) { item.IntValue = tmp; itemChanged = true; }
+					break;
+				}
+				case PropertyType::UInt64: {
+					uint64_t tmp = item.UIntValue;
+					if (ImGui::InputScalar("##v", ImGuiDataType_U64, &tmp)) { item.UIntValue = tmp; itemChanged = true; }
+					break;
+				}
+				case PropertyType::IntVec2: {
+					int vec[2] = { item.IntVec[0], item.IntVec[1] };
+					if (ImGui::DragInt2("##v", vec)) { item.IntVec[0] = vec[0]; item.IntVec[1] = vec[1]; itemChanged = true; }
+					break;
+				}
+				case PropertyType::IntVec3: {
+					int vec[3] = { item.IntVec[0], item.IntVec[1], item.IntVec[2] };
+					if (ImGui::DragInt3("##v", vec)) { for (int c = 0; c < 3; ++c) item.IntVec[c] = vec[c]; itemChanged = true; }
+					break;
+				}
+				case PropertyType::IntVec4: {
+					int vec[4] = { item.IntVec[0], item.IntVec[1], item.IntVec[2], item.IntVec[3] };
+					if (ImGui::DragInt4("##v", vec)) { for (int c = 0; c < 4; ++c) item.IntVec[c] = vec[c]; itemChanged = true; }
 					break;
 				}
 				case PropertyType::Float: {
@@ -1230,31 +1513,100 @@ namespace Index::PropertyDrawer {
 					}
 					break;
 				}
+				case PropertyType::FlagEnum: {
+					if (d.Metadata.Enum && !d.Metadata.Enum->Options.empty()) {
+						int64_t declaredMask = 0;
+						for (const auto& opt : d.Metadata.Enum->Options) declaredMask |= opt.Value;
+						std::string preview;
+						for (const auto& opt : d.Metadata.Enum->Options) {
+							if (opt.Value == 0) continue;
+							if ((item.IntValue & opt.Value) == opt.Value) {
+								if (!preview.empty()) preview += ", ";
+								preview += opt.Name;
+							}
+						}
+						if (preview.empty()) preview = "None";
+						if (ImGui::BeginCombo("##v", preview.c_str())) {
+							for (const auto& opt : d.Metadata.Enum->Options) {
+								if (opt.Value == 0) continue;
+								bool on = (item.IntValue & opt.Value) == opt.Value;
+								if (ImGui::Checkbox(opt.Name.c_str(), &on)) {
+									if (on) item.IntValue |= opt.Value;
+									else    item.IntValue &= ~opt.Value;
+									item.IntValue &= declaredMask;
+									itemChanged = true;
+								}
+							}
+							ImGui::EndCombo();
+						}
+					}
+					break;
+				}
+				case PropertyType::TextureRef:
+				case PropertyType::AudioRef:
+				case PropertyType::FontRef:
+				case PropertyType::SceneRef:
+				case PropertyType::PrefabRef:
+				case PropertyType::AssetRef:
+				case PropertyType::EntityRef:
+				case PropertyType::ComponentRef: {
+					const std::string rowKey = fieldKey + "/" + std::to_string(i);
+					if (DrawReferenceListItem(itemType, d.Metadata, item, rowKey, widgetWidth)) {
+						itemChanged = true;
+					}
+					break;
+				}
 				default:
 					ImGui::TextDisabled("(unsupported list item type)");
 					break;
 				}
 
-				ImGui::SameLine();
-				if (ImGui::Button("Remove", ImVec2(deleteButtonWidth, 0.0f))) {
-					removeIndex = static_cast<int>(i);
-				}
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this entry");
-
 				if (itemChanged) changed = true;
 				ImGui::PopID();
 			}
 
-			if (removeIndex >= 0 && removeIndex < static_cast<int>(items.size())) {
-				items.erase(items.begin() + removeIndex);
+			// Deferred drag-reorder: rotate the dragged element to the drop row.
+			if (moveFrom >= 0 && moveTo >= 0 && moveFrom != moveTo
+				&& moveFrom < static_cast<int>(items.size())
+				&& moveTo < static_cast<int>(items.size())) {
+				if (moveFrom < moveTo)
+					std::rotate(items.begin() + moveFrom, items.begin() + moveFrom + 1, items.begin() + moveTo + 1);
+				else
+					std::rotate(items.begin() + moveTo, items.begin() + moveFrom, items.begin() + moveFrom + 1);
+				sel.Selected.clear();
+				sel.Selected.insert(moveTo);
+				sel.LastClicked = moveTo;
 				changed = true;
+				ReferencePicker::CancelForPrefix(fieldKey + "/");
 			}
 
-			if (ImGui::Button("+ Add")) {
+			// Footer: icon-only Add, and Remove-selected (enabled only with a selection).
+			const float footerBtn = ImGui::GetFrameHeight();
+			if (IconButton("##listAdd", "plus", footerBtn, /*enabled=*/true)) {
 				PropertyValue blank;
 				blank.Type = itemType;
 				items.push_back(std::move(blank));
 				changed = true;
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add item");
+			ImGui::SameLine();
+			const bool hasSelection = !sel.Selected.empty();
+			const bool removeClicked = IconButton("##listRemove", "minus", footerBtn, hasSelection);
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+				ImGui::SetTooltip(hasSelection ? "Remove selected" : "Remove selected (select rows first)");
+			}
+			if (removeClicked) {
+				std::vector<int> indices(sel.Selected.begin(), sel.Selected.end());
+				std::sort(indices.begin(), indices.end());
+				for (auto it = indices.rbegin(); it != indices.rend(); ++it) {
+					if (*it >= 0 && *it < static_cast<int>(items.size())) {
+						items.erase(items.begin() + *it);
+					}
+				}
+				sel.Selected.clear();
+				sel.LastClicked = -1;
+				changed = true;
+				ReferencePicker::CancelForPrefix(fieldKey + "/");
 			}
 
 			ImGui::PopID();
@@ -1404,7 +1756,7 @@ namespace Index::PropertyDrawer {
 		case PropertyType::Double:  changed = DrawDouble(entities, d); break;
 		case PropertyType::String:  changed = DrawString(entities, d); break;
 		case PropertyType::StringList: changed = DrawStringList(entities, d); break;
-		case PropertyType::List:    changed = DrawList(entities, d); break;
+		case PropertyType::List:    changed = DrawList(entities, d, fieldKey); break;
 		case PropertyType::Vec2:    changed = DrawFloatVec<2>(entities, d); break;
 		case PropertyType::Vec3:    changed = DrawFloatVec<3>(entities, d); break;
 		case PropertyType::Vec4:    changed = DrawFloatVec<4>(entities, d); break;

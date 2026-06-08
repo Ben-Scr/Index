@@ -36,7 +36,9 @@ namespace Index {
 			EntryGroup Group = EntryGroup::Any;
 		};
 
-		std::vector<Entry> CollectAssetsByKind(AssetKind kind);
+		// includeSlices=false drops sprite-sheet slice sub-entries (Texture only),
+		// for fields that can't round-trip a slice (e.g. script TextureRef).
+		std::vector<Entry> CollectAssetsByKind(AssetKind kind, bool includeSlices = true);
 		std::vector<Entry> CollectEntities(bool includePrefabAssets = true); // loaded scene entities, optionally Prefab assets
 		std::vector<Entry> CollectComponentTargets(const std::string& componentDisplayName);
 
@@ -51,6 +53,12 @@ namespace Index {
 		void RenderPopup();
 
 		std::optional<std::string> ConsumeSelection(const std::string& fieldKey);
+
+		// Drops a pending selection and closes the picker when its target field
+		// key begins with `prefix`. Call when the rows under `prefix` (e.g. a
+		// list field's per-index row keys) are restructured, so a selection made
+		// against a now-shifted/removed row can't land on the wrong element.
+		void CancelForPrefix(const std::string& prefix);
 
 		bool DrawReferenceField(const char* label, const std::string& displayValue,
 			const std::string& secondary, bool missing, bool mixed, bool& outHovered,

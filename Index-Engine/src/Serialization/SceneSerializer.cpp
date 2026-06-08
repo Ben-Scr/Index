@@ -2,6 +2,7 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/SceneSerializerShared.hpp"
+#include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Json.hpp"
 #include "Scene/Scene.hpp"
@@ -1594,6 +1595,13 @@ namespace Index {
 			if (!SceneSerializerStorage::WriteRootToFile(path, root, format)) {
 				IDX_CORE_ERROR_TAG("SceneSerializer", "Save prefab failed (write error): {}", path);
 				return false;
+			}
+
+			// Drop any baked template for this prefab so the next InstantiatePrefab re-reads from disk; closes the
+			// TOCTOU window vs the async .prefab FileWatcher so a drag-spawn right after an edit cannot hydrate a
+			// stale template (e.g. one predating a just-added managed/native script component).
+			if (prefabGuid != 0) {
+				PrefabTemplateCache::Get().Invalidate(prefabGuid);
 			}
 
 			std::string name = "Entity";

@@ -24,7 +24,10 @@ project "Index-Editor-Tests"
     -- resolves through the engine include dir below.
     files
     {
-        path.join(ROOT_DIR, "Index-Editor/src/Editor/EditorCamera.cpp")
+        path.join(ROOT_DIR, "Index-Editor/src/Editor/EditorCamera.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Undo/UndoStack.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Undo/TransformEditCommand.cpp"),
+        path.join(ROOT_DIR, "Index-Editor/src/Undo/InspectorEditCommand.cpp")
     }
 
     -- Link the engine SharedLib (same set the editor uses) so calls into

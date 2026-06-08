@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_comment": "URLs point at GitHub Releases of the Index repo. The CJK font is download-on-demand: when a user first selects a CJK language, LanguageDownloader fetches it from the URL below and stores it under %LocalAppData%/Index/Fonts/NotoSansCJK/. Language JSONs (de.json, ja.json) stay bundled in this folder so the launcher works offline; the URLs here are the update path only.",
+  "_comment": "Download URLs are GitHub Release assets. The CJK font is download-on-demand and lives on the Index-AssetLibrary repo (it's ~19 MB, so it's not bundled): LanguageDownloader fetches it the first time a user selects a CJK language and stores it under %LocalAppData%/Index/Fonts/NotoSansCJK/. The language JSONs are hosted on the Index repo; de.json/ja.json also stay bundled in this folder so the launcher works offline, so their URLs here are the update path only.",
   "languages": [
     {
       "code": "de",
@@ -21,7 +21,7 @@
   ],
   "fonts": {
     "cjk": {
-      "url": "https://github.com/Ben-Scr/Index/releases/download/v1/NotoSansCJK-Regular.ttc",
+      "url": "https://github.com/Ben-Scr/Index-AssetLibrary/releases/download/fonts-v1/NotoSansCJK-Regular.ttc",
       "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
       "sizeBytes": 19484784,
       "targetSubpath": "Fonts/NotoSansCJK/NotoSansCJK-Regular.ttc"

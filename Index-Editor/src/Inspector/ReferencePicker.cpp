@@ -150,7 +150,7 @@ namespace Index::ReferencePicker {
 
 	} // namespace
 
-	std::vector<Entry> CollectAssetsByKind(AssetKind kind) {
+	std::vector<Entry> CollectAssetsByKind(AssetKind kind, bool includeSlices) {
 		EnsureBuiltInsRegisteredInEditor();
 
 		AssetRegistry::MarkDirty();
@@ -189,7 +189,7 @@ namespace Index::ReferencePicker {
 			entry.IsBuiltIn = AssetRegistry::IsBuiltIn(record.Id);
 			entries.push_back(std::move(entry));
 
-			if (kind != AssetKind::Texture) continue;
+			if (kind != AssetKind::Texture || !includeSlices) continue;
 			TextureMeta meta = AssetRegistry::ReadTextureMeta(record.Path);
 			if (meta.Sprites.empty()) continue;
 			const std::string parentName = std::filesystem::path(record.Path).filename().string();
@@ -327,6 +327,19 @@ namespace Index::ReferencePicker {
 		s_State.PendingFieldKey.clear();
 		s_State.PendingValue.clear();
 		return value;
+	}
+
+	void CancelForPrefix(const std::string& prefix) {
+		const auto startsWith = [&prefix](const std::string& s) {
+			return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+		};
+		if (startsWith(s_State.PendingFieldKey)) {
+			s_State.PendingFieldKey.clear();
+			s_State.PendingValue.clear();
+		}
+		if (s_State.IsOpen && startsWith(s_State.TargetFieldKey)) {
+			s_State.IsOpen = false;
+		}
 	}
 
 	void RenderPopup() {

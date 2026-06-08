@@ -118,6 +118,53 @@ public class Entity : IEquatable<Entity>
         }
     }
 
+    public Entity? Child => GetChildAt(0);
+
+    public Entity? Parent
+    {
+        get
+        {
+            if (IsPrefabAsset) return null;
+            ulong parentId = InternalCalls.Transform2D_GetParent(ID);
+            return parentId != 0 ? new Entity(parentId) : null;
+        }
+    }
+
+    public int ChildCount => IsPrefabAsset ? 0 : InternalCalls.Transform2D_GetChildCount(ID);
+
+    public Entity[] GetChildren()
+    {
+        if (IsPrefabAsset) return Array.Empty<Entity>();
+
+        int count = InternalCalls.Transform2D_GetChildCount(ID);
+        if (count <= 0) return Array.Empty<Entity>();
+
+        ulong[] ids = new ulong[count];
+        int actual = InternalCalls.Transform2D_GetChildren(ID, ids);
+
+        var result = new List<Entity>(actual);
+        for (int i = 0; i < actual; i++)
+        {
+            if (ids[i] == 0) continue;
+            result.Add(new Entity(ids[i]));
+        }
+        return result.ToArray();
+    }
+
+    public Entity? GetChildAt(int index)
+    {
+        if (IsPrefabAsset || index < 0) return null;
+        ulong childId = InternalCalls.Transform2D_GetChildAt(ID, index);
+        return childId != 0 ? new Entity(childId) : null;
+    }
+
+    public bool SetParent(Entity? newParent)
+    {
+        if (IsPrefabAsset) return false;
+        ulong parentId = newParent != null && newParent != Entity.Invalid ? newParent.ID : 0;
+        return InternalCalls.Transform2D_SetParent(ID, parentId);
+    }
+
     private static readonly Dictionary<Type, string> s_NativeComponentNames = new()
     {
         { typeof(NameComponent),         "Name" },
