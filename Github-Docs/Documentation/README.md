@@ -14,6 +14,7 @@ The foundational systems that make a game run.
 - **[ECS](Engine-Core/ECS.md)** — entities and components, the building blocks of everything in a scene.
 - **[Scenes](Engine-Core/Scenes.md)** — scenes, systems, the scene lifecycle, saving, and prefabs.
 - **[Job System](Engine-Core/Job-System.md)** — running work across multiple CPU cores.
+- **[Localization](Engine-Core/Localization.md)** — translating interface text, the per-language JSON files, supported languages, and on-demand downloads.
 
 ## Assets
 

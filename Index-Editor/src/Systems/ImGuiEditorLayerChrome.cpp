@@ -78,7 +78,7 @@ namespace Index {
 		}
 
 		// MUST drain before the active-scene early-return: prefab-edit is valid with no active scene; gating it on the scene check silently no-ops double-click/right-click→Open in that case.
-		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0) {
+		if (!Application::GetIsPlaying() && m_AssetBrowserInitialized && m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string earlyPendingPrefabEdit = m_AssetBrowser.TakePendingPrefabEdit();
 			if (!earlyPendingPrefabEdit.empty()) {
 				IDX_INFO_TAG("PrefabEdit", "Opening prefab from asset browser: {}", earlyPendingPrefabEdit);
@@ -177,19 +177,52 @@ namespace Index {
 			m_BuildAndPlay = false;
 		}
 
+		// Asset format reserialization (Project Settings → Serialization) runs the same 3-step async
+		// dance as the build: a 1-frame delay lets the progress window paint, then the worker rewrites
+		// every .scene/.prefab off-thread while the editor keeps rendering.
+		if (m_ReserializeState == 1) {
+			m_ReserializeState = 2;
+		} else if (m_ReserializeState == 2) {
+			ExecuteReserializeAsync();
+			m_ReserializeState = 3;
+		} else if (m_ReserializeState == 3) {
+			if (!m_ReserializeFuture.valid()) {
+				m_ReserializeState = 0; // worker never launched (e.g. no project) — don't wedge the disabled UI
+			} else if (m_ReserializeFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+				try {
+					m_ReserializeFuture.get();
+				} catch (const std::exception& e) {
+					IDX_ERROR_TAG("ProjectSettings", "Asset reserialization worker crashed: {}", e.what());
+				} catch (...) {
+					IDX_ERROR_TAG("ProjectSettings", "Asset reserialization worker crashed: unknown exception");
+				}
+				if (IndexProject* project = ProjectManager::GetCurrentProject()) {
+					IDX_INFO_TAG("ProjectSettings",
+						"Reserialized {} scene/prefab asset(s) as {}",
+						m_ReserializeConverted.load(std::memory_order_relaxed),
+						IndexProject::ProjectAssetSerializationFormatToString(project->AssetSerializationFormat));
+				}
+				// Deliberately NO AssetRegistry::MarkDirty()/Sync() here: reserialization rewrites only
+				// .scene/.prefab file *content*, never asset paths, GUIDs, or .meta sidecars — so the
+				// GUID↔path registry (and its persisted manifest) stays valid. Syncing would force the
+				// full ~9k-file directory walk back onto the UI thread, re-introducing the freeze.
+				m_ReserializeState = 0;
+			}
+		}
+
 		// Process OS file drops — forward to AssetBrowser
 		{
 			auto* app = Application::GetInstance();
 			if (app) {
 				auto drops = app->TakePendingFileDrops();
-				if (!drops.empty() && m_AssetBrowserInitialized && m_BuildState == 0) {
+				if (!drops.empty() && m_AssetBrowserInitialized && m_BuildState == 0 && m_ReserializeState == 0) {
 					m_AssetBrowser.OnExternalFileDrop(drops);
 				}
 			}
 		}
 
 		// Process deferred scene drop from Hierarchy drag-and-drop (blocked during Play Mode and active build)
-		if (!m_PendingSceneFileDrop.empty() && !Application::GetIsPlaying() && m_BuildState == 0) {
+		if (!m_PendingSceneFileDrop.empty() && !Application::GetIsPlaying() && m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string dropPath = m_PendingSceneFileDrop;
 			m_PendingSceneFileDrop.clear();
 
@@ -207,7 +240,7 @@ namespace Index {
 		}
 
 		// Process deferred scene switch (blocked during Play Mode and active build)
-		if (!m_PendingSceneSwitch.empty() && !Application::GetIsPlaying() && m_BuildState == 0) {
+		if (!m_PendingSceneSwitch.empty() && !Application::GetIsPlaying() && m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string switchPath = m_PendingSceneSwitch;
 			m_PendingSceneSwitch.clear();
 
@@ -235,7 +268,7 @@ namespace Index {
 		// mode and switches to the chosen scene (the open gesture IS the
 		// intent to leave). Save prompt is skipped in that case because
 		// play-mode mutations are intentionally discarded by the restore.
-		if (m_BuildState == 0) {
+		if (m_BuildState == 0 && m_ReserializeState == 0) {
 			std::string pendingLoad = m_AssetBrowser.TakePendingSceneLoad();
 			if (!pendingLoad.empty()) {
 				if (Application::GetIsPlaying()) {
@@ -259,7 +292,7 @@ namespace Index {
 
 		// Ctrl+S priority: prefab-edit mode > prefab inspector > all dirty scenes.
 		// Prefab saves allowed during play (detached scene is independent); scene save blocked to avoid persisting play-mode state.
-		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && m_BuildState == 0) {
+		if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false) && m_BuildState == 0 && m_ReserializeState == 0) {
 			if (IsInPrefabEditMode()) {
 				// Full prefab-edit mode: save the detached scene back to its
 				// .prefab without exiting edit mode. Without this branch,
@@ -295,8 +328,10 @@ namespace Index {
 
 		// Intercept quit request: exit playmode first, then check for unsaved changes
 		if (Application::IsQuitRequested()) {
-			// Refuse to quit mid-build — would kill the worker thread and leave partial artifacts on disk.
-			if (m_BuildState != 0) {
+			// Refuse to quit mid-build or mid-reserialization — would kill/race the worker thread (the
+			// quit path below saves scenes/prefabs the reserialization worker is rewriting) and leave
+			// partial artifacts on disk. Both are short-lived; the user can quit again once idle.
+			if (m_BuildState != 0 || m_ReserializeState != 0) {
 				Application::CancelQuit();
 			}
 			else {
@@ -334,8 +369,8 @@ namespace Index {
 		}
 		RenderDockspaceRoot();
 
-		// Block menu bar during build (worker is reading shared state); modals stay outside this gate so they remain dismissable.
-		ImGui::BeginDisabled(m_BuildState > 0);
+		// Block menu bar during build or asset reserialization (a worker owns shared/file state); modals stay outside this gate so they remain dismissable.
+		ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
 		RenderMainMenu(scene);
 		ImGui::EndDisabled();
 
@@ -585,7 +620,7 @@ namespace Index {
 		// Reset every frame so a hidden/closed Game View falls back to the OS viewport.
 		Window::ClearUIRegion();
 
-		ImGui::BeginDisabled(m_BuildState > 0);
+		ImGui::BeginDisabled(m_BuildState > 0 || m_ReserializeState > 0);
 
 		RenderToolbar();
 		RenderEntitiesPanel();
@@ -632,6 +667,12 @@ namespace Index {
 		if (m_ShowSpriteEditor) {
 			m_SpriteEditorPanel.Render(&m_ShowSpriteEditor);
 		}
+		// Applying slice edits writes the texture's .meta (not the image), so the
+		// image-only asset watcher never fires — refresh the Asset Browser here so
+		// newly sliced sub-sprites appear without a manual refresh.
+		if (m_SpriteEditorPanel.TakeSlicesApplied()) {
+			m_AssetBrowser.RequestRefresh();
+		}
 
 		// Loading popup priority: build > script recompile > package install (build already includes a script compile sub-stage).
 		bool showPopup = false;
@@ -647,6 +688,12 @@ namespace Index {
 			std::lock_guard<std::mutex> lk(m_BuildProgressMutex);
 			popupStage = m_BuildStage;
 			popupProgress = m_BuildProgress;
+		} else if (m_ReserializeState > 0) {
+			showPopup = true;
+			popupTitle = "Converting Assets...";
+			std::lock_guard<std::mutex> lk(m_ReserializeProgressMutex);
+			popupStage = m_ReserializeStage;
+			popupProgress = m_ReserializeProgress;
 		} else if (auto* scriptSys = scene.HasSystem<ScriptSystem>()
 				? scene.GetSystem<ScriptSystem>() : nullptr;
 			scriptSys && (scriptSys->IsScriptRebuildRunning() || scriptSys->IsNativeRebuildRunning())) {

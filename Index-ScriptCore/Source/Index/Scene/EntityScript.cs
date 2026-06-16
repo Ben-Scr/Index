@@ -15,9 +15,6 @@ public abstract class EntityScript : Component
             $"EntityScript '{GetType().Name}' accessed `Transform` on an entity without a Transform2D. " +
             "Probe `Entity.Transform` (nullable) when the script may run on tag entities.");
 
-    private CancellationTokenSource? m_CoroutineCts;
-    private bool m_CoroutineCtsTerminated;
-
     internal void _SetEntityID(ulong id)
     {
         Entity = new Entity(id);
@@ -36,12 +33,16 @@ public abstract class EntityScript : Component
 
 
     protected Entity Create(string? name = null) => Entity.Create(name);
+    protected Entity Create(string? name, Entity? parent) => Entity.Create(name, parent);
     protected Entity Create(Entity source) => Entity.Create(source);
     protected Entity Instantiate(Entity prefabOrSource) => Entity.Instantiate(prefabOrSource);
-    protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Transform2D? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
+    protected Entity Instantiate(Entity prefabOrSource, Entity? parent) => Entity.Instantiate(prefabOrSource, parent);
+    protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Entity? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
 
     protected void Print(object? obj) => Log.Print(obj);
-    
+
+    private CancellationTokenSource? m_CoroutineCts;
+    private bool m_CoroutineCtsTerminated;
 
     /// <summary>Token cancelled before OnDestroy(); pass to external async work for automatic teardown.</summary>
     protected CancellationToken DestroyToken

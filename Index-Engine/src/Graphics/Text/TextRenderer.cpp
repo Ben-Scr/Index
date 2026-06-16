@@ -488,7 +488,8 @@ namespace Index {
 
 	// ── Static font resolution (backend-neutral logic) ──────────────────────
 
-	Vec2 TextRenderer::MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing) {
+	Vec2 TextRenderer::MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing,
+		float lineSpacing) {
 		if (text.empty()) return Vec2{ 0.0f, font.GetLineHeight() };
 
 		float maxLineWidth = 0.0f;
@@ -505,7 +506,9 @@ namespace Index {
 			if (lineEnd == textSize) break;
 			lineStart = lineEnd + 1;
 		}
-		return Vec2{ maxLineWidth, font.GetLineHeight() * static_cast<float>(lineCount) };
+		const float gaps = static_cast<float>(lineCount > 1 ? lineCount - 1 : 0);
+		return Vec2{ maxLineWidth,
+			font.GetLineHeight() * static_cast<float>(lineCount) + lineSpacing * gaps };
 	}
 
 	Font* TextRenderer::ResolveFont(TextRendererComponent& text) {
@@ -598,10 +601,69 @@ namespace Index {
 
 	// ── Glyph emission (CPU side) ────────────────────────────────────────────
 
+	// Shared with EmitText (which renders the same rows) and the input-field caret/
+	// selection/hit-test code, so wrapped glyph rows and caret geometry never disagree.
+	void TextRenderer::ComputeVisualLines(Font& font, std::string_view text, float letterSpacing,
+		TextWrapMode wrapMode, float wrapWidthPixels, std::vector<std::pair<size_t, size_t>>& out)
+	{
+		out.clear();
+		const bool autoWrap = wrapMode != TextWrapMode::None && wrapWidthPixels > 0.0f;
+		auto emitVisualLine = [&](size_t s, size_t e) { out.push_back({ s, e }); };
+		auto wrapSegment = [&](size_t segStart, size_t segEnd) {
+			if (!autoWrap || segStart >= segEnd) { emitVisualLine(segStart, segEnd); return; }
+			size_t lineStartIdx = segStart;
+			size_t lastBreakIdx = std::string_view::npos;
+			float widthSinceLineStart = 0.0f;
+			uint32_t prev = 0;
+			int glyphsOnLine = 0;
+			size_t i = segStart;
+			while (i < segEnd) {
+				const size_t glyphStart = i;
+				uint32_t cp = 0; int len = 0;
+				if (!DecodeUtf8(text, i, cp, len)) break;
+				i = i + static_cast<size_t>(len);
+				const GlyphMetrics* g = font.GetGlyph(cp);
+				if (!g) { prev = 0; continue; }
+				float advance = g->XAdvance;
+				if (prev != 0) advance += font.GetKerning(prev, cp);
+				if (glyphsOnLine > 0) advance += letterSpacing;
+				const float candidate = widthSinceLineStart + advance;
+				if (candidate > wrapWidthPixels && glyphsOnLine > 0) {
+					if (wrapMode == TextWrapMode::Word && lastBreakIdx != std::string_view::npos && lastBreakIdx > lineStartIdx) {
+						emitVisualLine(lineStartIdx, lastBreakIdx);
+						lineStartIdx = lastBreakIdx + 1;
+						i = lineStartIdx;
+						if (i >= segEnd) { lineStartIdx = i; break; }
+						widthSinceLineStart = 0.0f; lastBreakIdx = std::string_view::npos; prev = 0; glyphsOnLine = 0;
+						continue;
+					}
+					emitVisualLine(lineStartIdx, glyphStart);
+					lineStartIdx = glyphStart; i = glyphStart;
+					widthSinceLineStart = 0.0f; lastBreakIdx = std::string_view::npos; prev = 0; glyphsOnLine = 0;
+					continue;
+				}
+				widthSinceLineStart = candidate;
+				if (cp == ' ' || cp == '\t') lastBreakIdx = glyphStart;
+				prev = cp; ++glyphsOnLine;
+			}
+			if (lineStartIdx < segEnd) emitVisualLine(lineStartIdx, segEnd);
+		};
+		size_t segStart = 0;
+		const size_t textSize = text.size();
+		while (segStart <= textSize) {
+			size_t segEnd = text.find('\n', segStart);
+			if (segEnd == std::string_view::npos) segEnd = textSize;
+			wrapSegment(segStart, segEnd);
+			if (segEnd == textSize) break;
+			segStart = segEnd + 1;
+		}
+	}
+
 	void TextRenderer::EmitText(Font& font, std::string_view text,
 		float worldX, float worldY,
 		float scale, const Color& color,
-		TextAlignment alignment, float letterSpacing,
+		TextAlignment alignment, TextVerticalAlignment verticalAlignment,
+		float letterSpacing, float lineSpacing,
 		TextWrapMode wrapMode, float wrapWidthPixels,
 		float rotation, Vec2 pivot,
 		bool hasTextureMask,
@@ -640,85 +702,22 @@ namespace Index {
 			         pivot.y + rotS * dx + rotC * dy };
 		};
 
-		const float lineHeight = font.GetLineHeight() * scale;
-		const bool autoWrap = wrapMode != TextWrapMode::None && wrapWidthPixels > 0.0f;
+		const float lineHeight = (font.GetLineHeight() + lineSpacing) * scale;
+		ComputeVisualLines(font, text, letterSpacing, wrapMode, wrapWidthPixels, m_WrapScratch);
 
-		m_WrapScratch.clear();
-
-		auto emitVisualLine = [&](size_t s, size_t e) {
-			m_WrapScratch.push_back({ s, e });
-		};
-
-		auto wrapSegment = [&](size_t segStart, size_t segEnd) {
-			if (!autoWrap || segStart >= segEnd) {
-				emitVisualLine(segStart, segEnd);
-				return;
+		// Vertical alignment distributes the block of baselines around worldY.
+		// Top anchors the first baseline at worldY (block grows down), Bottom
+		// anchors the last baseline (block grows up), Middle centres the span.
+		// Single-line text is unaffected — callers pre-position worldY per line.
+		float vAlignOffset = 0.0f;
+		if (m_WrapScratch.size() > 1) {
+			const float blockSpan = static_cast<float>(m_WrapScratch.size() - 1) * lineHeight;
+			switch (verticalAlignment) {
+			case TextVerticalAlignment::Middle: vAlignOffset = blockSpan * 0.5f; break;
+			case TextVerticalAlignment::Bottom: vAlignOffset = blockSpan;        break;
+			case TextVerticalAlignment::Top:
+			default:                            vAlignOffset = 0.0f;             break;
 			}
-			size_t lineStartIdx = segStart;
-			size_t lastBreakIdx = std::string_view::npos;
-			float widthSinceLineStart = 0.0f;
-			uint32_t prev = 0;
-			int glyphsOnLine = 0;
-
-			size_t i = segStart;
-			while (i < segEnd) {
-				const size_t glyphStart = i;
-				uint32_t cp = 0;
-				int len = 0;
-				if (!DecodeUtf8(text, i, cp, len)) break;
-				const size_t nextI = i + static_cast<size_t>(len);
-				i = nextI;
-
-				const GlyphMetrics* g = font.GetGlyph(cp);
-				if (!g) { prev = 0; continue; }
-
-				float advance = g->XAdvance;
-				if (prev != 0) advance += font.GetKerning(prev, cp);
-				if (glyphsOnLine > 0) advance += letterSpacing;
-
-				const float candidate = widthSinceLineStart + advance;
-
-				if (candidate > wrapWidthPixels && glyphsOnLine > 0) {
-					if (wrapMode == TextWrapMode::Word
-						&& lastBreakIdx != std::string_view::npos
-						&& lastBreakIdx > lineStartIdx)
-					{
-						emitVisualLine(lineStartIdx, lastBreakIdx);
-						lineStartIdx = lastBreakIdx + 1;
-						i = lineStartIdx;
-						if (i >= segEnd) { lineStartIdx = i; break; }
-						widthSinceLineStart = 0.0f;
-						lastBreakIdx = std::string_view::npos;
-						prev = 0;
-						glyphsOnLine = 0;
-						continue;
-					}
-					emitVisualLine(lineStartIdx, glyphStart);
-					lineStartIdx = glyphStart;
-					i = glyphStart;
-					widthSinceLineStart = 0.0f;
-					lastBreakIdx = std::string_view::npos;
-					prev = 0;
-					glyphsOnLine = 0;
-					continue;
-				}
-
-				widthSinceLineStart = candidate;
-				if (cp == ' ' || cp == '\t') lastBreakIdx = glyphStart;
-				prev = cp;
-				++glyphsOnLine;
-			}
-			if (lineStartIdx < segEnd) emitVisualLine(lineStartIdx, segEnd);
-		};
-
-		size_t segStart = 0;
-		const size_t textSize = text.size();
-		while (segStart <= textSize) {
-			size_t segEnd = text.find('\n', segStart);
-			if (segEnd == std::string_view::npos) segEnd = textSize;
-			wrapSegment(segStart, segEnd);
-			if (segEnd == textSize) break;
-			segStart = segEnd + 1;
 		}
 
 		for (size_t lineIndex = 0; lineIndex < m_WrapScratch.size(); ++lineIndex) {
@@ -735,7 +734,7 @@ namespace Index {
 			}
 
 			float penX = worldX + alignOffset;
-			const float baselineY = worldY - static_cast<float>(lineIndex) * lineHeight;
+			const float baselineY = worldY + vAlignOffset - static_cast<float>(lineIndex) * lineHeight;
 
 			uint32_t prev = 0;
 			int glyphsOnLine = 0;
@@ -885,7 +884,7 @@ namespace Index {
 					break;
 
 				EmitText(*cmd.FontPtr, cmd.Text, cmd.X, cmd.Y, cmd.Scale,
-					cmd.Tint, cmd.Align, cmd.LetterSpacing,
+					cmd.Tint, cmd.Align, cmd.VAlign, cmd.LetterSpacing, cmd.LineSpacing,
 					cmd.Wrap, cmd.WrapWidthPixels,
 					cmd.Rotation, cmd.Pivot,
 					cmd.HasTextureMask, cmd.MaskTextureHandle, cmd.MaskUvRect,
@@ -1010,8 +1009,10 @@ namespace Index {
 			cmd.Y = tr.Position.y - text.Margin.y * drawScale;
 			cmd.Scale = drawScale;
 			cmd.LetterSpacing = text.LetterSpacing;
+			cmd.LineSpacing = text.LineSpacing;
 			cmd.Tint = text.Color;
 			cmd.Align = text.HAlign;
+			cmd.VAlign = text.VAlign;
 			cmd.Wrap = text.WrapMode;
 			cmd.WrapWidthPixels = 0.0f;
 			cmd.SortingOrder = text.SortingOrder;

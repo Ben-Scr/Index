@@ -36,4 +36,25 @@ namespace Index {
 		ma_engine_set_volume(&m_Engine, volume);
 	}
 
+	void MiniaudioBackend::SetSuspended(bool suspended) {
+		if (!m_Initialized) {
+			return;
+		}
+
+		// Stop/start the device thread so playback freezes in place and later resumes from the same cursor.
+		ma_device* device = ma_engine_get_device(&m_Engine);
+		if (!device) {
+			return;
+		}
+
+		if (suspended) {
+			if (ma_device_is_started(device)) {
+				ma_device_stop(device);
+			}
+		}
+		else if (!ma_device_is_started(device)) {
+			ma_device_start(device);
+		}
+	}
+
 }

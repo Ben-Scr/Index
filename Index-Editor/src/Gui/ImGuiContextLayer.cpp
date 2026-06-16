@@ -554,6 +554,7 @@ namespace Index {
 		style.ScrollbarRounding = 6.0f;
 		style.GrabRounding      = 2.0f;
 		style.TabRounding       = 3.0f;
+		style.DragDropTargetRounding = 4.0f;
 
 		style.WindowBorderSize  = 1.0f;
 		style.FrameBorderSize   = 0.0f;
@@ -639,7 +640,8 @@ namespace Index {
 		c[ImGuiCol_SliderGrab]           = ImVec4(0.40f, 0.40f, 0.46f, 1.00f);
 		c[ImGuiCol_SliderGrabActive]     = ImVec4(0.50f, 0.50f, 0.56f, 1.00f);
 
-		c[ImGuiCol_DragDropTarget]       = ImVec4(accent.x, accent.y, accent.z, 0.70f);
+		c[ImGuiCol_DragDropTarget]       = ImVec4(accent.x, accent.y, accent.z, 1.00f);
+		c[ImGuiCol_DragDropTargetBg]     = ImVec4(accent.x, accent.y, accent.z, 0.12f);
 
 		c[ImGuiCol_NavCursor]            = accent;
 

@@ -21,6 +21,11 @@ namespace Index {
 		// Master volume in [0, 1]. AudioManager clamps before dispatch.
 		virtual void SetMasterVolume(float volume) = 0;
 
+		// Suspend/resume the whole audio device when the app is background-paused.
+		// Suspended freezes every sound in place; resuming continues from the same cursor (a pause, not a stop).
+		// Default no-op for backends without a stoppable device.
+		virtual void SetSuspended(bool suspended) { (void)suspended; }
+
 		// Escape hatch: nullptr-safe; will be removed once all AudioManager ma_* calls are folded into virtual methods.
 		virtual ma_engine* GetMiniaudioEngine() { return nullptr; }
 	};

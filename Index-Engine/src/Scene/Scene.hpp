@@ -290,6 +290,11 @@ namespace Index {
 		void MarkStaticRenderDataDirty();
 		uint64_t GetStaticRenderDataVersion() const { return m_StaticRenderDataVersion; }
 
+		// Bumped on any parent/child topology change (Entity::SetParent). The editor hierarchy panel polls this to rebuild
+		// its cached row order when a reparent doesn't change the entity count — e.g. a script reparenting at runtime.
+		void MarkHierarchyStructureDirty();
+		uint64_t GetHierarchyVersion() const { return m_HierarchyVersion; }
+
 		// Plays the PlayOnAwake particle/audio of `root` and its descendants. Called after a
 		// runtime prefab spawn so freshly created entities awaken the same way scene-start ones
 		// do (the one-shot start passes only see entities that exist when play begins).
@@ -334,8 +339,35 @@ namespace Index {
 		void DeferEntityRefFixup(std::function<void()> fixup);
 		void RunPendingEntityRefFixups();
 
+		// Drain only the fixups queued at/after startIndex (those added since GetPendingEntityRefFixupCount()
+		// was last sampled), leaving earlier entries for an outer drain. Lets one prefab instantiation resolve
+		// its own internal refs under its remap scope without prematurely resolving a sibling entity's forward ref.
+		void RunPendingEntityRefFixupsFrom(std::size_t startIndex);
+
 		// Non-zero means the prefab has cross-entity refs; PrefabTemplateCache marks it unbakeable.
 		std::size_t GetPendingEntityRefFixupCount() const { return m_PendingEntityRefFixups.size(); }
+
+		// Entity-ref remap window. While a remap scope is active, RegisterEntityRefRemap records
+		// original->clone persistent-id pairs (built while a duplicated/pasted subtree is rebuilt) and
+		// TryResolveEntityRef translates an incoming id through them. This is what makes a clone's
+		// in-component entity refs (TextField.TextEntity, Button.TargetGraphic, ...) retarget to the new
+		// children instead of the originals; ids absent from the map (external refs) pass through unchanged.
+		void PushEntityRefRemap();
+		void PopEntityRefRemap();
+		void RegisterEntityRefRemap(uint64_t oldId, uint64_t newId);
+		uint64_t TranslateEntityRef(uint64_t id) const;
+		bool IsEntityRefRemapActive() const { return m_EntityRefRemapDepth > 0; }
+
+		// RAII activator; re-entrant (only the outermost scope clears the map).
+		class EntityRefRemapScope {
+		public:
+			explicit EntityRefRemapScope(Scene& scene) : m_Scene(scene) { m_Scene.PushEntityRefRemap(); }
+			~EntityRefRemapScope() { m_Scene.PopEntityRefRemap(); }
+			EntityRefRemapScope(const EntityRefRemapScope&) = delete;
+			EntityRefRemapScope& operator=(const EntityRefRemapScope&) = delete;
+		private:
+			Scene& m_Scene;
+		};
 
 		UUID GetSceneId() const { return m_SceneId; }
 		void SetSceneId(UUID id) { m_SceneId = id; }
@@ -419,10 +451,13 @@ namespace Index {
 		std::vector<EntityHandle> m_DirtyTransformEntities;
 		std::unordered_set<EntityHandle> m_DirtyTransformEntitySet;
 		uint64_t m_StaticRenderDataVersion = 1;
+		uint64_t m_HierarchyVersion = 1;
 
 		std::vector<std::pair<EntityHandle, float>> m_PendingDestroys;
 
 		std::vector<std::function<void()>> m_PendingEntityRefFixups;
+		std::unordered_map<uint64_t, uint64_t> m_EntityRefRemap;
+		int m_EntityRefRemapDepth = 0;
 		bool m_UIDirty = true;
 		bool m_IsDetached = false;
 		EntityID m_NextRuntimeEntityID = 1;

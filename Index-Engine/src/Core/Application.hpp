@@ -135,8 +135,14 @@ namespace Index {
 		static bool IsMainThread() { return !s_Instance || s_Instance->m_MainThreadId == std::this_thread::get_id(); }
 
 		/// True for editor host, false for standalone runtime / launcher.
-		static bool IsEditor() { return s_Instance ? s_Instance->m_IsEditorHost : false; }
-		void SetEditorHost(bool isEditor) { m_IsEditorHost = isEditor; }
+		/// Backed by a process-global static so editor entry points can mark the host
+		/// before the Application exists — ProjectManager::SetCurrentProject runs from
+		/// CreateApplication, before construction, and gates editor-only systems on this.
+		static bool IsEditor() { return s_Instance ? s_Instance->m_IsEditorHost : s_IsEditorHostProcess; }
+		static void SetEditorHost(bool isEditor) {
+			s_IsEditorHostProcess = isEditor;
+			if (s_Instance) { s_Instance->m_IsEditorHost = isEditor; }
+		}
 
 		/// Signals a quit request that can be intercepted (e.g. to show a save dialog).
 		static void RequestQuit();
@@ -272,6 +278,8 @@ namespace Index {
 
 		static Application* s_Instance;
 		static CommandLineArgs s_CommandLineArgs;
+		// Process-global (not instance-bound): editor entry points set it before any instance exists.
+		static bool s_IsEditorHostProcess;
 
 
 		std::vector<std::string> m_PendingFileDrops;

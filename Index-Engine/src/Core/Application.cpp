@@ -50,6 +50,7 @@ namespace Index {
 
 	Application* Application::s_Instance = nullptr;
 	Application::CommandLineArgs Application::s_CommandLineArgs{};
+	bool Application::s_IsEditorHostProcess = false;
 
 	Application::Application()
 		: m_SceneManager(std::make_unique<SceneManager>())
@@ -519,8 +520,16 @@ namespace Index {
 		CoreInput();
 
 		const bool enginePaused = IsEnginePaused();
-		if (enginePaused && !m_WasEnginePaused) {
-			ScriptEngine::RaiseApplicationPaused();
+		if (enginePaused != m_WasEnginePaused) {
+			// Suspend the audio device while the engine is paused (background-pause/minimize) so playback
+			// freezes in place instead of droning on a frozen sim; refocus resumes it from the same cursor.
+			if (enginePaused) {
+				if (m_Configuration.EnableAudio) AudioManager::PauseAll();
+				ScriptEngine::RaiseApplicationPaused();
+			}
+			else if (m_Configuration.EnableAudio) {
+				AudioManager::ResumeAll();
+			}
 		}
 		m_WasEnginePaused = enginePaused;
 

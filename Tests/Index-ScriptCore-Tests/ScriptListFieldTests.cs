@@ -161,4 +161,57 @@ public class ScriptListFieldTests
         var back = (List<int>)Parse(typeof(List<int>), Format(typeof(List<int>), new List<int> { 7 }))!;
         Assert.Equal(new List<int> { 7 }, back);
     }
+
+    // ── Object/struct element lists (List<Slot>) ──────────────────────
+
+    // Plain data class used as a list element; exercises the inline-object path.
+    public sealed class ObjSlot
+    {
+        public int Count;
+        public string Label = "";
+        public float Weight;
+        public bool Equip;
+    }
+
+    [Fact]
+    public void ObjectList_MapsToList()
+    {
+        Assert.Equal("list", MapFieldType(typeof(List<ObjSlot>)));
+        Assert.Equal("list", MapFieldType(typeof(ObjSlot[])));
+    }
+
+    [Fact]
+    public void ObjectList_RoundTrips()
+    {
+        var src = new List<ObjSlot>
+        {
+            new ObjSlot { Count = 3,  Label = "Sword",                 Weight = 1.5f,  Equip = true  },
+            new ObjSlot { Count = 0,  Label = "",                      Weight = -2.0f, Equip = false },
+            // delimiter + escape chars inside a field, through BOTH codec levels
+            new ObjSlot { Count = 99, Label = "has\nnewline\\and slash", Weight = 0.0f,  Equip = true  },
+        };
+        var wire = Format(typeof(List<ObjSlot>), src);
+        var back = (List<ObjSlot>)Parse(typeof(List<ObjSlot>), wire)!;
+        Assert.Equal(src.Count, back.Count);
+        for (int i = 0; i < src.Count; i++)
+        {
+            Assert.Equal(src[i].Count, back[i].Count);
+            Assert.Equal(src[i].Label, back[i].Label);
+            Assert.Equal(src[i].Weight, back[i].Weight);
+            Assert.Equal(src[i].Equip, back[i].Equip);
+        }
+    }
+
+    [Fact]
+    public void ObjectList_EmptyAndSingleDefault_RoundTrip()
+    {
+        Assert.Equal("", Format(typeof(List<ObjSlot>), new List<ObjSlot>()));
+        Assert.Empty((List<ObjSlot>)Parse(typeof(List<ObjSlot>), "")!);
+
+        var one = new List<ObjSlot> { new ObjSlot() };
+        var back = (List<ObjSlot>)Parse(typeof(List<ObjSlot>), Format(typeof(List<ObjSlot>), one))!;
+        Assert.Single(back);
+        Assert.Equal(0, back[0].Count);
+        Assert.Equal("", back[0].Label);
+    }
 }

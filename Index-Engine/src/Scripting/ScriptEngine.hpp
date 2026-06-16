@@ -64,6 +64,9 @@ namespace Index {
 		// Strips static-event subscribers from the user assembly; safe to call from runtime (no-op when uninitialized).
 		static void OnPlayModeExited();
 
+		// Native→managed: drop cached C# component wrappers for a destroyed entity (UUID). No-op when scripting is uninitialized.
+		static void NotifyEntityDestroyed(uint64_t entityID);
+
 		static uint32_t CreateSceneSystemInstance(const std::string& className, const std::string& sceneName);
 		static void DestroySceneSystemInstance(uint32_t handle);
 		static void InvokeSceneSystemStart(uint32_t handle);

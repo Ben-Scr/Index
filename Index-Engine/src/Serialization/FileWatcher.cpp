@@ -98,7 +98,8 @@ namespace Index {
 			return;
 		}
 
-		m_FileTimestamps = BuildSnapshot();
+		// Baseline snapshot is built on the worker thread (WorkerMain), not here: Watch()
+		// is on the startup critical path and walking a large Assets/ tree would block it.
 		m_PendingChanges.store(false);
 		m_Watching.store(true);
 		m_WatchDescription = m_Targets.size() == 1
@@ -171,6 +172,11 @@ namespace Index {
 
 	void FileWatcher::WorkerMain() {
 		INDEX_PROFILE_THREAD_NAME("FileWatcher");
+
+		// Build the baseline off the caller's thread (see Watch). Only this thread touches
+		// m_FileTimestamps, and the waits below compare against it, so nothing reads it early.
+		m_FileTimestamps = BuildSnapshot();
+
 #ifdef IDX_PLATFORM_WINDOWS
 		if (WaitForNativeChanges()) {
 			return;

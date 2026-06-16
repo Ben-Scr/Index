@@ -14,6 +14,7 @@
 #include <Serialization/File.hpp>
 #include <Project/ProjectManager.hpp>
 #include <Project/IndexProject.hpp>
+#include <Assets/AssetRegistry.hpp>
 
 #include <Core/Version.hpp>
 #include <Core/Window.hpp>
@@ -169,7 +170,10 @@ Index::Application* Index::CreateApplication() {
 	if (IndexProject::Validate(projectRoot)) {
 		auto project = std::make_unique<IndexProject>(IndexProject::Load(projectRoot));
 		IDX_CORE_INFO_TAG("Runtime", "Loaded project: {} ({})", project->Name, project->RootDirectory);
-		ProjectManager::SetCurrentProject(std::move(project));
+		// assetsImmutable=true: a shipped game's Assets/ is read-only, so the registry trusts the
+		// shipped manifest and skips the directory walk (set inside SetCurrentProject/engine.dll so it
+		// reaches the registry copy that actually runs the rebuild; ResolvePath still existence-checks).
+		ProjectManager::SetCurrentProject(std::move(project), /*assetsImmutable=*/true);
 	}
 	else {
 		// E30: no project file next to the executable — surface the fallback so

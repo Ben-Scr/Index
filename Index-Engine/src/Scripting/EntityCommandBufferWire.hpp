@@ -44,4 +44,8 @@ namespace Index {
 
 	constexpr int kEcbErrorBadPrefab = -6;
 
+	// An exception escaped playback (e.g. std::bad_alloc during prefab bake). Caught at the
+	// reverse-pinvoke boundary because unwinding into CoreCLR is UB; surfaced as an error code.
+	constexpr int kEcbErrorInternal = -7;
+
 } // namespace Index

@@ -492,6 +492,26 @@ artifacts/
 		}
 
 		Localization::Poll();
+
+		// Language/font download results surface in secondary windows, never
+		// inline in Settings: progress goes to the native progress window
+		// (UpdateProgressPopup); the outcome lands here exactly once.
+		if (const auto dl = Localization::GetActiveDownload()) {
+			if (dl->Running) {
+				m_LanguageDownloadWasRunning = true;
+			}
+			else if (m_LanguageDownloadWasRunning) {
+				m_LanguageDownloadWasRunning = false;
+				if (dl->Failed) {
+					// English: the just-selected language's font isn't loaded yet, so a localized message would be unreadable boxes.
+					ShowError(Localization::FormatFallback("launcher.settings.language.download_failed", dl->Error));
+				}
+				else if (dl->RestartRequired) {
+					m_OpenLanguageRestartPopup = true;
+				}
+			}
+		}
+
 		PollCreateProjectTask();
 		PollDuplicateProjectTask();
 		const std::string titlebarText = IDX_TR("launcher.title") + std::string(" ") + std::string(IDX_VERSION);
@@ -786,7 +806,8 @@ artifacts/
 				// Kick off the initial fetch the first time the user opens
 				// this tab. Subsequent visits hit the cache. Re-fetch is
 				// triggered explicitly via the Refresh button.
-				if (!m_AssetLibrary.Loaded && !m_AssetLibrary.FetchInFlight) {
+				if (!m_AssetLibraryAutoFetchAttempted && !m_AssetLibrary.Loaded && !m_AssetLibrary.FetchInFlight) {
+					m_AssetLibraryAutoFetchAttempted = true;
 					StartFetchAssetLibraryIndex();
 				}
 				RenderAssetLibraryTab();
@@ -807,6 +828,7 @@ artifacts/
 		RenderAssetLibraryDetailModal();
 		RenderAssetLibraryTrustModal();
 		RenderAssetLibraryDoneModal();
+		RenderLanguageRestartModal();
 
 		ImGui::End();
 
@@ -2051,6 +2073,17 @@ artifacts/
 			}
 		}
 
+		// ── Language / CJK font download ───────────────────────────
+		if (!show) {
+			if (const auto dl = Localization::GetActiveDownload();
+				dl && dl->Running && !dl->Failed && !dl->RestartRequired) {
+				show = true;
+				title = Localization::GetFallback("launcher.progress.downloading_language");  // English: target language's font not loaded yet
+				stage.clear();  // no detail text — keep the window clean
+				progress = dl->Progress;
+			}
+		}
+
 		if (show) {
 			Win32BuildProgressWindow::Show(title);
 			Win32BuildProgressWindow::Update(progress, stage);
@@ -2267,7 +2300,23 @@ artifacts/
 	std::string LauncherLayer::GetSettingsPath() {
 		return Path::Combine(
 			Path::GetSpecialFolderPath(SpecialFolder::LocalAppData),
-			"Index", "launcher_settings.json");
+			"Index", "Launcher", "launcher_settings.json");
+	}
+
+	// One-time move of a launcher file from the old LocalAppData/Index root into
+	// the new Launcher/ subfolder so existing settings survive. No-op once moved.
+	static void MigrateLegacyLauncherFile(const std::string& legacyPath, const std::string& newPath) {
+		if (legacyPath == newPath || !File::Exists(legacyPath) || File::Exists(newPath)) return;
+
+		std::error_code ec;
+		std::filesystem::create_directories(std::filesystem::path(newPath).parent_path(), ec);
+		std::filesystem::rename(legacyPath, newPath, ec);
+		if (ec) {
+			ec.clear();
+			std::filesystem::copy_file(legacyPath, newPath,
+				std::filesystem::copy_options::overwrite_existing, ec);
+			if (!ec) std::filesystem::remove(legacyPath, ec);
+		}
 	}
 
 	const char* LauncherLayer::DirectoryNameConventionLabel(DirectoryNameConvention convention) {
@@ -2362,6 +2411,10 @@ artifacts/
 
 	void LauncherLayer::LoadLauncherSettings() {
 		const std::string path = GetSettingsPath();
+		MigrateLegacyLauncherFile(
+			Path::Combine(Path::GetSpecialFolderPath(SpecialFolder::LocalAppData),
+				"Index", "launcher_settings.json"),
+			path);
 		if (!File::Exists(path)) return;
 
 		Json::Value root;
@@ -2472,6 +2525,42 @@ artifacts/
 		ImGui::SetCursorPosX((ImGui::GetWindowWidth() - buttonW) * 0.5f);
 		if (ImGui::Button(IDX_TR("launcher.error.ok").c_str(), ImVec2(buttonW, 0))) {
 			m_ErrorMessage.clear();
+			ImGui::CloseCurrentPopup();
+		}
+
+		ImGui::EndPopup();
+	}
+
+	void LauncherLayer::RenderLanguageRestartModal() {
+		constexpr const char* k_RestartId = "###LauncherLanguageRestart";
+
+		if (m_OpenLanguageRestartPopup) {
+			ImGui::OpenPopup(k_RestartId);
+			m_OpenLanguageRestartPopup = false;
+		}
+
+		const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+		ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+		ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
+
+		ImGuiImplWebGPU::SetNextWindowAsNativeDialog();
+		// English fallback throughout: this prompt only appears right after selecting a
+		// CJK language whose font isn't loaded until restart, so localized text would be boxes.
+		const std::string title = Localization::GetFallback("launcher.settings.language.restart_title") + std::string(k_RestartId);
+		if (!ImGui::BeginPopupModal(title.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+			return;
+		}
+
+		ImGui::TextWrapped("%s", Localization::GetFallback("launcher.settings.language.restart_required").c_str());
+		ImGui::Spacing();
+		ImGui::Separator();
+		ImGui::Spacing();
+
+		if (ImGui::Button(Localization::GetFallback("launcher.settings.language.restart_now").c_str(), ImVec2(160, 0))) {
+			RestartLauncherProcess();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button(Localization::GetFallback("launcher.settings.language.restart_later").c_str(), ImVec2(120, 0))) {
 			ImGui::CloseCurrentPopup();
 		}
 
@@ -2607,26 +2696,6 @@ artifacts/
 				if (selected) ImGui::SetItemDefaultFocus();
 			}
 			ImGui::EndCombo();
-		}
-
-		if (const auto download = Localization::GetActiveDownload()) {
-			ImGui::Spacing();
-			if (download->Failed) {
-				const std::string msg = Localization::Format("launcher.settings.language.download_failed", download->Error);
-				ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s", msg.c_str());
-			}
-			else if (download->RestartRequired) {
-				ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "%s",
-					IDX_TR("launcher.settings.language.restart_required").c_str());
-				if (ImGui::Button(IDX_TR("launcher.settings.language.restart_now").c_str())) {
-					RestartLauncherProcess();
-				}
-			}
-			else {
-				const std::string msg = Localization::Format("launcher.settings.language.downloading", download->Code);
-				ImGui::TextDisabled("%s", msg.c_str());
-				ImGui::ProgressBar(download->Progress, ImVec2(-1.0f, 0));
-			}
 		}
 
 		ImGui::Spacing();
@@ -3088,12 +3157,16 @@ artifacts/
 			m_AssetLibrary.FetchInFlight = true;
 			m_AssetLibrary.FetchError.clear();
 		}
+		m_AssetLibraryFetchErrorReported = false; // re-arm one-shot error surfacing for this attempt
 
 		// If a previous worker is still alive (download or fetch), join it
 		// first. Single-slot pipeline by design.
 		if (m_AssetLibraryTask.Worker.joinable()) m_AssetLibraryTask.Worker.join();
 
+		// Boundary guard: a throw escaping a std::thread body calls std::terminate and kills the
+		// launcher. The fetch shells out, parses JSON, and allocates — catch and publish into task state.
 		m_AssetLibraryTask.Worker = std::thread([this]() {
+			try {
 			std::string error;
 			std::vector<AssetLibraryEntry> parsed;
 			int schemaVersion = 0;
@@ -3163,6 +3236,23 @@ artifacts/
 			else {
 				IDX_CORE_INFO_TAG("AssetLibrary", "Loaded {} entries", m_AssetLibrary.Entries.size());
 			}
+			}
+			catch (const std::exception& e) {
+				IDX_CORE_ERROR_TAG("AssetLibrary", "Fetch worker crashed: {}", e.what());
+				std::scoped_lock lock(m_AssetLibraryTask.Mutex);
+				m_AssetLibrary.Loaded = false;
+				m_AssetLibrary.FetchInFlight = false;
+				m_AssetLibrary.FetchError = std::string("Unexpected error: ") + e.what();
+				m_AssetLibrary.LastRefreshedAt = std::chrono::steady_clock::now();
+			}
+			catch (...) {
+				IDX_CORE_ERROR_TAG("AssetLibrary", "Fetch worker crashed: unknown exception");
+				std::scoped_lock lock(m_AssetLibraryTask.Mutex);
+				m_AssetLibrary.Loaded = false;
+				m_AssetLibrary.FetchInFlight = false;
+				m_AssetLibrary.FetchError = "Unexpected error";
+				m_AssetLibrary.LastRefreshedAt = std::chrono::steady_clock::now();
+			}
 		});
 	}
 
@@ -3210,8 +3300,33 @@ artifacts/
 		std::string baseDir = m_DefaultProjectsLocation.empty()
 			? IndexProject::GetDefaultProjectsDir()
 			: m_DefaultProjectsLocation;
+		// Boundary guard: a throw escaping a std::thread body calls std::terminate and kills the
+		// launcher. The worker touches the filesystem, parses JSON, and allocates — any of which can
+		// throw. Catch here and publish the failure into the task state the poll loop already reads.
 		m_AssetLibraryTask.Worker = std::thread(
-			&LauncherLayer::AssetLibraryDownloadWorkerBody, this, std::move(entryCopy), std::move(baseDir));
+			[this, entry = std::move(entryCopy), dir = std::move(baseDir)]() mutable {
+				try {
+					AssetLibraryDownloadWorkerBody(std::move(entry), std::move(dir));
+				}
+				catch (const std::exception& e) {
+					IDX_CORE_ERROR_TAG("AssetLibrary", "Download worker crashed: {}", e.what());
+					std::scoped_lock lock(m_AssetLibraryTask.Mutex);
+					m_AssetLibraryTask.Stage = AssetLibraryStage::Error;
+					m_AssetLibraryTask.Error = std::string("Unexpected error: ") + e.what();
+					m_AssetLibraryTask.Running = false;
+					m_AssetLibraryTask.Finished = true;
+					m_AssetLibraryTask.Success = false;
+				}
+				catch (...) {
+					IDX_CORE_ERROR_TAG("AssetLibrary", "Download worker crashed: unknown exception");
+					std::scoped_lock lock(m_AssetLibraryTask.Mutex);
+					m_AssetLibraryTask.Stage = AssetLibraryStage::Error;
+					m_AssetLibraryTask.Error = "Unexpected error during import";
+					m_AssetLibraryTask.Running = false;
+					m_AssetLibraryTask.Finished = true;
+					m_AssetLibraryTask.Success = false;
+				}
+			});
 	}
 
 	void LauncherLayer::AssetLibraryDownloadWorkerBody(AssetLibraryEntry entry, std::string baseDir) {
@@ -3379,14 +3494,30 @@ artifacts/
 		bool finishedThisFrame = false;
 		std::string targetPath;
 		std::string finalName;
+		std::string downloadError;   // non-empty => download/import failed
+		std::string fetchError;      // non-empty => index fetch failed
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			if (m_AssetLibraryTask.Finished && !m_AssetLibraryTask.Running
 				&& m_AssetLibraryTask.Stage != AssetLibraryStage::Idle)
 			{
-				finishedThisFrame = m_AssetLibraryTask.Success;
-				targetPath = m_AssetLibraryTask.TargetProjectPath;
-				finalName = m_AssetLibraryTask.FinalName;
+				if (m_AssetLibraryTask.Success) {
+					finishedThisFrame = true;
+					targetPath = m_AssetLibraryTask.TargetProjectPath;
+					finalName = m_AssetLibraryTask.FinalName;
+				}
+				else if (m_AssetLibraryTask.Stage == AssetLibraryStage::Error) {
+					downloadError = m_AssetLibraryTask.Error;
+					m_AssetLibraryTask.Stage = AssetLibraryStage::Idle; // one-shot
+				}
+			}
+
+			// Index fetch failure: surface once from sticky state. An auto-fetch
+			// can start and fail between two polls, so an in-flight edge would miss it.
+			if (!m_AssetLibrary.FetchInFlight && !m_AssetLibrary.FetchError.empty()
+				&& !m_AssetLibraryFetchErrorReported) {
+				fetchError = m_AssetLibrary.FetchError;
+				m_AssetLibraryFetchErrorReported = true;
 			}
 		}
 		if (finishedThisFrame && !targetPath.empty()) {
@@ -3407,19 +3538,24 @@ artifacts/
 			m_AssetLibraryTask.TargetProjectPath.clear(); // one-shot
 			m_AssetLibraryTask.FinalName.clear();
 		}
+		// Errors surface in the shared secondary error window, never inline in the panel.
+		if (!downloadError.empty()) {
+			ShowError(downloadError);
+		}
+		if (!fetchError.empty()) {
+			ShowError(IDX_TR("launcher.asset_library.fetch_failed") + " (" + fetchError + ")");
+		}
 	}
 
 	void LauncherLayer::RenderAssetLibraryTab() {
 		// Status / refresh strip.
 		bool fetchInFlight = false;
 		bool indexLoaded = false;
-		std::string fetchError;
 		size_t entryCount = 0;
 		{
 			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
 			fetchInFlight = m_AssetLibrary.FetchInFlight;
 			indexLoaded = m_AssetLibrary.Loaded;
-			fetchError = m_AssetLibrary.FetchError;
 			entryCount = m_AssetLibrary.Entries.size();
 		}
 
@@ -3444,15 +3580,10 @@ artifacts/
 		if (fetchInFlight) ImGui::EndDisabled();
 		ImGui::EndGroup();
 
-		// Status line.
+		// Status line — loading indicator only; fetch failures surface in a
+		// secondary error window (PollAssetLibraryTask), not inline.
 		if (fetchInFlight) {
 			ImGui::TextDisabled("%s", IDX_TR("launcher.asset_library.progress.fetching_manifest").c_str());
-		}
-		else if (!fetchError.empty()) {
-			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s",
-				IDX_TR("launcher.asset_library.fetch_failed").c_str());
-			ImGui::SameLine();
-			ImGui::TextDisabled("(%s)", fetchError.c_str());
 		}
 
 		// Card list. Each "card" is a Selectable spanning the full row with
@@ -3508,20 +3639,6 @@ artifacts/
 
 		ImGui::EndChild();
 
-		// Bottom status: error only. Success is surfaced via a modal
-		// (RenderAssetLibraryDoneModal); in-flight progress via the shared
-		// OS-level popup (Win32BuildProgressWindow) from UpdateProgressPopup.
-		AssetLibraryStage stage;
-		std::string taskError;
-		{
-			std::scoped_lock lock(m_AssetLibraryTask.Mutex);
-			stage = m_AssetLibraryTask.Stage;
-			taskError = m_AssetLibraryTask.Error;
-		}
-		if (stage == AssetLibraryStage::Error) {
-			ImGui::Separator();
-			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s", taskError.c_str());
-		}
 	}
 
 	void LauncherLayer::RenderAssetLibraryDetailModal() {

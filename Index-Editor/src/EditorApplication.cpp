@@ -107,6 +107,11 @@ public:
 };
 
 Index::Application* Index::CreateApplication() {
+	// Mark this process as the editor host before SetCurrentProject runs below — it
+	// gates editor-only engine systems (e.g. the PrefabTemplateCache .prefab watcher)
+	// on Application::IsEditor(), and the Application instance doesn't exist yet.
+	Application::SetEditorHost(true);
+
 	// Parse --project="path" from command line
 	const Application::CommandLineArgs args = Application::GetCommandLineArgs();
 

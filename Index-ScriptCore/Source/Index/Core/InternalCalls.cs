@@ -189,6 +189,7 @@ internal static unsafe class InternalCalls
 
     private static void CallStringBinding(delegate* unmanaged<byte*, void> fn, string? message)
     {
+        if (fn == null) return;  // native logging not bound yet (early init / headless tests) — drop rather than deref null
         message ??= "";
         int len = Encoding.UTF8.GetByteCount(message);
         Span<byte> buf = len <= 512 ? stackalloc byte[len + 1] : new byte[len + 1];
@@ -517,15 +518,15 @@ internal static unsafe class InternalCalls
     internal static void Transform2D_SetLocalRotation(ulong id, float rotation) => NativeCallbacks.Bindings.Transform2D_SetLocalRotation(id, rotation);
     internal static void Transform2D_GetLocalScale(ulong id, out float x, out float y) { float ox, oy; NativeCallbacks.Bindings.Transform2D_GetLocalScale(id, &ox, &oy); x = ox; y = oy; }
     internal static void Transform2D_SetLocalScale(ulong id, float x, float y) => NativeCallbacks.Bindings.Transform2D_SetLocalScale(id, x, y);
-    internal static ulong Transform2D_GetParent(ulong id) => NativeCallbacks.Bindings.Transform2D_GetParent(id);
-    internal static bool Transform2D_SetParent(ulong id, ulong parentId) => NativeCallbacks.Bindings.Transform2D_SetParent(id, parentId) != 0;
-    internal static int Transform2D_GetChildCount(ulong id) => NativeCallbacks.Bindings.Transform2D_GetChildCount(id);
-    internal static ulong Transform2D_GetChildAt(ulong id, int index) => NativeCallbacks.Bindings.Transform2D_GetChildAt(id, index);
-    internal static int Transform2D_GetChildren(ulong id, Span<ulong> outIDs)
+    internal static ulong Entity_GetParent(ulong id) => NativeCallbacks.Bindings.Entity_GetParent(id);
+    internal static bool Entity_SetParent(ulong id, ulong parentId, bool worldPositionStays) => NativeCallbacks.Bindings.Entity_SetParent(id, parentId, worldPositionStays ? 1 : 0) != 0;
+    internal static int Entity_GetChildCount(ulong id) => NativeCallbacks.Bindings.Entity_GetChildCount(id);
+    internal static ulong Entity_GetChildAt(ulong id, int index) => NativeCallbacks.Bindings.Entity_GetChildAt(id, index);
+    internal static int Entity_GetChildren(ulong id, Span<ulong> outIDs)
     {
         fixed (ulong* idPtr = outIDs)
         {
-            return NativeCallbacks.Bindings.Transform2D_GetChildren(id, idPtr, outIDs.Length);
+            return NativeCallbacks.Bindings.Entity_GetChildren(id, idPtr, outIDs.Length);
         }
     }
 
@@ -576,8 +577,12 @@ internal static unsafe class InternalCalls
     internal static void TextRenderer_SetColor(ulong id, float r, float g, float b, float a) => NativeCallbacks.Bindings.TextRenderer_SetColor(id, r, g, b, a);
     internal static float TextRenderer_GetLetterSpacing(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetLetterSpacing(id);
     internal static void TextRenderer_SetLetterSpacing(ulong id, float spacing) => NativeCallbacks.Bindings.TextRenderer_SetLetterSpacing(id, spacing);
+    internal static float TextRenderer_GetLineSpacing(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetLineSpacing(id);
+    internal static void TextRenderer_SetLineSpacing(ulong id, float spacing) => NativeCallbacks.Bindings.TextRenderer_SetLineSpacing(id, spacing);
     internal static int TextRenderer_GetHAlign(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetHAlign(id);
     internal static void TextRenderer_SetHAlign(ulong id, int alignment) => NativeCallbacks.Bindings.TextRenderer_SetHAlign(id, alignment);
+    internal static int TextRenderer_GetVAlign(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetVAlign(id);
+    internal static void TextRenderer_SetVAlign(ulong id, int alignment) => NativeCallbacks.Bindings.TextRenderer_SetVAlign(id, alignment);
     internal static int TextRenderer_GetWrapMode(ulong id) => NativeCallbacks.Bindings.TextRenderer_GetWrapMode(id);
     internal static void TextRenderer_SetWrapMode(ulong id, int mode) => NativeCallbacks.Bindings.TextRenderer_SetWrapMode(id, mode);
     // WrapWidth helpers removed alongside the field.
@@ -1038,6 +1043,14 @@ internal static unsafe class InternalCalls
         return result != 0 && id != 0;
     }
 
+    internal static bool UI_GetHoveredEntity(out ulong entityID)
+    {
+        ulong id;
+        int result = NativeCallbacks.Bindings.UI_GetHoveredEntity(&id);
+        entityID = id;
+        return result != 0 && id != 0;
+    }
+
     // ── UI: RectTransform2D ──────────────────────────────────────────
 
     internal static void RectTransform_GetAnchorMin(ulong id, out float x, out float y)
@@ -1074,6 +1087,10 @@ internal static unsafe class InternalCalls
         => NativeCallbacks.Bindings.RectTransform_SetLocalScale(id, x, y);
     internal static void RectTransform_GetResolvedSize(ulong id, out float w, out float h)
     { float ow, oh; NativeCallbacks.Bindings.RectTransform_GetResolvedSize(id, &ow, &oh); w = ow; h = oh; }
+    internal static void RectTransform_GetScreenPosition(ulong id, out float x, out float y)
+    { float ox, oy; NativeCallbacks.Bindings.RectTransform_GetScreenPosition(id, &ox, &oy); x = ox; y = oy; }
+    internal static void RectTransform_SetScreenPosition(ulong id, float x, float y)
+        => NativeCallbacks.Bindings.RectTransform_SetScreenPosition(id, x, y);
 
     // ── UI: Image ────────────────────────────────────────────────────
 
@@ -1242,6 +1259,8 @@ internal static unsafe class InternalCalls
     internal static bool InputField_GetSubmittedThisFrame(ulong id) => NativeCallbacks.Bindings.InputField_GetSubmittedThisFrame(id) != 0;
     internal static int InputField_GetCharacterLimit(ulong id) => NativeCallbacks.Bindings.InputField_GetCharacterLimit(id);
     internal static void InputField_SetCharacterLimit(ulong id, int v) => NativeCallbacks.Bindings.InputField_SetCharacterLimit(id, v);
+    internal static bool InputField_GetMultiline(ulong id) => NativeCallbacks.Bindings.InputField_GetMultiline(id) != 0;
+    internal static void InputField_SetMultiline(ulong id, bool v) => NativeCallbacks.Bindings.InputField_SetMultiline(id, v ? 1 : 0);
     internal static void InputField_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
     { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static void InputField_SetNormalColor(ulong id, float r, float g, float b, float a)

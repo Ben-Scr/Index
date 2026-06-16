@@ -48,6 +48,7 @@ Index-Engine/src/Generated/IndexEntityBitsConfig.h
 *.tlog
 .claude/
 .agents/
+.scratch/
 
 # User-specific files
 *.rsuser

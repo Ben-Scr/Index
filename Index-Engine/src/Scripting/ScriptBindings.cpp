@@ -6,6 +6,7 @@
 #include "Scripting/ScriptSystem.hpp"
 #include "Scripting/NativeScriptHost.hpp"
 #include "Scripting/DataAssetManager.hpp"
+#include "Collections/Viewport.hpp"
 #include "Core/Application.hpp"
 #include "Core/Input.hpp"
 #include "Core/Time.hpp"
@@ -15,6 +16,7 @@
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/SceneDefinition.hpp"
+#include "Systems/UIEventSystem.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Serialization/Path.hpp"
 #include "Serialization/File.hpp"
@@ -425,32 +427,34 @@ namespace Index {
 
 	int Index_Entity_AddComponent(uint64_t entityID, const char* componentName)
 	{
-		Scene* scene = nullptr;
-		EntityHandle handle = entt::null;
-		if (!ResolveEntityReference(entityID, scene, handle)) return 0;
+		IDX_BINDING_TRY {
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (!ResolveEntityReference(entityID, scene, handle)) return 0;
 
-		const ComponentInfo* info = FindComponentByName(componentName);
-		if (!info || !info->add) return AddManagedComponent(*scene, handle, componentName ? componentName : "") ? 1 : 0;
+			const ComponentInfo* info = FindComponentByName(componentName);
+			if (!info || !info->add) return AddManagedComponent(*scene, handle, componentName ? componentName : "") ? 1 : 0;
 
-		Entity entity = scene->GetEntity(handle);
-		if (info->has && info->has(entity)) return 1;
+			Entity entity = scene->GetEntity(handle);
+			if (info->has && info->has(entity)) return 1;
 
-		// Dynamic components bypass AddWithDependencies (keyed on type_index in m_map, not m_dynamicMap);
-		// also must seed a ScriptComponent.Scripts Managed entry so the inspector field renderer finds it.
-		if (info->isDynamic) {
-			info->add(entity);
-			if (!entity.HasComponent<ScriptComponent>()) {
-				entity.AddComponent<ScriptComponent>();
+			// Dynamic components bypass AddWithDependencies (keyed on type_index in m_map, not m_dynamicMap);
+			// also must seed a ScriptComponent.Scripts Managed entry so the inspector field renderer finds it.
+			if (info->isDynamic) {
+				info->add(entity);
+				if (!entity.HasComponent<ScriptComponent>()) {
+					entity.AddComponent<ScriptComponent>();
+				}
+				auto& sc = entity.GetComponent<ScriptComponent>();
+				if (!sc.HasScript(componentName, ScriptType::Managed)) {
+					sc.AddScript(componentName, ScriptType::Managed);
+				}
+				return 1;
 			}
-			auto& sc = entity.GetComponent<ScriptComponent>();
-			if (!sc.HasScript(componentName, ScriptType::Managed)) {
-				sc.AddScript(componentName, ScriptType::Managed);
-			}
+
+			SceneManager::Get().GetComponentRegistry().AddWithDependencies(entity, info->typeId);
 			return 1;
-		}
-
-		SceneManager::Get().GetComponentRegistry().AddWithDependencies(entity, info->typeId);
-		return 1;
+		} IDX_BINDING_CATCH(0)
 	}
 
 	int Index_Entity_RemoveComponent(uint64_t entityID, const char* componentName)
@@ -774,7 +778,9 @@ namespace Index {
 	}
 
 	static int Index_Scene_Load(const char* sceneName) {
-		return LoadSceneByName(sceneName, false);
+		IDX_BINDING_TRY {
+			return LoadSceneByName(sceneName, false);
+		} IDX_BINDING_CATCH(0)
 	}
 
 	static void Index_Scene_Unload(const char* sceneName) {
@@ -1548,26 +1554,28 @@ namespace Index {
 
 	static void Index_NameComponent_SetName(uint64_t entityID, const char* name)
 	{
-		Scene* scene = nullptr;
-		EntityHandle handle = entt::null;
-		if (!ResolveEntityReference(entityID, scene, handle)) return;
+		IDX_BINDING_TRY {
+			Scene* scene = nullptr;
+			EntityHandle handle = entt::null;
+			if (!ResolveEntityReference(entityID, scene, handle)) return;
 
-		const std::string nextName = name ? name : "";
-		if (nextName.empty()) {
-			if (scene->HasComponent<NameComponent>(handle)) {
-				scene->RemoveComponent<NameComponent>(handle);
-				scene->MarkDirty();
+			const std::string nextName = name ? name : "";
+			if (nextName.empty()) {
+				if (scene->HasComponent<NameComponent>(handle)) {
+					scene->RemoveComponent<NameComponent>(handle);
+					scene->MarkDirty();
+				}
+				return;
 			}
-			return;
-		}
 
-		if (scene->HasComponent<NameComponent>(handle)) {
-			scene->GetComponent<NameComponent>(handle).Name = nextName;
-		}
-		else {
-			scene->AddComponent<NameComponent>(handle, nextName);
-		}
-		scene->MarkDirty();
+			if (scene->HasComponent<NameComponent>(handle)) {
+				scene->GetComponent<NameComponent>(handle).Name = nextName;
+			}
+			else {
+				scene->AddComponent<NameComponent>(handle, nextName);
+			}
+			scene->MarkDirty();
+		} IDX_BINDING_CATCH_VOID
 	}
 
 	// ── Transform2D ─────────────────────────────────────────────────────
@@ -1715,7 +1723,7 @@ namespace Index {
 		comp.MarkDirty();
 	}
 
-	static uint64_t Index_Transform2D_GetParent(uint64_t entityID)
+	static uint64_t Index_Entity_GetParent(uint64_t entityID)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
@@ -1726,7 +1734,7 @@ namespace Index {
 		return GetEntityScriptId(*scene, parent.GetHandle());
 	}
 
-	static int Index_Transform2D_SetParent(uint64_t entityID, uint64_t parentEntityID)
+	static int Index_Entity_SetParent(uint64_t entityID, uint64_t parentEntityID, int worldPositionStays)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
@@ -1734,27 +1742,56 @@ namespace Index {
 
 		Entity entity = scene->GetEntity(handle);
 
-		if (parentEntityID == 0) {
-			entity.SetParent(Entity::Null);
-			return 1;
+		// Resolve the new parent (0 == detach to scene root).
+		Entity newParent = Entity::Null;
+		if (parentEntityID != 0) {
+			Scene* parentScene = nullptr;
+			EntityHandle parentHandle = entt::null;
+			if (!ResolveEntityReference(parentEntityID, parentScene, parentHandle)) return 0;
+
+			// Cross-scene parenting would silently corrupt the parent's HierarchyComponent
+			// (the child's handle wouldn't resolve in the parent's registry), so refuse it.
+			if (parentScene != scene) {
+				IDX_CORE_WARN_TAG("ScriptBinding", "Entity.SetParent across scenes is not supported");
+				return 0;
+			}
+			newParent = scene->GetEntity(parentHandle);
 		}
 
-		Scene* parentScene = nullptr;
-		EntityHandle parentHandle = entt::null;
-		if (!ResolveEntityReference(parentEntityID, parentScene, parentHandle)) return 0;
-
-		// Cross-scene parenting would silently corrupt the parent's HierarchyComponent
-		// (the child's handle wouldn't resolve in the parent's registry), so refuse it.
-		if (parentScene != scene) {
-			IDX_CORE_WARN_TAG("ScriptBinding", "Transform2D.SetParent across scenes is not supported");
-			return 0;
+		// Snapshot the child's world transform before the hierarchy change so we can keep
+		// it in place: SetParent only swaps the parent, leaving the local transform — and
+		// therefore the world transform — to shift into the new parent's frame.
+		Transform2DComponent* childTransform = nullptr;
+		if (worldPositionStays != 0 && scene->HasComponent<Transform2DComponent>(handle)) {
+			childTransform = &scene->GetComponent<Transform2DComponent>(handle);
+		}
+		Vec2 worldPosition{ 0.0f, 0.0f };
+		Vec2 worldScale{ 1.0f, 1.0f };
+		float worldRotation = 0.0f;
+		if (childTransform) {
+			worldPosition = childTransform->Position;
+			worldRotation = childTransform->Rotation;
+			worldScale = childTransform->Scale;
 		}
 
-		entity.SetParent(scene->GetEntity(parentHandle));
+		entity.SetParent(newParent);
+
+		// Re-derive local values against the (now current) parent so the cached world
+		// transform is reproduced by the next hierarchy pass.
+		if (childTransform) {
+			const Transform2DComponent* parentTransform = GetParentTransform(*scene, handle);
+			childTransform->LocalPosition = WorldPositionToLocal(parentTransform, worldPosition);
+			childTransform->LocalScale = WorldScaleToLocal(parentTransform, worldScale);
+			childTransform->LocalRotation = parentTransform ? worldRotation - parentTransform->Rotation : worldRotation;
+			childTransform->Position = worldPosition;
+			childTransform->Rotation = worldRotation;
+			childTransform->Scale = worldScale;
+			childTransform->MarkDirty();
+		}
 		return 1;
 	}
 
-	static int Index_Transform2D_GetChildCount(uint64_t entityID)
+	static int Index_Entity_GetChildCount(uint64_t entityID)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
@@ -1762,7 +1799,7 @@ namespace Index {
 		return static_cast<int>(scene->GetEntity(handle).GetChildren().size());
 	}
 
-	static uint64_t Index_Transform2D_GetChildAt(uint64_t entityID, int index)
+	static uint64_t Index_Entity_GetChildAt(uint64_t entityID, int index)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
@@ -1773,7 +1810,7 @@ namespace Index {
 		return GetEntityScriptId(*scene, children[static_cast<size_t>(index)]);
 	}
 
-	static int Index_Transform2D_GetChildren(uint64_t entityID, uint64_t* outIDs, int maxOut)
+	static int Index_Entity_GetChildren(uint64_t entityID, uint64_t* outIDs, int maxOut)
 	{
 		Scene* scene = nullptr;
 		EntityHandle handle = entt::null;
@@ -1993,6 +2030,18 @@ namespace Index {
 		comp.LetterSpacing = spacing;
 	}
 
+	static float Index_TextRenderer_GetLineSpacing(uint64_t entityID)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, 0.0f);
+		return comp.LineSpacing;
+	}
+
+	static void Index_TextRenderer_SetLineSpacing(uint64_t entityID, float spacing)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.LineSpacing = spacing;
+	}
+
 	static int Index_TextRenderer_GetHAlign(uint64_t entityID)
 	{
 		GET_COMPONENT(TextRendererComponent, entityID, 0);
@@ -2003,6 +2052,18 @@ namespace Index {
 	{
 		GET_COMPONENT(TextRendererComponent, entityID, );
 		comp.HAlign = static_cast<TextAlignment>(align);
+	}
+
+	static int Index_TextRenderer_GetVAlign(uint64_t entityID)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, 0);
+		return static_cast<int>(comp.VAlign);
+	}
+
+	static void Index_TextRenderer_SetVAlign(uint64_t entityID, int align)
+	{
+		GET_COMPONENT(TextRendererComponent, entityID, );
+		comp.VAlign = static_cast<TextVerticalAlignment>(align);
 	}
 
 	static int Index_TextRenderer_GetWrapMode(uint64_t entityID)
@@ -2754,7 +2815,305 @@ namespace Index {
 		return *entityID != 0 ? 1 : 0;
 	}
 
+	// Front-most Interactable UI entity under the pointer (or 0). Reads UIEventSystem's per-frame
+	// hover result, which is already gated on an enabled InteractableComponent.
+	static int Index_UI_GetHoveredEntity(uint64_t* outEntityID) {
+		if (!outEntityID) return 0;
+		*outEntityID = 0;
+
+		Scene* scene = GetScene();
+		if (!scene) return 0;
+
+		auto* uiEvents = scene->GetSystem<UIEventSystem>();
+		if (!uiEvents) return 0;
+
+		EntityHandle hovered = uiEvents->GetHoveredEntity();
+		if (hovered == entt::null || !scene->IsValid(hovered)) return 0;
+
+		*outEntityID = GetEntityScriptId(*scene, hovered);
+		return *outEntityID != 0 ? 1 : 0;
+	}
+
 	// ── UI: RectTransform2D ─────────────────────────────────────────────
+
+	struct RectLayoutReference {
+		Vec2 Min{ 0.0f, 0.0f };
+		Vec2 Max{ 0.0f, 0.0f };
+		Vec2 Pivot{ 0.0f, 0.0f };
+		Vec2 Scale{ 1.0f, 1.0f };
+		float Rotation = 0.0f;
+	};
+
+	static bool TryGetUiViewportSize(int& outWidth, int& outHeight) {
+		const Window::UIRegion uiRegion = Window::GetUIRegion();
+		if (uiRegion.IsActive()) {
+			outWidth = uiRegion.Width;
+			outHeight = uiRegion.Height;
+			return outWidth > 0 && outHeight > 0;
+		}
+
+		Viewport* viewport = Window::GetMainViewport();
+		if (!viewport || viewport->GetWidth() <= 0 || viewport->GetHeight() <= 0) {
+			outWidth = 0;
+			outHeight = 0;
+			return false;
+		}
+
+		outWidth = viewport->GetWidth();
+		outHeight = viewport->GetHeight();
+		return true;
+	}
+
+	static float ResolveUiScale(int viewportWidth, int viewportHeight) {
+		float uiScale = 1.0f;
+		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
+			const int refW = std::max(1, project->UIReferenceWidth);
+			const int refH = std::max(1, project->UIReferenceHeight);
+			const float xRatio = static_cast<float>(viewportWidth) / static_cast<float>(refW);
+			const float yRatio = static_cast<float>(viewportHeight) / static_cast<float>(refH);
+			const float match = std::clamp(project->UIScaleMatch, 0.0f, 1.0f);
+			if (xRatio > 0.0f && yRatio > 0.0f) {
+				const float logBlend = (1.0f - match) * std::log(xRatio) + match * std::log(yRatio);
+				uiScale = std::exp(logBlend);
+			}
+			if (!std::isfinite(uiScale) || uiScale <= 0.0f) {
+				uiScale = 1.0f;
+			}
+		}
+		return uiScale;
+	}
+
+	static bool TryGetRootRectReference(RectLayoutReference& outReference) {
+		int vpW = 0;
+		int vpH = 0;
+		if (!TryGetUiViewportSize(vpW, vpH)) {
+			return false;
+		}
+
+		const float halfW = static_cast<float>(vpW) * 0.5f;
+		const float halfH = static_cast<float>(vpH) * 0.5f;
+		const float uiScale = ResolveUiScale(vpW, vpH);
+		outReference.Min = Vec2{ -halfW, -halfH };
+		outReference.Max = Vec2{ halfW, halfH };
+		outReference.Pivot = Vec2{ 0.0f, 0.0f };
+		outReference.Scale = Vec2{ uiScale, uiScale };
+		outReference.Rotation = 0.0f;
+		return true;
+	}
+
+	static Vec2 ScreenPositionToUiSpace(float x, float y, int viewportWidth, int viewportHeight) {
+		return Vec2{
+			x - static_cast<float>(viewportWidth) * 0.5f,
+			static_cast<float>(viewportHeight) * 0.5f - y
+		};
+	}
+
+	static Vec2 UiSpaceToScreenPosition(const Vec2& position, int viewportWidth, int viewportHeight) {
+		return Vec2{
+			position.x + static_cast<float>(viewportWidth) * 0.5f,
+			static_cast<float>(viewportHeight) * 0.5f - position.y
+		};
+	}
+
+	static Vec2 RotateAround(const Vec2& point, const Vec2& pivot, float rotation) {
+		if (rotation == 0.0f) return point;
+		const float c = std::cos(rotation);
+		const float s = std::sin(rotation);
+		const float dx = point.x - pivot.x;
+		const float dy = point.y - pivot.y;
+		return Vec2{
+			pivot.x + c * dx - s * dy,
+			pivot.y + s * dx + c * dy
+		};
+	}
+
+	static RectLayoutReference ResolveRectReference(
+		const RectTransform2DComponent& rect,
+		const RectLayoutReference& parent)
+	{
+		RectLayoutReference resolved;
+		resolved.Rotation = parent.Rotation + rect.LocalRotation;
+		resolved.Scale = Vec2{
+			parent.Scale.x * rect.LocalScale.x,
+			parent.Scale.y * rect.LocalScale.y
+		};
+
+		const Vec2 parentSize{ parent.Max.x - parent.Min.x, parent.Max.y - parent.Min.y };
+		const Vec2 normMin{
+			std::min(rect.AnchorMin.x, rect.AnchorMax.x),
+			std::min(rect.AnchorMin.y, rect.AnchorMax.y)
+		};
+		const Vec2 normMax{
+			std::max(rect.AnchorMin.x, rect.AnchorMax.x),
+			std::max(rect.AnchorMin.y, rect.AnchorMax.y)
+		};
+
+		const Vec2 anchorBL{
+			parent.Min.x + parentSize.x * normMin.x,
+			parent.Min.y + parentSize.y * normMin.y
+		};
+		const Vec2 anchorTR{
+			parent.Min.x + parentSize.x * normMax.x,
+			parent.Min.y + parentSize.y * normMax.y
+		};
+		const Vec2 anchorCenter{
+			(anchorBL.x + anchorTR.x) * 0.5f,
+			(anchorBL.y + anchorTR.y) * 0.5f
+		};
+
+		Vec2 pivotWorld{
+			anchorCenter.x + rect.AnchoredPosition.x * parent.Scale.x,
+			anchorCenter.y + rect.AnchoredPosition.y * parent.Scale.y
+		};
+		pivotWorld = RotateAround(pivotWorld, parent.Pivot, parent.Rotation);
+
+		const Vec2 finalSize{
+			rect.SizeDelta.x * resolved.Scale.x,
+			rect.SizeDelta.y * resolved.Scale.y
+		};
+		resolved.Min = Vec2{
+			pivotWorld.x - finalSize.x * rect.Pivot.x,
+			pivotWorld.y - finalSize.y * rect.Pivot.y
+		};
+		resolved.Max = Vec2{ resolved.Min.x + finalSize.x, resolved.Min.y + finalSize.y };
+		resolved.Pivot = pivotWorld;
+		return resolved;
+	}
+
+	static bool TryResolveRectReference(Scene& scene, EntityHandle entity, RectLayoutReference& outReference, int depth = 0);
+
+	static bool TryResolveParentRectReference(Scene& scene, EntityHandle entity, RectLayoutReference& outReference, int depth) {
+		EntityHandle parent = entt::null;
+		if (scene.HasComponent<HierarchyComponent>(entity)) {
+			parent = scene.GetComponent<HierarchyComponent>(entity).Parent;
+		}
+
+		if (parent != entt::null && scene.IsValid(parent) && scene.HasComponent<RectTransform2DComponent>(parent)) {
+			return TryResolveRectReference(scene, parent, outReference, depth + 1);
+		}
+
+		return TryGetRootRectReference(outReference);
+	}
+
+	static bool TryResolveRectReference(Scene& scene, EntityHandle entity, RectLayoutReference& outReference, int depth) {
+		if (depth > 128 || !scene.IsValid(entity) || !scene.HasComponent<RectTransform2DComponent>(entity)) {
+			return false;
+		}
+
+		const auto& rect = scene.GetComponent<RectTransform2DComponent>(entity);
+		if (rect.ResolvedValid) {
+			outReference.Min = rect.ResolvedMin;
+			outReference.Max = rect.ResolvedMax;
+			outReference.Pivot = rect.ResolvedPivot;
+			outReference.Scale = rect.Scale;
+			outReference.Rotation = rect.Rotation;
+			return true;
+		}
+
+		RectLayoutReference parent;
+		if (!TryResolveParentRectReference(scene, entity, parent, depth)) {
+			return false;
+		}
+		outReference = ResolveRectReference(rect, parent);
+		return true;
+	}
+
+	static Vec2 ResolveAnchorCenter(const RectTransform2DComponent& rect, const RectLayoutReference& parent) {
+		const Vec2 parentSize{ parent.Max.x - parent.Min.x, parent.Max.y - parent.Min.y };
+		const Vec2 normMin{
+			std::min(rect.AnchorMin.x, rect.AnchorMax.x),
+			std::min(rect.AnchorMin.y, rect.AnchorMax.y)
+		};
+		const Vec2 normMax{
+			std::max(rect.AnchorMin.x, rect.AnchorMax.x),
+			std::max(rect.AnchorMin.y, rect.AnchorMax.y)
+		};
+
+		const Vec2 anchorBL{
+			parent.Min.x + parentSize.x * normMin.x,
+			parent.Min.y + parentSize.y * normMin.y
+		};
+		const Vec2 anchorTR{
+			parent.Min.x + parentSize.x * normMax.x,
+			parent.Min.y + parentSize.y * normMax.y
+		};
+		return Vec2{
+			(anchorBL.x + anchorTR.x) * 0.5f,
+			(anchorBL.y + anchorTR.y) * 0.5f
+		};
+	}
+
+	static void Index_RectTransform_GetScreenPosition(uint64_t entityID, float* outX, float* outY) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 0.0f, *outY = 0.0f));
+
+		int vpW = 0;
+		int vpH = 0;
+		if (!TryGetUiViewportSize(vpW, vpH)) {
+			*outX = 0.0f;
+			*outY = 0.0f;
+			return;
+		}
+
+		RectLayoutReference resolved;
+		if (!TryResolveRectReference(*scene, handle, resolved)) {
+			*outX = 0.0f;
+			*outY = 0.0f;
+			return;
+		}
+
+		const Vec2 center{
+			(resolved.Min.x + resolved.Max.x) * 0.5f,
+			(resolved.Min.y + resolved.Max.y) * 0.5f
+		};
+		const Vec2 screenPosition = UiSpaceToScreenPosition(center, vpW, vpH);
+		*outX = screenPosition.x;
+		*outY = screenPosition.y;
+	}
+
+	static void Index_RectTransform_SetScreenPosition(uint64_t entityID, float x, float y) {
+		GET_COMPONENT(RectTransform2DComponent, entityID, );
+
+		int vpW = 0;
+		int vpH = 0;
+		if (!TryGetUiViewportSize(vpW, vpH)) {
+			return;
+		}
+
+		RectLayoutReference parent;
+		if (!TryResolveParentRectReference(*scene, handle, parent, 0)) {
+			return;
+		}
+
+		const Vec2 uiPosition = ScreenPositionToUiSpace(x, y, vpW, vpH);
+		const Vec2 rectScale{
+			parent.Scale.x * comp.LocalScale.x,
+			parent.Scale.y * comp.LocalScale.y
+		};
+		const Vec2 finalSize{
+			comp.SizeDelta.x * rectScale.x,
+			comp.SizeDelta.y * rectScale.y
+		};
+		const Vec2 desiredPivot{
+			uiPosition.x + finalSize.x * (comp.Pivot.x - 0.5f),
+			uiPosition.y + finalSize.y * (comp.Pivot.y - 0.5f)
+		};
+		const Vec2 unrotated = RotateAround(desiredPivot, parent.Pivot, -parent.Rotation);
+		const Vec2 anchorCenter = ResolveAnchorCenter(comp, parent);
+		const float scaleX = parent.Scale.x != 0.0f ? parent.Scale.x : 1.0f;
+		const float scaleY = parent.Scale.y != 0.0f ? parent.Scale.y : 1.0f;
+		comp.AnchoredPosition = Vec2{
+			(unrotated.x - anchorCenter.x) / scaleX,
+			(unrotated.y - anchorCenter.y) / scaleY
+		};
+
+		const RectLayoutReference resolved = ResolveRectReference(comp, parent);
+		comp.Rotation = resolved.Rotation;
+		comp.Scale = resolved.Scale;
+		comp.ResolvedMin = resolved.Min;
+		comp.ResolvedMax = resolved.Max;
+		comp.ResolvedPivot = resolved.Pivot;
+		comp.ResolvedValid = true;
+	}
 
 	static void Index_RectTransform_GetAnchorMin(uint64_t entityID, float* outX, float* outY) {
 		GET_COMPONENT(RectTransform2DComponent, entityID, (void)(*outX = 0.5f, *outY = 0.5f));
@@ -3201,6 +3560,14 @@ namespace Index {
 		GET_COMPONENT(InputFieldComponent, entityID, );
 		comp.CharacterLimit = value;
 	}
+	static int Index_InputField_GetMultiline(uint64_t entityID) {
+		GET_COMPONENT(InputFieldComponent, entityID, 0);
+		return comp.Multiline ? 1 : 0;
+	}
+	static void Index_InputField_SetMultiline(uint64_t entityID, int value) {
+		GET_COMPONENT(InputFieldComponent, entityID, );
+		comp.Multiline = value != 0;
+	}
 
 	// ── UI: Dropdown ────────────────────────────────────────────────────
 
@@ -3573,11 +3940,11 @@ namespace Index {
 		b.Transform2D_SetLocalRotation = &Index_Transform2D_SetLocalRotation;
 		b.Transform2D_GetLocalScale = &Index_Transform2D_GetLocalScale;
 		b.Transform2D_SetLocalScale = &Index_Transform2D_SetLocalScale;
-		b.Transform2D_GetParent = &Index_Transform2D_GetParent;
-		b.Transform2D_SetParent = &Index_Transform2D_SetParent;
-		b.Transform2D_GetChildCount = &Index_Transform2D_GetChildCount;
-		b.Transform2D_GetChildAt = &Index_Transform2D_GetChildAt;
-		b.Transform2D_GetChildren = &Index_Transform2D_GetChildren;
+		b.Entity_GetParent = &Index_Entity_GetParent;
+		b.Entity_SetParent = &Index_Entity_SetParent;
+		b.Entity_GetChildCount = &Index_Entity_GetChildCount;
+		b.Entity_GetChildAt = &Index_Entity_GetChildAt;
+		b.Entity_GetChildren = &Index_Entity_GetChildren;
 
 		b.SpriteRenderer_GetColor = &Index_SpriteRenderer_GetColor;
 		b.SpriteRenderer_SetColor = &Index_SpriteRenderer_SetColor;
@@ -3598,8 +3965,12 @@ namespace Index {
 		b.TextRenderer_SetColor = &Index_TextRenderer_SetColor;
 		b.TextRenderer_GetLetterSpacing = &Index_TextRenderer_GetLetterSpacing;
 		b.TextRenderer_SetLetterSpacing = &Index_TextRenderer_SetLetterSpacing;
+		b.TextRenderer_GetLineSpacing = &Index_TextRenderer_GetLineSpacing;
+		b.TextRenderer_SetLineSpacing = &Index_TextRenderer_SetLineSpacing;
 		b.TextRenderer_GetHAlign = &Index_TextRenderer_GetHAlign;
 		b.TextRenderer_SetHAlign = &Index_TextRenderer_SetHAlign;
+		b.TextRenderer_GetVAlign = &Index_TextRenderer_GetVAlign;
+		b.TextRenderer_SetVAlign = &Index_TextRenderer_SetVAlign;
 		b.TextRenderer_GetWrapMode = &Index_TextRenderer_GetWrapMode;
 		b.TextRenderer_SetWrapMode = &Index_TextRenderer_SetWrapMode;
 		// WrapWidth get/set slots removed; the C# struct doesn't carry
@@ -3774,6 +4145,9 @@ namespace Index {
 		b.FastPhysics2D_ContainsPointAll = &Index_FastPhysics2D_ContainsPointAll;
 
 		b.EntityPicker_TryPickEntity = &Index_EntityPicker_TryPickEntity;
+		b.UI_GetHoveredEntity = &Index_UI_GetHoveredEntity;
+		b.RectTransform_GetScreenPosition = &Index_RectTransform_GetScreenPosition;
+		b.RectTransform_SetScreenPosition = &Index_RectTransform_SetScreenPosition;
 
 		// ── UI ──────────────────────────────────────────────────────
 		b.RectTransform_GetAnchorMin        = &Index_RectTransform_GetAnchorMin;
@@ -3867,6 +4241,8 @@ namespace Index {
 		b.InputField_GetSubmittedThisFrame    = &Index_InputField_GetSubmittedThisFrame;
 		b.InputField_GetCharacterLimit        = &Index_InputField_GetCharacterLimit;
 		b.InputField_SetCharacterLimit        = &Index_InputField_SetCharacterLimit;
+		b.InputField_GetMultiline             = &Index_InputField_GetMultiline;
+		b.InputField_SetMultiline             = &Index_InputField_SetMultiline;
 		b.InputField_GetNormalColor   = &Index_InputField_GetNormalColor;
 		b.InputField_SetNormalColor   = &Index_InputField_SetNormalColor;
 		b.InputField_GetHoveredColor  = &Index_InputField_GetHoveredColor;

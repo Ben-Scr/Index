@@ -48,7 +48,8 @@ namespace Index {
 			bool AutoSaveScenes = false;
 			float AutoSaveIntervalSeconds = 120.0f;
 			bool AutoSavePrefabs = true;
-			bool ConfirmOnDelete = true;
+			bool ConfirmOnDeleteEntity = true;
+			bool ConfirmOnDeleteAsset = true;
 
 			bool GridSnapEnabled = false;
 			float GridSizeX = EditorPreferences::k_DefaultGridSize;
@@ -59,6 +60,9 @@ namespace Index {
 			float RotationSnapDegrees = EditorPreferences::k_DefaultRotationSnap;
 			bool ScaleSnapEnabled = false;
 			float ScaleSnap = EditorPreferences::k_DefaultScaleSnap;
+
+			bool AlignmentGuidesEnabled = true;
+			float AlignmentSnapThreshold = EditorPreferences::k_DefaultAlignmentSnapThreshold;
 
 			bool Loaded = false;
 			bool FreshlyCreated = false;
@@ -276,8 +280,19 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("AutoSavePrefabs")) {
 			s.AutoSavePrefabs = v->AsBoolOr(true);
 		}
+		// Back-compat: the single ConfirmOnDelete pref was split into separate
+		// entity/asset toggles. Seed both from the legacy key when present so an
+		// existing "off" choice carries over, then let the new keys override.
 		if (const Json::Value* v = root.FindMember("ConfirmOnDelete")) {
-			s.ConfirmOnDelete = v->AsBoolOr(true);
+			const bool legacy = v->AsBoolOr(true);
+			s.ConfirmOnDeleteEntity = legacy;
+			s.ConfirmOnDeleteAsset = legacy;
+		}
+		if (const Json::Value* v = root.FindMember("ConfirmOnDeleteEntity")) {
+			s.ConfirmOnDeleteEntity = v->AsBoolOr(true);
+		}
+		if (const Json::Value* v = root.FindMember("ConfirmOnDeleteAsset")) {
+			s.ConfirmOnDeleteAsset = v->AsBoolOr(true);
 		}
 		if (const Json::Value* v = root.FindMember("GridSnapEnabled")) {
 			s.GridSnapEnabled = v->AsBoolOr(false);
@@ -306,6 +321,13 @@ namespace Index {
 		if (const Json::Value* v = root.FindMember("ScaleSnap")) {
 			s.ScaleSnap = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultScaleSnap));
 			if (s.ScaleSnap < EditorPreferences::k_MinScaleSnap) s.ScaleSnap = EditorPreferences::k_MinScaleSnap;
+		}
+		if (const Json::Value* v = root.FindMember("AlignmentGuidesEnabled")) {
+			s.AlignmentGuidesEnabled = v->AsBoolOr(true);
+		}
+		if (const Json::Value* v = root.FindMember("AlignmentSnapThreshold")) {
+			s.AlignmentSnapThreshold = static_cast<float>(v->AsDoubleOr(EditorPreferences::k_DefaultAlignmentSnapThreshold));
+			if (s.AlignmentSnapThreshold < EditorPreferences::k_MinAlignmentSnapThreshold) s.AlignmentSnapThreshold = EditorPreferences::k_MinAlignmentSnapThreshold;
 		}
 
 		if (const Json::Value* v = root.FindMember("CustomColors"); v && v->IsObject()) {
@@ -353,7 +375,8 @@ namespace Index {
 		root.AddMember("AutoSaveScenes", Json::Value(s.AutoSaveScenes));
 		root.AddMember("AutoSaveIntervalSeconds", Json::Value(static_cast<double>(s.AutoSaveIntervalSeconds)));
 		root.AddMember("AutoSavePrefabs", Json::Value(s.AutoSavePrefabs));
-		root.AddMember("ConfirmOnDelete", Json::Value(s.ConfirmOnDelete));
+		root.AddMember("ConfirmOnDeleteEntity", Json::Value(s.ConfirmOnDeleteEntity));
+		root.AddMember("ConfirmOnDeleteAsset", Json::Value(s.ConfirmOnDeleteAsset));
 		root.AddMember("GridSnapEnabled", Json::Value(s.GridSnapEnabled));
 		root.AddMember("GridSizeX", Json::Value(static_cast<double>(s.GridSizeX)));
 		root.AddMember("GridSizeY", Json::Value(static_cast<double>(s.GridSizeY)));
@@ -362,6 +385,8 @@ namespace Index {
 		root.AddMember("RotationSnapDegrees", Json::Value(static_cast<double>(s.RotationSnapDegrees)));
 		root.AddMember("ScaleSnapEnabled", Json::Value(s.ScaleSnapEnabled));
 		root.AddMember("ScaleSnap", Json::Value(static_cast<double>(s.ScaleSnap)));
+		root.AddMember("AlignmentGuidesEnabled", Json::Value(s.AlignmentGuidesEnabled));
+		root.AddMember("AlignmentSnapThreshold", Json::Value(static_cast<double>(s.AlignmentSnapThreshold)));
 
 		// Always serialize CustomColors once seeded — the user can return
 		// to the saved set after experimenting with Dark/Light/System.
@@ -456,8 +481,26 @@ namespace Index {
 		return S().CustomColors[imGuiColIdx];
 	}
 
-	void EditorPreferences::ResetCustomColorsFromCurrent() {
-		SeedCustomColorsFromCurrent();
+	void EditorPreferences::ResetCustomColorsToDefault() {
+		// Seed from the resolved default theme (Dark/Light per the OS), NOT the
+		// live style: in Custom mode the live style already *is* the custom
+		// colors, so reseeding from it was a no-op. Build the base palette on the
+		// live style, capture it, then restore so the caller's ApplyTheme() is
+		// what actually pushes the reset colors back on screen.
+		ImGuiStyle& style = ImGui::GetStyle();
+		ImVec4 saved[ImGuiCol_COUNT];
+		std::memcpy(saved, style.Colors, sizeof(saved));
+
+		if (ResolveTheme(EditorThemeMode::SystemDefault) == EditorThemeMode::Light) {
+			ImGui::StyleColorsLight();
+		}
+		else {
+			ImGuiContextLayer::ApplyIndexThemeColors();
+		}
+		std::memcpy(S().CustomColors, style.Colors, sizeof(ImVec4) * ImGuiCol_COUNT);
+		S().CustomColorsSeeded = true;
+
+		std::memcpy(style.Colors, saved, sizeof(saved));
 		Save();
 	}
 
@@ -578,13 +621,23 @@ namespace Index {
 		Save();
 	}
 
-	bool EditorPreferences::GetConfirmOnDelete() {
-		return S().ConfirmOnDelete;
+	bool EditorPreferences::GetConfirmOnDeleteEntity() {
+		return S().ConfirmOnDeleteEntity;
 	}
 
-	void EditorPreferences::SetConfirmOnDelete(bool value) {
-		if (S().ConfirmOnDelete == value) return;
-		S().ConfirmOnDelete = value;
+	void EditorPreferences::SetConfirmOnDeleteEntity(bool value) {
+		if (S().ConfirmOnDeleteEntity == value) return;
+		S().ConfirmOnDeleteEntity = value;
+		Save();
+	}
+
+	bool EditorPreferences::GetConfirmOnDeleteAsset() {
+		return S().ConfirmOnDeleteAsset;
+	}
+
+	void EditorPreferences::SetConfirmOnDeleteAsset(bool value) {
+		if (S().ConfirmOnDeleteAsset == value) return;
+		S().ConfirmOnDeleteAsset = value;
 		Save();
 	}
 
@@ -669,6 +722,27 @@ namespace Index {
 		const float clamped = (value < k_MinScaleSnap) ? k_MinScaleSnap : value;
 		if (S().ScaleSnap == clamped) return;
 		S().ScaleSnap = clamped;
+		Save();
+	}
+
+	bool EditorPreferences::GetAlignmentGuidesEnabled() {
+		return S().AlignmentGuidesEnabled;
+	}
+
+	void EditorPreferences::SetAlignmentGuidesEnabled(bool value) {
+		if (S().AlignmentGuidesEnabled == value) return;
+		S().AlignmentGuidesEnabled = value;
+		Save();
+	}
+
+	float EditorPreferences::GetAlignmentSnapThreshold() {
+		return S().AlignmentSnapThreshold;
+	}
+
+	void EditorPreferences::SetAlignmentSnapThreshold(float value) {
+		const float clamped = (value < k_MinAlignmentSnapThreshold) ? k_MinAlignmentSnapThreshold : value;
+		if (S().AlignmentSnapThreshold == clamped) return;
+		S().AlignmentSnapThreshold = clamped;
 		Save();
 	}
 

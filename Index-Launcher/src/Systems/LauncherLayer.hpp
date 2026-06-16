@@ -194,6 +194,7 @@ namespace Index {
 		void RenderSettingsPopup();
 		void RenderProjectInfoPopup();
 		void RenderErrorPopup();
+		void RenderLanguageRestartModal();
 		void RenderRenameProjectPopup();
 		void RequestProjectRename(const LauncherProjectEntry& entry);
 		void RenderDuplicateProjectPopup();
@@ -288,6 +289,11 @@ namespace Index {
 		// Single-slot: only one library download in flight at a time.
 		AssetLibraryIndex m_AssetLibrary;
 		AssetLibraryTaskState m_AssetLibraryTask;
+		// Surface an index-fetch failure exactly once per attempt (sticky, not edge —
+		// an auto-fetch can fail between two polls). Re-armed when a new fetch starts.
+		bool m_AssetLibraryFetchErrorReported = false;
+		// Auto-fetch the index once per session on first tab open; failures don't auto-retry (Refresh is manual).
+		bool m_AssetLibraryAutoFetchAttempted = false;
 		std::string m_LauncherSearch;
 		std::string m_AssetLibrarySelectedTag;     // empty = "All tags"
 		std::string m_AssetLibraryDetailEntryId;
@@ -337,6 +343,10 @@ namespace Index {
 
 		std::string m_ErrorMessage;
 		bool m_OpenErrorPopup = false;
+
+		bool m_OpenLanguageRestartPopup = false;
+		// Edge-detect: fire the download-result window once when a language/font download finishes.
+		bool m_LanguageDownloadWasRunning = false;
 
 		// Startup splash + deferred heavy startup (registry scan) that runs
 		// behind it, so the splash holds until the launcher is actually ready.

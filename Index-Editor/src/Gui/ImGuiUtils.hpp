@@ -2,6 +2,7 @@
 #include <imgui.h>
 #include "Collections/Color.hpp"
 #include "Collections/Vec2.hpp"
+#include "Graphics/Filter.hpp"
 #include "Scene/Entity.hpp"
 #include <magic_enum/magic_enum.hpp>
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -138,9 +140,34 @@ namespace Index::ImGuiUtils {
 		return changed;
 	}
 
-	void DrawTexturePreview(uint64_t rendererId, float texWidth, float texHeight, float previewSize = 96.0f);
+	// ImGui's WebGPU backend samples every image through one shared (Linear)
+	// sampler, so a texture's own Point/pixel-art filter is otherwise lost in
+	// editor previews. Pass the texture's Filter and a Point texture is bracketed
+	// with the backend's per-draw sampler callbacks so it renders crisp; any
+	// other filter falls through to the default Linear sampler.
+	void DrawTexturePreview(uint64_t rendererId, float texWidth, float texHeight,
+		float previewSize = 96.0f, Filter filter = Filter::Bilinear);
 
-	void DrawTexturePreview(const Texture2D& tex, float previewSize = 96.0f);
+	// filterOverride: nullopt derives the filter from tex.GetFilter(); pass a
+	// value to force it (e.g. the asset's authored import filter, when the
+	// preview Texture2D was loaded with a fixed filter that doesn't reflect it).
+	void DrawTexturePreview(const Texture2D& tex, float previewSize = 96.0f,
+		std::optional<Filter> filterOverride = std::nullopt);
+
+	// ImGui::Image that honors a texture's Filter (Point => crisp/nearest) by
+	// bracketing the draw with the WGPU backend's per-draw sampler callbacks.
+	// Use instead of ImGui::Image wherever a user asset's filter must be respected.
+	void ImageFiltered(ImTextureID texId, const ImVec2& size, Filter filter,
+		const ImVec2& uv0 = ImVec2(0.0f, 0.0f), const ImVec2& uv1 = ImVec2(1.0f, 1.0f));
+
+	// Same filter-aware bracketing as ImageFiltered, but for code that draws into
+	// an explicit ImDrawList at an explicit rect (drawList->AddImage) rather than
+	// at the layout cursor. For pickers / canvases / overlays that position the
+	// image themselves and need a tint or custom UVs.
+	void AddImageFiltered(ImDrawList* drawList, ImTextureID texId,
+		const ImVec2& pMin, const ImVec2& pMax, Filter filter,
+		const ImVec2& uv0 = ImVec2(0.0f, 0.0f), const ImVec2& uv1 = ImVec2(1.0f, 1.0f),
+		ImU32 tintCol = IM_COL32_WHITE);
 
 	// Empty-slot stand-in for a texture preview: checkerboard panel, border, and
 	// a centered "No Texture" label. Use wherever a preview would draw but no

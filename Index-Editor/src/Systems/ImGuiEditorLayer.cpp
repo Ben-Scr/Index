@@ -719,13 +719,11 @@ namespace Index {
 		m_GizmoDragActive = true;
 		m_GizmoDragBefore.clear();
 		for (EntityHandle handle : GetSelectedEntities(scene)) {
-			Transform2DComponent* transform = nullptr;
-			if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
 			const uint64_t id = scene.GetEntityPersistentID(handle);
 			if (id == 0) continue;
-			m_GizmoDragBefore.push_back({ id, TransformSnapshot{
-				transform->Position, transform->Scale, transform->Rotation,
-				transform->LocalPosition, transform->LocalScale, transform->LocalRotation } });
+			EntityTransformSnapshot snap = CaptureEntityTransform(scene, handle);
+			if (!snap.Valid) continue;
+			m_GizmoDragBefore.push_back({ id, snap });
 		}
 	}
 
@@ -738,20 +736,19 @@ namespace Index {
 		for (const auto& [id, before] : m_GizmoDragBefore) {
 			EntityHandle handle = entt::null;
 			if (!scene.TryResolveEntityRef(id, handle)) continue;
-			Transform2DComponent* transform = nullptr;
-			if (!scene.TryGetComponent<Transform2DComponent>(handle, transform) || !transform) continue;
+			EntityTransformSnapshot after = CaptureEntityTransform(scene, handle);
+			if (!after.Valid) continue;
 			TransformEditCommand::Entry entry;
 			entry.PersistentId = id;
 			entry.Before = before;
-			entry.After = TransformSnapshot{
-				transform->Position, transform->Scale, transform->Rotation,
-				transform->LocalPosition, transform->LocalScale, transform->LocalRotation };
+			entry.After = after;
 			entries.push_back(entry);
 		}
 		m_GizmoDragBefore.clear();
 
 		const char* label = m_GizmoMode == EditorGizmoMode::Rotate ? "Rotate"
-			: m_GizmoMode == EditorGizmoMode::Scale ? "Scale" : "Move";
+			: m_GizmoMode == EditorGizmoMode::Scale ? "Scale"
+			: m_GizmoMode == EditorGizmoMode::Bounds ? "Resize" : "Move";
 		auto command = std::make_unique<TransformEditCommand>(std::move(entries), label);
 		if (command->HasChange()) {
 			m_UndoStack.Push(std::move(command));
@@ -907,6 +904,15 @@ namespace Index {
 
 	void ImGuiEditorLayer::OnDetach(Application& app) {
 		(void)app;
+		// Drain the async workers first — their lambdas write member state (the progress mutexes) that
+		// the imminent destructor would otherwise free out from under a still-running thread. The future
+		// destructors already block for the same duration; this just joins while the members are alive.
+		if (m_ReserializeFuture.valid()) {
+			try { m_ReserializeFuture.get(); } catch (...) {}
+		}
+		if (m_BuildFuture.valid()) {
+			try { m_BuildFuture.get(); } catch (...) {}
+		}
 		// MUST precede WebGPU teardown: Texture2D destructor touches the device.
 		m_Splash.Shutdown();
 		m_ProfilerPanel.Shutdown();
@@ -1009,9 +1015,13 @@ namespace Index {
 					std::vector<std::string>{ m_AssetWatcherRoot },
 					std::vector<std::string>{ ".png", ".jpg", ".jpeg", ".bmp", ".tga" },
 					[this]() {
+						if (m_AssetBrowser.IsImportingAssets()
+							|| m_AssetBrowser.IsDeleting()
+							|| m_AssetBrowser.ConsumeAssetWatcherImportRefreshSuppression()) {
+							return;
+						}
 						const size_t reloaded = TextureManager::ReloadTexturesFromDisk();
 						AssetRegistry::MarkDirty();
-						AssetRegistry::Sync();
 						m_AssetBrowser.RequestRefresh();
 						// Clear thumbnail tile cache too — otherwise the asset
 						// browser keeps showing the pre-edit file icon until
@@ -1023,7 +1033,9 @@ namespace Index {
 						}
 					});
 			}
-			m_AssetWatcher.Poll(0.25f);
+			if (!m_AssetBrowser.IsImportingAssets() && !m_AssetBrowser.IsDeleting()) {
+				m_AssetWatcher.Poll(0.25f);
+			}
 		}
 		else if (!m_AssetWatcherRoot.empty()) {
 			m_AssetWatcher.Stop();
@@ -1250,6 +1262,12 @@ namespace Index {
 			return;
 		}
 
+		// Skip while the reserialization worker owns the .scene/.prefab tree — a write here would race it.
+		if (m_ReserializeState != 0) {
+			m_AutoSaveAccumulator = 0.0f;
+			return;
+		}
+
 		// Reset accumulator on scene change so the new scene gets a full interval before its first auto-save.
 		Scene* active = app.GetSceneManager() ? app.GetSceneManager()->GetActiveScene() : nullptr;
 		if (!active) {
@@ -1285,6 +1303,7 @@ namespace Index {
 
 	void ImGuiEditorLayer::RunPrefabAutoSaveTick() {
 		if (!m_PrefabEditScene) return;
+		if (m_ReserializeState != 0) return; // worker owns the .prefab tree — don't race it
 		if (!EditorPreferences::GetAutoSavePrefabs()) return;
 		if (!m_PrefabEditScene->IsDirty()) return;
 		// Debounce: skip while any ImGui widget is active (e.g. dragging a slider) to avoid thrashing disk on every intermediate value.
@@ -1455,6 +1474,10 @@ namespace Index {
 				project->LastOpenedScene = scene.GetName();
 				project->Save();
 			}
+			// Capture the edit-mode baseline of inspector-authored script fields now,
+			// before play-start consumes (and erases) PendingFieldValues — the play-exit
+			// restore re-applies these so component/UI references survive the round-trip.
+			CaptureScriptFieldOverrides(/*merge=*/false);
 		}
 
 		m_LogEntries.clear();
@@ -1705,6 +1728,65 @@ namespace Index {
 		}
 	}
 
+	void ImGuiEditorLayer::CaptureScriptFieldOverrides(bool merge) {
+		if (!merge) {
+			m_PlayModeScriptFields.clear();
+		}
+		int captured = 0;
+		SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
+			auto view = s.GetRegistry().view<ScriptComponent>();
+			for (EntityHandle entity : view) {
+				const ScriptComponent& sc = view.get<ScriptComponent>(entity);
+				if (sc.PendingFieldValues.empty()) {
+					continue;
+				}
+				const uint64_t uuid = s.GetEntityPersistentID(entity);
+				if (uuid == 0) {
+					continue;
+				}
+				auto& fields = m_PlayModeScriptFields[s.GetName()][uuid];
+				for (const auto& [key, value] : sc.PendingFieldValues) {
+					fields[key] = value;
+					++captured;
+					IDX_CORE_INFO_TAG("PlayFix", "capture({}) scene='{}' uuid={} {}='{}'",
+						merge ? "overlay" : "baseline", s.GetName(), uuid, key, value);
+				}
+			}
+		});
+		IDX_CORE_INFO_TAG("PlayFix", "CaptureScriptFieldOverrides(merge={}) captured {} field(s)", merge, captured);
+	}
+
+	void ImGuiEditorLayer::ReapplyScriptFieldOverrides() {
+		IDX_CORE_INFO_TAG("PlayFix", "ReapplyScriptFieldOverrides: {} scene(s) in snapshot", m_PlayModeScriptFields.size());
+		for (const auto& [sceneName, entities] : m_PlayModeScriptFields) {
+			auto loaded = SceneManager::Get().GetLoadedScene(sceneName).lock();
+			if (!loaded) {
+				IDX_CORE_WARN_TAG("PlayFix", "reapply: scene '{}' NOT loaded — skipping {} entity override(s)", sceneName, entities.size());
+				continue;
+			}
+			for (const auto& [uuid, fields] : entities) {
+				EntityHandle handle = entt::null;
+				if (!loaded->TryResolveEntityRef(uuid, handle)) {
+					IDX_CORE_WARN_TAG("PlayFix", "reapply: scene '{}' uuid={} did NOT resolve to an entity — skipping", sceneName, uuid);
+					continue;
+				}
+				if (!loaded->HasComponent<ScriptComponent>(handle)) {
+					IDX_CORE_WARN_TAG("PlayFix", "reapply: scene '{}' uuid={} has no ScriptComponent — skipping", sceneName, uuid);
+					continue;
+				}
+				ScriptComponent& sc = loaded->GetComponent<ScriptComponent>(handle);
+				for (const auto& [key, value] : fields) {
+					const auto existing = sc.PendingFieldValues.find(key);
+					IDX_CORE_INFO_TAG("PlayFix", "reapply scene='{}' uuid={} {}: reload-had='{}' -> forcing='{}'",
+						sceneName, uuid, key,
+						existing == sc.PendingFieldValues.end() ? "<absent>" : existing->second, value);
+					sc.PendingFieldValues[key] = value;
+				}
+			}
+		}
+		m_PlayModeScriptFields.clear();
+	}
+
 	void ImGuiEditorLayer::RestoreEditorSceneAfterPlaymode() {
 		m_UndoStack.Clear();
 		InspectorUndoRecorder::Reset();
@@ -1740,6 +1822,12 @@ namespace Index {
 
 		ApplicationEditorAccess::SetPlaymodePaused(false);
 		Application::SetIsPlaying(false);
+
+		// Overlay any references (re)assigned in the inspector during play onto the
+		// captured baseline, while the live entities still exist — the reload below
+		// destroys them. Runtime gameplay mutations don't touch PendingFieldValues, so
+		// only inspector edits are carried across; everything else reverts as designed.
+		CaptureScriptFieldOverrides(/*merge=*/true);
 
 		if (!m_PlayModeScenes.empty()) {
 			// Snapshot-set restore. The legacy version only iterated currently-
@@ -1780,6 +1868,15 @@ namespace Index {
 					}
 				}
 				else {
+					// A play-mode script may have Single-unloaded the editor's working
+					// scene. Its name isn't a registered definition (the editor loads
+					// scene content into the one "SampleScene" definition), so reloading
+					// by name would fail and leave the editor with no active scene —
+					// blanking the viewport and crashing on close. Register the
+					// definition from the snapshot path so the reload succeeds.
+					if (!SceneManager::Get().HasSceneDefinition(sceneName)) {
+						SceneManager::Get().RegisterScene(sceneName);
+					}
 					if (auto loaded = SceneManager::Get().LoadSceneAdditive(sceneName).lock()) {
 						SceneSerializer::LoadFromFile(*loaded, scenePath);
 					}
@@ -1793,6 +1890,11 @@ namespace Index {
 			m_PlayModeScenes.clear();
 			m_PlayModeActiveScene.clear();
 		}
+
+		// Force inspector-authored script field values back onto the reloaded entities
+		// (matched by persistent UUID). This bypasses the serialize round-trip that can
+		// drop a pending component/UI reference, so such references survive play/stop.
+		ReapplyScriptFieldOverrides();
 
 		// MUST run after scene reload so OnDisable thunks fire first; well-behaved scripts that pair +=/-= leave nothing for this sweep.
 		ScriptEngine::OnPlayModeExited();
@@ -2352,7 +2454,7 @@ namespace Index {
 		}
 
 		// Confirmation disabled in preferences: delete straight away.
-		if (!EditorPreferences::GetConfirmOnDelete()) {
+		if (!EditorPreferences::GetConfirmOnDeleteEntity()) {
 			DeleteSelectedEntity(scene);
 			return;
 		}
@@ -2791,7 +2893,10 @@ namespace Index {
 			if (ImGui::MenuItem("Text")) {
 				// Use CreateWith (not CreateEntity): avoids seeding Transform2DComponent which conflicts with RectTransform2D.
 				Entity created = EntityHelper::CreateWith<RectTransform2DComponent, TextRendererComponent>(scene);
-				created.GetComponent<TextRendererComponent>().HAlign = TextAlignment::Center;
+				created.GetComponent<RectTransform2DComponent>().SizeDelta = Vec2{ 100.0f, 100.0f };
+				auto& createdText = created.GetComponent<TextRendererComponent>();
+				createdText.HAlign = TextAlignment::Center;
+				createdText.FontSize = 64.0f;
 				if (!created.HasComponent<NameComponent>()) {
 					created.AddComponent<NameComponent>(NameComponent("Text"));
 				}
@@ -3528,6 +3633,13 @@ namespace Index {
 				if (m_EntityOrderSceneId != scenePtrRaw) {
 					m_EntityOrderDirty = true;
 					m_EntityOrderSceneId = scenePtrRaw;
+				}
+				// Catch reparents that don't change the entity count (e.g. a script calling Entity.SetParent at runtime): the
+				// cached row depths would otherwise keep a detached child nested under its old parent, with the parent's fold arrow gone.
+				const uint64_t hierarchyVersion = scene.GetHierarchyVersion();
+				if (hierarchyVersion != m_LastHierarchyVersion) {
+					m_EntityOrderDirty = true;
+					m_LastHierarchyVersion = hierarchyVersion;
 				}
 				const bool needsRebuild = m_EntityOrderDirty
 					|| m_EntityOrder.size() != registryCount;
@@ -4475,6 +4587,8 @@ namespace Index {
 			}
 			else {
 				RenderAssetInspector();
+				// DataAsset reference fields open the picker; same early-return bypass as above.
+				ReferencePicker::RenderPopup();
 			}
 			m_IsInspectorPanelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 			ImGui::End();

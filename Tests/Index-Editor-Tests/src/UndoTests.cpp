@@ -11,6 +11,7 @@
 #include "Scene/Scene.hpp"
 #include "Scene/Entity.hpp"
 #include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/RectTransform2DComponent.hpp"
 #include "Inspector/PropertyValue.hpp"
 #include "Inspector/PropertyType.hpp"
 
@@ -197,6 +198,42 @@ TEST_CASE("TransformEditCommand: an unresolvable id is skipped, not fatal") {
 
 	CHECK_NOTHROW(command.Undo(*scene));
 	CHECK(e.GetComponent<Transform2DComponent>().Position.x == doctest::Approx(5.0f));
+}
+
+TEST_CASE("TransformEditCommand: RectTransform2D undo/redo restores authored rect fields") {
+	auto scene = Scene::CreateDetachedScene("Rect Undo");
+	Entity e = scene->CreateEntity("Panel");
+	e.AddComponent<RectTransform2DComponent>();
+	const uint64_t id = scene->GetEntityPersistentID(e.GetHandle());
+	REQUIRE(id != 0);
+
+	auto& rect = e.GetComponent<RectTransform2DComponent>();
+	rect.AnchoredPosition = { 1.0f, 2.0f };
+	rect.SizeDelta = { 100.0f, 50.0f };
+	rect.LocalScale = { 1.0f, 1.0f };
+	const EntityTransformSnapshot before = CaptureEntityTransform(*scene, e.GetHandle());
+
+	rect.AnchoredPosition = { 9.0f, 9.0f };
+	rect.SizeDelta = { 300.0f, 80.0f };
+	rect.LocalScale = { 2.0f, 2.0f };
+	const EntityTransformSnapshot after = CaptureEntityTransform(*scene, e.GetHandle());
+
+	// The capture must select the rect path (not Transform2D), and a real edit registers.
+	REQUIRE(before.IsRect);
+	REQUIRE(after.IsRect);
+	std::vector<TransformEditCommand::Entry> entries = { { id, before, after } };
+	TransformEditCommand command(std::move(entries));
+	REQUIRE(command.HasChange());
+
+	command.Undo(*scene);
+	CHECK(rect.AnchoredPosition.x == doctest::Approx(1.0f));
+	CHECK(rect.SizeDelta.x == doctest::Approx(100.0f));
+	CHECK(rect.LocalScale.x == doctest::Approx(1.0f));
+
+	command.Redo(*scene);
+	CHECK(rect.AnchoredPosition.x == doctest::Approx(9.0f));
+	CHECK(rect.SizeDelta.x == doctest::Approx(300.0f));
+	CHECK(rect.LocalScale.x == doctest::Approx(2.0f));
 }
 
 namespace {

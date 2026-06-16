@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Index {
 
@@ -69,6 +70,20 @@ namespace Index {
 		// For PropertyType::List — the PropertyType of each list item. The
 		// drawer dispatches per-row through the matching primitive widget.
 		PropertyType ListItemType = PropertyType::None;
+
+		// For PropertyType::List with INLINE OBJECT items: the schema of each
+		// element's leaf sub-fields, in encode/decode order. Non-empty means the
+		// list holds inline objects (each element edited field-by-field) rather
+		// than primitives/references; ListItemType is then unused.
+		struct ListItemField {
+			std::string Name;
+			std::string DisplayName;
+			PropertyType Type = PropertyType::None;
+			std::shared_ptr<EnumDescriptor> Enum;
+			std::string ComponentTypeName;
+			AssetKind AssetKindFilter = AssetKind::Unknown;
+		};
+		std::vector<ListItemField> ListItemFields;
 
 		std::function<bool(const Entity&)> EnabledIfFn;
 

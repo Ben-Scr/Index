@@ -457,6 +457,12 @@ namespace Index {
 		if (s_Initialized && s_Callbacks.OnPlayModeExited) s_Callbacks.OnPlayModeExited();
 	}
 
+	void ScriptEngine::NotifyEntityDestroyed(uint64_t entityID)
+	{
+		if (!s_Initialized || entityID == 0 || !s_Callbacks.NotifyEntityDestroyed) return;
+		s_Callbacks.NotifyEntityDestroyed(entityID);
+	}
+
 	uint32_t ScriptEngine::CreateSceneSystemInstance(const std::string& className, const std::string& sceneName)
 	{
 		if (!s_Initialized || !s_Callbacks.CreateSceneSystemInstance) return 0;

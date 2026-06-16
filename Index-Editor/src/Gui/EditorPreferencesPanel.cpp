@@ -205,16 +205,16 @@ namespace Index {
 
 		ImGui::TextUnformatted("Custom Colors");
 		ImGui::SameLine();
-		if (ImGui::Button("Reset to Current##ResetCustomColors")) {
-			EditorPreferences::ResetCustomColorsFromCurrent();
+		if (ImGui::Button("Reset to Default##ResetCustomColors")) {
+			EditorPreferences::ResetCustomColorsToDefault();
 			// Re-apply so the swatches snap back to the just-seeded values.
 			EditorPreferences::ApplyTheme();
 		}
 		if (ImGui::IsItemHovered() && customActive) {
 			ImGui::SetTooltip(
-				"Reseed the editable swatches from the colors currently\n"
-				"on screen. Useful after experimenting with Dark/Light\n"
-				"and wanting to start customising from that base.");
+				"Reset the editable swatches to the default theme\n"
+				"(Dark or Light, following the system setting), giving\n"
+				"you a clean base to start customising from.");
 		}
 
 		// Scrollable region so the long ImGuiCol_ list doesn't push the
@@ -288,8 +288,6 @@ namespace Index {
 			}
 		}
 		ImGui::PopID();
-		ImGui::TextDisabled("Takes effect after restarting the editor.");
-
 		ImGui::Spacing();
 
 		ImGui::PushID("EditorFontZoom");
@@ -408,7 +406,7 @@ namespace Index {
 		if (ImGui::Button("Re-detect##ScriptEditorRedetect")) {
 			ExternalEditor::DetectEditors();
 		}
-		ImGui::TextDisabled("The editor used when opening .cs / .cpp / .hpp script files.");
+		ImGui::TextDisabled("The editor used when opening script files.");
 		}
 		}
 
@@ -493,7 +491,8 @@ namespace Index {
 		const bool showAssetBrowser = PreferenceSectionVisible("Asset Browser", "behavior asset browser file extensions extension rename");
 		const bool showAutoSave = PreferenceSectionVisible("Auto-Save", "behavior auto save autosave scene prefab interval");
 		const bool showEditing = PreferenceSectionVisible("Editing", "behavior editing delete deletion confirm confirmation prompt ask dialog warn entity asset safety");
-		if (!showApplication && !showAssetBrowser && !showAutoSave && !showEditing) return;
+		const bool showViewport = PreferenceSectionVisible("Viewport", "behavior viewport ui alignment guides guide smart snap snapping align rect transform");
+		if (!showApplication && !showAssetBrowser && !showAutoSave && !showEditing && !showViewport) return;
 
 		if (showApplication) {
 			ImGui::TextUnformatted("Application");
@@ -512,15 +511,58 @@ namespace Index {
 			ImGui::TextUnformatted("Editing");
 			ImGui::Separator();
 
-			bool confirmOnDelete = EditorPreferences::GetConfirmOnDelete();
-			if (ImGui::Checkbox("Confirm before deleting", &confirmOnDelete)) {
-				EditorPreferences::SetConfirmOnDelete(confirmOnDelete);
+			bool confirmOnDeleteEntity = EditorPreferences::GetConfirmOnDeleteEntity();
+			if (ImGui::Checkbox("Confirm before deleting entity", &confirmOnDeleteEntity)) {
+				EditorPreferences::SetConfirmOnDeleteEntity(confirmOnDeleteEntity);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Ask for confirmation before deleting an entity in the\n"
+					"Entities hierarchy. Turn off to delete immediately\n"
+					"without a prompt.");
+			}
+
+			bool confirmOnDeleteAsset = EditorPreferences::GetConfirmOnDeleteAsset();
+			if (ImGui::Checkbox("Confirm before deleting asset", &confirmOnDeleteAsset)) {
+				EditorPreferences::SetConfirmOnDeleteAsset(confirmOnDeleteAsset);
 			}
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip(
 					"Ask for confirmation before deleting an asset in the\n"
-					"Project panel or an entity in the Entities hierarchy.\n"
-					"Turn off to delete immediately without a prompt.");
+					"Project panel. Turn off to delete immediately\n"
+					"without a prompt.");
+			}
+
+			ImGui::Spacing();
+		}
+
+		// ── Viewport ──────────────────────────────────────────────
+		if (showViewport) {
+			ImGui::TextUnformatted("Viewport");
+			ImGui::Separator();
+
+			bool alignGuides = EditorPreferences::GetAlignmentGuidesEnabled();
+			if (ImGui::Checkbox("UI alignment guides", &alignGuides)) {
+				EditorPreferences::SetAlignmentGuidesEnabled(alignGuides);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"When dragging a UI (RectTransform) element in the viewport,\n"
+					"show alignment guide lines against other UI elements and\n"
+					"snap to them. Hold Ctrl while dragging to place freely.");
+			}
+
+			if (alignGuides) {
+				float threshold = EditorPreferences::GetAlignmentSnapThreshold();
+				ImGui::SetNextItemWidth(160.0f);
+				if (ImGui::InputFloat("Snap distance (pixels)", &threshold, 1.0f, 4.0f, "%.0f")) {
+					EditorPreferences::SetAlignmentSnapThreshold(threshold);
+				}
+				if (ImGui::IsItemHovered()) {
+					ImGui::SetTooltip(
+						"How close (in screen pixels) a dragged edge must be to\n"
+						"another element's edge before it snaps.");
+				}
 			}
 
 			ImGui::Spacing();
@@ -537,11 +579,8 @@ namespace Index {
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip(
-				"When off (default), asset names render without their\n"
-				"extension (\"MyScene\" instead of \"MyScene.scene\").\n"
-				"Renaming pre-fills only the stem and re-appends the\n"
-				"original extension on commit. When on, extensions are\n"
-				"shown and editable verbatim.");
+				"When off, asset names render\n"
+				"without their extension.");
 		}
 
 		ImGui::Spacing();

@@ -77,7 +77,7 @@ namespace Index {
 		return scratch;
 	}
 
-	static int Index_Ecb_Playback(const uint8_t* buffer, int length,
+	static int Index_Ecb_PlaybackImpl(const uint8_t* buffer, int length,
 		uint64_t* outRuntimeIds, int maxOut)
 	{
 		if (buffer == nullptr || length < static_cast<int>(sizeof(EcbHeader))) {
@@ -361,6 +361,25 @@ namespace Index {
 		// Pulse lives outside the guard scope so it isn't double-counted by a later MarkAllDirtyOnce().
 		scene->MarkAllDirtyOnce();
 		return static_cast<int>(header.entityCount);
+	}
+
+	// Boundary guard: Ecb_Playback is reached via [UnmanagedCallersOnly]; an exception unwinding
+	// into CoreCLR is UB / fatal. Playback allocates heavily (prefab bake, scratch vectors) and can
+	// throw std::bad_alloc, so swallow here and surface as an error code the C# side already handles.
+	static int Index_Ecb_Playback(const uint8_t* buffer, int length,
+		uint64_t* outRuntimeIds, int maxOut)
+	{
+		try {
+			return Index_Ecb_PlaybackImpl(buffer, length, outRuntimeIds, maxOut);
+		}
+		catch (const std::exception& e) {
+			IDX_CORE_ERROR_TAG("ScriptBinding", "exception in Index_Ecb_Playback: {}", e.what());
+			return kEcbErrorInternal;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("ScriptBinding", "unknown exception in Index_Ecb_Playback");
+			return kEcbErrorInternal;
+		}
 	}
 
 	void PopulateEcbBindings(NativeBindings& b)

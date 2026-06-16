@@ -149,11 +149,18 @@ Entity copy = Entity.Instantiate(prefab);
 e.Destroy();
 ```
 
-**Transform** — position, rotation, scale, and hierarchy:
+**Transform** — position, rotation, scale:
 
 ```csharp
 Entity.Transform.Position += Vector2.Up \* Time.DeltaTime;
-Entity.Transform.SetParent(other.Transform);
+```
+
+**Hierarchy** — parenting lives on the entity, not the transform:
+
+```csharp
+Entity.SetParent(other);          // 'other' is an Entity — keeps world position (default)
+Entity.SetParent(other, false);   // adopt the parent's frame instead (local transform kept)
+Entity.SetParent(null);           // detach to the scene root
 ```
 
 **Input** — keyboard, mouse, axes:

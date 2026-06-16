@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include "Gui/ThumbnailCache.hpp"
+#include "Assets/AssetRegistry.hpp"
 #include <imgui.h>
 #include <algorithm>
 
@@ -61,9 +62,18 @@ namespace Index {
 			return 0;
 		}
 
+		// Honor the asset's authored import filter so GetCacheEntry()->GetFilter()
+		// is authoritative for the browser tile (pixel art with Point stays crisp).
+		// With no import block, match the engine's load default (Filter::Point, see
+		// TextureManager::LoadTexture) — NOT the TextureMeta struct default of
+		// Bilinear — so an un-imported PNG renders the same in the tile, the
+		// inspector preview, and at runtime instead of being the lone blurry one.
+		const TextureMeta meta = AssetRegistry::ReadTextureMeta(absolutePath);
+		const Filter importFilter = meta.HasImportBlock ? meta.Import.FilterMode : Filter::Point;
+
 		auto tex = std::make_unique<Texture2D>(
 			absolutePath.c_str(),
-			Filter::Bilinear,
+			importFilter,
 			Wrap::Clamp,
 			Wrap::Clamp,
 			false,   // no mipmaps for thumbnails

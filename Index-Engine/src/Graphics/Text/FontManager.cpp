@@ -92,12 +92,9 @@ namespace Index {
 		FontHandle existing = FindExisting(assetId, pixelSize);
 		if (existing.IsValid()) return existing;
 
-		std::string path = AssetRegistry::ResolvePath(assetId);
-		if (path.empty()) {
-			AssetRegistry::MarkDirty();
-			AssetRegistry::Sync();
-			path = AssetRegistry::ResolvePath(assetId);
-		}
+		// ResolvePath self-recovers once on a miss; don't MarkDirty()+Sync() (clears the negative
+		// cache → full O(N) Assets/ rescan ×3 per dangling GUID, re-arms every other miss).
+		const std::string path = AssetRegistry::ResolvePath(assetId);
 		if (path.empty()) return FontHandle::Invalid();
 
 		auto font = std::make_unique<Font>();
@@ -122,12 +119,9 @@ namespace Index {
 			}
 		}
 
-		std::string path = AssetRegistry::ResolvePath(assetId);
-		if (path.empty()) {
-			AssetRegistry::MarkDirty();
-			AssetRegistry::Sync();
-			path = AssetRegistry::ResolvePath(assetId);
-		}
+		// ResolvePath self-recovers once on a miss; don't MarkDirty()+Sync() (clears the negative
+		// cache → full O(N) Assets/ rescan ×3 per dangling GUID, re-arms every other miss).
+		const std::string path = AssetRegistry::ResolvePath(assetId);
 		if (path.empty()) return FontHandle::Invalid();
 
 		std::vector<uint8_t> ttf = File::ReadAllBytes(path);

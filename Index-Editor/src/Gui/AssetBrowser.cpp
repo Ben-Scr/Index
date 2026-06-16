@@ -168,6 +168,62 @@ namespace Index {
 			return !ec;
 		}
 
+		void CollectRegistryAssetPaths(const std::filesystem::path& path, std::vector<std::string>& paths)
+		{
+			std::error_code ec;
+			if (std::filesystem::is_regular_file(path, ec) && !ec) {
+				const std::string assetPath = path.string();
+				if (!AssetRegistry::IsMetaFilePath(assetPath)) {
+					paths.push_back(assetPath);
+				}
+				return;
+			}
+
+			ec.clear();
+			if (!std::filesystem::is_directory(path, ec) || ec) {
+				return;
+			}
+
+			for (std::filesystem::recursive_directory_iterator it(
+				 path,
+				 std::filesystem::directory_options::skip_permission_denied,
+				 ec), end;
+				 it != end;
+				 it.increment(ec))
+			{
+				if (ec) {
+					ec.clear();
+					continue;
+				}
+
+				std::error_code fileEc;
+				if (!it->is_regular_file(fileEc) || fileEc) {
+					continue;
+				}
+
+				const std::string assetPath = it->path().string();
+				if (!AssetRegistry::IsMetaFilePath(assetPath)) {
+					paths.push_back(assetPath);
+				}
+			}
+		}
+
+		void RegisterRegistryAssetTree(const std::filesystem::path& path)
+		{
+			std::vector<std::string> assetPaths;
+			CollectRegistryAssetPaths(path, assetPaths);
+			for (const std::string& assetPath : assetPaths) {
+				AssetRegistry::ImportAssetPathIncremental(assetPath);
+			}
+		}
+
+		void ForgetRegistryAssetPaths(const std::vector<std::string>& assetPaths)
+		{
+			for (const std::string& assetPath : assetPaths) {
+				AssetRegistry::ForgetAssetPathIncremental(assetPath);
+			}
+		}
+
 		bool MoveEntryTo(const std::filesystem::path& source, const std::filesystem::path& destination)
 		{
 			std::error_code ec;
@@ -749,6 +805,20 @@ namespace Index {
 #endif
 
 	void AssetBrowser::Shutdown() {
+		m_ImportActive.store(false, std::memory_order_release);
+		if (m_ImportThread.joinable()) {
+			m_ImportThread.join();
+		}
+		m_DeleteActive.store(false, std::memory_order_release);
+		if (m_DeleteThread.joinable()) {
+			m_DeleteThread.join();
+		}
+		m_SearchWorkerActive.store(false, std::memory_order_release);
+		if (m_SearchThread.joinable()) {
+			m_SearchThread.join();
+		}
+		UpdateExternalAssetImportProgressWindow();
+		UpdateAssetDeletionProgressWindow();
 #ifdef IDX_PLATFORM_WINDOWS
 		JoinAllShellLaunchThreads();
 #endif
@@ -776,8 +846,9 @@ namespace Index {
 	}
 
 	void AssetBrowser::Refresh() {
-		AssetRegistry::MarkDirty();
-		AssetRegistry::Sync();
+		if (m_SkipRegistrySyncOnNextRefresh) {
+			m_SkipRegistrySyncOnNextRefresh = false;
+		}
 		m_Entries = Directory::GetEntries(m_CurrentDirectory);
 		RebuildSliceCache();
 		if (m_SearchBuffer[0] != '\0')
@@ -785,25 +856,116 @@ namespace Index {
 		m_NeedsRefresh = false;
 	}
 
-	// Walk the entire Assets/ tree and collect entries (files + folders) whose
-	// name contains the current query (ASCII case-insensitive). Cached in
-	// m_SearchResults; rebuilt only when the query changes or assets refresh —
-	// never per frame. Capped so a one-character query can't flood the grid.
 	void AssetBrowser::RebuildSearchResults() {
+		QueueSearchRebuild();
+	}
+
+	void AssetBrowser::QueueSearchRebuild() {
 		m_SearchResults.clear();
 		m_SearchTruncated = false;
-		if (m_SearchBuffer[0] == '\0')
+		if (m_SearchBuffer[0] == '\0') {
+			std::scoped_lock lock(m_SearchMutex);
+			m_QueuedSearchQuery.clear();
 			return;
+		}
+
+		std::string query(m_SearchBuffer);
+		{
+			std::scoped_lock lock(m_SearchMutex);
+			m_QueuedSearchQuery = query;
+		}
+		if (!m_SearchWorkerActive.load(std::memory_order_acquire)) {
+			StartSearchWorker(std::move(query));
+		}
+	}
+
+	void AssetBrowser::StartSearchWorker(std::string query) {
+		if (query.empty() || m_RootDirectory.empty()) {
+			return;
+		}
+		if (m_SearchWorkerActive.exchange(true, std::memory_order_acq_rel)) {
+			return;
+		}
+		if (m_SearchThread.joinable()) {
+			m_SearchThread.join();
+		}
+
+		{
+			std::scoped_lock lock(m_SearchMutex);
+			m_SearchWorkerFinished = false;
+			m_SearchWorkerTruncated = false;
+			m_SearchWorkerQuery = query;
+			m_SearchWorkerResults.clear();
+		}
+
+		try {
+			m_SearchThread = std::thread(
+				&AssetBrowser::RunSearchWorker,
+				this,
+				m_RootDirectory,
+				std::move(query));
+		}
+		catch (const std::exception& e) {
+			m_SearchWorkerActive.store(false, std::memory_order_release);
+			IDX_CORE_WARN_TAG("AssetBrowser", "Failed to start asset search worker: {}", e.what());
+		}
+	}
+
+	void AssetBrowser::PumpSearchRebuild() {
+		if (!m_SearchWorkerActive.load(std::memory_order_acquire)) {
+			return;
+		}
+
+		bool finished = false;
+		{
+			std::scoped_lock lock(m_SearchMutex);
+			finished = m_SearchWorkerFinished;
+		}
+		if (!finished) {
+			return;
+		}
+
+		if (m_SearchThread.joinable()) {
+			m_SearchThread.join();
+		}
+
+		std::string completedQuery;
+		std::string queuedQuery;
+		std::vector<DirectoryEntry> results;
+		bool truncated = false;
+		{
+			std::scoped_lock lock(m_SearchMutex);
+			completedQuery = m_SearchWorkerQuery;
+			queuedQuery = m_QueuedSearchQuery;
+			results = std::move(m_SearchWorkerResults);
+			truncated = m_SearchWorkerTruncated;
+			m_SearchWorkerFinished = false;
+			m_SearchWorkerQuery.clear();
+		}
+		m_SearchWorkerActive.store(false, std::memory_order_release);
+
+		if (std::string(m_SearchBuffer) == completedQuery) {
+			m_SearchResults = std::move(results);
+			m_SearchTruncated = truncated;
+		}
+		if (!queuedQuery.empty() && queuedQuery != completedQuery) {
+			StartSearchWorker(std::move(queuedQuery));
+		}
+	}
+
+	void AssetBrowser::RunSearchWorker(std::string rootDirectory, std::string queryText) {
+		std::vector<DirectoryEntry> results;
+		bool truncated = false;
 
 		constexpr std::size_t kMaxSearchResults = 1000;
-		constexpr std::size_t kMaxEntriesExamined = 200000; // bound the walk on huge trees
+		constexpr std::size_t kMaxEntriesExamined = 200000;
 
 		const auto toLower = [](char c) -> char {
 			return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c;
 		};
 		std::string query;
-		for (const char* p = m_SearchBuffer; *p; ++p)
-			query.push_back(toLower(*p));
+		for (char ch : queryText)
+			query.push_back(toLower(ch));
 
 		const auto matches = [&](const std::string& name) {
 			if (query.size() > name.size()) return false;
@@ -817,18 +979,24 @@ namespace Index {
 		};
 
 		std::error_code ec;
-		const std::filesystem::path root(m_RootDirectory);
-		if (m_RootDirectory.empty() || !std::filesystem::exists(root, ec) || ec)
+		const std::filesystem::path root(rootDirectory);
+		if (rootDirectory.empty() || !std::filesystem::exists(root, ec) || ec) {
+			std::scoped_lock lock(m_SearchMutex);
+			m_SearchWorkerResults.clear();
+			m_SearchWorkerTruncated = false;
+			m_SearchWorkerFinished = true;
 			return;
+		}
 
-		// Directory symlinks are not followed (follow_directory_symlink is unset,
-		// the default), so the walk can't cycle. The examined cap bounds it anyway.
 		std::size_t examined = 0;
 		for (std::filesystem::recursive_directory_iterator
 				it(root, std::filesystem::directory_options::skip_permission_denied, ec), end;
 			it != end && !ec; it.increment(ec)) {
+			if (!m_SearchWorkerActive.load(std::memory_order_acquire)) {
+				return;
+			}
 			if (++examined > kMaxEntriesExamined) {
-				m_SearchTruncated = true;
+				truncated = true;
 				break;
 			}
 			const std::filesystem::directory_entry& de = *it;
@@ -844,19 +1012,25 @@ namespace Index {
 			if (!matches(e.Name))
 				continue;
 
-			m_SearchResults.push_back(std::move(e));
-			if (m_SearchResults.size() >= kMaxSearchResults) {
-				m_SearchTruncated = true;
+			results.push_back(std::move(e));
+			if (results.size() >= kMaxSearchResults) {
+				truncated = true;
 				break;
 			}
 		}
 
-		// Directories first, then alphabetical — same order as Directory::GetEntries.
-		std::sort(m_SearchResults.begin(), m_SearchResults.end(),
+		std::sort(results.begin(), results.end(),
 			[](const DirectoryEntry& a, const DirectoryEntry& b) {
 				if (a.IsDirectory != b.IsDirectory) return a.IsDirectory > b.IsDirectory;
 				return a.Name < b.Name;
 			});
+
+		{
+			std::scoped_lock lock(m_SearchMutex);
+			m_SearchWorkerResults = std::move(results);
+			m_SearchWorkerTruncated = truncated;
+			m_SearchWorkerFinished = true;
+		}
 	}
 
 	void AssetBrowser::RebuildSliceCache() {
@@ -1173,10 +1347,12 @@ namespace Index {
 			const std::filesystem::path targetPath = MakeUniqueAssetPath(sourcePath, targetDirectory, !sameDirectory);
 
 			bool succeeded = false;
+			std::vector<std::string> movedSourceAssetPaths;
 			if (m_AssetClipboardCut) {
 				if (sameDirectory) {
 					continue;
 				}
+				CollectRegistryAssetPaths(sourcePath, movedSourceAssetPaths);
 				succeeded = MoveEntryTo(sourcePath, targetPath);
 			}
 			else {
@@ -1187,6 +1363,10 @@ namespace Index {
 			}
 
 			if (succeeded) {
+				if (m_AssetClipboardCut) {
+					ForgetRegistryAssetPaths(movedSourceAssetPaths);
+				}
+				RegisterRegistryAssetTree(targetPath);
 				pastedPaths.push_back(targetPath.string());
 				m_Thumbnails.Invalidate(sourcePath.string());
 				m_Thumbnails.Invalidate(targetPath.string());
@@ -1223,6 +1403,7 @@ namespace Index {
 			const std::filesystem::path targetPath = MakeUniqueAssetPath(sourcePath, sourcePath.parent_path(), false);
 			if (CopyEntryTo(sourcePath, targetPath)) {
 				SyncSceneEmbeddedNameIfNeeded(targetPath);
+				RegisterRegistryAssetTree(targetPath);
 				duplicatedPaths.push_back(targetPath.string());
 				m_Thumbnails.Invalidate(targetPath.string());
 			}
@@ -1237,14 +1418,14 @@ namespace Index {
 	}
 
 	void AssetBrowser::DeleteSelectedAssets() {
-		const std::vector<std::string> paths = GetSelectedPaths();
-		for (const std::string& path : paths) {
-			DeleteEntry(path);
-		}
+		StartAssetDeletion(GetSelectedPaths());
 	}
 
 	void AssetBrowser::Render() {
 		m_SelectionActivated = false;
+		PumpExternalAssetImport();
+		PumpAssetDeletion();
+		PumpSearchRebuild();
 
 #ifdef IDX_PLATFORM_WINDOWS
 		MaybeStartExternalFileDrag();
@@ -1563,27 +1744,74 @@ namespace Index {
 			m_VisibleEntryPaths.push_back(entry.Path);
 		}
 
-		// Track tiles placed (not source-entry index) — spliced slice tiles shift the wrap point so `i % columns` would place siblings in the wrong row.
-		int tilesPlaced = 0;
-		for (int i = 0; i < static_cast<int>(visibleEntries.size()); i++) {
-			if (tilesPlaced > 0 && tilesPlaced % columns != 0) {
-				ImGui::SameLine();
-			}
-			RenderAssetTile(visibleEntries[i], i);
-			++tilesPlaced;
+		// Flatten entries + expanded slices, then clip by rows so large folders
+		// only render and load thumbnails for the visible viewport.
+		struct GridTile {
+			int EntryIndex = -1;
+			int SliceIndex = -1;
+		};
 
-			auto sliceIt = m_SliceCache.find(visibleEntries[i].Path);
+		std::vector<GridTile> tiles;
+		tiles.reserve(visibleEntries.size());
+		for (int i = 0; i < static_cast<int>(visibleEntries.size()); ++i) {
+			tiles.push_back(GridTile{ i, -1 });
+
+			auto sliceIt = m_SliceCache.find(visibleEntries[static_cast<std::size_t>(i)].Path);
 			if (sliceIt == m_SliceCache.end()) continue;
-			if (m_ExpandedTextures.find(visibleEntries[i].Path) == m_ExpandedTextures.end()) continue;
+			if (m_ExpandedTextures.find(visibleEntries[static_cast<std::size_t>(i)].Path) == m_ExpandedTextures.end()) continue;
 
 			const std::vector<SpriteSlice>& slices = sliceIt->second;
 			for (int s = 0; s < static_cast<int>(slices.size()); ++s) {
-				if (tilesPlaced % columns != 0) {
-					ImGui::SameLine();
-				}
-				RenderSliceTile(visibleEntries[i], slices[s], s, /*tileIndex*/ -1 - s);
-				++tilesPlaced;
+				tiles.push_back(GridTile{ i, s });
 			}
+		}
+
+		const float rowHeight = m_TileSize + ImGui::GetTextLineHeightWithSpacing() + m_TilePadding;
+		const int rowCount = columns > 0
+			? (static_cast<int>(tiles.size()) + columns - 1) / columns
+			: 0;
+		const float rowStartX = ImGui::GetCursorPosX();
+		const float rowStartY = ImGui::GetCursorPosY();
+
+		ImGuiListClipper clipper;
+		clipper.Begin(rowCount, rowHeight);
+		while (clipper.Step()) {
+			for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+				ImGui::SetCursorPos(ImVec2(rowStartX, rowStartY + row * rowHeight));
+				for (int column = 0; column < columns; ++column) {
+					const int tileIndex = row * columns + column;
+					if (tileIndex >= static_cast<int>(tiles.size())) {
+						break;
+					}
+					if (column > 0) {
+						ImGui::SameLine();
+					}
+
+					const GridTile& tile = tiles[static_cast<std::size_t>(tileIndex)];
+					const DirectoryEntry& entry = visibleEntries[static_cast<std::size_t>(tile.EntryIndex)];
+					if (tile.SliceIndex < 0) {
+						RenderAssetTile(entry, tile.EntryIndex);
+						continue;
+					}
+
+					const auto sliceIt = m_SliceCache.find(entry.Path);
+					if (sliceIt == m_SliceCache.end()
+						|| tile.SliceIndex >= static_cast<int>(sliceIt->second.size())) {
+						continue;
+					}
+					RenderSliceTile(entry,
+						sliceIt->second[static_cast<std::size_t>(tile.SliceIndex)],
+						tile.SliceIndex,
+						-1 - tileIndex);
+				}
+				ImGui::SetCursorPos(ImVec2(rowStartX, rowStartY + (row + 1) * rowHeight));
+			}
+		}
+		if (rowCount > 0) {
+			// The clipper and row layout seek the cursor to virtual rows that
+			// were not submitted. Dear ImGui requires a real item at that final
+			// position so the child window's content bounds grow consistently.
+			ImGui::Dummy(ImVec2(0.0f, 0.0f));
 		}
 
 		if (visibleEntries.empty()) {
@@ -1628,30 +1856,24 @@ namespace Index {
 		ImGui::BeginGroup();
 
 		ImVec2 cursorPos = ImGui::GetCursorScreenPos();
-		const ImVec2 selectionMin(cursorPos.x - 2.0f, cursorPos.y - 2.0f);
-		const ImVec2 selectionMax(
-			cursorPos.x + m_TileSize + 2.0f,
-			cursorPos.y + m_TileSize + ImGui::GetTextLineHeightWithSpacing() + 2.0f);
-
-
 
 		if (isSelected)
 		{
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
 
-			ImVec2 min = selectionMin;
-			ImVec2 max = selectionMax;
-
-			// One simple inset so the selection does not touch/clamp at item edges
+			// Snap only the top-left, then derive the bottom-right from a fixed,
+			// integer-pixel size. Flooring both corners independently let the
+			// width/height drift by 1px with the tile's sub-pixel position in the
+			// scrolled grid, so the box looked a different size on different
+			// tiles. A fixed size keeps every selection rect identical.
 			const float inset = 1.0f;
-			min.x += inset;
-			min.y += inset;
-			max.x -= inset;
-			max.y -= inset;
-
-			// Important for crisp 1px AddRect border
-			min = PixelSnap(min);
-			max = PixelSnap(max);
+			const ImVec2 min = PixelSnap(ImVec2(
+				cursorPos.x - 2.0f + inset,
+				cursorPos.y - 2.0f + inset));
+			const float width = floorf(m_TileSize + 4.0f - inset * 2.0f);
+			const float height = floorf(
+				m_TileSize + ImGui::GetTextLineHeightWithSpacing() + 4.0f - inset * 2.0f);
+			const ImVec2 max(min.x + width, min.y + height);
 
 			const float rounding = 2.0f;
 			const float thickness = 1.0f;
@@ -1659,21 +1881,9 @@ namespace Index {
 			ImU32 fillColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelection);
 			ImU32 borderColor = ImGui::GetColorU32(EditorTheme::Colors::AssetTileSelectionBorder);
 
-			drawList->AddRectFilled(
-				min,
-				max,
-				fillColor,
-				rounding
-			);
-
-			drawList->AddRect(
-				min,
-				max,
-				borderColor,
-				rounding,
-				ImDrawFlags_RoundCornersAll,
-				thickness
-			);
+			drawList->AddRectFilled(min, max, fillColor, rounding);
+			drawList->AddRect(min, max, borderColor, rounding,
+				ImDrawFlags_RoundCornersAll, thickness);
 		}
 
 		// Pushed AFTER the selection rect so the highlight renders at full color and only the icon+label dims.
@@ -1696,16 +1906,21 @@ namespace Index {
 				texH = it->GetHeight();
 			}
 
-			float drawW = m_TileSize;
-			float drawH = m_TileSize;
+			// Fit inside a padded box (same 10% margin as the file-type icon
+			// path) so a square texture doesn't run into the selection outline.
+			const float pad = m_TileSize * 0.1f;
+			const float maxDim = m_TileSize - pad * 2.0f;
+
+			float drawW = maxDim;
+			float drawH = maxDim;
 
 			if (texW > 0.0f && texH > 0.0f) {
 				float aspect = texW / texH;
 				if (aspect > 1.0f) {
-					drawH = m_TileSize / aspect;
+					drawH = maxDim / aspect;
 				}
 				else {
-					drawW = m_TileSize * aspect;
+					drawW = maxDim * aspect;
 				}
 			}
 
@@ -1713,9 +1928,13 @@ namespace Index {
 			float offsetY = (m_TileSize - drawH) * 0.5f;
 
 			ImGui::SetCursorScreenPos(ImVec2(iconPos.x + offsetX, iconPos.y + offsetY));
-			ImGui::Image(
+			// Respect the asset's import filter so pixel-art tiles render crisp
+			// instead of through ImGui's shared bilinear sampler.
+			const Filter thumbFilter = it ? it->GetFilter() : Filter::Bilinear;
+			ImGuiUtils::ImageFiltered(
 				static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail)),
 				ImVec2(drawW, drawH),
+				thumbFilter,
 				ImVec2(0, 1), ImVec2(1, 0)
 			);
 
@@ -2303,9 +2522,9 @@ namespace Index {
 				cursorPos.y + (m_TileSize - drawH) * 0.5f);
 			const ImVec2 imgMax(imgMin.x + drawW, imgMin.y + drawH);
 
-			dl->AddImage(
+			ImGuiUtils::AddImageFiltered(dl,
 				static_cast<ImTextureID>(static_cast<intptr_t>(parentThumb)),
-				imgMin, imgMax,
+				imgMin, imgMax, parentTex->GetFilter(),
 				ImVec2(u0, v0), ImVec2(u1, v1));
 		}
 		else {

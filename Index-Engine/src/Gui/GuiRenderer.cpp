@@ -105,11 +105,15 @@ namespace Index {
 			float OriginX = 0.0f;
 			float Scale = 1.0f;
 			float LetterSpacing = 0.0f;
+			float LineSpacing = 0.0f;
 			Font* FontPtr = nullptr;
 			TextAlignment Align = TextAlignment::Left;
+			TextVerticalAlignment VAlign = TextVerticalAlignment::Middle;
 			Vec2 BL{};
 			Vec2 TR{};
 			float FontSize = 16.0f;
+			TextWrapMode WrapMode = TextWrapMode::None;
+			float WrapWidthPixels = 0.0f;
 		};
 
 		InputFieldOverlayLayout ResolveInputFieldOverlay(entt::registry& registry,
@@ -141,12 +145,45 @@ namespace Index {
 			out.OriginX = originX;
 			out.Scale = (tc.FontSize / bakedSize) * uniformScale;
 			out.LetterSpacing = tc.LetterSpacing;
+			out.LineSpacing = tc.LineSpacing;
 			out.FontPtr = font;
 			out.Align = tc.HAlign;
+			out.VAlign = tc.VAlign;
 			out.BL = bl;
 			out.TR = tr;
 			out.FontSize = tc.FontSize * uniformScale;
+			out.WrapMode = tc.WrapMode;
+			out.WrapWidthPixels = 0.0f;
+			if (tc.WrapMode != TextWrapMode::None && out.Scale > 0.0f) {
+				const float padPixels = 8.0f * uniformScale;
+				const float marginPixels = (tc.Margin.x + tc.Margin.z) * uniformScale;
+				out.WrapWidthPixels = std::max(0.0f, ((tr.x - bl.x) - padPixels - marginPixels) / out.Scale);
+			}
 			return out;
+		}
+
+		// Visual line byte-ranges for the field's text, wrap-aware (matches the renderer).
+		std::vector<std::pair<int, int>> InputVisualLines(const InputFieldOverlayLayout& layout, std::string_view text) {
+			std::vector<std::pair<size_t, size_t>> raw;
+			TextRenderer::ComputeVisualLines(*layout.FontPtr, text, layout.LetterSpacing,
+				layout.WrapMode, layout.WrapWidthPixels, raw);
+			std::vector<std::pair<int, int>> lines;
+			lines.reserve(raw.size());
+			for (const auto& p : raw) lines.emplace_back(static_cast<int>(p.first), static_cast<int>(p.second));
+			if (lines.empty()) lines.emplace_back(0, 0);
+			return lines;
+		}
+
+		// Visual line for caret byte b: the latest line whose start <= b. Char-wrap ranges
+		// touch, so this puts the caret on the lower line; a '\n'/word-wrap gap keeps the
+		// byte before the break on the upper line. (Line starts are monotonic.)
+		int VisualLineOfByte(const std::vector<std::pair<int, int>>& lines, int b) {
+			int result = 0;
+			for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+				if (lines[i].first <= b) result = i;
+				else break;
+			}
+			return result;
 		}
 
 		struct UIMaskClip {
@@ -693,9 +730,16 @@ namespace Index {
 			}
 		}
 
-		// ── 3. UI text instances (collection runs; submission is a Stage-6 no-op) ──
+		// ── 3. UI text instances (collect into m_TextScratch; submitted later in the merge walk) ──
 		m_TextScratch.clear();
 		m_TextScratch.reserve(m_DrawOrder.size());
+
+		// Input-field text children scroll horizontally and clip to their rect so an
+		// overflowing field keeps the caret visible instead of spilling text outside.
+		std::unordered_map<EntityHandle, const InputFieldComponent*> inputFieldTextChildren;
+		for (auto&& [ifEntity, ifField] : registry.view<InputFieldComponent>().each()) {
+			if (ifField.TextEntity != entt::null) inputFieldTextChildren.emplace(ifField.TextEntity, &ifField);
+		}
 
 		for (const auto& [entity, drawIndex] : m_DrawOrder) {
 			if (!registry.all_of<RectTransform2DComponent, TextRendererComponent>(entity)) continue;
@@ -719,11 +763,28 @@ namespace Index {
 			const float marginTopWorld    = text.Margin.y * uniformScale;
 			const float marginRightWorld  = text.Margin.z * uniformScale;
 			const float marginBottomWorld = text.Margin.w * uniformScale;
-			(void)marginBottomWorld;
 
-			float baselineY = bl.y + size.y * 0.5f
-				- text.FontSize * 0.35f * uniformScale
-				- marginTopWorld;
+			// Pick the baseline of the alignment-anchoring line within the rect;
+			// EmitText then distributes the rest of a multi-line block from here.
+			// Top: first line's ascent meets the top inset. Bottom: last line's
+			// descender (GetDescent() is negative) rests on the bottom inset.
+			const float ascentWorld  = font->GetAscent()  * drawScale;
+			const float descentWorld = font->GetDescent() * drawScale;
+			float baselineY;
+			switch (text.VAlign) {
+			case TextVerticalAlignment::Top:
+				baselineY = tr.y - marginTopWorld - ascentWorld;
+				break;
+			case TextVerticalAlignment::Bottom:
+				baselineY = bl.y + marginBottomWorld - descentWorld;
+				break;
+			case TextVerticalAlignment::Middle:
+			default:
+				baselineY = bl.y + size.y * 0.5f
+					- text.FontSize * 0.35f * uniformScale
+					- marginTopWorld;
+				break;
+			}
 
 			float originX;
 			switch (text.HAlign) {
@@ -740,8 +801,10 @@ namespace Index {
 			cmd.Y = baselineY;
 			cmd.Scale = drawScale;
 			cmd.LetterSpacing = text.LetterSpacing;
+			cmd.LineSpacing = text.LineSpacing;
 			cmd.Tint = text.Color;
 			cmd.Align = text.HAlign;
+			cmd.VAlign = text.VAlign;
 			cmd.Wrap = text.WrapMode;
 			if (text.WrapMode != TextWrapMode::None) {
 				const float padPixels = 8.0f * uniformScale;
@@ -764,6 +827,20 @@ namespace Index {
 			ApplyMaskClipToText(ResolveClipForEntity(registry, entity), cmd);
 			cmd.Rotation = rect.Rotation;
 			cmd.Pivot = rect.ResolvedPivot;
+			if (auto ifIt = inputFieldTextChildren.find(entity); ifIt != inputFieldTextChildren.end() && !ifIt->second->Multiline) {
+				cmd.X -= ifIt->second->ScrollOffsetX;
+				Vec2 fieldClipMin = bl;
+				Vec2 fieldClipMax = tr;
+				if (cmd.HasClip) {
+					fieldClipMin.x = std::max(fieldClipMin.x, cmd.ClipMin.x);
+					fieldClipMin.y = std::max(fieldClipMin.y, cmd.ClipMin.y);
+					fieldClipMax.x = std::min(fieldClipMax.x, cmd.ClipMax.x);
+					fieldClipMax.y = std::min(fieldClipMax.y, cmd.ClipMax.y);
+				}
+				cmd.HasClip = true;
+				cmd.ClipMin = fieldClipMin;
+				cmd.ClipMax = fieldClipMax;
+			}
 			m_TextScratch.push_back(cmd);
 		}
 
@@ -811,8 +888,7 @@ namespace Index {
 				FontHandle dh = FontManager::GetDefaultFont();
 				dropdownFont = FontManager::GetFont(dh);
 			}
-			// Stage 5: dropdownFont is nullptr (stub FontManager). Option-row
-			// quads still emit (they're textureless); labels skipped.
+			// Option-row quads emit regardless (textureless); labels only when the font is loaded.
 			const float bakedSize = (dropdownFont && dropdownFont->GetPixelSize() > 0.0f)
 				? dropdownFont->GetPixelSize() : fontPx;
 			const float uniformScale = rect.Scale.x;
@@ -877,7 +953,7 @@ namespace Index {
 			if (!field.IsFocused && !hasSelection) continue;
 
 			InputFieldOverlayLayout layout = ResolveInputFieldOverlay(registry, field);
-			if (!layout.Valid) continue;  // stub Font path returns Valid=false
+			if (!layout.Valid) continue;  // font failed to load
 
 			auto fieldIt = m_DrawIndexByEntity.find(entity);
 			auto textIt = m_DrawIndexByEntity.find(field.TextEntity);
@@ -887,6 +963,119 @@ namespace Index {
 			const std::uint32_t textDI = textIt->second;
 
 			const UIMaskClip fieldClip = ResolveClipForEntity(registry, entity);
+			// Single-line fields also clip the caret/selection to the field's text rect so
+			// scrolled-out glyphs and the highlight don't spill past the edges. Multiline
+			// fields don't clip (they show all lines); inherited masks still apply.
+			UIMaskClip fieldClipRect = fieldClip;
+			if (!field.Multiline) {
+				if (!fieldClipRect.HasClip) {
+					fieldClipRect.HasClip = true;
+					fieldClipRect.ClipMin = layout.BL;
+					fieldClipRect.ClipMax = layout.TR;
+				} else {
+					fieldClipRect.ClipMin.x = std::max(fieldClipRect.ClipMin.x, layout.BL.x);
+					fieldClipRect.ClipMin.y = std::max(fieldClipRect.ClipMin.y, layout.BL.y);
+					fieldClipRect.ClipMax.x = std::min(fieldClipRect.ClipMax.x, layout.TR.x);
+					fieldClipRect.ClipMax.y = std::min(fieldClipRect.ClipMax.y, layout.TR.y);
+				}
+			}
+
+			// Caret/selection rows must follow the text's vertical alignment so they
+			// land on the lines TextRenderer actually draws. Reproduce the text-loop
+			// baseline math per alignment, then lift to the caret box's centre by the
+			// same cap-height offset the Middle case bakes in. Margins are ignored to
+			// match the rest of this overlay (input-field text uses zero margin).
+			// Returns the caret centre Y of the first (top) line for a `lineCount` block.
+			const float overlayLineHeight = (layout.FontPtr->GetLineHeight() + layout.LineSpacing) * layout.Scale;
+			const float overlayCapOffset  = layout.FontSize * 0.35f;
+			auto firstLineCaretCenterY = [&](int lineCount) -> float {
+				const float ascentWorld  = layout.FontPtr->GetAscent()  * layout.Scale;
+				const float descentWorld = layout.FontPtr->GetDescent() * layout.Scale; // negative (below baseline)
+				const float blockSpan = static_cast<float>(std::max(0, lineCount - 1)) * overlayLineHeight;
+				switch (layout.VAlign) {
+				case TextVerticalAlignment::Top:
+					return layout.TR.y - ascentWorld + overlayCapOffset;
+				case TextVerticalAlignment::Bottom:
+					return layout.BL.y - descentWorld + overlayCapOffset + blockSpan;
+				case TextVerticalAlignment::Middle:
+				default:
+					return layout.BL.y + (layout.TR.y - layout.BL.y) * 0.5f + blockSpan * 0.5f;
+				}
+			};
+
+			// ── Multiline overlay ───────────────────────────────────────
+			// Visual lines come from TextRenderer's wrap (hard '\n' + soft word/char wrap),
+			// so the caret/selection track the rows actually drawn. Each line steps down by
+			// one line height from the alignment-anchored first line. Secret masking is
+			// intentionally skipped — secret multiline is nonsensical.
+			if (field.Multiline) {
+				const float lineHeight = (layout.FontPtr->GetLineHeight() + layout.LineSpacing) * layout.Scale;
+				const float verticalPad = 2.0f;
+				const float halfHeight = layout.FontSize * 0.5f + verticalPad;
+
+				std::vector<std::pair<int, int>> lines = InputVisualLines(layout, field.Text);
+
+				// Anchor line 0 to match TextRenderer's per-alignment baseline; each
+				// subsequent line steps down by one line height.
+				const float firstCenterY = firstLineCaretCenterY(static_cast<int>(lines.size()));
+				auto lineCenterY = [&](int lineIdx) {
+					return firstCenterY - static_cast<float>(lineIdx) * lineHeight;
+				};
+				// Absolute X of a global byte offset that lies within `lineIdx`.
+				auto byteToAbsX = [&](int lineIdx, int byte) {
+					const auto [ls, le] = lines[lineIdx];
+					std::string_view lineView{ field.Text.data() + ls, static_cast<size_t>(le - ls) };
+					const float lineW = MeasureUpToByteUI(*layout.FontPtr, lineView,
+						le - ls, layout.LetterSpacing) * layout.Scale;
+					float shift = 0.0f;
+					if (layout.Align == TextAlignment::Center) shift = -lineW * 0.5f;
+					else if (layout.Align == TextAlignment::Right) shift = -lineW;
+					const float w = MeasureUpToByteUI(*layout.FontPtr, lineView,
+						std::clamp(byte - ls, 0, le - ls), layout.LetterSpacing) * layout.Scale;
+					return layout.OriginX + shift + w - field.ScrollOffsetX;
+				};
+
+				if (hasSelection) {
+					const int lo = std::min(field.SelectionAnchorBytePos, field.CaretBytePos);
+					const int hi = std::max(field.SelectionAnchorBytePos, field.CaretBytePos);
+					for (int li = 0; li < static_cast<int>(lines.size()); ++li) {
+						const auto [ls, le] = lines[li];
+						const int a = std::max(lo, ls);
+						const int b = std::min(hi, le);
+						const bool spansNewline = hi > le; // selection continues onto the next line
+						if (a > b) continue;
+						if (a == b && !spansNewline) continue;
+						const float xA = byteToAbsX(li, a);
+						float xB = byteToAbsX(li, b);
+						if (spansNewline) xB += std::max(2.0f, layout.FontSize * 0.25f);
+						const float selW = std::max(0.0f, xB - xA);
+						if (selW <= 0.0f) continue;
+						const Vec2 selCenter{ xA + selW * 0.5f, lineCenterY(li) };
+						const Vec2 selSize{ selW, halfHeight * 2.0f };
+						Instance44 selInst(selCenter, selSize, 0.0f, field.SelectionColor,
+							TextureHandle{}, 0, 0, fieldDI + 1u);
+						ApplyMaskClipToInstance(fieldClipRect, selInst);
+						m_InstancesScratch.push_back(selInst);
+					}
+				}
+
+				const bool caretBlinkOnMl = (field.CaretBlinkRate <= 0.0f)
+					? true
+					: (std::fmod(elapsedSeconds * field.CaretBlinkRate, 1.0f) < 0.5f);
+				if (field.IsFocused && caretBlinkOnMl && !field.IsReadOnly) {
+					int caretLine = VisualLineOfByte(lines, std::clamp(field.CaretBytePos, 0, static_cast<int>(field.Text.size())));
+					caretLine = std::clamp(caretLine, 0, static_cast<int>(lines.size()) - 1);
+					const float caretX = byteToAbsX(caretLine, field.CaretBytePos);
+					const float caretWidth = std::max(1.0f, field.CaretWidth);
+					const Vec2 caretCenter{ caretX + caretWidth * 0.5f, lineCenterY(caretLine) };
+					const Vec2 caretSize{ caretWidth, halfHeight * 2.0f };
+					Instance44 caretInst(caretCenter, caretSize, 0.0f, field.CaretColor,
+						TextureHandle{}, 0, 0, textDI + 1u);
+					ApplyMaskClipToInstance(fieldClipRect, caretInst);
+					m_InstancesScratch.push_back(caretInst);
+				}
+				continue;
+			}
 
 			const auto& tc = registry.get<TextRendererComponent>(field.TextEntity);
 			std::string secretMaskBuffer;
@@ -920,7 +1109,7 @@ namespace Index {
 
 			const float verticalPad = 2.0f;
 			const float halfHeight = layout.FontSize * 0.5f + verticalPad;
-			const float centerY = layout.BL.y + (layout.TR.y - layout.BL.y) * 0.5f;
+			const float centerY = firstLineCaretCenterY(1);
 
 			const float fullLineW = MeasureUpToByteUI(*layout.FontPtr, measureText,
 				static_cast<int>(measureText.size()), layout.LetterSpacing) * layout.Scale;
@@ -931,7 +1120,7 @@ namespace Index {
 			auto byteToAbsX = [&](int byte) {
 				const float w = MeasureUpToByteUI(*layout.FontPtr, measureText,
 					convertByte(byte), layout.LetterSpacing) * layout.Scale;
-				return layout.OriginX + alignShift + w;
+				return layout.OriginX + alignShift + w - field.ScrollOffsetX;
 			};
 
 			if (hasSelection) {
@@ -949,7 +1138,7 @@ namespace Index {
 						TextureHandle{},
 						0, 0,
 						fieldDI + 1u);
-					ApplyMaskClipToInstance(fieldClip, selInst);
+					ApplyMaskClipToInstance(fieldClipRect, selInst);
 					m_InstancesScratch.push_back(selInst);
 				}
 			}
@@ -968,7 +1157,7 @@ namespace Index {
 					TextureHandle{},
 					0, 0,
 					textDI + 1u);
-				ApplyMaskClipToInstance(fieldClip, caretInst);
+				ApplyMaskClipToInstance(fieldClipRect, caretInst);
 				m_InstancesScratch.push_back(caretInst);
 			}
 			(void)tc;

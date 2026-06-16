@@ -23,6 +23,15 @@ namespace Index {
 		bool HasUnsavedChanges() const { return m_Dirty; }
 		const std::string& GetOpenAssetPath() const { return m_AssetPath; }
 
+		// True exactly once after Apply() commits slice edits to disk. The editor
+		// polls this to refresh the Asset Browser's slice cache — applying writes
+		// the texture's .meta, which the image-only asset watcher never sees.
+		bool TakeSlicesApplied() {
+			const bool applied = m_SlicesApplied;
+			m_SlicesApplied = false;
+			return applied;
+		}
+
 	private:
 		enum class SliceMode { Manual, GridBySize, GridByCount, Auto };
 		enum class DragMode  { None, MoveBody, ResizeEdge, ResizeCorner };
@@ -96,6 +105,7 @@ namespace Index {
 		std::vector<SpriteSlice> m_Slices;       // staged edits (not on disk)
 		std::vector<int>         m_Selection;    // indices into m_Slices
 		bool                     m_Dirty = false;
+		bool                     m_SlicesApplied = false;  // set by Apply(), drained by TakeSlicesApplied()
 
 		ImVec2 m_PanOffset{ 0.0f, 0.0f };
 		float  m_Zoom            = 1.0f;

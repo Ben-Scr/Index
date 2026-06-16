@@ -10,7 +10,18 @@ public static class Log
 {
     public static event Action<string>? LogMessage;
 
-    internal static void RaiseLogMessage(string message) => LogMessage?.Invoke(message);
+    // The public LogMessage event runs user code, and Log.* is called from inside
+    // the catch block of every native→managed entry point. A throwing subscriber
+    // here would unwind back across the reverse-pinvoke boundary and crash the
+    // process — defeating the very guards that call us. Swallow it and report
+    // straight to native (which does NOT re-raise this event, so no recursion).
+    internal static void RaiseLogMessage(string message)
+    {
+        Action<string>? handler = LogMessage;
+        if (handler == null) return;
+        try { handler(message); }
+        catch (Exception ex) { InternalCalls.Log_Error($"Log.LogMessage subscriber threw: {ex}"); }
+    }
 
     private static void Write(string message, Action<string> nativeWrite)
     {

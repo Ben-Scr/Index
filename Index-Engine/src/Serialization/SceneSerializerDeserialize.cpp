@@ -1067,8 +1067,11 @@ namespace Index {
 			text.Color.b = GetFloatMember(*textValue, "b", text.Color.b);
 			text.Color.a = GetFloatMember(*textValue, "a", text.Color.a);
 			text.LetterSpacing = GetFloatMember(*textValue, "letterSpacing", text.LetterSpacing);
+			text.LineSpacing = GetFloatMember(*textValue, "lineSpacing", text.LineSpacing);
 			text.HAlign = static_cast<TextAlignment>(GetIntMember(*textValue, "alignment", static_cast<int>(text.HAlign)));
+			text.VAlign = static_cast<TextVerticalAlignment>(GetIntMember(*textValue, "valign", static_cast<int>(text.VAlign)));
 			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(*textValue, "wrapMode", static_cast<int>(text.WrapMode)));
+			text.AutoSize = GetBoolMember(*textValue, "autoSize", false);
 			// WrapWidth field removed; old scenes that wrote it just
 			// pass through unread.
 			text.Margin.x = GetFloatMember(*textValue, "marginL", text.Margin.x);
@@ -1444,6 +1447,9 @@ namespace Index {
 				auto& fieldsComponent = getOrCreateScriptComponent();
 				int populated = 0;
 				int skippedNoScript = 0;
+				// Clone/paste: script entity-ref fields are stored as id strings and resolved in C# at bind
+				// time (remap gone), so collect the entity-typed keys for a deferred remap translation.
+				std::vector<std::string> entityRefFieldKeys;
 				for (const auto& [className, fieldsValue] : fieldsByClass->GetObject()) {
 					if ((!fieldsComponent.HasScript(className) && !fieldsComponent.HasManagedComponent(className))
 						|| !fieldsValue.IsArray()) {
@@ -1466,15 +1472,64 @@ namespace Index {
 							continue;
 						}
 
-						fieldsComponent.PendingFieldValues[className + "." + fieldName] =
-							ValueToFieldString(*valueValue);
+						const std::string key = className + "." + fieldName;
+						const std::string stored = ValueToFieldString(*valueValue);
+						fieldsComponent.PendingFieldValues[key] = stored;
 						++populated;
+
+						// Entity refs are a bare decimal id ([type]=="entity") or "<id>:<ComponentName>"
+						// (component ref); "prefab:<guid>" is an asset ref and must never be remapped.
+						if (scene.IsEntityRefRemapActive() && !stored.empty() && stored != "0"
+							&& stored.rfind("prefab:", 0) != 0) {
+							const std::size_t colon = stored.find(':');
+							bool isEntityRef = false;
+							if (colon != std::string::npos) {
+								const std::string idPart = stored.substr(0, colon);
+								isEntityRef = !idPart.empty()
+									&& idPart.find_first_not_of("0123456789") == std::string::npos;
+							}
+							else {
+								isEntityRef = GetStringMember(fieldValue, "type") == "entity";
+							}
+							if (isEntityRef) {
+								entityRefFieldKeys.push_back(key);
+							}
+						}
 					}
 				}
 				if (populated > 0 || skippedNoScript > 0) {
 					IDX_CORE_INFO_TAG("SceneSerializer",
 						"Entity '{}' ScriptFields: {} populated, {} class(es) skipped (script not registered yet)",
 						name, populated, skippedNoScript);
+				}
+
+				if (scene.IsEntityRefRemapActive() && !entityRefFieldKeys.empty()) {
+					Scene* scenePtr = &scene;
+					ScriptComponent* scPtr = &fieldsComponent;
+					scene.DeferEntityRefFixup([scenePtr, scPtr, keys = std::move(entityRefFieldKeys)]() {
+						for (const std::string& k : keys) {
+							auto it = scPtr->PendingFieldValues.find(k);
+							if (it == scPtr->PendingFieldValues.end()) {
+								continue;
+							}
+							std::string& val = it->second;
+							if (val.empty() || val == "0" || val.rfind("prefab:", 0) == 0) {
+								continue;
+							}
+							const std::size_t colon = val.find(':');
+							try {
+								if (colon != std::string::npos) {
+									const uint64_t id = std::stoull(val.substr(0, colon));
+									if (id != 0) val = std::to_string(scenePtr->TranslateEntityRef(id)) + val.substr(colon);
+								}
+								else {
+									const uint64_t id = std::stoull(val);
+									if (id != 0) val = std::to_string(scenePtr->TranslateEntityRef(id));
+								}
+							}
+							catch (...) {}
+						}
+					});
 				}
 			}
 		}
@@ -1587,6 +1642,21 @@ namespace Index {
 				continue;
 			}
 
+			// Map a serialized source id to the freshly-built copy's persistent id so in-component refs into
+			// the subtree retarget to THIS copy's children instead of the originals/template. Clone/paste
+			// carries the original persistent id as "sourceUuid"; prefab instantiation instead keys on the
+			// template entity's own "uuid" (its source id), preserved by RemovePrefabRuntimeIdentityMembers —
+			// NOT GetPrefabSourceId/SourceEntityId, which can diverge from the id the template's refs stored.
+			if (scene.IsEntityRefRemapActive()) {
+				uint64_t sourceRefId = GetUInt64Member(sourceEntityValue, "sourceUuid", 0);
+				if (sourceRefId == 0 && entityOrigin == EntityOrigin::Prefab) {
+					sourceRefId = GetUInt64Member(sourceEntityValue, "uuid", 0);
+				}
+				if (sourceRefId != 0) {
+					scene.RegisterEntityRefRemap(sourceRefId, scene.GetEntityPersistentID(handle));
+				}
+			}
+
 			if (entityOrigin == EntityOrigin::Prefab
 				&& scene.HasComponent<PrefabInstanceComponent>(handle)) {
 				const uint64_t sourceEntityId = GetUInt64Member(sourceEntityValue, "SourceEntityId", 0);
@@ -1628,6 +1698,10 @@ namespace Index {
 		if (!entityValue.IsObject()) {
 			return entt::null;
 		}
+
+		// Active across the whole rebuild + fixup drain: DeserializeEntityTree records original->clone id
+		// pairs, and the deferred ref/event/script-field fixups translate through them before this returns.
+		Scene::EntityRefRemapScope remapScope(scene);
 
 		EntityHandle root = entt::null;
 		PrefabDefinition definition;
@@ -1720,8 +1794,11 @@ namespace Index {
 			text.Color.b = GetFloatMember(componentValue, "b", text.Color.b);
 			text.Color.a = GetFloatMember(componentValue, "a", text.Color.a);
 			text.LetterSpacing = GetFloatMember(componentValue, "letterSpacing", text.LetterSpacing);
+			text.LineSpacing = GetFloatMember(componentValue, "lineSpacing", text.LineSpacing);
 			text.HAlign = static_cast<TextAlignment>(GetIntMember(componentValue, "alignment", static_cast<int>(text.HAlign)));
+			text.VAlign = static_cast<TextVerticalAlignment>(GetIntMember(componentValue, "valign", static_cast<int>(text.VAlign)));
 			text.WrapMode = static_cast<TextWrapMode>(GetIntMember(componentValue, "wrapMode", static_cast<int>(text.WrapMode)));
+			text.AutoSize = GetBoolMember(componentValue, "autoSize", false);
 			// WrapWidth field removed; old scenes that wrote it just
 			// pass through unread.
 			text.Margin.x = GetFloatMember(componentValue, "marginL", text.Margin.x);
@@ -2113,7 +2190,21 @@ namespace Index {
 		}
 
 		ApplyEntityOverrides(definition, entityValue);
-		const EntityHandle root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+
+		// Retarget the template's internal entity refs (child-to-child, child-to-root) onto this instance's
+		// own freshly-built entities. Drain ONLY the fixups this instance queued — scene load defers other
+		// entities' refs to the same queue and resolves them in the final pass, so a full drain here would
+		// resolve a sibling's forward ref before its target exists.
+		const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
+		EntityHandle root = entt::null;
+		{
+			Scene::EntityRefRemapScope remapScope(scene);
+			root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+			scene.RunPendingEntityRefFixupsFrom(fixupStart);
+		}
+
+		// Restamp AFTER resolution: this only rewrites the root's UUIDComponent.Id, leaving the already-
+		// resolved EntityHandles in child components valid (handles are stable, not derived from the id).
 		const uint64_t instanceUuid = GetUInt64Member(entityValue, "uuid", 0);
 		if (root != entt::null && instanceUuid != 0 && scene.HasComponent<UUIDComponent>(root)) {
 			scene.GetComponent<UUIDComponent>(root).Id = UUID(instanceUuid);
@@ -2143,10 +2234,16 @@ namespace Index {
 		}
 
 		const std::size_t fixupCountBefore = scene.GetPendingEntityRefFixupCount();
-		const EntityHandle root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
-		const std::size_t fixupCountAfter = scene.GetPendingEntityRefFixupCount();
-
-		scene.RunPendingEntityRefFixups();
+		std::size_t fixupCountAfter = fixupCountBefore;
+		EntityHandle root = entt::null;
+		{
+			// Retarget the template's internal entity refs onto this instance's children. The scope must stay
+			// active across the drain: ref resolution is deferred and translates through the remap at drain time.
+			Scene::EntityRefRemapScope remapScope(scene);
+			root = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+			fixupCountAfter = scene.GetPendingEntityRefFixupCount();
+			scene.RunPendingEntityRefFixupsFrom(fixupCountBefore);
+		}
 
 		if (root != entt::null && cache.Find(prefabGuid) == nullptr) {
 			const std::size_t fixupsAdded =
@@ -2229,8 +2326,15 @@ namespace Index {
 			}
 
 			scene.DestroyEntity(root);
-			const EntityHandle freshRoot =
-				DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+			const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
+			EntityHandle freshRoot = entt::null;
+			{
+				// Rebuild resolves the template's internal refs against the fresh subtree; drain only this
+				// rebuild's fixups so we don't disturb anything else still pending.
+				Scene::EntityRefRemapScope remapScope(scene);
+				freshRoot = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+				scene.RunPendingEntityRefFixupsFrom(fixupStart);
+			}
 			if (freshRoot == entt::null) {
 				return entt::null;
 			}
@@ -2378,8 +2482,15 @@ namespace Index {
 
 		// DeserializeEntityTree preserves Origin and PrefabGUID via the explicit args.
 		scene.DestroyEntity(existing);
-		const EntityHandle freshRoot =
-			DeserializeEntityTree(scene, newSource.Entities, EntityOrigin::Prefab, prefabGuid);
+		const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
+		EntityHandle freshRoot = entt::null;
+		{
+			// Retarget the refreshed template's internal entity refs onto the rebuilt subtree; drain only
+			// this rebuild's fixups while the remap is active.
+			Scene::EntityRefRemapScope remapScope(scene);
+			freshRoot = DeserializeEntityTree(scene, newSource.Entities, EntityOrigin::Prefab, prefabGuid);
+			scene.RunPendingEntityRefFixupsFrom(fixupStart);
+		}
 		if (freshRoot == entt::null) return entt::null;
 
 		// Restore identity / parent on the freshly-built root.
@@ -2455,7 +2566,16 @@ namespace Index {
 				return entt::null;
 			}
 
-			return DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+			// Same self-ref retargeting as InstantiatePrefab, for the fallback path taken when the file
+			// isn't a tracked Prefab asset (e.g. a loose .prefab outside the project / headless load).
+			const std::size_t fixupStart = scene.GetPendingEntityRefFixupCount();
+			EntityHandle root2 = entt::null;
+			{
+				Scene::EntityRefRemapScope remapScope(scene);
+				root2 = DeserializeEntityTree(scene, definition.Entities, EntityOrigin::Prefab, prefabGuid);
+				scene.RunPendingEntityRefFixupsFrom(fixupStart);
+			}
+			return root2;
 		}
 		catch (const std::exception& exception) {
 			IDX_CORE_ERROR_TAG("SceneSerializer", "LoadEntityFromFile failed: {}", exception.what());

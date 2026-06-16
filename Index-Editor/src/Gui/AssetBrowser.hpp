@@ -3,10 +3,15 @@
 #include "Gui/ThumbnailCache.hpp"
 #include "Scene/EntityHandle.hpp"
 #include "Serialization/Directory.hpp"
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -26,6 +31,11 @@ namespace Index {
 		// previews re-fetch from the updated files on the next frame.
 		void InvalidateAllThumbnails() { m_Thumbnails.Clear(); }
 
+		// Drop one cached thumbnail (keyed by absolute path) so its tile re-creates
+		// with fresh import settings next frame — e.g. after the inspector changes
+		// a texture's Filter Mode (the thumbnail bakes its filter at creation).
+		void InvalidateThumbnail(const std::string& absolutePath) { m_Thumbnails.Invalidate(absolutePath); }
+
 		/// Returns true when the user is currently naming a new script (rename in progress).
 		bool IsCreatingScript() const { return m_PendingScriptType != PendingScriptType::None; }
 		bool BeginRenameSelected();
@@ -44,6 +54,11 @@ namespace Index {
 
 		/// Call this when external files are dropped onto the window.
 		void OnExternalFileDrop(const std::vector<std::string>& paths);
+		bool IsImportingAssets() const { return m_ImportActive.load(std::memory_order_acquire); }
+		bool IsDeleting() const { return m_DeleteActive.load(std::memory_order_acquire); }
+		bool ConsumeAssetWatcherImportRefreshSuppression() {
+			return m_SuppressNextAssetWatcherRefresh.exchange(false, std::memory_order_acq_rel);
+		}
 
 		/// Returns the currently selected asset path (empty if none).
 		const std::string& GetSelectedPath() const { return m_SelectedPath; }
@@ -60,6 +75,24 @@ namespace Index {
 		void NavigateTo(const std::string& directory);
 		void NavigateUp();
 		void Refresh();
+		void PumpExternalAssetImport();
+		void StartExternalAssetImport(std::vector<std::string> paths, std::string destinationDirectory);
+		void RunExternalAssetImport(std::vector<std::string> paths, std::string destinationDirectory);
+		void ConsumeFinishedExternalAssetImport();
+		void ProcessPendingImportedAssetRegistrations();
+		void UpdateExternalAssetImportProgressWindow();
+		// Async asset deletion (mirrors the import worker above): big folders / large
+		// assets are removed on a worker thread so the editor never blocks, with a
+		// grace-period Win32 progress popup. See AssetBrowserActions.cpp.
+		void PumpAssetDeletion();
+		void StartAssetDeletion(std::vector<std::string> paths);
+		void RunAssetDeletion();
+		void ConsumeAndApplyFinishedAssetDeletion();
+		void UpdateAssetDeletionProgressWindow();
+		void QueueSearchRebuild();
+		void PumpSearchRebuild();
+		void StartSearchWorker(std::string query);
+		void RunSearchWorker(std::string rootDirectory, std::string query);
 
 		void RenderBreadcrumb();
 		void RenderSearchBar();
@@ -91,7 +124,7 @@ namespace Index {
 		void RenderCreationCollisionPrompt();
 
 		// Confirmation dialog before deleting selected assets, gated by
-		// EditorPreferences::GetConfirmOnDelete().
+		// EditorPreferences::GetConfirmOnDeleteAsset().
 		void RenderDeleteConfirmationPrompt();
 
 		// .scene files embed their displayed name; a byte-copy via Duplicate /
@@ -161,6 +194,7 @@ namespace Index {
 #endif
 		bool m_SelectionActivated = false;
 		bool m_NeedsRefresh = true;
+		bool m_SkipRegistrySyncOnNextRefresh = false;
 
 		bool m_IsRenaming = false;
 		std::string m_RenamePath;
@@ -174,6 +208,14 @@ namespace Index {
 		char m_SearchBuffer[256]{};
 		std::vector<DirectoryEntry> m_SearchResults;
 		bool m_SearchTruncated = false;
+		std::atomic_bool m_SearchWorkerActive{ false };
+		std::mutex m_SearchMutex;
+		std::thread m_SearchThread;
+		bool m_SearchWorkerFinished = false;
+		bool m_SearchWorkerTruncated = false;
+		std::string m_SearchWorkerQuery;
+		std::string m_QueuedSearchQuery;
+		std::vector<DirectoryEntry> m_SearchWorkerResults;
 
 		float m_TileSize = 80.0f;
 		float m_TilePadding = 8.0f;
@@ -222,6 +264,56 @@ namespace Index {
 		// freed pointer = native crash. Deferring one frame lets the prior
 		// frame's draw dispatch complete first.
 		std::vector<std::string> m_PendingThumbnailInvalidates;
+
+		std::atomic_bool m_ImportActive{ false };
+		std::atomic_bool m_SuppressNextAssetWatcherRefresh{ false };
+		std::mutex m_ImportMutex;
+		std::thread m_ImportThread;
+		bool m_ImportWorkerFinished = false;
+		bool m_ImportResultsConsumed = true;
+		bool m_ImportProgressWindowVisible = false;
+		std::string m_ImportDestinationDirectory;
+		std::string m_ImportCurrentItem;
+		std::uintmax_t m_ImportTotalBytes = 0;
+		std::uintmax_t m_ImportCopiedBytes = 0;
+		std::size_t m_ImportTotalRootItems = 0;
+		std::size_t m_ImportProcessedRootItems = 0;
+		std::size_t m_ImportImportedRootCount = 0;
+		std::vector<std::string> m_ImportImportedRootPaths;
+		std::vector<std::string> m_ImportImportedAssetPaths;
+		std::vector<std::string> m_ImportErrors;
+
+		std::vector<std::string> m_PendingImportedAssetRegistrations;
+		std::vector<std::string> m_PendingImportRootPaths;
+		std::size_t m_PendingImportedAssetRegistrationIndex = 0;
+		std::size_t m_PendingImportRootCount = 0;
+		std::string m_PendingImportDestinationDirectory;
+
+		// --- Async asset deletion -------------------------------------------------
+		// The worker only touches the filesystem (AssetRegistry / SceneManager hold
+		// unsynchronized global state); all registry/scene/selection bookkeeping runs
+		// on the main thread in the pump once the worker reports success.
+		struct DeleteRootInfo {
+			std::string Path;
+			bool IsDirectory = false;
+			std::string NativeMirrorPath; // resolved on the main thread (source must exist); worker removes it
+			std::string SceneStem;        // non-empty for a .scene root; pump calls UnregisterScene
+		};
+
+		std::atomic_bool m_DeleteActive{ false };
+		std::thread m_DeleteThread;
+		std::mutex m_DeleteMutex;
+		bool m_DeleteWorkerFinished = false;        // guarded by m_DeleteMutex
+		bool m_DeleteResultsConsumed = true;        // guarded by m_DeleteMutex
+		bool m_DeleteProgressWindowVisible = false; // main thread only
+		std::chrono::steady_clock::time_point m_DeleteStartTime{}; // main thread only; gates the grace period
+		std::atomic<std::size_t> m_DeleteTotalEntries{ 0 };
+		std::atomic<std::size_t> m_DeleteProcessedEntries{ 0 };
+		std::string m_DeleteCurrentItem;            // guarded by m_DeleteMutex
+		std::vector<DeleteRootInfo> m_DeleteRoots;  // main thread fills at Start; worker + pump read it
+		std::vector<std::string> m_DeleteForgetAssetPaths; // guarded by m_DeleteMutex; consumed by pump
+		std::vector<std::string> m_DeleteSucceededRoots;   // guarded by m_DeleteMutex; consumed by pump
+		std::vector<std::string> m_DeleteErrors;           // guarded by m_DeleteMutex; consumed by pump
 	};
 
 }

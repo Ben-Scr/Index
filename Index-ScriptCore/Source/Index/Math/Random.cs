@@ -26,14 +26,15 @@ public sealed class Random
 
     public void SetSeed(ulong seed)
     {
-        state = seed;
+        // xorshift* has a fixed point at 0 (state stays 0 -> every draw is 0); remap the zero seed.
+        state = seed != 0 ? seed : 0x9E3779B97F4A7C15UL;
     }
     public void RemoveSeed()
     {
         ulong t = (ulong)DateTime.Now.Ticks;
         ulong g = (ulong)Guid.NewGuid().GetHashCode();
         ulong s = (ulong)Stopwatch.GetTimestamp();
-        state = t ^ g ^ s;
+        SetSeed(t ^ g ^ s);
     }
 
     public ulong GetSeed() => state;
@@ -62,17 +63,19 @@ public sealed class Random
     public int NextInt(int max)
     {
         if (max <= 0) throw new ArgumentOutOfRangeException(nameof(max));
-        return NextInt() * max;
+        return NextInt() % max;
     }
     public int NextInt(int min, int max)
     {
         if (min >= max) throw new ArgumentOutOfRangeException($"Next({min},{max}) is wrong, min can't be more or equal to max.");
-        return min + (NextInt() % (max - min));
+        ulong range = (ulong)((long)max - min);
+        return (int)(min + (long)(NextState() % range));
     }
 
     public double NextDouble()
     {
-        return (double)NextState() / ulong.MaxValue;
+        // 53-bit mantissa / 2^53 stays in [0,1): worst case 1 - 2^-53, never exactly 1.0.
+        return (NextState() >> 11) * (1.0 / 9007199254740992.0);
     }
     public double NextDouble(double max)
     {
@@ -86,7 +89,9 @@ public sealed class Random
 
     public float NextFloat()
     {
-        return (float)NextDouble();
+        // Build from 24 bits directly: (float)NextDouble() would round 1 - 2^-53 up to 1.0f.
+        // Worst case 1 - 2^-24 = 0.99999994f, so the result stays in [0,1).
+        return (NextState() >> 40) * (1.0f / 16777216.0f);
     }
     public float NextFloat(float max)
     {

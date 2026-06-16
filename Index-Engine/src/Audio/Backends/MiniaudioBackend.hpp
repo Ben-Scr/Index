@@ -20,6 +20,7 @@ namespace Index {
 		bool Initialize() override;
 		void Shutdown() override;
 		void SetMasterVolume(float volume) override;
+		void SetSuspended(bool suspended) override;
 		ma_engine* GetMiniaudioEngine() override { return m_Initialized ? &m_Engine : nullptr; }
 
 	private:

@@ -85,51 +85,6 @@ public class Transform2D : Component
         }
     }
 
-    public Entity? Child => GetChildAt(0);
-
-    public Entity? Parent
-    {
-        get
-        {
-            ulong parentId = InternalCalls.Transform2D_GetParent(RequireComponent<Transform2D>());
-            return parentId != 0 ? new Entity(parentId) : null;
-        }
-    }
-
-    public int ChildCount => InternalCalls.Transform2D_GetChildCount(RequireComponent<Transform2D>());
-
-    public Entity[] GetChildren()
-    {
-        ulong entityId = RequireComponent<Transform2D>();
-        int count = InternalCalls.Transform2D_GetChildCount(entityId);
-        if (count <= 0) return Array.Empty<Entity>();
-
-        ulong[] ids = new ulong[count];
-        int actual = InternalCalls.Transform2D_GetChildren(entityId, ids);
-
-        var result = new List<Entity>(actual);
-        for (int i = 0; i < actual; i++)
-        {
-            if (ids[i] == 0) continue;
-            result.Add(new Entity(ids[i]));
-        }
-        return result.ToArray();
-    }
-
-    public Entity? GetChildAt(int index)
-    {
-        if (index < 0) return null;
-        ulong childId = InternalCalls.Transform2D_GetChildAt(RequireComponent<Transform2D>(), index);
-        return childId != 0 ? new Entity(childId) : null;
-    }
-
-    public bool SetParent(Entity? newParent)
-    {
-        ulong entityId = RequireComponent<Transform2D>();
-        ulong parentId = newParent != null && newParent != Entity.Invalid ? newParent.ID : 0;
-        return InternalCalls.Transform2D_SetParent(entityId, parentId);
-    }
-
     public Vector2 Up
     {
         get
@@ -213,6 +168,7 @@ public class SpriteRenderer : Component
 // ── TextRenderer ────────────────────────────────────────────────────
 
 public enum TextAlignment { Left = 0, Center = 1, Right = 2 }
+public enum TextVerticalAlignment { Top = 0, Middle = 1, Bottom = 2 }
 public enum TextWrapMode { None = 0, Word = 1, Character = 2 }
 
 public class TextRenderer : Component
@@ -257,10 +213,23 @@ public class TextRenderer : Component
         set => InternalCalls.TextRenderer_SetLetterSpacing(RequireComponent<TextRenderer>(), value);
     }
 
+    // Extra space between lines, in baked-atlas pixels (added to the font's line height).
+    public float LineSpacing
+    {
+        get => InternalCalls.TextRenderer_GetLineSpacing(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetLineSpacing(RequireComponent<TextRenderer>(), value);
+    }
+
     public TextAlignment Alignment
     {
         get => (TextAlignment)InternalCalls.TextRenderer_GetHAlign(RequireComponent<TextRenderer>());
         set => InternalCalls.TextRenderer_SetHAlign(RequireComponent<TextRenderer>(), (int)value);
+    }
+
+    public TextVerticalAlignment VerticalAlignment
+    {
+        get => (TextVerticalAlignment)InternalCalls.TextRenderer_GetVAlign(RequireComponent<TextRenderer>());
+        set => InternalCalls.TextRenderer_SetVAlign(RequireComponent<TextRenderer>(), (int)value);
     }
 
     public TextWrapMode WrapMode

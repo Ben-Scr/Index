@@ -210,14 +210,20 @@ namespace Index {
 			return ext == ".scene" || ext == ".prefab";
 		}
 
+		// onProgress(done, total, fileName) is invoked before converting each file (done = files
+		// already finished) and once more at the end with done == total. Pass {} for no reporting.
 		int ConvertSerializedAssetsInDirectory(const std::filesystem::path& rootDir,
-			SceneSerializationFormat format)
+			SceneSerializationFormat format,
+			const std::function<void(int, int, const std::string&)>& onProgress = {})
 		{
 			if (!std::filesystem::exists(rootDir)) {
 				return 0;
 			}
 
-			int converted = 0;
+			// Collect first so the conversion loop can report determinate done/total progress; the
+			// walk itself can be slow on asset-heavy projects (cold, Defender-amplified), which is why
+			// the whole operation belongs on a worker thread.
+			std::vector<std::filesystem::path> targets;
 			std::error_code ec;
 			for (std::filesystem::recursive_directory_iterator it(rootDir,
 					std::filesystem::directory_options::skip_permission_denied, ec), end;
@@ -232,9 +238,21 @@ namespace Index {
 					ec.clear();
 					continue;
 				}
-				if (SceneSerializer::ConvertFileFormat(it->path().string(), format)) {
+				targets.push_back(it->path());
+			}
+
+			int converted = 0;
+			const int total = static_cast<int>(targets.size());
+			for (int i = 0; i < total; ++i) {
+				if (onProgress) {
+					onProgress(i, total, targets[i].filename().string());
+				}
+				if (SceneSerializer::ConvertFileFormat(targets[i].string(), format)) {
 					++converted;
 				}
+			}
+			if (onProgress) {
+				onProgress(total, total, {});
 			}
 			return converted;
 		}
@@ -1104,6 +1122,54 @@ namespace Index {
 		});
 	}
 
+	void ImGuiEditorLayer::ReportReserializeProgress(float progress, std::string_view stage) {
+		// Progress + stage written under one lock so the UI never observes a mismatched pair.
+		std::lock_guard<std::mutex> lk(m_ReserializeProgressMutex);
+		m_ReserializeProgress = std::clamp(progress, 0.0f, 1.0f);
+		m_ReserializeStage.assign(stage);
+	}
+
+	void ImGuiEditorLayer::ExecuteReserializeAsync() {
+		m_ReserializeConverted.store(0, std::memory_order_relaxed);
+		ReportReserializeProgress(0.0f, "Scanning project assets");
+
+		IndexProject* project = ProjectManager::GetCurrentProject();
+		if (!project) {
+			return; // poll's !valid() guard clears the state next frame
+		}
+
+		const SceneSerializationFormat format = ToSceneSerializationFormat(project->AssetSerializationFormat);
+		const std::string assetsDir = project->AssetsDirectory;
+
+		// Flush the dirty active scene on the UI thread (SceneSerializer isn't thread-safe) before the
+		// worker owns the tree; ClearDirty so auto-save can't race a second write to the same file.
+		if (Scene* active = SceneManager::Get().GetActiveScene(); active && active->IsDirty()) {
+			if (SceneSerializer::SaveToFile(*active, project->GetSceneFilePath(active->GetName()), format)) {
+				active->ClearDirty();
+			}
+		}
+
+		m_ReserializeFuture = std::async(std::launch::async, [this, assetsDir, format]() {
+			const int converted = ConvertSerializedAssetsInDirectory(assetsDir, format,
+				[this](int done, int total, const std::string& fileName) {
+					// done+1 = the item now being converted, matching the "(k/total)" label; clamped in
+					// ReportReserializeProgress so the final done==total call lands at 1.0.
+					const float fraction = total > 0
+						? static_cast<float>(done + 1) / static_cast<float>(total)
+						: 1.0f;
+					if (fileName.empty()) {
+						ReportReserializeProgress(fraction, "Finishing");
+					}
+					else {
+						ReportReserializeProgress(fraction,
+							"Converting " + fileName + "  ("
+							+ std::to_string(done + 1) + "/" + std::to_string(total) + ")");
+					}
+				});
+			m_ReserializeConverted.store(converted, std::memory_order_relaxed);
+		});
+	}
+
 	void ImGuiEditorLayer::ExecuteBuild() {
 		m_BuildStartTime = std::chrono::steady_clock::now();
 
@@ -1323,6 +1389,29 @@ namespace Index {
 			IDX_INFO_TAG("Build", "Serialized assets optimized to binary: {} file(s)", convertedFiles);
 		}
 
+		// Ship the asset-registry manifest (<project>/.index/asset-registry.cache) so the runtime
+		// trusts it and skips the cold ~9k-.meta directory scan on launch. Copy-only — no registry
+		// calls from this build worker thread; a stale/absent manifest self-heals on first launch.
+		{
+			const std::filesystem::path manifestSrc =
+				std::filesystem::path(project->AssetsDirectory).parent_path() / ".index" / "asset-registry.cache";
+			if (std::filesystem::exists(manifestSrc)) {
+				try {
+					const std::filesystem::path manifestDest = outDir / ".index" / "asset-registry.cache";
+					std::filesystem::create_directories(manifestDest.parent_path());
+					std::filesystem::copy_file(manifestSrc, manifestDest,
+						std::filesystem::copy_options::overwrite_existing);
+					IDX_INFO_TAG("Build", "Shipped asset-registry manifest");
+				}
+				catch (const std::exception& e) {
+					IDX_WARN_TAG("Build", "Failed to ship asset-registry manifest: {}", e.what());
+				}
+			}
+			else {
+				IDX_WARN_TAG("Build", "Asset-registry manifest not found at {}; runtime cold-scans on first launch", manifestSrc.string());
+			}
+		}
+
 		{
 			std::string indexAssetsSrc;
 			if (std::filesystem::exists(project->IndexAssetsDirectory)) {
@@ -1474,25 +1563,34 @@ namespace Index {
 
 		IndexProject* project = ProjectManager::GetCurrentProject();
 		if (project) {
-			AssetRegistry::Sync();
-			std::vector<std::string> diskScenes;
-			diskScenes.reserve(m_BuildSceneList.size() + 4);
-			for (const AssetRegistry::Record& record : AssetRegistry::FindAll(AssetKind::Scene)) {
-				diskScenes.push_back(std::filesystem::path(record.Path).stem().string());
-			}
+			// Reconcile the build scene list against on-disk scenes only when the registry actually
+			// changed AND is already clean. NEVER force a rebuild here: the old AssetRegistry::Sync()
+			// ran the full ~9k-.meta directory walk on the UI thread — that was the ~1s freeze when
+			// this panel opened. While the registry is mid-edit (dirty) we keep the cached list; the
+			// next consumer rebuilds it and bumps the change version, and we pick it up then.
+			const uint64_t registryVersion = AssetRegistry::GetChangeVersion();
+			if (registryVersion != m_BuildSceneListVersion && !AssetRegistry::IsDirty()) {
+				m_BuildSceneListVersion = registryVersion;
 
-			// Drop entries whose .scene file no longer exists.
-			m_BuildSceneList.erase(
-				std::remove_if(m_BuildSceneList.begin(), m_BuildSceneList.end(),
-					[&](const std::string& s) {
-						return std::find(diskScenes.begin(), diskScenes.end(), s) == diskScenes.end();
-					}),
-				m_BuildSceneList.end());
+				std::vector<std::string> diskScenes;
+				diskScenes.reserve(m_BuildSceneList.size() + 4);
+				for (const AssetRegistry::Record& record : AssetRegistry::FindAll(AssetKind::Scene)) {
+					diskScenes.push_back(std::filesystem::path(record.Path).stem().string());
+				}
 
-			// Append entries the user has not seen yet (new on disk).
-			for (const std::string& stem : diskScenes) {
-				if (std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), stem) == m_BuildSceneList.end()) {
-					m_BuildSceneList.push_back(stem);
+				// Drop entries whose .scene file no longer exists.
+				m_BuildSceneList.erase(
+					std::remove_if(m_BuildSceneList.begin(), m_BuildSceneList.end(),
+						[&](const std::string& s) {
+							return std::find(diskScenes.begin(), diskScenes.end(), s) == diskScenes.end();
+						}),
+					m_BuildSceneList.end());
+
+				// Append entries the user has not seen yet (new on disk).
+				for (const std::string& stem : diskScenes) {
+					if (std::find(m_BuildSceneList.begin(), m_BuildSceneList.end(), stem) == m_BuildSceneList.end()) {
+						m_BuildSceneList.push_back(stem);
+					}
 				}
 			}
 
@@ -1963,8 +2061,8 @@ namespace Index {
 				ImGui::TextDisabled("Startup");
 				ImGui::Separator();
 
-				changed |= ImGui::InputInt("Width", &project.BuildWidth);
-				changed |= ImGui::InputInt("Height", &project.BuildHeight);
+				changed |= ImGui::InputInt("Width", &project.BuildWidth, 0, 0);
+				changed |= ImGui::InputInt("Height", &project.BuildHeight, 0, 0);
 				if (project.BuildWidth < 320) project.BuildWidth = 320;
 				if (project.BuildHeight < 240) project.BuildHeight = 240;
 
@@ -2022,10 +2120,10 @@ namespace Index {
 
 				ImGui::Spacing();
 				ImGui::TextDisabled("Resize Limits (0 = unbounded)");
-				changed |= ImGui::InputInt("Min Width",  &project.BuildMinWidth);
-				changed |= ImGui::InputInt("Min Height", &project.BuildMinHeight);
-				changed |= ImGui::InputInt("Max Width",  &project.BuildMaxWidth);
-				changed |= ImGui::InputInt("Max Height", &project.BuildMaxHeight);
+				changed |= ImGui::InputInt("Min Width",  &project.BuildMinWidth, 0, 0);
+				changed |= ImGui::InputInt("Min Height", &project.BuildMinHeight, 0, 0);
+				changed |= ImGui::InputInt("Max Width",  &project.BuildMaxWidth, 0, 0);
+				changed |= ImGui::InputInt("Max Height", &project.BuildMaxHeight, 0, 0);
 				if (project.BuildMinWidth  < 0) project.BuildMinWidth  = 0;
 				if (project.BuildMinHeight < 0) project.BuildMinHeight = 0;
 				if (project.BuildMaxWidth  < 0) project.BuildMaxWidth  = 0;
@@ -2067,8 +2165,8 @@ namespace Index {
 			if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
 			if (ImGui::CollapsingHeader("UI Scaling", ImGuiTreeNodeFlags_DefaultOpen)) {
 				ImGui::Indent(8);
-				changed |= ImGui::InputInt("Reference Width##UIRef", &project.UIReferenceWidth);
-				changed |= ImGui::InputInt("Reference Height##UIRef", &project.UIReferenceHeight);
+				changed |= ImGui::InputInt("Reference Width##UIRef", &project.UIReferenceWidth, 0, 0);
+				changed |= ImGui::InputInt("Reference Height##UIRef", &project.UIReferenceHeight, 0, 0);
 				if (project.UIReferenceWidth  < 1) project.UIReferenceWidth  = 1;
 				if (project.UIReferenceHeight < 1) project.UIReferenceHeight = 1;
 				changed |= ImGui::SliderFloat("Match Width / Height", &project.UIScaleMatch, 0.0f, 1.0f, "%.2f");
@@ -2447,9 +2545,9 @@ namespace Index {
 					SplashAssetResolve::Resolve(project.AppIconPath, &project));
 				Texture2D* iconTex = TextureManager::GetTexture(iconHandle);
 				if (iconTex && iconTex->IsValid()) {
-					ImGui::Image(
+					ImGuiUtils::ImageFiltered(
 						static_cast<ImTextureID>(static_cast<intptr_t>(iconTex->GetHandle())),
-						ImVec2(64, 64));
+						ImVec2(64, 64), iconTex->GetFilter());
 					ImGui::SameLine();
 				}
 				else {
@@ -2970,30 +3068,22 @@ namespace Index {
 			constexpr const char* k_FormatLabels[] = { "JSON", "Binary" };
 			int formatIndex = project.AssetSerializationFormat == IndexProject::ProjectAssetSerializationFormat::Binary ? 1 : 0;
 			ImGui::SetNextItemWidth(180.0f);
+			// Disabled mid-conversion so the format can't be flipped again while the worker is running.
+			ImGui::BeginDisabled(m_ReserializeState != 0);
 			if (ImGui::Combo("Asset format", &formatIndex, k_FormatLabels, IM_ARRAYSIZE(k_FormatLabels))) {
 				const auto nextFormat = formatIndex == 1
 					? IndexProject::ProjectAssetSerializationFormat::Binary
 					: IndexProject::ProjectAssetSerializationFormat::Json;
-				if (nextFormat != project.AssetSerializationFormat) {
+				if (nextFormat != project.AssetSerializationFormat && m_ReserializeState == 0) {
+					// Persist the setting now; the actual file rewrite runs asynchronously (see the
+					// m_ReserializeState machine in OnPreRender). A loader auto-detects either format,
+					// so a mid-flight crash leaving mixed-format files on disk is still readable.
 					project.AssetSerializationFormat = nextFormat;
-					const SceneSerializationFormat sceneFormat = ToSceneSerializationFormat(nextFormat);
-					const int converted = ConvertSerializedAssetsInDirectory(project.AssetsDirectory, sceneFormat);
-					if (Scene* activeScene = SceneManager::Get().GetActiveScene()) {
-						if (activeScene->IsDirty()) {
-							SceneSerializer::SaveToFile(*activeScene,
-								project.GetSceneFilePath(activeScene->GetName()),
-								sceneFormat);
-						}
-					}
-					AssetRegistry::MarkDirty();
-					AssetRegistry::Sync();
-					IDX_INFO_TAG("ProjectSettings",
-						"Reserialized {} scene/prefab asset(s) as {}",
-						converted,
-						IndexProject::ProjectAssetSerializationFormatToString(nextFormat));
+					m_ReserializeState = 1;
 					changed = true;
 				}
 			}
+			ImGui::EndDisabled();
 			if (ImGui::IsItemHovered()) {
 				ImGui::SetTooltip(
 					"Controls how scene and prefab assets are written on disk.\n"
@@ -3205,9 +3295,9 @@ namespace Index {
 				const ImVec2 bgMin(wMin.x + (width  - drawW) * 0.5f,
 				                   wMin.y + (height - drawH) * 0.5f);
 				const ImVec2 bgMax(bgMin.x + drawW, bgMin.y + drawH);
-				draw->AddImage(
+				ImGuiUtils::AddImageFiltered(draw,
 					static_cast<ImTextureID>(static_cast<intptr_t>(bg->GetHandle())),
-					bgMin, bgMax,
+					bgMin, bgMax, bg->GetFilter(),
 					ImVec2(0, 0), ImVec2(1, 1),
 					packColor(1.0f, 1.0f, 1.0f, alpha));
 			}
@@ -3226,9 +3316,9 @@ namespace Index {
 				logoW *= scale; logoH *= scale;
 				const ImVec2 imgMin(centerX - logoW * 0.5f, centerY - logoH * 0.65f);
 				const ImVec2 imgMax(imgMin.x + logoW, imgMin.y + logoH);
-				draw->AddImage(
+				ImGuiUtils::AddImageFiltered(draw,
 					static_cast<ImTextureID>(static_cast<intptr_t>(logo->GetHandle())),
-					imgMin, imgMax,
+					imgMin, imgMax, logo->GetFilter(),
 					ImVec2(0, 0), ImVec2(1, 1),
 					packColor(1.0f, 1.0f, 1.0f, alpha));
 			}
@@ -3339,16 +3429,10 @@ namespace Index {
 			ImGui::Spacing();
 			const Texture2D* tex = GetPreviewTexture(path);
 			if (tex && tex->IsValid()) {
-				// Use the Texture2D overload so the canonical flip rule
-				// applies — preview matches the asset-browser thumbnail
-				// regardless of the texture's load-time flipVertical flag.
-				ImGuiUtils::DrawTexturePreview(*tex, 128.0f);
-				ImGui::Text("%.0f x %.0f", tex->GetWidth(), tex->GetHeight());
-
-				ImGui::Spacing();
-				ImGui::Separator();
-				ImGui::Spacing();
-
+				// Read the import meta first: the preview Texture2D is always
+				// loaded with a fixed filter, so the authored FilterMode (not
+				// tex.GetFilter()) is what the preview must honor — and reading
+				// it every frame keeps the preview live as the combo changes.
 				TextureMeta meta = AssetRegistry::ReadTextureMeta(selectedPath);
 				if (!meta.HasImportBlock) {
 					meta.Import.FilterMode = tex->GetFilter();
@@ -3356,10 +3440,24 @@ namespace Index {
 					meta.Import.WrapV      = tex->GetWrapV();
 				}
 
+				// Use the Texture2D overload so the canonical flip rule
+				// applies — preview matches the asset-browser thumbnail
+				// regardless of the texture's load-time flipVertical flag.
+				ImGuiUtils::DrawTexturePreview(*tex, 128.0f, meta.Import.FilterMode);
+				ImGui::Text("%.0f x %.0f", tex->GetWidth(), tex->GetHeight());
+
+				ImGui::Spacing();
+				ImGui::Separator();
+				ImGui::Spacing();
+
 				const auto persist = [&](TextureMeta updated) {
 					updated.HasImportBlock = true;
 					if (AssetRegistry::WriteTextureMeta(selectedPath, updated)) {
 						TextureManager::ApplyMetaSamplerToLoaded(selectedPath);
+						// The browser tile bakes its filter at thumbnail creation, so
+						// drop it to re-pick up the new Filter Mode (engine slots above
+						// re-sample live; the cache is separate).
+						m_AssetBrowser.InvalidateThumbnail(selectedPath);
 					}
 				};
 

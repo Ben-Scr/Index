@@ -120,11 +120,12 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, void> Transform2D_SetLocalRotation;
     public delegate* unmanaged<ulong, float*, float*, void> Transform2D_GetLocalScale;
     public delegate* unmanaged<ulong, float, float, void> Transform2D_SetLocalScale;
-    public delegate* unmanaged<ulong, ulong> Transform2D_GetParent;
-    public delegate* unmanaged<ulong, ulong, int> Transform2D_SetParent;
-    public delegate* unmanaged<ulong, int> Transform2D_GetChildCount;
-    public delegate* unmanaged<ulong, int, ulong> Transform2D_GetChildAt;
-    public delegate* unmanaged<ulong, ulong*, int, int> Transform2D_GetChildren;
+    // Hierarchy is entity-level (HierarchyComponent); slots stay here to match the locked native struct order.
+    public delegate* unmanaged<ulong, ulong> Entity_GetParent;
+    public delegate* unmanaged<ulong, ulong, int, int> Entity_SetParent;
+    public delegate* unmanaged<ulong, int> Entity_GetChildCount;
+    public delegate* unmanaged<ulong, int, ulong> Entity_GetChildAt;
+    public delegate* unmanaged<ulong, ulong*, int, int> Entity_GetChildren;
 
     // ── SpriteRenderer ───────────────────────────────────────────
     public delegate* unmanaged<ulong, float*, float*, float*, float*, void> SpriteRenderer_GetColor;
@@ -147,8 +148,12 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<ulong, float, float, float, float, void> TextRenderer_SetColor;
     public delegate* unmanaged<ulong, float> TextRenderer_GetLetterSpacing;
     public delegate* unmanaged<ulong, float, void> TextRenderer_SetLetterSpacing;
+    public delegate* unmanaged<ulong, float> TextRenderer_GetLineSpacing;
+    public delegate* unmanaged<ulong, float, void> TextRenderer_SetLineSpacing;
     public delegate* unmanaged<ulong, int> TextRenderer_GetHAlign;
     public delegate* unmanaged<ulong, int, void> TextRenderer_SetHAlign;
+    public delegate* unmanaged<ulong, int> TextRenderer_GetVAlign;
+    public delegate* unmanaged<ulong, int, void> TextRenderer_SetVAlign;
     public delegate* unmanaged<ulong, int> TextRenderer_GetWrapMode;
     public delegate* unmanaged<ulong, int, void> TextRenderer_SetWrapMode;
     // WrapWidth slots removed — wrap area now comes from the host
@@ -914,6 +919,17 @@ internal unsafe struct NativeBindingsStruct
     public delegate* unmanaged<float, float, float, float, float, void> Gizmo_DrawSquare;
     public delegate* unmanaged<float, float, float, int, void> Gizmo_DrawCircle;
     public delegate* unmanaged<byte*, float, float, float, float, void> Gizmo_DrawText;
+
+    // ── UI: hovered entity (appended for binary compat; keep in lock-step with C++ NativeBindings) ──
+    public delegate* unmanaged<ulong*, int> UI_GetHoveredEntity;
+
+    // RectTransform screen position (appended for binary compat; keep in lock-step with C++ NativeBindings).
+    public delegate* unmanaged<ulong, float*, float*, void> RectTransform_GetScreenPosition;
+    public delegate* unmanaged<ulong, float, float, void> RectTransform_SetScreenPosition;
+
+    // InputField multiline toggle (appended for binary compat; keep in lock-step with C++ NativeBindings).
+    public delegate* unmanaged<ulong, int> InputField_GetMultiline;
+    public delegate* unmanaged<ulong, int, void> InputField_SetMultiline;
 }
 
 internal static unsafe class NativeCallbacks

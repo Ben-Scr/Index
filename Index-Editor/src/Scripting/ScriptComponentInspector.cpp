@@ -37,6 +37,14 @@ namespace Index {
 
 	namespace {
 
+		// One inline sub-field of an object list element (itemType == "object").
+		struct EditorItemFieldRecord {
+			std::string Name;
+			std::string DisplayName;
+			std::string TypeTag;             // leaf wire tag ("int", "entity", "component:Foo", ...)
+			std::shared_ptr<EnumDescriptor> Enum;
+		};
+
 		// JSON field record produced by C# Index-ScriptCore (one per
 		// [ShowInEditor] field). The C++ side parses this into a
 		// PropertyDescriptor and drives the unified PropertyDrawer.
@@ -44,7 +52,8 @@ namespace Index {
 			std::string Name;
 			std::string DisplayName;
 			std::string TypeTag;             // "float", "enum", "component:Foo", ...
-			std::string ItemTypeTag;         // for TypeTag == "list": the element's wire tag
+			std::string ItemTypeTag;         // for TypeTag == "list": the element's wire tag ("int", "object", ...)
+			std::vector<EditorItemFieldRecord> ItemFields;  // for ItemTypeTag == "object": the element schema
 			std::string ComponentTypeName;   // populated when TypeTag starts with "component:"
 			std::string Value;                // current value as a string (PropertyValue::FromString accepts this)
 			std::string Tooltip;
@@ -166,6 +175,33 @@ namespace Index {
 					}
 				}
 
+				// Inline object-list element schema (one entry per leaf sub-field).
+				if (const Json::Value* itemFields = item.FindMember("itemFields"); itemFields && itemFields->IsArray()) {
+					for (const Json::Value& f : itemFields->GetArray()) {
+						if (!f.IsObject()) continue;
+						EditorItemFieldRecord fr;
+						if (const Json::Value* v = f.FindMember("name"))        fr.Name = v->AsStringOr();
+						if (const Json::Value* v = f.FindMember("displayName")) fr.DisplayName = v->AsStringOr();
+						if (const Json::Value* v = f.FindMember("type"))        fr.TypeTag = v->AsStringOr();
+						if (fr.TypeTag == "enum" || fr.TypeTag == "flagenum") {
+							fr.Enum = std::make_shared<EnumDescriptor>();
+							fr.Enum->IsFlags = (fr.TypeTag == "flagenum");
+							if (const Json::Value* fv = f.FindMember("enumIsFlags")) fr.Enum->IsFlags = fv->AsBoolOr(fr.Enum->IsFlags);
+							if (const Json::Value* opts = f.FindMember("enumOptions"); opts && opts->IsArray()) {
+								for (const Json::Value& opt : opts->GetArray()) {
+									if (!opt.IsObject()) continue;
+									EnumOption option;
+									if (const Json::Value* n = opt.FindMember("name"))   option.Name = n->AsStringOr();
+									if (const Json::Value* vv = opt.FindMember("value")) option.Value = static_cast<int64_t>(vv->AsDoubleOr(0.0));
+									fr.Enum->Options.push_back(std::move(option));
+								}
+							}
+						}
+						if (fr.DisplayName.empty()) fr.DisplayName = fr.Name;
+						rec.ItemFields.push_back(std::move(fr));
+					}
+				}
+
 				if (rec.DisplayName.empty()) rec.DisplayName = rec.Name;
 				fields.push_back(std::move(rec));
 			}
@@ -179,6 +215,7 @@ namespace Index {
 			const std::string& className, const std::string& fieldName,
 			const std::string& newValueStr, bool isPlaying)
 		{
+			(void)isPlaying; // edits now persist to PendingFieldValues in both modes; see below
 			if (!entity.HasComponent<ScriptComponent>()) return;
 			auto& sc = const_cast<Entity&>(entity).GetComponent<ScriptComponent>();
 			if (scriptIndex >= sc.Scripts.size()) return;
@@ -190,9 +227,13 @@ namespace Index {
 				callbacks.SetScriptField(static_cast<int32_t>(inst.GetGCHandle()),
 					fieldName.c_str(), newValueStr.c_str());
 			}
-			if (!isPlaying) {
-				sc.PendingFieldValues[className + "." + fieldName] = newValueStr;
-			}
+			// Record on PendingFieldValues in both edit AND play mode. In edit mode this
+			// is the authoritative store; in play mode the live instance already took the
+			// value via SetScriptField above, but persisting it here lets the editor's
+			// play-exit restore carry an inspector edit made during play back into edit
+			// mode (ImGuiEditorLayer::CaptureScriptFieldOverrides / ReapplyScriptFieldOverrides).
+			// Runtime gameplay mutations never run through here, so they still revert.
+			sc.PendingFieldValues[className + "." + fieldName] = newValueStr;
 		}
 
 		void ApplyManagedComponentFieldEdit(const Entity& entity,
@@ -311,11 +352,17 @@ namespace Index {
 			return PropertyTypeFromString(itemTag);
 		}
 
-		std::string EncodeScriptList(const std::vector<PropertyValue>& items) {
+		using ListItemSchema = std::vector<PropertyMetadata::ListItemField>;
+
+		// Raw container codec (leading-'\n' element marker + backslash/newline
+		// escaping). Used at the outer level (elements) and, for object lists, the
+		// inner level (each element's sub-fields) — the outer pass escapes the
+		// inner strings, so nesting is automatic.
+		std::string JoinListString(const std::vector<std::string>& parts) {
 			std::string out;
-			for (const PropertyValue& item : items) {
+			for (const std::string& p : parts) {
 				out.push_back('\n');
-				for (char c : item.ToString()) {
+				for (char c : p) {
 					if (c == '\\') out.append("\\\\");
 					else if (c == '\n') out.append("\\n");
 					else out.push_back(c);
@@ -324,11 +371,10 @@ namespace Index {
 			return out;
 		}
 
-		std::vector<PropertyValue> DecodeScriptList(const std::string& text, PropertyType itemType) {
-			std::vector<PropertyValue> items;
-			if (text.empty()) return items;
-			// Non-empty payload always opens with the '\n' element marker; skip it.
-			std::size_t start = (text[0] == '\n') ? 1 : 0;
+		std::vector<std::string> SplitListString(const std::string& text) {
+			std::vector<std::string> parts;
+			if (text.empty()) return parts;
+			std::size_t start = (text[0] == '\n') ? 1 : 0;  // skip the leading element marker
 			std::string current;
 			for (std::size_t i = start; i < text.size(); ++i) {
 				char c = text[i];
@@ -337,23 +383,74 @@ namespace Index {
 					if (next == 'n')  { current.push_back('\n'); ++i; continue; }
 					if (next == '\\') { current.push_back('\\'); ++i; continue; }
 				}
-				if (c == '\n') { items.push_back(PropertyValue::FromString(itemType, current)); current.clear(); continue; }
+				if (c == '\n') { parts.push_back(std::move(current)); current.clear(); continue; }
 				current.push_back(c);
 			}
-			items.push_back(PropertyValue::FromString(itemType, current));
+			parts.push_back(std::move(current));
+			return parts;
+		}
+
+		// schema empty => scalar/reference list (each element is itemType).
+		// schema non-empty => inline object list (each element's ListValue holds the
+		// sub-field PropertyValues, in schema order; itemType is unused).
+		std::string EncodeScriptList(const std::vector<PropertyValue>& items, const ListItemSchema& schema) {
+			std::vector<std::string> parts;
+			parts.reserve(items.size());
+			if (schema.empty()) {
+				for (const PropertyValue& item : items) parts.push_back(item.ToString());
+			}
+			else {
+				for (const PropertyValue& item : items) {
+					std::vector<std::string> fieldStrs;
+					fieldStrs.reserve(schema.size());
+					for (std::size_t k = 0; k < schema.size(); ++k) {
+						if (k < item.ListValue.size()) {
+							fieldStrs.push_back(item.ListValue[k].ToString());
+						}
+						else {
+							PropertyValue blank; blank.Type = schema[k].Type;
+							fieldStrs.push_back(blank.ToString());
+						}
+					}
+					parts.push_back(JoinListString(fieldStrs));
+				}
+			}
+			return JoinListString(parts);
+		}
+
+		std::vector<PropertyValue> DecodeScriptList(const std::string& text, PropertyType itemType, const ListItemSchema& schema) {
+			std::vector<PropertyValue> items;
+			const std::vector<std::string> parts = SplitListString(text);
+			items.reserve(parts.size());
+			if (schema.empty()) {
+				for (const std::string& p : parts) items.push_back(PropertyValue::FromString(itemType, p));
+			}
+			else {
+				for (const std::string& slotStr : parts) {
+					const std::vector<std::string> fieldStrs = SplitListString(slotStr);
+					PropertyValue element;
+					element.Type = PropertyType::List;  // object element: sub-fields live in ListValue
+					element.ListValue.reserve(schema.size());
+					for (std::size_t k = 0; k < schema.size(); ++k) {
+						const std::string fs = (k < fieldStrs.size()) ? fieldStrs[k] : std::string();
+						element.ListValue.push_back(PropertyValue::FromString(schema[k].Type, fs));
+					}
+					items.push_back(std::move(element));
+				}
+			}
 			return items;
 		}
 
-		PropertyValue MakeListPropertyValue(const std::string& encoded, PropertyType itemType) {
+		PropertyValue MakeListPropertyValue(const std::string& encoded, PropertyType itemType, const ListItemSchema& schema) {
 			PropertyValue v;
 			v.Type = PropertyType::List;
-			v.ListValue = DecodeScriptList(encoded, itemType);
+			v.ListValue = DecodeScriptList(encoded, itemType, schema);
 			return v;
 		}
 
 		PropertyValue LookupPerEntityListValue(const std::shared_ptr<ScriptFieldValueMap>& perEntity,
 			const Entity& entity, const std::string& fieldName,
-			const std::string& defaultValue, PropertyType itemType)
+			const std::string& defaultValue, PropertyType itemType, const ListItemSchema& schema)
 		{
 			std::string raw = defaultValue;
 			if (perEntity) {
@@ -363,13 +460,32 @@ namespace Index {
 					if (fIt != eIt->second.end()) raw = fIt->second;
 				}
 			}
-			return MakeListPropertyValue(raw, itemType);
+			return MakeListPropertyValue(raw, itemType, schema);
 		}
 
-		// When d is a list, resolve item metadata (ListItemType + per-item
-		// component/asset filter) and return the item type; None otherwise.
+		// When d is a list, resolve item metadata and return the (scalar) item type.
+		// For inline object lists (ItemTypeTag == "object") it builds the sub-field
+		// schema into Metadata.ListItemFields and returns None.
 		PropertyType ConfigureListItemMetadata(PropertyDescriptor& d, const EditorFieldRecord& rec) {
 			if (d.Type != PropertyType::List) return PropertyType::None;
+			if (rec.ItemTypeTag == "object") {
+				d.Metadata.ListItemFields.clear();
+				d.Metadata.ListItemFields.reserve(rec.ItemFields.size());
+				for (const EditorItemFieldRecord& f : rec.ItemFields) {
+					PropertyMetadata::ListItemField lf;
+					lf.Name = f.Name;
+					lf.DisplayName = f.DisplayName.empty() ? f.Name : f.DisplayName;
+					std::string comp;
+					AssetKind kind = AssetKind::Unknown;
+					lf.Type = ResolveListItemType(f.TypeTag, comp, kind);
+					lf.ComponentTypeName = comp;
+					lf.AssetKindFilter = kind;
+					lf.Enum = f.Enum;
+					d.Metadata.ListItemFields.push_back(std::move(lf));
+				}
+				d.Metadata.ListItemType = PropertyType::None;
+				return PropertyType::None;
+			}
 			std::string itemComp;
 			AssetKind itemKind = AssetKind::Unknown;
 			const PropertyType itemType = ResolveListItemType(rec.ItemTypeTag, itemComp, itemKind);
@@ -409,13 +525,14 @@ namespace Index {
 			}
 
 			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
-				d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, itemType]
+				ListItemSchema schema = d.Metadata.ListItemFields;
+				d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, itemType, schema]
 					(const Entity& e) -> PropertyValue {
-						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType);
+						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType, schema);
 					};
-				d.Set = [className, fieldName = rec.Name, scriptIndex, isPlaying]
+				d.Set = [className, fieldName = rec.Name, scriptIndex, isPlaying, schema]
 					(Entity& entity, const PropertyValue& v) {
-						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, EncodeScriptList(v.ListValue), isPlaying);
+						ApplyScriptFieldEdit(entity, scriptIndex, className, fieldName, EncodeScriptList(v.ListValue, schema), isPlaying);
 					};
 				return d;
 			}
@@ -462,12 +579,13 @@ namespace Index {
 			}
 
 			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
-				d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, itemType]
+				ListItemSchema schema = d.Metadata.ListItemFields;
+				d.Get = [perEntityValues, fieldName = rec.Name, defaultValue = rec.Value, itemType, schema]
 					(const Entity& e) -> PropertyValue {
-						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType);
+						return LookupPerEntityListValue(perEntityValues, e, fieldName, defaultValue, itemType, schema);
 					};
-				d.Set = [className, fieldName = rec.Name](Entity& entity, const PropertyValue& v) {
-					ApplyManagedComponentFieldEdit(entity, className, fieldName, EncodeScriptList(v.ListValue));
+				d.Set = [className, fieldName = rec.Name, schema](Entity& entity, const PropertyValue& v) {
+					ApplyManagedComponentFieldEdit(entity, className, fieldName, EncodeScriptList(v.ListValue, schema));
 				};
 				return d;
 			}
@@ -669,12 +787,13 @@ namespace Index {
 			d.Metadata.SuppressTextureSlices = true;
 
 			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
-				d.Get = [value = rec.Value, itemType](const Entity&) -> PropertyValue {
-					return MakeListPropertyValue(value, itemType);
+				ListItemSchema schema = d.Metadata.ListItemFields;
+				d.Get = [value = rec.Value, itemType, schema](const Entity&) -> PropertyValue {
+					return MakeListPropertyValue(value, itemType, schema);
 				};
-				d.Set = [scene, className, fieldName = rec.Name](Entity&, const PropertyValue& v) {
+				d.Set = [scene, className, fieldName = rec.Name, schema](Entity&, const PropertyValue& v) {
 					if (!scene) return;
-					const std::string s = EncodeScriptList(v.ListValue);
+					const std::string s = EncodeScriptList(v.ListValue, schema);
 					scene->SetSceneSystemFieldValue(className, fieldName, s);
 					uint32_t handle = scene->GetSceneSystemHandle(className);
 					if (handle != 0) {
@@ -725,11 +844,12 @@ namespace Index {
 			d.Metadata.SuppressTextureSlices = true;
 
 			if (const PropertyType itemType = ConfigureListItemMetadata(d, rec); d.Type == PropertyType::List) {
-				d.Get = [value = rec.Value, itemType](const Entity&) -> PropertyValue {
-					return MakeListPropertyValue(value, itemType);
+				ListItemSchema schema = d.Metadata.ListItemFields;
+				d.Get = [value = rec.Value, itemType, schema](const Entity&) -> PropertyValue {
+					return MakeListPropertyValue(value, itemType, schema);
 				};
-				d.Set = [guid, fieldName = rec.Name](Entity&, const PropertyValue& v) {
-					DataAssetManager::SetField(guid, fieldName, EncodeScriptList(v.ListValue));
+				d.Set = [guid, fieldName = rec.Name, schema](Entity&, const PropertyValue& v) {
+					DataAssetManager::SetField(guid, fieldName, EncodeScriptList(v.ListValue, schema));
 					DataAssetManager::Save(guid);
 				};
 				return d;

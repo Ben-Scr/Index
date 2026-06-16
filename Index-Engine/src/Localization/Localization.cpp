@@ -482,6 +482,19 @@ namespace Index::Localization {
 		return it->second;
 	}
 
+	const std::string& GetFallback(std::string_view key) {
+		State& s = S();
+		const std::string keyStr(key);
+		if (auto it = s.Fallback.find(keyStr); it != s.Fallback.end()) {
+			return it->second;
+		}
+		auto [it, inserted] = s.MissingKeys.emplace(keyStr, keyStr);
+		if (inserted) {
+			IDX_CORE_WARN_TAG("Localization", "Missing fallback key: '{}'", keyStr);
+		}
+		return it->second;
+	}
+
 	const std::vector<LanguageInfo>& GetAvailableLanguages() {
 		return S().AvailableLanguages;
 	}
@@ -623,6 +636,7 @@ namespace Index::Localization {
 		out.Code = snap.Code;
 		out.Stage = snap.Stage;
 		out.Progress = snap.Progress;
+		out.Running = snap.Running;
 		out.Failed = snap.Finished && !snap.Success;
 		out.RestartRequired = snap.RestartRequired;
 		out.Error = snap.Error;

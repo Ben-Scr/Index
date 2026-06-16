@@ -125,22 +125,22 @@ public class Entity : IEquatable<Entity>
         get
         {
             if (IsPrefabAsset) return null;
-            ulong parentId = InternalCalls.Transform2D_GetParent(ID);
+            ulong parentId = InternalCalls.Entity_GetParent(ID);
             return parentId != 0 ? new Entity(parentId) : null;
         }
     }
 
-    public int ChildCount => IsPrefabAsset ? 0 : InternalCalls.Transform2D_GetChildCount(ID);
+    public int ChildCount => IsPrefabAsset ? 0 : InternalCalls.Entity_GetChildCount(ID);
 
     public Entity[] GetChildren()
     {
         if (IsPrefabAsset) return Array.Empty<Entity>();
 
-        int count = InternalCalls.Transform2D_GetChildCount(ID);
+        int count = InternalCalls.Entity_GetChildCount(ID);
         if (count <= 0) return Array.Empty<Entity>();
 
         ulong[] ids = new ulong[count];
-        int actual = InternalCalls.Transform2D_GetChildren(ID, ids);
+        int actual = InternalCalls.Entity_GetChildren(ID, ids);
 
         var result = new List<Entity>(actual);
         for (int i = 0; i < actual; i++)
@@ -154,15 +154,21 @@ public class Entity : IEquatable<Entity>
     public Entity? GetChildAt(int index)
     {
         if (IsPrefabAsset || index < 0) return null;
-        ulong childId = InternalCalls.Transform2D_GetChildAt(ID, index);
+        ulong childId = InternalCalls.Entity_GetChildAt(ID, index);
         return childId != 0 ? new Entity(childId) : null;
     }
 
-    public bool SetParent(Entity? newParent)
+    /// <summary>
+    /// Reparents this entity under <paramref name="parent"/> (pass null to detach to the scene root).
+    /// When <paramref name="worldPositionStays"/> is true the entity keeps its world position,
+    /// rotation and scale — only its local transform is re-derived against the new parent.
+    /// Pass false to keep the local transform instead, letting the entity move with the new parent's frame.
+    /// </summary>
+    public bool SetParent(Entity? parent, bool worldPositionStays = true)
     {
         if (IsPrefabAsset) return false;
-        ulong parentId = newParent != null && newParent != Entity.Invalid ? newParent.ID : 0;
-        return InternalCalls.Transform2D_SetParent(ID, parentId);
+        ulong parentId = parent != null && parent != Entity.Invalid ? parent.ID : 0;
+        return InternalCalls.Entity_SetParent(ID, parentId, worldPositionStays);
     }
 
     private static readonly Dictionary<Type, string> s_NativeComponentNames = new()
@@ -320,6 +326,17 @@ public class Entity : IEquatable<Entity>
             if (s_ManagedComponentStore.Remove(key, out Component? component))
                 component.Invalidate();
         }
+    }
+
+    // Native→managed bridge (ScriptInstanceManager.NotifyEntityDestroyed): the engine
+    // destroyed this entity without going through a C# path, so its cached wrappers would
+    // otherwise linger until assembly unload. Empty-store fast path keeps bulk teardown
+    // O(1) per entity (the store is empty for the vast majority of entities).
+    internal static void OnNativeEntityDestroyed(ulong entityID)
+    {
+        if (s_ManagedComponentStore.Count == 0)
+            return;
+        InvalidateManagedComponents(entityID);
     }
 
     // MUST clear on assembly unload: s_ManagedComponentStore roots user Component subclasses, preventing the AssemblyLoadContext from unloading until every entry is removed.
@@ -715,14 +732,46 @@ public class Entity : IEquatable<Entity>
 
         return id != 0 ? new Entity(id) : Invalid;
     }
-    public static Entity Create(Vector3 position)
+    public static Entity Create(string? name, Vector3 position, float rotation)
     {
-        ulong id = InternalCalls.Entity_Create(null);
+        ulong id = InternalCalls.Entity_Create(name);
 
         if (id != 0)
         {
             InternalCalls.Entity_AddComponent(id, GetNativeName<Transform2D>() ?? "");
             InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+            InternalCalls.Transform2D_SetRotation(id, rotation);
+        }
+
+        return id != 0 ? new Entity(id) : Invalid;
+    }
+    public static Entity Create(string? name, Vector3 position, float rotation, Entity? parent)
+    {
+        ulong id = InternalCalls.Entity_Create(name);
+
+        if (id != 0)
+        {
+            InternalCalls.Entity_AddComponent(id, GetNativeName<Transform2D>() ?? "");
+            InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
+            InternalCalls.Transform2D_SetRotation(id, rotation);
+
+            ulong parentId = parent != null && parent != Entity.Invalid ? parent.ID : 0;
+            // position/rotation are the local transform under the new parent; don't preserve world.
+            InternalCalls.Entity_SetParent(id, parentId, worldPositionStays: false);
+        }
+
+        return id != 0 ? new Entity(id) : Invalid;
+    }
+    public static Entity Create(string? name, Entity? parent)
+    {
+        ulong id = InternalCalls.Entity_Create(name);
+
+        if (id != 0)
+        {
+            InternalCalls.Entity_AddComponent(id, GetNativeName<Transform2D>() ?? "");
+
+            ulong parentId = parent != null && parent != Entity.Invalid ? parent.ID : 0;
+            InternalCalls.Entity_SetParent(id, parentId, worldPositionStays: false);
         }
 
         return id != 0 ? new Entity(id) : Invalid;
@@ -740,7 +789,7 @@ public class Entity : IEquatable<Entity>
         return id != 0 ? new Entity(id) : Invalid;
     }
 
-    public static Entity Instantiate(Entity source, Vector3 position, float rotation, Transform2D? parent)
+    public static Entity Instantiate(Entity source, Vector3 position, float rotation, Entity? parent)
     {
         if (source is null || source == Invalid)
             return Invalid;
@@ -753,8 +802,8 @@ public class Entity : IEquatable<Entity>
             return Invalid;
 
         // Set parent before position/rotation — world-space setters re-derive local values from the parent transform.
-        if (parent != null)
-            InternalCalls.Transform2D_SetParent(id, ((Component)parent).Entity.ID);
+        if (parent != null && parent != Invalid)
+            InternalCalls.Entity_SetParent(id, parent.ID, worldPositionStays: false);
 
         InternalCalls.Transform2D_SetPosition(id, position.X, position.Y);
         InternalCalls.Transform2D_SetRotation(id, rotation * Mathf.Deg2Rad);
@@ -814,7 +863,7 @@ public class Entity : IEquatable<Entity>
         return new Entity(id);
     }
 
-    public static Entity Instantiate(Entity source, Transform2D? parent)
+    public static Entity Instantiate(Entity source, Entity? parent)
     {
         if (source is null || source == Invalid)
             return Invalid;
@@ -826,8 +875,8 @@ public class Entity : IEquatable<Entity>
         if (id == 0)
             return Invalid;
 
-        if (parent != null)
-            InternalCalls.Transform2D_SetParent(id, ((Component)parent).Entity.ID);
+        if (parent != null && parent != Invalid)
+            InternalCalls.Entity_SetParent(id, parent.ID, worldPositionStays: false);
 
         return new Entity(id);
     }

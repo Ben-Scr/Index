@@ -352,12 +352,13 @@ namespace Index {
 			auto* rect = registry.try_get<RectTransform2DComponent>(entity);
 			if (!text || !rect) return;
 			if (text->WrapMode != TextWrapMode::None) return;
+			if (!text->AutoSize) return; // manual sizing: leave SizeDelta to the user
 
 			Font* font = TextRenderer::ResolveFont(*text);
 			if (!font || !font->IsLoaded()) return;
 
 			const Vec2 naturalAtlasPx = TextRenderer::MeasureNaturalSize(
-				*font, text->Text, text->LetterSpacing);
+				*font, text->Text, text->LetterSpacing, text->LineSpacing);
 
 			const float bakedSize = font->GetPixelSize() > 0.0f
 				? font->GetPixelSize()

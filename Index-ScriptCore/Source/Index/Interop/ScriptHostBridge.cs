@@ -99,6 +99,9 @@ internal unsafe struct ManagedCallbacksStruct
     public delegate* unmanaged<ulong, byte*, byte*, void> SetDataAssetField;
     public delegate* unmanaged<byte*, int> DataAssetClassExists;
     public delegate* unmanaged<byte*, int, int> GetDataAssetTypes;
+
+    // ── Native→managed entity invalidation (appended for binary compat) ──
+    public delegate* unmanaged<ulong, void> NotifyEntityDestroyed;
 }
 
 /// <summary>Entry point called from C++ via hostfxr; exchanges native/managed function pointers.</summary>
@@ -195,6 +198,9 @@ internal static class ScriptHostBridge
             managedCallbacks->SetDataAssetField = &ScriptInstanceManager.SetDataAssetField;
             managedCallbacks->DataAssetClassExists = &ScriptInstanceManager.DataAssetClassExists;
             managedCallbacks->GetDataAssetTypes = &ScriptInstanceManager.GetDataAssetTypesBuffer;
+
+            // ── Native→managed entity invalidation (appended for binary compat) ──
+            managedCallbacks->NotifyEntityDestroyed = &ScriptInstanceManager.NotifyEntityDestroyed;
 
             ScriptInstanceManager.SetCoreAssembly(typeof(ScriptHostBridge).Assembly);
 

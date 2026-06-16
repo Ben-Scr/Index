@@ -881,6 +881,13 @@ namespace Index {
 		// is created. Capturing here also preserves runtime-modified fields.
 		void SnapshotManagedFieldsToPending(ScriptComponent& scriptComp, const ScriptInstance& instance) {
 			if (!instance.HasManagedInstance()) return;
+			// Only capture in EDIT mode. This exists to preserve inspector-assigned
+			// field values across an edit-mode recompile; doing it during PLAY would
+			// copy RUNTIME-mutated values into the persistent PendingFieldValues, which
+			// then bake into the pre-play snapshot and survive Stop — play-mode changes
+			// must revert. (A play-mode hot-reload therefore re-applies authored values
+			// rather than preserving runtime state, which is the correct trade-off.)
+			if (Application::GetIsPlaying()) return;
 			auto& callbacks = ScriptEngine::GetCallbacks();
 			if (!callbacks.GetScriptFields) return;
 

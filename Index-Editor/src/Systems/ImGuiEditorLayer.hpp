@@ -58,6 +58,9 @@ namespace Index {
 		Translate,
 		Rotate,
 		Scale,
+		// Bounding-box resize: drag edges/corners to resize the entity's bounds —
+		// RectTransform2D size (SizeDelta) or Transform2D scale.
+		Bounds,
 	};
 
 	class ImGuiEditorLayer : public Layer {
@@ -126,12 +129,21 @@ namespace Index {
 		void ExecuteBuild();
 		void ExecuteBuildAsync();
 		void ReportBuildProgress(float progress, std::string_view stage);
+		void ExecuteReserializeAsync();
+		void ReportReserializeProgress(float progress, std::string_view stage);
 		void RenderPackageManagerPanel();
 		void RenderAssetInspector();
 		void BeginPlayModeRequest(Scene& scene);
 		void CompletePlayModeEntry(Scene& scene);
 		void PollPendingPlayModeRequest(Scene& scene);
 		void RestoreEditorSceneAfterPlaymode();
+		// Snapshot inspector-authored script field overrides for the play/stop round-trip
+		// so component references survive even when the scene-file round-trip drops them.
+		// merge=false (play-entry) captures the edit-mode baseline; merge=true (play-exit,
+		// pre-reload) overlays values edited in the inspector during play. See m_PlayModeScriptFields.
+		void CaptureScriptFieldOverrides(bool merge);
+		// Re-apply the captured overrides onto the reloaded entities (play-exit, post-reload).
+		void ReapplyScriptFieldOverrides();
 		void SelectSceneNode();
 		void SelectEntity(EntityHandle entity);
 		void ClearEntitySelection();
@@ -276,6 +288,9 @@ namespace Index {
 		// Scene* (not sceneId): two loaded scenes can collide on sceneId — a duplicated .scene file keeps its serialized id, and an
 		// additively loaded script-only scene starts at the UUID default. Scene* is always distinct among currently-loaded scenes.
 		const class Scene* m_EntityOrderSceneId = nullptr;
+		// Structural changes from outside the editor (a script calling Entity.SetParent at runtime) don't flip
+		// m_EntityOrderDirty and don't change the entity count; the scene's hierarchy version catches them.
+		uint64_t m_LastHierarchyVersion = 0;
 
 		// ── Prefab edit mode ──────────────────────────────────────────
 		std::unique_ptr<Scene> m_PrefabEditScene;
@@ -322,7 +337,7 @@ namespace Index {
 		// Transforms captured on the gizmo-drag rising edge; one undo step covering
 		// the whole drag is committed on the falling edge.
 		bool m_GizmoDragActive = false;
-		std::vector<std::pair<uint64_t, TransformSnapshot>> m_GizmoDragBefore;
+		std::vector<std::pair<uint64_t, EntityTransformSnapshot>> m_GizmoDragBefore;
 
 		// Unreal-style transient toast: fades in/out over the editor view to show
 		// the last undone/redone action. Rect is captured during RenderEditorView.
@@ -430,6 +445,16 @@ namespace Index {
 		// Name of the active scene at play-mode entry. Restored after exit so
 		// a script-side LoadScene during play doesn't leak its choice into edit mode.
 		std::string m_PlayModeActiveScene;
+		// Inspector-authored script field values (ScriptComponent::PendingFieldValues)
+		// captured per entity at play-entry and forced back onto the reloaded entities
+		// after the play-exit restore. The play snapshot round-trips through the scene
+		// serializer, which can drop a pending value (notably a component/UI reference);
+		// re-applying the captured map guarantees inspector-assigned references survive a
+		// play/stop cycle regardless of where the serialize round-trip loses them.
+		// Keyed: scene name -> entity persistent UUID -> ("ClassName.FieldName" -> value).
+		std::unordered_map<std::string,
+			std::unordered_map<uint64_t, std::unordered_map<std::string, std::string>>>
+			m_PlayModeScriptFields;
 		bool m_PlayModeRecompilePending = false;
 		int m_StepFrames = 0;
 
@@ -447,6 +472,9 @@ namespace Index {
 		ProfilerPanel m_ProfilerPanel;
 
 		std::vector<std::string> m_BuildSceneList;
+		// AssetRegistry::GetChangeVersion() the build scene list was last reconciled against; gates the
+		// O(assets) FindAll so opening the Build panel doesn't force a registry rebuild every frame.
+		uint64_t m_BuildSceneListVersion = 0;
 		int m_DraggedSceneIndex = -1;
 		bool m_ShowProjectSettings = false;
 	public:
@@ -488,5 +516,15 @@ namespace Index {
 		std::string m_BuildStage;       // protected by m_BuildProgressMutex
 		std::vector<entt::entity> m_EditorPausedAudioEntities; // AudioSources paused by editor, not by gameplay
 		std::chrono::steady_clock::time_point m_BuildStartTime;
+
+		// Async scene/prefab format reserialization (Project Settings → Serialization → Asset format).
+		// Like the build worker, the heavy disk conversion runs off-thread while OnPreRender keeps
+		// painting the shared Win32 progress window from the values published here under the mutex.
+		int m_ReserializeState = 0; // 0=idle, 1=pending, 2=launch worker, 3=running
+		std::future<void> m_ReserializeFuture;
+		std::atomic<int> m_ReserializeConverted{ 0 };
+		std::mutex m_ReserializeProgressMutex;
+		float m_ReserializeProgress{ 0.0f }; // protected by m_ReserializeProgressMutex
+		std::string m_ReserializeStage;      // protected by m_ReserializeProgressMutex
 	};
 }

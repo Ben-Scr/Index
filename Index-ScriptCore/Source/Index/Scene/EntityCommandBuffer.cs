@@ -684,6 +684,8 @@ public sealed partial class EntityCommandBuffer : IDisposable
                   "form (e.g. the prefab contains internal entity references — a " +
                   "v1 limitation; fall back to Entity.Instantiate(prefab) for those). " +
                   "See the engine log for the offending GUID",
+            -7 => "an unexpected internal engine exception occurred during playback " +
+                  "(e.g. out of memory while baking a prefab). See the engine log for details",
             _ => $"native error code {created}",
         };
         throw new InvalidOperationException(

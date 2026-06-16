@@ -41,10 +41,10 @@ namespace Index {
 		// Mutable accessor — ColorEdit4 writes through this. Caller must
 		// pass a valid ImGuiCol_ index (asserted internally).
 		static ImVec4& CustomColor(int imGuiColIdx);
-		// Reseeds m_CustomColors from the live ImGui style. Useful as a
-		// "reset" button after the user has experimented and wants to
-		// return to the current base theme's colors.
-		static void ResetCustomColorsFromCurrent();
+		// Reseeds m_CustomColors from the resolved default theme (Dark/Light
+		// per the OS), giving the "reset" button a clean known base to
+		// customise from — not a copy of the custom colors already on screen.
+		static void ResetCustomColorsToDefault();
 
 		static uint64_t GetEditorFontAssetId();
 		// Persisted immediately; the new font only takes effect on next
@@ -93,10 +93,14 @@ namespace Index {
 		static void SetAutoSavePrefabs(bool value);
 
 		// ── Editing ───────────────────────────────────────────────
-		// When true (default), deleting an asset (Project panel) or an entity
-		// (Entities hierarchy) raises a confirmation dialog first.
-		static bool GetConfirmOnDelete();
-		static void SetConfirmOnDelete(bool value);
+		// When true (default), deleting an entity (Entities hierarchy) or an
+		// asset (Project panel) raises a confirmation dialog first. The two are
+		// tracked independently so each can be silenced on its own.
+		static bool GetConfirmOnDeleteEntity();
+		static void SetConfirmOnDeleteEntity(bool value);
+
+		static bool GetConfirmOnDeleteAsset();
+		static void SetConfirmOnDeleteAsset(bool value);
 
 		// ── Viewport / Snapping ───────────────────────────────────
 		// When enabled, entities dragged in the Editor View snap their world
@@ -131,6 +135,18 @@ namespace Index {
 		static float GetScaleSnap();
 		// Clamped to >= k_MinScaleSnap.
 		static void  SetScaleSnap(float value);
+
+		// UI alignment guides: when dragging a UI (RectTransform) element, draw
+		// alignment lines against other UI elements' edges/centers and snap to
+		// them when the dragged edge comes within AlignmentSnapThreshold screen
+		// pixels of a candidate edge.
+		static constexpr float k_DefaultAlignmentSnapThreshold = 8.0f; // screen pixels
+		static constexpr float k_MinAlignmentSnapThreshold = 1.0f;
+		static bool  GetAlignmentGuidesEnabled();
+		static void  SetAlignmentGuidesEnabled(bool value);
+		static float GetAlignmentSnapThreshold();
+		// Clamped to >= k_MinAlignmentSnapThreshold.
+		static void  SetAlignmentSnapThreshold(float value);
 	};
 
 }

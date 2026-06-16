@@ -12,6 +12,7 @@
     "launcher.action.execute_selected": "Ausf\u00fchren",
 
     "launcher.progress.opening_project": "Projekt wird geöffnet",
+    "launcher.progress.downloading_language": "Sprache wird heruntergeladen…",
     "launcher.progress.working": "Wird ausgeführt...",
     "launcher.progress.launching_editor": "Editor wird gestartet...",
 
@@ -87,10 +88,11 @@
     "launcher.settings.language": "Sprache",
     "launcher.settings.language.auto_format": "Auto ({0})",
     "launcher.settings.language.not_installed_suffix": " (nicht installiert)",
-    "launcher.settings.language.downloading": "Lade {0}…",
     "launcher.settings.language.download_failed": "Download fehlgeschlagen: {0}",
+    "launcher.settings.language.restart_title": "Neustart erforderlich",
     "launcher.settings.language.restart_required": "Starten Sie den Launcher neu, um CJK-Zeichen anzuzeigen.",
     "launcher.settings.language.restart_now": "Jetzt neu starten",
+    "launcher.settings.language.restart_later": "Später",
     "launcher.settings.theme": "Design",
     "launcher.settings.theme.auto_format": "Automatisch ({0})",
     "launcher.settings.theme.dark": "Dunkel",

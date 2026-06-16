@@ -52,6 +52,11 @@ namespace Index {
 		static void SetMasterVolume(float volume);
 		static float GetMasterVolume() { return s_masterVolume; }
 
+		/// Global suspend/resume of all audio output, used when the application is background-paused.
+		/// Freezes every playing sound in place; ResumeAll continues from the same point (a pause, not a stop).
+		static void PauseAll();
+		static void ResumeAll();
+
 
 		static void PlayOneShot(const AudioHandle& audioHandle, float volume = 1.0f);
 

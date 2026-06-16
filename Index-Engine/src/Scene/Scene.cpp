@@ -494,11 +494,38 @@ namespace Index {
 		return static_cast<uint64_t>(m_Registry.get<UUIDComponent>(entity).Id);
 	}
 
+	void Scene::PushEntityRefRemap() { ++m_EntityRefRemapDepth; }
+
+	void Scene::PopEntityRefRemap() {
+		if (m_EntityRefRemapDepth > 0 && --m_EntityRefRemapDepth == 0) {
+			m_EntityRefRemap.clear();
+		}
+	}
+
+	void Scene::RegisterEntityRefRemap(uint64_t oldId, uint64_t newId) {
+		if (m_EntityRefRemapDepth == 0 || oldId == 0 || newId == 0 || oldId == newId) {
+			return;
+		}
+		m_EntityRefRemap[oldId] = newId;
+	}
+
+	uint64_t Scene::TranslateEntityRef(uint64_t id) const {
+		if (m_EntityRefRemapDepth == 0 || id == 0) {
+			return id;
+		}
+		const auto it = m_EntityRefRemap.find(id);
+		return it != m_EntityRefRemap.end() ? it->second : id;
+	}
+
 	bool Scene::TryResolveEntityRef(uint64_t entityId, EntityHandle& outHandle) const {
 		outHandle = entt::null;
 		if (entityId == 0) {
 			return false;
 		}
+
+		// During a clone/paste batch, retarget a ref that pointed into the duplicated subtree
+		// to the corresponding clone; external ids are not in the map and pass through unchanged.
+		entityId = TranslateEntityRef(entityId);
 
 		if (TryResolveRuntimeID(entityId, outHandle)) {
 			return true;
@@ -526,6 +553,25 @@ namespace Index {
 		while (!m_PendingEntityRefFixups.empty()) {
 			std::vector<std::function<void()>> batch;
 			batch.swap(m_PendingEntityRefFixups);
+			for (auto& fn : batch) {
+				if (fn) fn();
+			}
+		}
+	}
+
+	void Scene::RunPendingEntityRefFixupsFrom(std::size_t startIndex) {
+		// Run only [startIndex, end). Fixups always append (DeferEntityRefFixup -> emplace_back), so any
+		// new ones land past startIndex and get drained on a later loop pass; entries before startIndex are
+		// left untouched for the outer drain.
+		while (m_PendingEntityRefFixups.size() > startIndex) {
+			std::vector<std::function<void()>> batch;
+			batch.reserve(m_PendingEntityRefFixups.size() - startIndex);
+			for (std::size_t i = startIndex; i < m_PendingEntityRefFixups.size(); ++i) {
+				batch.push_back(std::move(m_PendingEntityRefFixups[i]));
+			}
+			m_PendingEntityRefFixups.erase(
+				m_PendingEntityRefFixups.begin() + static_cast<std::ptrdiff_t>(startIndex),
+				m_PendingEntityRefFixups.end());
 			for (auto& fn : batch) {
 				if (fn) fn();
 			}
@@ -1013,6 +1059,12 @@ namespace Index {
 			}
 		}
 
+		// Native-initiated destruction: drop the entity's cached C# component
+		// wrappers. DestroyEntityInternal is the choke point for single, cascade-
+		// child, ClearEntities, and scene-unload destroys, so covering it here covers
+		// all of them. Read the UUID while the entity is still alive.
+		ScriptEngine::NotifyEntityDestroyed(GetEntityPersistentID(nativeEntity));
+
 		UnregisterEntityIdentity(nativeEntity);
 		// Dynamic components don't get on_destroy hooks; scrub via Application path so detached/headless scenes don't assert.
 		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
@@ -1245,6 +1297,12 @@ namespace Index {
 		m_TearingDown = true;
 		m_MainCameraEntity = entt::null;
 		try {
+			// Detached scenes (prefab inspector) reach here with live entities that never
+			// went through DestroyEntityInternal; drop their managed wrappers so the C#
+			// component store doesn't retain them until the next assembly unload.
+			m_Registry.view<UUIDComponent>().each([](const UUIDComponent& uuid) {
+				ScriptEngine::NotifyEntityDestroyed(static_cast<uint64_t>(uuid.Id));
+			});
 			m_Registry.clear();
 		}
 		catch (...) {
@@ -1285,6 +1343,14 @@ namespace Index {
 		++m_StaticRenderDataVersion;
 		if (m_StaticRenderDataVersion == 0) {
 			m_StaticRenderDataVersion = 1;
+		}
+	}
+
+	void Scene::MarkHierarchyStructureDirty()
+	{
+		++m_HierarchyVersion;
+		if (m_HierarchyVersion == 0) {
+			m_HierarchyVersion = 1;
 		}
 	}
 
@@ -1718,6 +1784,17 @@ namespace Index {
 	{
 		if (!registry.valid(entity)) {
 			return;
+		}
+
+		// Audio rides the enabled-state edge like PlayOnAwake: mute on disable, re-awaken on (re)enable while playing.
+		// The DisabledTag cascade re-runs this per child, so a whole subtree mutes/awakens together.
+		if (auto* audio = registry.try_get<AudioSourceComponent>(entity)) {
+			if (!enabled) {
+				audio->Stop();
+			}
+			else if (Application::GetIsPlaying()) {
+				audio->PlayOnAwakeIfEnabled();
+			}
 		}
 
 		if (auto* rigidbody = registry.try_get<Rigidbody2DComponent>(entity); rigidbody && rigidbody->IsValid()) {

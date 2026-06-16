@@ -117,7 +117,7 @@ namespace Index {
 		labelText.Text = "Button";
 		labelText.Color = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		labelText.HAlign = TextAlignment::Center;
-		labelText.FontSize = 18.0f;
+		labelText.FontSize = 36.0f;
 		label.SetParent(entity);
 
 		return entity;
@@ -194,7 +194,7 @@ namespace Index {
 		labelText.Text = "100%";
 		labelText.Color = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		labelText.HAlign = TextAlignment::Center;
-		labelText.FontSize = 14.0f;
+		labelText.FontSize = 28.0f;
 		// Sort the label above the fill so the percent is readable.
 		labelText.SortingOrder = 1;
 		label.SetParent(entity);
@@ -252,7 +252,7 @@ namespace Index {
 		auto& tc = textChild.GetComponent<TextRendererComponent>();
 		tc.Text = "Enter text...";
 		tc.Color = Color{ 0.55f, 0.55f, 0.55f, 1.0f };
-		tc.FontSize = 16.0f;
+		tc.FontSize = 32.0f;
 		tc.HAlign = TextAlignment::Left;
 		textChild.SetParent(entity);
 
@@ -283,7 +283,7 @@ namespace Index {
 		auto& tc = labelChild.GetComponent<TextRendererComponent>();
 		tc.Text = dd.Options.empty() ? "" : dd.Options[0];
 		tc.Color = Color{ 0.10f, 0.10f, 0.10f, 1.0f };
-		tc.FontSize = 16.0f;
+		tc.FontSize = 32.0f;
 		tc.HAlign = TextAlignment::Left;
 		labelChild.SetParent(entity);
 

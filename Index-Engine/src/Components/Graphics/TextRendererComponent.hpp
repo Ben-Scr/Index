@@ -16,6 +16,15 @@ namespace Index {
         Right
     };
 
+    // Vertical placement of the whole text block. For UI text it aligns within
+    // the host rect; for world-space text it positions the block relative to the
+    // entity's anchor point (Middle keeps the single-line baseline on the anchor).
+    enum class TextVerticalAlignment : uint8_t {
+        Top = 0,
+        Middle,
+        Bottom
+    };
+
     // None = single line + explicit breaks; Word = break at last whitespace; Character = break at overflow glyph.
     enum class TextWrapMode : uint8_t {
         None = 0,
@@ -46,10 +55,24 @@ namespace Index {
 
         float LetterSpacing = 0.0f;
 
+        // Extra space added between lines, in baked-atlas pixels (same unit as
+        // LetterSpacing). 0 = the font's natural line height. Added on top of it,
+        // so negative values tighten lines.
+        float LineSpacing = 0.0f;
+
         TextAlignment HAlign = TextAlignment::Left;
+
+        // Middle keeps existing scenes visually identical: single-line UI text was
+        // already vertically centred in its rect and world text sat on its anchor.
+        TextVerticalAlignment VAlign = TextVerticalAlignment::Middle;
 
         // World-space text (no RectTransform2D) never wraps; UI text wraps inside rect-width minus Margin. WrapWidth field removed — Margin already provides the inset.
         TextWrapMode WrapMode = TextWrapMode::None;
+
+        // Off by default. When enabled (and WrapMode is None), auto-fit the RectTransform to the text each
+        // frame. Turn off to size the rect manually — HAlign/VAlign then place the text
+        // within it. Ignored when the text wraps (the rect width drives wrapping).
+        bool AutoSize = false;
 
         // Screen-pixel insets: x=left, y=top, z=right (narrows wrap width), w=bottom (reserved). World-space text only honours x/y today.
         Vec4 Margin{ 0.0f, 0.0f, 0.0f, 0.0f };

@@ -736,6 +736,14 @@ namespace Index {
 				const uint64_t clipboardId = clipboardIds[static_cast<uint32_t>(entity)];
 				entityValue.AddMember("uuid", Value(std::to_string(clipboardId)));
 
+				// The clipboard "uuid" is a synthetic 1..N hierarchy id; in-component entity refs were
+				// serialized against the entity's REAL persistent id. Carry that original id so the
+				// deserializer can build the original->clone remap that retargets internal refs.
+				const uint64_t originalPersistentId = scene.GetEntityPersistentID(entity);
+				if (originalPersistentId != 0) {
+					entityValue.AddMember("sourceUuid", Value(std::to_string(originalPersistentId)));
+				}
+
 				// Origin/PrefabGUID survive the identity strip (they describe kind, not runtime id); SourceEntityId must be re-emitted or DeserializeFullEntity re-seeds it from the clipboard uuid, scrambling override diffs.
 				if (scene.GetEntityOrigin(entity) == EntityOrigin::Prefab) {
 					const uint64_t prefabGuid = static_cast<uint64_t>(scene.GetPrefabGUID(entity));
@@ -1036,8 +1044,11 @@ namespace Index {
 				textValue.AddMember("b", Value(text.Color.b));
 				textValue.AddMember("a", Value(text.Color.a));
 				textValue.AddMember("alignment", Value(static_cast<int>(text.HAlign)));
+				textValue.AddMember("valign", Value(static_cast<int>(text.VAlign)));
 				textValue.AddMember("letterSpacing", Value(text.LetterSpacing));
+				textValue.AddMember("lineSpacing", Value(text.LineSpacing));
 				textValue.AddMember("wrapMode", Value(static_cast<int>(text.WrapMode)));
+				textValue.AddMember("autoSize", Value(text.AutoSize));
 				// WrapWidth field removed — wrap area is now derived
 				// from the host rect's width minus Margin every frame.
 				textValue.AddMember("marginL", Value(text.Margin.x));

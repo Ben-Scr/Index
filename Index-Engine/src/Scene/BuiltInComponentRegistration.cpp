@@ -86,14 +86,21 @@ namespace Index {
 			Scene* s = owner.GetScene();
 			if (!s) return;
 
-			EntityHandle resolved = entt::null;
-			if (s->TryResolveEntityRef(static_cast<uint64_t>(id), resolved)) {
-				outRef = resolved;
-				return;
+			const uint64_t persistentId = static_cast<uint64_t>(id);
+
+			// During a clone/paste batch the original target still exists, so an immediate resolve would
+			// (wrongly) bind to it. Force deferral so resolution runs after the whole subtree — and thus the
+			// full original->clone remap — is built; TryResolveEntityRef then retargets to the clone.
+			if (!s->IsEntityRefRemapActive()) {
+				EntityHandle resolved = entt::null;
+				if (s->TryResolveEntityRef(persistentId, resolved)) {
+					outRef = resolved;
+					return;
+				}
 			}
 
-			// Forward ref: defer to end of load batch; SceneSerializer drains the queue before returning, by which point all UUIDComponents are registered.
-			const uint64_t persistentId = static_cast<uint64_t>(id);
+			// Forward ref (or forced-deferred clone ref): defer to end of load batch; SceneSerializer drains the queue before returning, by which point all UUIDComponents are registered (and the remap is complete).
+			outRef = entt::null;
 			EntityHandle* refSlot = &outRef;
 			s->DeferEntityRefFixup([s, refSlot, persistentId]() {
 				EntityHandle r = entt::null;
@@ -117,7 +124,7 @@ namespace Index {
 			}
 			return array;
 		}
-		void UIEventListFromJson(const Json::Value& v, InspectorEventList& outList) {
+		void UIEventListFromJson(Entity& owner, const Json::Value& v, InspectorEventList& outList) {
 			outList.Bindings.clear();
 			if (!v.IsArray()) return;
 			for (const Json::Value& row : v.GetArray()) {
@@ -137,6 +144,27 @@ namespace Index {
 				if (!b.ScriptClassName.empty() || !b.MethodName.empty()) {
 					outList.Bindings.push_back(std::move(b));
 				}
+			}
+
+			// Clone/paste: event targets are stored as raw ids and resolved lazily at runtime dispatch (when
+			// the remap is gone), so they aren't covered by the UI-ref deferral. Translate the stored ids now,
+			// deferred so the full subtree remap exists first. The list lives on a pointer-stable component.
+			Scene* s = owner.GetScene();
+			if (s && s->IsEntityRefRemapActive()) {
+				InspectorEventList* listPtr = &outList;
+				s->DeferEntityRefFixup([s, listPtr]() {
+					for (InspectorEventBinding& b : listPtr->Bindings) {
+						if (b.TargetEntityUUID != 0) {
+							b.TargetEntityUUID = s->TranslateEntityRef(b.TargetEntityUUID);
+						}
+						if (b.ArgumentKind == InspectorEventArgKind::EntityRef && !b.ArgumentValue.empty()) {
+							try {
+								const uint64_t argId = std::stoull(b.ArgumentValue);
+								if (argId != 0) b.ArgumentValue = std::to_string(s->TranslateEntityRef(argId));
+							} catch (...) {}
+						}
+					}
+				});
 			}
 		}
 
@@ -982,15 +1010,31 @@ namespace Index {
 						e.GetComponent<TextRendererComponent>().LetterSpacing = v;
 					},
 					Properties::Meta::Clamp(-64.0, 64.0, 0.1f)),
+				Properties::MakeWith<float>("LineSpacing", "Line Spacing",
+					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().LineSpacing; },
+					[](Entity& e, float v) {
+						e.GetComponent<TextRendererComponent>().LineSpacing = v;
+					},
+					Properties::Meta::Clamp(-64.0, 256.0, 0.25f)),
 				Properties::MakeWith<TextAlignment>("Alignment", "Alignment",
 					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().HAlign; },
 					[](Entity& e, TextAlignment v) {
 						e.GetComponent<TextRendererComponent>().HAlign = v;
 					}),
+				Properties::MakeWith<TextVerticalAlignment>("VerticalAlignment", "Vertical Alignment",
+					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().VAlign; },
+					[](Entity& e, TextVerticalAlignment v) {
+						e.GetComponent<TextRendererComponent>().VAlign = v;
+					}),
 				Properties::MakeWith<TextWrapMode>("WrapMode", "Wrap Mode",
 					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().WrapMode; },
 					[](Entity& e, TextWrapMode v) {
 						e.GetComponent<TextRendererComponent>().WrapMode = v;
+					}),
+				Properties::MakeWith<bool>("AutoSize", "Auto Size",
+					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().AutoSize; },
+					[](Entity& e, bool v) {
+						e.GetComponent<TextRendererComponent>().AutoSize = v;
 					}),
 				// (Left, Top, Right, Bottom) margin in pixels; drives the editor gizmo and reduces effective wrap width.
 				Properties::MakeWith<Vec4>("Margin", "Margin",
@@ -1448,7 +1492,7 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("focusedSprite"))  c.FocusedSprite  = UIUuidFromJson(*m, c.FocusedSprite);
 
 			if (const Json::Value* m = v.FindMember("onClick")) {
-				UIEventListFromJson(*m, c.OnClick);
+				UIEventListFromJson(e, *m, c.OnClick);
 			}
 		};
 		buttonInfo.onAdd = &InheritImageColorIntoNormal<ButtonComponent>;
@@ -1540,15 +1584,16 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("pressedSprite"))  c.PressedSprite  = UIUuidFromJson(*m, c.PressedSprite);
 			if (const Json::Value* m = v.FindMember("disabledSprite")) c.DisabledSprite = UIUuidFromJson(*m, c.DisabledSprite);
 			if (const Json::Value* m = v.FindMember("focusedSprite"))  c.FocusedSprite  = UIUuidFromJson(*m, c.FocusedSprite);
-			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(*m, c.OnValueChanged);
+			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(e, *m, c.OnValueChanged);
 		};
 		sliderInfo.onAdd = &InheritImageColorIntoNormal<SliderComponent>;
 		sceneManager.RegisterComponentType<SliderComponent>(sliderInfo);
 
 		ComponentInfo inputFieldInfo{ "Input Field", "UI", ComponentCategory::Component };
 		inputFieldInfo.serializedName = "InputField";
-		PropertyMetadata caretBlinkMeta = Properties::Meta::Clamp(0.0, 5.0, 0.05f);
+		PropertyMetadata caretBlinkMeta = Properties::Meta::Clamp(0.0, 5.0, 0.05f).WithHeader("Caret & Colors");
 		PropertyMetadata caretWidthMeta = Properties::Meta::Clamp(1.0, 5.0, 0.05f);
+		PropertyMetadata lineLimitMeta = Properties::Meta::EnabledIf<InputFieldComponent>([](const InputFieldComponent& f) { return f.Multiline; });
 		inputFieldInfo.properties = {
 			Properties::Make("Text",            "Text",            &InputFieldComponent::Text),
 			Properties::Make("PlaceholderText", "Placeholder",     &InputFieldComponent::PlaceholderText),
@@ -1557,12 +1602,8 @@ namespace Index {
 			Properties::Make("ContentType",     "Content Type",    &InputFieldComponent::ContentType),
 			Properties::Make("IsSecret",        "Secret",          &InputFieldComponent::IsSecret),
 			Properties::Make("IsReadOnly",      "Read Only",       &InputFieldComponent::IsReadOnly),
-			Properties::Make("CaretBlinkRate",  "Caret Blink Rate (Hz)", &InputFieldComponent::CaretBlinkRate, caretBlinkMeta),
-			Properties::Make("CaretWidth",      "Caret Width",     &InputFieldComponent::CaretWidth, caretWidthMeta),
-			Properties::Make("TextColor",       "Text Color",      &InputFieldComponent::TextColor),
-			Properties::Make("PlaceholderColor","Placeholder Color", &InputFieldComponent::PlaceholderColor),
-			Properties::Make("CaretColor",      "Caret Color",     &InputFieldComponent::CaretColor),
-			Properties::Make("SelectionColor",  "Selection Color", &InputFieldComponent::SelectionColor),
+			Properties::Make("Multiline",       "Multiline",       &InputFieldComponent::Multiline),
+			Properties::Make("LineLimit",       "Line Limit",      &InputFieldComponent::LineLimit, lineLimitMeta),
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&InputFieldComponent::TransitionMode,
 				{
@@ -1582,6 +1623,16 @@ namespace Index {
 					}),
 					Properties::Branch(UITransitionMode::None, {}),
 				}),
+			// "Caret & Colors" collapsible section: the WithHeader on CaretBlinkRate
+			// opens a CollapsingHeader and the fields below render inside it. Kept
+			// last so the section runs to the end of the list — nothing following
+			// gets swept into the group.
+			Properties::Make("CaretBlinkRate",  "Caret Blink Rate (Hz)", &InputFieldComponent::CaretBlinkRate, caretBlinkMeta),
+			Properties::Make("CaretWidth",      "Caret Width",     &InputFieldComponent::CaretWidth, caretWidthMeta),
+			Properties::Make("TextColor",       "Text Color",      &InputFieldComponent::TextColor),
+			Properties::Make("PlaceholderColor","Placeholder Color", &InputFieldComponent::PlaceholderColor),
+			Properties::Make("CaretColor",      "Caret Color",     &InputFieldComponent::CaretColor),
+			Properties::Make("SelectionColor",  "Selection Color", &InputFieldComponent::SelectionColor),
 		};
 		inputFieldInfo.serialize = [](Entity e) -> Json::Value {
 			const auto& c = e.GetComponent<InputFieldComponent>();
@@ -1590,9 +1641,11 @@ namespace Index {
 			v.AddMember("placeholder",      Json::Value(c.PlaceholderText));
 			v.AddMember("textEntity",       UIEntityHandleToJson(e, c.TextEntity));
 			v.AddMember("characterLimit",   Json::Value(c.CharacterLimit));
+			v.AddMember("lineLimit",        Json::Value(c.LineLimit));
 			v.AddMember("contentType",      Json::Value(static_cast<int>(c.ContentType)));
 			v.AddMember("isSecret",         Json::Value(c.IsSecret));
 			v.AddMember("isReadOnly",       Json::Value(c.IsReadOnly));
+			v.AddMember("multiline",        Json::Value(c.Multiline));
 			v.AddMember("caretBlinkRate",   Json::Value(c.CaretBlinkRate));
 			v.AddMember("caretWidth",       Json::Value(c.CaretWidth));
 			v.AddMember("textColor",        UIColorToJson(c.TextColor));
@@ -1620,9 +1673,11 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("placeholder"))      c.PlaceholderText  = m->AsStringOr(c.PlaceholderText);
 			if (const Json::Value* m = v.FindMember("textEntity"))       UIEntityHandleFromJson(e, *m, c.TextEntity);
 			if (const Json::Value* m = v.FindMember("characterLimit"))   c.CharacterLimit   = m->AsIntOr(c.CharacterLimit);
+			if (const Json::Value* m = v.FindMember("lineLimit"))        c.LineLimit        = m->AsIntOr(c.LineLimit);
 			if (const Json::Value* m = v.FindMember("contentType"))      c.ContentType      = static_cast<InputContentType>(m->AsIntOr(static_cast<int>(c.ContentType)));
 			if (const Json::Value* m = v.FindMember("isSecret"))         c.IsSecret         = m->AsBoolOr(c.IsSecret);
 			if (const Json::Value* m = v.FindMember("isReadOnly"))       c.IsReadOnly       = m->AsBoolOr(c.IsReadOnly);
+			if (const Json::Value* m = v.FindMember("multiline"))        c.Multiline        = m->AsBoolOr(c.Multiline);
 			if (const Json::Value* m = v.FindMember("caretBlinkRate"))   c.CaretBlinkRate   = static_cast<float>(m->AsDoubleOr(c.CaretBlinkRate));
 			if (const Json::Value* m = v.FindMember("caretWidth"))       c.CaretWidth       = static_cast<float>(m->AsDoubleOr(c.CaretWidth));
 			if (const Json::Value* m = v.FindMember("textColor"))        c.TextColor        = UIColorFromJson(*m, c.TextColor);
@@ -1640,8 +1695,8 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("pressedSprite"))  c.PressedSprite  = UIUuidFromJson(*m, c.PressedSprite);
 			if (const Json::Value* m = v.FindMember("disabledSprite")) c.DisabledSprite = UIUuidFromJson(*m, c.DisabledSprite);
 			if (const Json::Value* m = v.FindMember("focusedSprite"))  c.FocusedSprite  = UIUuidFromJson(*m, c.FocusedSprite);
-			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(*m, c.OnValueChanged);
-			if (const Json::Value* m = v.FindMember("onSubmitted"))    UIEventListFromJson(*m, c.OnSubmitted);
+			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(e, *m, c.OnValueChanged);
+			if (const Json::Value* m = v.FindMember("onSubmitted"))    UIEventListFromJson(e, *m, c.OnSubmitted);
 		};
 		inputFieldInfo.onAdd = &InheritImageColorIntoNormal<InputFieldComponent>;
 		sceneManager.RegisterComponentType<InputFieldComponent>(inputFieldInfo);
@@ -1763,7 +1818,7 @@ namespace Index {
 					c.Options.push_back(item.AsStringOr(""));
 				}
 			}
-			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(*m, c.OnValueChanged);
+			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(e, *m, c.OnValueChanged);
 		};
 		dropdownInfo.onAdd = &InheritImageColorIntoNormal<DropdownComponent>;
 		sceneManager.RegisterComponentType<DropdownComponent>(dropdownInfo);
@@ -1830,7 +1885,7 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("pressedSprite"))  c.PressedSprite  = UIUuidFromJson(*m, c.PressedSprite);
 			if (const Json::Value* m = v.FindMember("disabledSprite")) c.DisabledSprite = UIUuidFromJson(*m, c.DisabledSprite);
 			if (const Json::Value* m = v.FindMember("focusedSprite"))  c.FocusedSprite  = UIUuidFromJson(*m, c.FocusedSprite);
-			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(*m, c.OnValueChanged);
+			if (const Json::Value* m = v.FindMember("onValueChanged")) UIEventListFromJson(e, *m, c.OnValueChanged);
 		};
 		toggleInfo.onAdd = &InheritImageColorIntoNormal<ToggleComponent>;
 		sceneManager.RegisterComponentType<ToggleComponent>(toggleInfo);

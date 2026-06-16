@@ -38,9 +38,12 @@ namespace Index {
 		float LastObservedValue = 0.0f;
 		bool ValueObserved = false;
 
-		// Drag tracks angular delta from PressMouseAngle/PressValue so the handle doesn't snap to cursor angle.
-		float PressMouseAngle = 0.0f;
-		float PressValue = 0.0f;
+		// Drag sums per-frame angular steps into DragAccumAngle (unwrapped) and rebuilds
+		// Value from PressValue each frame, so the handle doesn't snap to the cursor and
+		// dragging past 180° / across the arc seam never flips Value by the full range.
+		float PressMouseAngle = 0.0f;   // previous frame's cursor angle (rolling)
+		float PressValue = 0.0f;        // Value captured at press
+		float DragAccumAngle = 0.0f;    // unwrapped angular travel since press
 		bool IsDragging = false;
 
 		UITransitionMode TransitionMode = UITransitionMode::ColorSwap;

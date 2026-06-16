@@ -179,6 +179,7 @@
     <Compile Include="Source\Index\UI\UIComponents.cs" />
     <Compile Include="Source\Index\UI\UIEnums.cs" />
     <Compile Include="Source\Index\UI\UIEventDispatcher.cs" />
+    <Compile Include="Source\Index\UI\UIPointer.cs" />
     <Compile Include="Source\Index\UI\UITransitionMode.cs" />
     <Compile Include="Source\Index\Utility\CameraUtility.cs" />
     <Compile Include="Source\Index\Utility\RectTransformUtility.cs" />

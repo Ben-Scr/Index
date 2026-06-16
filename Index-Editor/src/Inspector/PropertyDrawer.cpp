@@ -893,7 +893,13 @@ namespace Index::PropertyDrawer {
 			if (clicked) {
 				pickerOpener(fieldKey);
 			}
-			if (DrawReferenceContextMenu("##RefCtx")) {
+			// Scope the popup id per field: DrawReferenceField's PushID is already
+			// popped here, so without this every reference field in the component
+			// shares "##RefCtx" — a duplicate ImGui id plus one stacked "Clear" per field.
+			ImGui::PushID(fieldKey.c_str());
+			const bool refCtxCleared = DrawReferenceContextMenu("##RefCtx");
+			ImGui::PopID();
+			if (refCtxCleared) {
 				PropertyValue cleared;
 				cleared.Type = valueType;
 				WriteAll(entities, d, cleared);
@@ -1274,6 +1280,276 @@ namespace Index::PropertyDrawer {
 			return clicked && enabled;
 		}
 
+		// A list row's drag handle (left gutter): click selects (Ctrl toggles,
+		// Shift selects a range from the anchor); dragging it reorders. Shared by
+		// scalar/reference rows and object-element headers.
+		void DrawListRowHandle(int idx, ListSelectionState& sel, int count,
+			float handleW, float rowH, ImDrawList* dl, int& moveFrom, int& moveTo)
+		{
+			ImGui::InvisibleButton("##handle", ImVec2(handleW, rowH));
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+				const ImGuiIO& io = ImGui::GetIO();
+				if (io.KeyShift && sel.LastClicked >= 0 && sel.LastClicked < count) {
+					sel.Selected.clear();
+					const int a = std::min(sel.LastClicked, idx);
+					const int b = std::max(sel.LastClicked, idx);
+					for (int k = a; k <= b; ++k) sel.Selected.insert(k);
+				}
+				else if (io.KeyCtrl) {
+					if (sel.Selected.count(idx)) sel.Selected.erase(idx); else sel.Selected.insert(idx);
+					sel.LastClicked = idx;
+				}
+				else {
+					sel.Selected.clear();
+					sel.Selected.insert(idx);
+					sel.LastClicked = idx;
+				}
+			}
+			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+				ImGui::SetDragDropPayload("LIST_ITEM_REORDER", &idx, sizeof(int));
+				if (const uint64_t moveIcon = EditorIcons::Get("move", 16)) {
+						ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(moveIcon)), ImVec2(14, 14), ImVec2(0, 1), ImVec2(1, 0));
+						ImGui::SameLine();
+					}
+					ImGui::Text("Element %d", idx);
+				ImGui::EndDragDropSource();
+			}
+			if (ImGui::BeginDragDropTarget()) {
+				if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("LIST_ITEM_REORDER")) {
+					moveFrom = *static_cast<const int*>(p->Data);
+					moveTo = idx;
+				}
+				ImGui::EndDragDropTarget();
+			}
+			if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to reorder \xc2\xb7 click to select");
+			if (const uint64_t gripIcon = EditorIcons::Get("move", 16)) {
+				const ImVec2 hMin = ImGui::GetItemRectMin();
+				const ImVec2 hMax = ImGui::GetItemRectMax();
+				const float gs = std::min(14.0f, rowH - 6.0f);
+				const ImVec2 c((hMin.x + hMax.x) * 0.5f, (hMin.y + hMax.y) * 0.5f);
+				dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(gripIcon)),
+					ImVec2(c.x - gs * 0.5f, c.y - gs * 0.5f),
+					ImVec2(c.x + gs * 0.5f, c.y + gs * 0.5f),
+					ImVec2(0, 1), ImVec2(1, 0),
+					ImGui::GetColorU32(ImGuiCol_TextDisabled));
+			}
+		}
+
+		// Draws one list value widget for `item` (a scalar/reference element, or an
+		// object element's sub-field). `meta` supplies Enum / ComponentTypeName /
+		// AssetKindFilter / DragSpeed for the widget; `rowKey` keys any reference
+		// picker. Returns true on change. Sets the next item width itself.
+		bool DrawListItemValue(PropertyType itemType, const PropertyMetadata& meta,
+			PropertyValue& item, const std::string& rowKey, float width)
+		{
+			item.Type = itemType;
+			bool changed = false;
+			ImGui::SetNextItemWidth(width);
+			switch (itemType) {
+			case PropertyType::Bool: {
+				bool b = item.BoolValue;
+				if (ImGui::Checkbox("##v", &b)) { item.BoolValue = b; changed = true; }
+				break;
+			}
+			case PropertyType::Int8:
+			case PropertyType::Int16:
+			case PropertyType::Int32: {
+				int tmp = static_cast<int>(item.IntValue);
+				const float speed = meta.DragSpeed > 0 ? meta.DragSpeed : 1.0f;
+				if (ImGui::DragInt("##v", &tmp, speed)) { item.IntValue = tmp; changed = true; }
+				break;
+			}
+			case PropertyType::UInt8:
+			case PropertyType::UInt16:
+			case PropertyType::UInt32: {
+				int tmp = static_cast<int>(std::min<uint64_t>(item.UIntValue, INT_MAX));
+				const float speed = meta.DragSpeed > 0 ? meta.DragSpeed : 1.0f;
+				if (ImGui::DragInt("##v", &tmp, speed, 0, INT_MAX)) {
+					item.UIntValue = static_cast<uint64_t>(std::max(tmp, 0));
+					changed = true;
+				}
+				break;
+			}
+			case PropertyType::Int64: {
+				int64_t tmp = item.IntValue;
+				if (ImGui::InputScalar("##v", ImGuiDataType_S64, &tmp)) { item.IntValue = tmp; changed = true; }
+				break;
+			}
+			case PropertyType::UInt64: {
+				uint64_t tmp = item.UIntValue;
+				if (ImGui::InputScalar("##v", ImGuiDataType_U64, &tmp)) { item.UIntValue = tmp; changed = true; }
+				break;
+			}
+			case PropertyType::IntVec2: {
+				int vec[2] = { item.IntVec[0], item.IntVec[1] };
+				if (ImGui::DragInt2("##v", vec)) { item.IntVec[0] = vec[0]; item.IntVec[1] = vec[1]; changed = true; }
+				break;
+			}
+			case PropertyType::IntVec3: {
+				int vec[3] = { item.IntVec[0], item.IntVec[1], item.IntVec[2] };
+				if (ImGui::DragInt3("##v", vec)) { for (int c = 0; c < 3; ++c) item.IntVec[c] = vec[c]; changed = true; }
+				break;
+			}
+			case PropertyType::IntVec4: {
+				int vec[4] = { item.IntVec[0], item.IntVec[1], item.IntVec[2], item.IntVec[3] };
+				if (ImGui::DragInt4("##v", vec)) { for (int c = 0; c < 4; ++c) item.IntVec[c] = vec[c]; changed = true; }
+				break;
+			}
+			case PropertyType::Float: {
+				float tmp = static_cast<float>(item.FloatValue);
+				const float speed = meta.DragSpeed > 0 ? meta.DragSpeed : 0.1f;
+				if (ImGui::DragFloat("##v", &tmp, speed)) { item.FloatValue = static_cast<double>(tmp); changed = true; }
+				break;
+			}
+			case PropertyType::Double: {
+				double tmp = item.FloatValue;
+				const float speed = meta.DragSpeed > 0 ? meta.DragSpeed : 0.1f;
+				if (ImGui::DragScalar("##v", ImGuiDataType_Double, &tmp, speed)) { item.FloatValue = tmp; changed = true; }
+				break;
+			}
+			case PropertyType::String: {
+				char buf[1024]{};
+				std::snprintf(buf, sizeof(buf), "%s", item.StringValue.c_str());
+				if (ImGui::InputText("##v", buf, sizeof(buf))) { item.StringValue = buf; changed = true; }
+				break;
+			}
+			case PropertyType::Vec2: {
+				float vec[2] = { item.FloatVec[0], item.FloatVec[1] };
+				if (ImGui::DragFloat2("##v", vec, 0.1f)) { item.FloatVec[0] = vec[0]; item.FloatVec[1] = vec[1]; changed = true; }
+				break;
+			}
+			case PropertyType::Vec3: {
+				float vec[3] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2] };
+				if (ImGui::DragFloat3("##v", vec, 0.1f)) {
+					item.FloatVec[0] = vec[0]; item.FloatVec[1] = vec[1]; item.FloatVec[2] = vec[2]; changed = true;
+				}
+				break;
+			}
+			case PropertyType::Vec4: {
+				float vec[4] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2], item.FloatVec[3] };
+				if (ImGui::DragFloat4("##v", vec, 0.1f)) { for (int c = 0; c < 4; ++c) item.FloatVec[c] = vec[c]; changed = true; }
+				break;
+			}
+			case PropertyType::Color: {
+				float vec[4] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2], item.FloatVec[3] };
+				if (ImGui::ColorEdit4("##v", vec)) { for (int c = 0; c < 4; ++c) item.FloatVec[c] = vec[c]; changed = true; }
+				break;
+			}
+			case PropertyType::Enum: {
+				if (meta.Enum && !meta.Enum->Options.empty()) {
+					const char* preview = "Unknown";
+					for (const auto& opt : meta.Enum->Options) {
+						if (opt.Value == item.IntValue) { preview = opt.Name.c_str(); break; }
+					}
+					if (ImGui::BeginCombo("##v", preview)) {
+						for (const auto& opt : meta.Enum->Options) {
+							const bool isSelected = (opt.Value == item.IntValue);
+							if (ImGui::Selectable(opt.Name.c_str(), isSelected)) { item.IntValue = opt.Value; changed = true; }
+							if (isSelected) ImGui::SetItemDefaultFocus();
+						}
+						ImGui::EndCombo();
+					}
+				}
+				break;
+			}
+			case PropertyType::FlagEnum: {
+				if (meta.Enum && !meta.Enum->Options.empty()) {
+					int64_t declaredMask = 0;
+					for (const auto& opt : meta.Enum->Options) declaredMask |= opt.Value;
+					std::string preview;
+					for (const auto& opt : meta.Enum->Options) {
+						if (opt.Value == 0) continue;
+						if ((item.IntValue & opt.Value) == opt.Value) {
+							if (!preview.empty()) preview += ", ";
+							preview += opt.Name;
+						}
+					}
+					if (preview.empty()) preview = "None";
+					if (ImGui::BeginCombo("##v", preview.c_str())) {
+						for (const auto& opt : meta.Enum->Options) {
+							if (opt.Value == 0) continue;
+							bool on = (item.IntValue & opt.Value) == opt.Value;
+							if (ImGui::Checkbox(opt.Name.c_str(), &on)) {
+								if (on) item.IntValue |= opt.Value;
+								else    item.IntValue &= ~opt.Value;
+								item.IntValue &= declaredMask;
+								changed = true;
+							}
+						}
+						ImGui::EndCombo();
+					}
+				}
+				break;
+			}
+			case PropertyType::TextureRef:
+			case PropertyType::AudioRef:
+			case PropertyType::FontRef:
+			case PropertyType::SceneRef:
+			case PropertyType::PrefabRef:
+			case PropertyType::AssetRef:
+			case PropertyType::EntityRef:
+			case PropertyType::ComponentRef: {
+				if (DrawReferenceListItem(itemType, meta, item, rowKey, width)) changed = true;
+				break;
+			}
+			default:
+				ImGui::TextDisabled("(unsupported list item type)");
+				break;
+			}
+			return changed;
+		}
+
+		// ── List element clipboard (Duplicate / Copy / Paste context menu) ──
+		struct ListElementClipboard {
+			bool HasValue = false;
+			PropertyValue Value;
+			std::string Signature;   // item-type / schema key; paste only into a matching list
+		};
+		ListElementClipboard s_ListClipboard;
+
+		// Paste-compatibility key: scalar lists key on the item type plus the reference's
+		// component-type / asset-kind filter; object lists key on the ordered sub-field types
+		// plus their ref filters. So an int can't paste onto an entity list, a {Entity,int}
+		// slot can't paste onto a {float} slot, and a ComponentRef(Rigidbody) can't paste onto
+		// a ComponentRef(SpriteRenderer).
+		std::string ListElementSignature(PropertyType itemType, const PropertyMetadata& meta)
+		{
+			if (meta.ListItemFields.empty()) {
+				std::string sig = "s:" + std::to_string(static_cast<int>(itemType));
+				if (!meta.ComponentTypeName.empty()) sig += "#" + meta.ComponentTypeName;
+				if (meta.AssetKindFilter != AssetKind::Unknown) sig += "@" + std::to_string(static_cast<int>(meta.AssetKindFilter));
+				return sig;
+			}
+			std::string sig = "o:";
+			for (const PropertyMetadata::ListItemField& f : meta.ListItemFields) {
+				sig += std::to_string(static_cast<int>(f.Type));
+				if (!f.ComponentTypeName.empty()) sig += "#" + f.ComponentTypeName;
+				if (f.AssetKindFilter != AssetKind::Unknown) sig += "@" + std::to_string(static_cast<int>(f.AssetKindFilter));
+				sig.push_back(',');
+			}
+			return sig;
+		}
+
+		// Right-click menu for one list element (opens on the last-submitted item). Copy
+		// applies immediately; Duplicate/Paste set deferred indices so the list isn't
+		// mutated mid-iteration.
+		void DrawListElementContextMenu(const char* popupId, std::vector<PropertyValue>& items, int idx,
+			PropertyType itemType, const PropertyMetadata& meta,
+			int& outDuplicate, int& outPaste)
+		{
+			if (!ImGui::BeginPopupContextItem(popupId)) return;
+			const std::string sig = ListElementSignature(itemType, meta);
+			if (ImGui::MenuItem("Duplicate")) outDuplicate = idx;
+			if (ImGui::MenuItem("Copy")) {
+				s_ListClipboard.Value = items[static_cast<std::size_t>(idx)];
+				s_ListClipboard.Signature = sig;
+				s_ListClipboard.HasValue = true;
+			}
+			const bool canPaste = s_ListClipboard.HasValue && s_ListClipboard.Signature == sig;
+			if (ImGui::MenuItem("Paste", nullptr, false, canPaste)) outPaste = idx;
+			ImGui::EndPopup();
+		}
+
 		bool DrawList(std::span<const Entity> entities, const PropertyDescriptor& d,
 			const std::string& fieldKey) {
 			PropertyValue v;
@@ -1282,13 +1558,27 @@ namespace Index::PropertyDrawer {
 			const PropertyType itemType = d.Metadata.ListItemType;
 
 			ImGui::PushID(d.Name.c_str());
-			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
-			if (!uniform) {
-				ImGui::TextDisabled("— (multiple values, edits overwrite all)");
-			}
-			else {
-				ImGui::TextDisabled("%d %s", static_cast<int>(items.size()),
-					items.size() == 1 ? "item" : "items");
+
+			// Collapsible header for the whole field: collapsing it skips the row
+			// loop entirely (the perf win on large lists). ImGui persists the state.
+			std::string headerLabel = d.DisplayName;
+				headerLabel += uniform
+					? "  (" + std::to_string(items.size()) + (items.size() == 1 ? " item)" : " items)")
+					: "  (mixed)";
+				headerLabel += "###";   // stable ID so the count text doesn't reset open state
+				headerLabel += d.Name;
+				// Framed = an always-visible rounded header bar (clearer than a bare tree
+				// node); dark-gray colors keep it on-theme rather than the accent Header.
+				ImGui::PushStyleColor(ImGuiCol_Header,        IM_COL32(58, 58, 64, 255));
+				ImGui::PushStyleColor(ImGuiCol_HeaderHovered, IM_COL32(70, 70, 78, 255));
+				ImGui::PushStyleColor(ImGuiCol_HeaderActive,  IM_COL32(66, 66, 74, 255));
+				const bool fieldOpen = ImGui::TreeNodeEx(headerLabel.c_str(),
+					ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen);
+				ImGui::PopStyleColor(3);
+
+			if (!fieldOpen) {
+				ImGui::PopID();
+				return false;
 			}
 
 			// Selection is per (field, inspected-entity-set): fieldKey alone is reused
@@ -1308,20 +1598,106 @@ namespace Index::PropertyDrawer {
 
 			bool changed = false;
 			int moveFrom = -1, moveTo = -1;
+			int duplicateIdx = -1, pasteIdx = -1;
 
 			ImDrawList* dl = ImGui::GetWindowDrawList();
 			const ImGuiStyle& style = ImGui::GetStyle();
-			const ImU32 colNormal   = ImGui::GetColorU32(ImGuiCol_FrameBg);
-			const ImU32 colHovered  = ImGui::GetColorU32(ImGuiCol_FrameBgHovered);
-			const ImU32 colSelected = ImGui::GetColorU32(ImGuiCol_Header);
+			// The card fill MUST stay distinct from the field FrameBg/FrameBgHovered the
+			// value widgets paint themselves with (same token == invisible inset). Derive a
+			// recessed well from FrameBg (tracks theme edits); hover lifts only partway — NOT
+			// to FrameBgHovered — so a hovered field still reads as an inset on the card.
+			const ImVec4 frameBgCol = style.Colors[ImGuiCol_FrameBg];
+			const auto scaleRGB = [](const ImVec4& c, float k) {
+				return ImGui::GetColorU32(ImVec4(c.x * k, c.y * k, c.z * k, 1.0f));
+			};
+			const ImU32 colNormal    = scaleRGB(frameBgCol, 0.78f);
+			const ImU32 colHovered   = scaleRGB(frameBgCol, 0.90f);
+			// Light-gray selection (the theme's accent Header color doesn't fit the dark theme).
+			const ImU32 colSelected   = IM_COL32(108, 108, 114, 115);
+			const ImU32 colSelBorder  = IM_COL32(165, 165, 172, 220);
+			const ImU32 colCardBorder = ImGui::GetColorU32(ImGuiCol_Border);   // crisp card edge vs the child bg
 			const float rounding = std::max(style.FrameRounding, 3.0f);
 			const float rowH = ImGui::GetFrameHeight();
 			const float handleW = ImGui::GetFrameHeight();
+			const bool isObjectList = !d.Metadata.ListItemFields.empty();
 
 			for (std::size_t i = 0; i < items.size(); ++i) {
 				ImGui::PushID(static_cast<int>(i));
 				const int idx = static_cast<int>(i);
 				const bool isSel = sel.Selected.count(idx) != 0;
+
+				if (isObjectList) {
+					// Inline object element: a collapsible "Element N" group inside a
+					// variable-height rounded card (drawn behind via a channel split so
+					// it wraps the whole group, header + expanded sub-fields).
+					const std::string rowKey = fieldKey + "/" + std::to_string(i);
+					PropertyValue& item = items[i];
+					if (item.Type != PropertyType::List) item.Type = PropertyType::List;
+					for (std::size_t k = item.ListValue.size(); k < d.Metadata.ListItemFields.size(); ++k) {
+						PropertyValue sub; sub.Type = d.Metadata.ListItemFields[k].Type;
+						item.ListValue.push_back(std::move(sub));
+					}
+
+					ImDrawListSplitter splitter;
+					splitter.Split(dl, 2);
+					splitter.SetCurrentChannel(dl, 1);  // content above the card
+
+					const ImVec2 slotMin = ImGui::GetCursorScreenPos();
+					const float slotW = ImGui::GetContentRegionAvail().x;
+					ImGui::BeginGroup();
+					DrawListRowHandle(idx, sel, static_cast<int>(items.size()), handleW, rowH, dl, moveFrom, moveTo);
+					ImGui::SameLine(0.0f, style.ItemSpacing.x);
+
+					const std::string header = "Element " + std::to_string(i) + "##el";
+					bool itemChanged = false;
+					const bool elemOpen = ImGui::TreeNodeEx(header.c_str(),
+							ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_FramePadding);
+						DrawListElementContextMenu("##elemCtx", items, idx, itemType, d.Metadata, duplicateIdx, pasteIdx);
+						if (elemOpen) {
+						for (std::size_t k = 0; k < d.Metadata.ListItemFields.size(); ++k) {
+							const PropertyMetadata::ListItemField& f = d.Metadata.ListItemFields[k];
+							ImGui::PushID(static_cast<int>(k));
+							PropertyMetadata subMeta;
+							subMeta.Enum = f.Enum;
+							subMeta.ComponentTypeName = f.ComponentTypeName;
+							subMeta.AssetKindFilter = f.AssetKindFilter;
+							subMeta.SuppressTextureSlices = d.Metadata.SuppressTextureSlices;
+							// Indent-aware label column: BeginInspectorFieldRow's absolute SameLine(160)
+							// ignores the tree indent and overruns the value. Pad RELATIVE to the label
+							// (indent-agnostic) and inset the value from the card's right edge.
+							const float labelColW = std::min(130.0f, slotW * 0.42f);
+							ImGui::AlignTextToFramePadding();
+							bool subTrunc = false;
+							const std::string subLbl = ImGuiUtils::Ellipsize(f.DisplayName, labelColW - style.ItemSpacing.x, &subTrunc);
+							ImGui::TextUnformatted(subLbl.c_str());
+							if (subTrunc && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.DisplayName.c_str());
+							ImGui::SameLine(0.0f, std::max(style.ItemSpacing.x, labelColW - ImGui::CalcTextSize(subLbl.c_str()).x));
+							const float subWidth = std::max(40.0f, ImGui::GetContentRegionAvail().x - 6.0f);
+							if (DrawListItemValue(f.Type, subMeta, item.ListValue[k], rowKey + "." + f.Name, subWidth))
+								itemChanged = true;
+							ImGui::PopID();
+						}
+						ImGui::TreePop();
+					}
+					ImGui::EndGroup();
+
+					const ImVec2 slotMax(slotMin.x + slotW, ImGui::GetItemRectMax().y);
+					const bool rowHovered = ImGui::IsMouseHoveringRect(slotMin, slotMax)
+						&& ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+					splitter.SetCurrentChannel(dl, 0);  // background card
+					dl->AddRectFilled(slotMin, slotMax,
+						isSel ? colSelected : (rowHovered ? colHovered : colNormal), rounding);
+						dl->AddRect(slotMin, slotMax, colCardBorder, rounding, 0, 1.0f);
+					if (isSel) {
+							splitter.SetCurrentChannel(dl, 1);  // border ON TOP of content so the widgets don't clip it
+							dl->AddRect(slotMin, slotMax, colSelBorder, rounding, 0, 1.5f);
+						}
+					splitter.Merge(dl);
+
+					if (itemChanged) changed = true;
+					ImGui::PopID();
+					continue;
+				}
 
 				// Rounded "tab" card behind the row, drawn first so the widgets sit on top.
 				const ImVec2 rowMin = ImGui::GetCursorScreenPos();
@@ -1334,234 +1710,21 @@ namespace Index::PropertyDrawer {
 					&& ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
 				dl->AddRectFilled(rowMin, rowMax,
 					isSel ? colSelected : (rowHovered ? colHovered : colNormal), rounding);
-				if (isSel) dl->AddRect(rowMin, rowMax, ImGui::GetColorU32(ImGuiCol_NavHighlight), rounding);
+					dl->AddRect(rowMin, rowMax, colCardBorder, rounding, 0, 1.0f);
+				// (selection outline drawn AFTER the value widget below so it can't be clipped)
 
-				// Drag handle: click selects (Ctrl toggles, Shift selects a range); drag reorders.
-				ImGui::InvisibleButton("##handle", ImVec2(handleW, rowH));
-				if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-					const ImGuiIO& io = ImGui::GetIO();
-					if (io.KeyShift && sel.LastClicked >= 0 && sel.LastClicked < static_cast<int>(items.size())) {
-						sel.Selected.clear();
-						const int a = std::min(sel.LastClicked, idx);
-						const int b = std::max(sel.LastClicked, idx);
-						for (int k = a; k <= b; ++k) sel.Selected.insert(k);
-					}
-					else if (io.KeyCtrl) {
-						if (isSel) sel.Selected.erase(idx); else sel.Selected.insert(idx);
-						sel.LastClicked = idx;
-					}
-					else {
-						sel.Selected.clear();
-						sel.Selected.insert(idx);
-						sel.LastClicked = idx;
-					}
-				}
-				if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
-					ImGui::SetDragDropPayload("LIST_ITEM_REORDER", &idx, sizeof(int));
-					ImGui::TextUnformatted("Move item");
-					ImGui::EndDragDropSource();
-				}
-				if (ImGui::BeginDragDropTarget()) {
-					if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload("LIST_ITEM_REORDER")) {
-						moveFrom = *static_cast<const int*>(p->Data);
-						moveTo = idx;
-					}
-					ImGui::EndDragDropTarget();
-				}
-				if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to reorder \xc2\xb7 click to select");
-				if (const uint64_t gripIcon = EditorIcons::Get("move", 16)) {
-					const ImVec2 hMin = ImGui::GetItemRectMin();
-					const ImVec2 hMax = ImGui::GetItemRectMax();
-					const float gs = std::min(14.0f, rowH - 6.0f);
-					const ImVec2 c((hMin.x + hMax.x) * 0.5f, (hMin.y + hMax.y) * 0.5f);
-					dl->AddImage(static_cast<ImTextureID>(static_cast<intptr_t>(gripIcon)),
-						ImVec2(c.x - gs * 0.5f, c.y - gs * 0.5f),
-						ImVec2(c.x + gs * 0.5f, c.y + gs * 0.5f),
-						ImVec2(0, 1), ImVec2(1, 0),
-						ImGui::GetColorU32(ImGuiCol_TextDisabled));
-				}
+				DrawListRowHandle(idx, sel, static_cast<int>(items.size()), handleW, rowH, dl, moveFrom, moveTo);
+				DrawListElementContextMenu("##elemCtx", items, idx, itemType, d.Metadata, duplicateIdx, pasteIdx);
 
 				ImGui::SameLine(0.0f, style.ItemSpacing.x);
 				const float widgetWidth = std::max(40.0f, ImGui::GetContentRegionAvail().x);
-				ImGui::SetNextItemWidth(widgetWidth);
 
+				const std::string rowKey = fieldKey + "/" + std::to_string(i);
 				PropertyValue& item = items[i];
-				item.Type = itemType;
+				if (DrawListItemValue(itemType, d.Metadata, item, rowKey, widgetWidth)) changed = true;
 
-				bool itemChanged = false;
-				switch (itemType) {
-				case PropertyType::Bool: {
-					bool b = item.BoolValue;
-					if (ImGui::Checkbox("##v", &b)) { item.BoolValue = b; itemChanged = true; }
-					break;
-				}
-				case PropertyType::Int8:
-				case PropertyType::Int16:
-				case PropertyType::Int32: {
-					int tmp = static_cast<int>(item.IntValue);
-					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
-					if (ImGui::DragInt("##v", &tmp, speed)) { item.IntValue = tmp; itemChanged = true; }
-					break;
-				}
-				case PropertyType::UInt8:
-				case PropertyType::UInt16:
-				case PropertyType::UInt32: {
-					int tmp = static_cast<int>(std::min<uint64_t>(item.UIntValue, INT_MAX));
-					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 1.0f;
-					if (ImGui::DragInt("##v", &tmp, speed, 0, INT_MAX)) {
-						item.UIntValue = static_cast<uint64_t>(std::max(tmp, 0));
-						itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Int64: {
-					int64_t tmp = item.IntValue;
-					if (ImGui::InputScalar("##v", ImGuiDataType_S64, &tmp)) { item.IntValue = tmp; itemChanged = true; }
-					break;
-				}
-				case PropertyType::UInt64: {
-					uint64_t tmp = item.UIntValue;
-					if (ImGui::InputScalar("##v", ImGuiDataType_U64, &tmp)) { item.UIntValue = tmp; itemChanged = true; }
-					break;
-				}
-				case PropertyType::IntVec2: {
-					int vec[2] = { item.IntVec[0], item.IntVec[1] };
-					if (ImGui::DragInt2("##v", vec)) { item.IntVec[0] = vec[0]; item.IntVec[1] = vec[1]; itemChanged = true; }
-					break;
-				}
-				case PropertyType::IntVec3: {
-					int vec[3] = { item.IntVec[0], item.IntVec[1], item.IntVec[2] };
-					if (ImGui::DragInt3("##v", vec)) { for (int c = 0; c < 3; ++c) item.IntVec[c] = vec[c]; itemChanged = true; }
-					break;
-				}
-				case PropertyType::IntVec4: {
-					int vec[4] = { item.IntVec[0], item.IntVec[1], item.IntVec[2], item.IntVec[3] };
-					if (ImGui::DragInt4("##v", vec)) { for (int c = 0; c < 4; ++c) item.IntVec[c] = vec[c]; itemChanged = true; }
-					break;
-				}
-				case PropertyType::Float: {
-					float tmp = static_cast<float>(item.FloatValue);
-					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
-					if (ImGui::DragFloat("##v", &tmp, speed)) {
-						item.FloatValue = static_cast<double>(tmp); itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Double: {
-					double tmp = item.FloatValue;
-					const float speed = d.Metadata.DragSpeed > 0 ? d.Metadata.DragSpeed : 0.1f;
-					if (ImGui::DragScalar("##v", ImGuiDataType_Double, &tmp, speed)) {
-						item.FloatValue = tmp; itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::String: {
-					char buf[1024]{};
-					std::snprintf(buf, sizeof(buf), "%s", item.StringValue.c_str());
-					if (ImGui::InputText("##v", buf, sizeof(buf))) {
-						item.StringValue = buf; itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Vec2: {
-					float vec[2] = { item.FloatVec[0], item.FloatVec[1] };
-					if (ImGui::DragFloat2("##v", vec, 0.1f)) {
-						item.FloatVec[0] = vec[0]; item.FloatVec[1] = vec[1]; itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Vec3: {
-					float vec[3] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2] };
-					if (ImGui::DragFloat3("##v", vec, 0.1f)) {
-						item.FloatVec[0] = vec[0]; item.FloatVec[1] = vec[1]; item.FloatVec[2] = vec[2];
-						itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Vec4: {
-					float vec[4] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2], item.FloatVec[3] };
-					if (ImGui::DragFloat4("##v", vec, 0.1f)) {
-						for (int c = 0; c < 4; ++c) item.FloatVec[c] = vec[c];
-						itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Color: {
-					float vec[4] = { item.FloatVec[0], item.FloatVec[1], item.FloatVec[2], item.FloatVec[3] };
-					if (ImGui::ColorEdit4("##v", vec)) {
-						for (int c = 0; c < 4; ++c) item.FloatVec[c] = vec[c];
-						itemChanged = true;
-					}
-					break;
-				}
-				case PropertyType::Enum: {
-					if (d.Metadata.Enum && !d.Metadata.Enum->Options.empty()) {
-						const char* preview = "Unknown";
-						for (const auto& opt : d.Metadata.Enum->Options) {
-							if (opt.Value == item.IntValue) { preview = opt.Name.c_str(); break; }
-						}
-						if (ImGui::BeginCombo("##v", preview)) {
-							for (const auto& opt : d.Metadata.Enum->Options) {
-								const bool isSelected = (opt.Value == item.IntValue);
-								if (ImGui::Selectable(opt.Name.c_str(), isSelected)) {
-									item.IntValue = opt.Value; itemChanged = true;
-								}
-								if (isSelected) ImGui::SetItemDefaultFocus();
-							}
-							ImGui::EndCombo();
-						}
-					}
-					break;
-				}
-				case PropertyType::FlagEnum: {
-					if (d.Metadata.Enum && !d.Metadata.Enum->Options.empty()) {
-						int64_t declaredMask = 0;
-						for (const auto& opt : d.Metadata.Enum->Options) declaredMask |= opt.Value;
-						std::string preview;
-						for (const auto& opt : d.Metadata.Enum->Options) {
-							if (opt.Value == 0) continue;
-							if ((item.IntValue & opt.Value) == opt.Value) {
-								if (!preview.empty()) preview += ", ";
-								preview += opt.Name;
-							}
-						}
-						if (preview.empty()) preview = "None";
-						if (ImGui::BeginCombo("##v", preview.c_str())) {
-							for (const auto& opt : d.Metadata.Enum->Options) {
-								if (opt.Value == 0) continue;
-								bool on = (item.IntValue & opt.Value) == opt.Value;
-								if (ImGui::Checkbox(opt.Name.c_str(), &on)) {
-									if (on) item.IntValue |= opt.Value;
-									else    item.IntValue &= ~opt.Value;
-									item.IntValue &= declaredMask;
-									itemChanged = true;
-								}
-							}
-							ImGui::EndCombo();
-						}
-					}
-					break;
-				}
-				case PropertyType::TextureRef:
-				case PropertyType::AudioRef:
-				case PropertyType::FontRef:
-				case PropertyType::SceneRef:
-				case PropertyType::PrefabRef:
-				case PropertyType::AssetRef:
-				case PropertyType::EntityRef:
-				case PropertyType::ComponentRef: {
-					const std::string rowKey = fieldKey + "/" + std::to_string(i);
-					if (DrawReferenceListItem(itemType, d.Metadata, item, rowKey, widgetWidth)) {
-						itemChanged = true;
-					}
-					break;
-				}
-				default:
-					ImGui::TextDisabled("(unsupported list item type)");
-					break;
-				}
+				if (isSel) dl->AddRect(rowMin, rowMax, colSelBorder, rounding, 0, 1.5f);
 
-				if (itemChanged) changed = true;
 				ImGui::PopID();
 			}
 
@@ -1580,11 +1743,41 @@ namespace Index::PropertyDrawer {
 				ReferencePicker::CancelForPrefix(fieldKey + "/");
 			}
 
+			// Deferred Duplicate (insert a copy right after the element) / Paste (replace).
+				// Skip if a reorder fired this frame: it rotated `items`, so the captured
+				// pre-rotate indices would point at the wrong element. (Can't co-fire via mouse
+				// today; this documents/future-proofs the invariant.)
+				const bool reorderedThisFrame = (moveFrom >= 0 && moveTo >= 0 && moveFrom != moveTo);
+			if (!reorderedThisFrame && duplicateIdx >= 0 && duplicateIdx < static_cast<int>(items.size())) {
+				PropertyValue copy = items[static_cast<std::size_t>(duplicateIdx)];
+				items.insert(items.begin() + duplicateIdx + 1, std::move(copy));
+				sel.Selected.clear();
+				sel.Selected.insert(duplicateIdx + 1);
+				sel.LastClicked = duplicateIdx + 1;
+				changed = true;
+				ReferencePicker::CancelForPrefix(fieldKey + "/");
+			}
+			if (!reorderedThisFrame && pasteIdx >= 0 && pasteIdx < static_cast<int>(items.size())
+				&& s_ListClipboard.HasValue
+				&& s_ListClipboard.Signature == ListElementSignature(itemType, d.Metadata)) {
+				items[static_cast<std::size_t>(pasteIdx)] = s_ListClipboard.Value;
+				changed = true;
+			}
+
 			// Footer: icon-only Add, and Remove-selected (enabled only with a selection).
 			const float footerBtn = ImGui::GetFrameHeight();
 			if (IconButton("##listAdd", "plus", footerBtn, /*enabled=*/true)) {
 				PropertyValue blank;
-				blank.Type = itemType;
+				if (isObjectList) {
+						blank.Type = PropertyType::List;
+						for (const PropertyMetadata::ListItemField& f : d.Metadata.ListItemFields) {
+							PropertyValue sub; sub.Type = f.Type;
+							blank.ListValue.push_back(std::move(sub));
+						}
+					}
+					else {
+						blank.Type = itemType;
+					}
 				items.push_back(std::move(blank));
 				changed = true;
 			}
@@ -1609,6 +1802,7 @@ namespace Index::PropertyDrawer {
 				ReferencePicker::CancelForPrefix(fieldKey + "/");
 			}
 
+			ImGui::TreePop();
 			ImGui::PopID();
 
 			if (changed) {

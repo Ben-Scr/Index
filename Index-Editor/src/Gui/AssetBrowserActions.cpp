@@ -23,12 +23,16 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 
 #ifdef IDX_PLATFORM_WINDOWS
 #include <windows.h>
@@ -206,12 +210,16 @@ namespace Index {
 			}
 		}
 
-		void RegisterImportedAssetPath(const std::filesystem::path& path) {
+		std::uintmax_t SafeFileSize(const std::filesystem::path& path) {
+			std::error_code ec;
+			const std::uintmax_t size = std::filesystem::file_size(path, ec);
+			return ec ? 0 : size;
+		}
+
+		void CollectImportByteSize(const std::filesystem::path& path, std::uintmax_t& totalBytes) {
 			std::error_code ec;
 			if (std::filesystem::is_regular_file(path, ec) && !ec) {
-				if (!AssetRegistry::IsMetaFilePath(path.string())) {
-					AssetRegistry::GetOrCreateAssetUUID(path.string());
-				}
+				totalBytes += SafeFileSize(path);
 				return;
 			}
 
@@ -232,15 +240,142 @@ namespace Index {
 				}
 
 				std::error_code fileEc;
+				if (it->is_regular_file(fileEc) && !fileEc) {
+					totalBytes += SafeFileSize(it->path());
+				}
+			}
+		}
+
+		std::filesystem::path MakeUniqueImportFilePath(
+			const std::filesystem::path& source,
+			const std::filesystem::path& destinationDirectory)
+		{
+			std::filesystem::path dest = destinationDirectory / source.filename();
+			std::error_code ec;
+			if (!std::filesystem::exists(dest, ec)) {
+				return dest;
+			}
+
+			const std::string stem = dest.stem().string();
+			const std::string ext = dest.extension().string();
+			for (int counter = 1; counter < 10000; ++counter) {
+				dest = destinationDirectory / (stem + " (" + std::to_string(counter) + ")" + ext);
+				ec.clear();
+				if (!std::filesystem::exists(dest, ec)) {
+					return dest;
+				}
+			}
+
+			return destinationDirectory / (stem + " (" + std::to_string(std::time(nullptr)) + ")" + ext);
+		}
+
+		void AddImportedAssetPath(std::vector<std::string>& paths, const std::filesystem::path& path) {
+			const std::string assetPath = path.string();
+			if (!AssetRegistry::IsMetaFilePath(assetPath)) {
+				paths.push_back(assetPath);
+			}
+		}
+
+		void CollectRegistryAssetPaths(const std::filesystem::path& path, std::vector<std::string>& paths)
+		{
+			std::error_code ec;
+			if (std::filesystem::is_regular_file(path, ec) && !ec) {
+				AddImportedAssetPath(paths, path);
+				return;
+			}
+
+			ec.clear();
+			if (!std::filesystem::is_directory(path, ec) || ec) {
+				return;
+			}
+
+			for (std::filesystem::recursive_directory_iterator it(
+				 path,
+				 std::filesystem::directory_options::skip_permission_denied,
+				 ec), end;
+				 it != end;
+				 it.increment(ec))
+			{
+				if (ec) {
+					ec.clear();
+					continue;
+				}
+
+				std::error_code fileEc;
 				if (!it->is_regular_file(fileEc) || fileEc) {
 					continue;
 				}
 
-				const std::string assetPath = it->path().string();
-				if (!AssetRegistry::IsMetaFilePath(assetPath)) {
-					AssetRegistry::GetOrCreateAssetUUID(assetPath);
+				AddImportedAssetPath(paths, it->path());
+			}
+		}
+
+		void RegisterRegistryAssetTree(const std::filesystem::path& path)
+		{
+			std::vector<std::string> assetPaths;
+			CollectRegistryAssetPaths(path, assetPaths);
+			for (const std::string& assetPath : assetPaths) {
+				AssetRegistry::ImportAssetPathIncremental(assetPath);
+			}
+		}
+
+		void ForgetRegistryAssetPaths(const std::vector<std::string>& assetPaths)
+		{
+			for (const std::string& assetPath : assetPaths) {
+				AssetRegistry::ForgetAssetPathIncremental(assetPath);
+			}
+		}
+
+		bool CopyFileChunked(
+			const std::filesystem::path& source,
+			const std::filesystem::path& destination,
+			bool skipExisting,
+			const std::atomic_bool& keepRunning,
+			const std::function<void(std::uintmax_t)>& onCopiedBytes)
+		{
+			std::error_code ec;
+			if (skipExisting && std::filesystem::exists(destination, ec) && !ec) {
+				return false;
+			}
+
+			if (destination.has_parent_path()) {
+				std::filesystem::create_directories(destination.parent_path(), ec);
+				if (ec) {
+					return false;
 				}
 			}
+
+			std::ifstream input(source, std::ios::binary);
+			if (!input.is_open()) {
+				return false;
+			}
+
+			std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+			if (!output.is_open()) {
+				return false;
+			}
+
+			// Heap, not stack: a 1 MB std::array here overflowed the import worker
+			// thread's 1 MB default stack the moment CopyFileChunked was entered,
+			// crashing the editor on every drag-import. std::vector keeps the same
+			// throughput-friendly chunk size without touching the stack guard page.
+			std::vector<char> buffer(1024 * 1024);
+			while (keepRunning.load(std::memory_order_acquire) && input) {
+				input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+				const std::streamsize read = input.gcount();
+				if (read <= 0) {
+					break;
+				}
+
+				output.write(buffer.data(), read);
+				if (!output) {
+					return false;
+				}
+
+				onCopiedBytes(static_cast<std::uintmax_t>(read));
+			}
+
+			return keepRunning.load(std::memory_order_acquire) && !input.bad() && output.good();
 		}
 	}
 
@@ -308,6 +443,12 @@ namespace Index {
 
 			if (renameSucceeded) {
 				m_SelectedPath = finalPath;
+				if (finalPath != m_RenamePath) {
+					AssetRegistry::MoveCompanionMetadata(m_RenamePath, finalPath);
+				}
+				else {
+					AssetRegistry::ImportAssetPathIncremental(finalPath);
+				}
 			}
 			m_PendingScriptType = PendingScriptType::None;
 			m_PendingScriptDir.clear();
@@ -368,7 +509,7 @@ namespace Index {
 						"\n"
 						"public class " + className + " : Component\n"
 						"{\n"
-						"    public float Value = 0.0f;\n"
+						"     \n"
 						"}\n";
 				}
 				else if (isNativeComponent) {
@@ -380,8 +521,7 @@ namespace Index {
 						"[StructLayout(LayoutKind.Sequential)]\n"
 						"public struct " + className + " : IComponent\n"
 						"{\n"
-						"    public float Value = 0.0f;\n"
-						"\n"
+						"     \n"
 						"    public " + className + "() { }\n"
 						"}\n";
 				}
@@ -396,10 +536,6 @@ namespace Index {
 						"    }\n"
 						"\n"
 						"    public override void OnUpdate()\n"
-						"    {\n"
-						"    }\n"
-						"\n"
-						"    public override void OnDestroy()\n"
 						"    {\n"
 						"    }\n"
 						"}\n";
@@ -429,7 +565,7 @@ namespace Index {
 						"[CreateDataAsset(\"" + className + "\")]\n"
 						"public class " + className + " : DataAsset\n"
 						"{\n"
-						"    public float Value = 0.0f;\n"
+						"     \n"
 						"}\n";
 				}
 				else if (isEmpty) {
@@ -438,6 +574,7 @@ namespace Index {
 						"\n"
 						"public class " + className + "\n"
 						"{\n"
+						"     \n"
 						"}\n";
 				}
 				else {
@@ -510,6 +647,7 @@ namespace Index {
 				}
 			}
 
+			AssetRegistry::ImportAssetPathIncremental(finalPath);
 			m_SelectedPath = finalPath;
 			m_PendingScriptType = PendingScriptType::None;
 			m_PendingScriptDir.clear();
@@ -536,6 +674,9 @@ namespace Index {
 			if (!m_RenamePath.empty() && std::filesystem::exists(m_RenamePath)) {
 				std::error_code ec;
 				std::filesystem::remove(m_RenamePath, ec);
+				if (!ec) {
+					AssetRegistry::DeleteCompanionMetadata(m_RenamePath);
+				}
 			}
 			m_PendingScriptType = PendingScriptType::None;
 			m_PendingScriptDir.clear();
@@ -575,8 +716,11 @@ namespace Index {
 		const std::filesystem::path pathFs(path);
 		const bool wasSceneFile = pathFs.extension() == ".scene";
 		const std::string sceneStem = wasSceneFile ? pathFs.stem().string() : std::string{};
+		std::vector<std::string> deletedAssetPaths;
+		CollectRegistryAssetPaths(pathFs, deletedAssetPaths);
 
 		if (Directory::Delete(path)) {
+			ForgetRegistryAssetPaths(deletedAssetPaths);
 			if (!nativeMirrorPath.empty()) {
 				std::error_code ec;
 				std::filesystem::remove(nativeMirrorPath, ec);
@@ -611,10 +755,14 @@ namespace Index {
 
 		std::string oldExt = std::filesystem::path(path).extension().string();
 		std::string oldStem = std::filesystem::path(path).stem().string();
+		std::vector<std::string> renamedAssetPaths;
+		CollectRegistryAssetPaths(path, renamedAssetPaths);
 
 		if (Directory::Rename(path, newName)) {
 			std::filesystem::path p(path);
 			std::string newPath = (p.parent_path() / newName).string();
+			ForgetRegistryAssetPaths(renamedAssetPaths);
+			RegisterRegistryAssetTree(newPath);
 			if (m_SelectedPath == path) {
 				m_SelectedPath = newPath;
 			}
@@ -829,7 +977,7 @@ namespace Index {
 		}
 
 		// Confirmation disabled in preferences: delete straight away.
-		if (!EditorPreferences::GetConfirmOnDelete()) {
+		if (!EditorPreferences::GetConfirmOnDeleteAsset()) {
 			DeleteSelectedAssets();
 			return;
 		}
@@ -871,9 +1019,7 @@ namespace Index {
 
 			bool decided = false;
 			if (ImGui::Button("Delete", ImVec2(120, 0))) {
-				for (const std::string& path : m_PendingDeletePaths) {
-					DeleteEntry(path);
-				}
+				StartAssetDeletion(m_PendingDeletePaths);
 				decided = true;
 			}
 			ImGui::SameLine();
@@ -1038,6 +1184,7 @@ namespace Index {
 				}
 
 				const std::string finalPathStr = finalPath.string();
+				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
 				m_NeedsRefresh = true;
 				Refresh();
 				m_SelectedPath = finalPathStr;
@@ -1072,6 +1219,7 @@ namespace Index {
 					file.close();
 				}
 
+				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
 				m_NeedsRefresh = true;
 				Refresh();
 				m_SelectedPath = finalPathStr;
@@ -1117,6 +1265,7 @@ namespace Index {
 					file.close();
 				}
 
+				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
 				m_NeedsRefresh = true;
 				Refresh();
 				m_SelectedPath = finalPathStr;
@@ -1158,6 +1307,7 @@ namespace Index {
 					}
 				}
 
+				AssetRegistry::ImportAssetPathIncremental(finalPathStr);
 				m_PendingScriptType = PendingScriptType::EntityPrefab;
 				m_PendingScriptDir = parentDir;
 				m_PendingPrefabSourceEntity = sourceEntity;
@@ -1223,75 +1373,749 @@ namespace Index {
 		catch (...) {}
 	}
 
+	void AssetBrowser::StartExternalAssetImport(std::vector<std::string> paths, std::string destinationDirectory) {
+		if (paths.empty() || destinationDirectory.empty()) {
+			return;
+		}
+
+		// Import and delete share the single Win32 progress popup and the
+		// (unsynchronized) AssetRegistry, so they must not overlap. A delete already in
+		// flight wins; the drop is ignored (same behaviour as dropping mid-import).
+		if (m_DeleteActive.load(std::memory_order_acquire)) {
+			IDX_CORE_WARN_TAG("AssetBrowser", "Asset deletion is in progress; ignoring {} dropped path(s).", paths.size());
+			return;
+		}
+
+		if (m_ImportActive.exchange(true, std::memory_order_acq_rel)) {
+			IDX_CORE_WARN_TAG("AssetBrowser", "Asset import is already running; ignoring {} dropped path(s).", paths.size());
+			return;
+		}
+
+		if (m_ImportThread.joinable()) {
+			m_ImportThread.join();
+		}
+
+		{
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportWorkerFinished = false;
+			m_ImportResultsConsumed = true;
+			m_ImportDestinationDirectory = destinationDirectory;
+			m_ImportCurrentItem = "Preparing...";
+			m_ImportTotalBytes = 0;
+			m_ImportCopiedBytes = 0;
+			m_ImportTotalRootItems = paths.size();
+			m_ImportProcessedRootItems = 0;
+			m_ImportImportedRootCount = 0;
+			m_ImportImportedRootPaths.clear();
+			m_ImportImportedAssetPaths.clear();
+			m_ImportErrors.clear();
+		}
+
+		try {
+			m_ImportThread = std::thread(
+				&AssetBrowser::RunExternalAssetImport,
+				this,
+				std::move(paths),
+				std::move(destinationDirectory));
+		}
+		catch (const std::exception& e) {
+			m_ImportActive.store(false, std::memory_order_release);
+			IDX_CORE_ERROR_TAG("AssetBrowser", "Failed to start asset import worker: {}", e.what());
+		}
+	}
+
+	void AssetBrowser::RunExternalAssetImport(std::vector<std::string> paths, std::string destinationDirectory) {
+		namespace fs = std::filesystem;
+
+		// Boundary guard: a throw escaping this std::thread body calls std::terminate and kills the
+		// editor. Most fs calls here use error_code, but allocation (the copy buffer, path strings) can
+		// still throw — catch and publish a finished+error state so the import UI recovers instead.
+		try {
+
+		std::vector<std::string> importedRootPaths;
+		std::vector<std::string> importedAssetPaths;
+		std::vector<std::string> errors;
+		std::size_t importedRootCount = 0;
+
+		auto publishCurrentItem = [this](const std::string& item) {
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportCurrentItem = item;
+		};
+
+		auto publishCopiedBytes = [this](std::uintmax_t bytes) {
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportCopiedBytes += bytes;
+		};
+
+		auto publishProcessedRoot = [this](std::size_t processed) {
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportProcessedRootItems = processed;
+		};
+
+		auto appendError = [&errors](const fs::path& path, const std::string& message) {
+			errors.push_back("Failed to import '" + path.string() + "': " + message);
+		};
+
+		publishCurrentItem("Scanning...");
+		std::uintmax_t totalBytes = 0;
+		for (const std::string& pathString : paths) {
+			if (!m_ImportActive.load(std::memory_order_acquire)) {
+				break;
+			}
+
+			std::error_code ec;
+			const fs::path path(pathString);
+			if (fs::exists(path, ec) && !ec) {
+				CollectImportByteSize(path, totalBytes);
+			}
+		}
+
+		{
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportTotalBytes = totalBytes;
+		}
+
+		const fs::path destDir(destinationDirectory);
+		for (std::size_t i = 0; i < paths.size(); ++i) {
+			if (!m_ImportActive.load(std::memory_order_acquire)) {
+				break;
+			}
+
+			const fs::path src(paths[i]);
+			publishCurrentItem(src.filename().empty() ? src.string() : src.filename().string());
+
+			std::error_code ec;
+			if (!fs::exists(src, ec) || ec) {
+				appendError(src, ec ? ec.message() : "source path does not exist");
+				publishProcessedRoot(i + 1);
+				continue;
+			}
+
+			bool importedThisRoot = false;
+			fs::path importedRootPath;
+
+			if (fs::is_directory(src, ec) && !ec) {
+				const fs::path destRoot = destDir / src.filename();
+				fs::create_directories(destRoot, ec);
+				if (ec) {
+					appendError(src, ec.message());
+					publishProcessedRoot(i + 1);
+					continue;
+				}
+
+				importedThisRoot = true;
+				importedRootPath = destRoot;
+
+				for (fs::recursive_directory_iterator it(
+					 src,
+					 fs::directory_options::skip_permission_denied,
+					 ec), end;
+					 it != end && m_ImportActive.load(std::memory_order_acquire);
+					 it.increment(ec)) {
+					if (ec) {
+						ec.clear();
+						continue;
+					}
+
+					std::error_code relEc;
+					const fs::path rel = fs::relative(it->path(), src, relEc);
+					if (relEc) {
+						continue;
+					}
+
+					const fs::path dest = destRoot / rel;
+					std::error_code entryEc;
+					if (it->is_directory(entryEc) && !entryEc) {
+						fs::create_directories(dest, entryEc);
+						if (entryEc) {
+							appendError(it->path(), entryEc.message());
+						}
+						continue;
+					}
+
+					entryEc.clear();
+					if (!it->is_regular_file(entryEc) || entryEc) {
+						continue;
+					}
+
+					if (fs::exists(dest, entryEc) && !entryEc) {
+						publishCopiedBytes(SafeFileSize(it->path()));
+						continue;
+					}
+
+					if (CopyFileChunked(it->path(), dest, false, m_ImportActive, publishCopiedBytes)) {
+						AddImportedAssetPath(importedAssetPaths, dest);
+					}
+					else if (m_ImportActive.load(std::memory_order_acquire)) {
+						appendError(it->path(), "copy failed");
+					}
+				}
+			}
+			else if (fs::is_regular_file(src, ec) && !ec) {
+				const fs::path dest = MakeUniqueImportFilePath(src, destDir);
+				if (CopyFileChunked(src, dest, false, m_ImportActive, publishCopiedBytes)) {
+					importedThisRoot = true;
+					importedRootPath = dest;
+					AddImportedAssetPath(importedAssetPaths, dest);
+				}
+				else if (m_ImportActive.load(std::memory_order_acquire)) {
+					appendError(src, "copy failed");
+				}
+			}
+
+			if (importedThisRoot) {
+				++importedRootCount;
+				importedRootPaths.push_back(importedRootPath.string());
+			}
+
+			publishProcessedRoot(i + 1);
+		}
+
+		{
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportCurrentItem = m_ImportActive.load(std::memory_order_acquire) ? "Copy complete" : "Cancelled";
+			m_ImportImportedRootCount = importedRootCount;
+			m_ImportImportedRootPaths = std::move(importedRootPaths);
+			m_ImportImportedAssetPaths = std::move(importedAssetPaths);
+			m_ImportErrors = std::move(errors);
+			m_ImportWorkerFinished = true;
+			m_ImportResultsConsumed = false;
+		}
+		}
+		catch (const std::exception& e) {
+			IDX_CORE_ERROR_TAG("AssetBrowser", "Asset import worker crashed: {}", e.what());
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportCurrentItem = "Import failed";
+			m_ImportErrors.push_back(std::string("Import failed: ") + e.what());
+			m_ImportWorkerFinished = true;
+			m_ImportResultsConsumed = false;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("AssetBrowser", "Asset import worker crashed: unknown exception");
+			std::scoped_lock lock(m_ImportMutex);
+			m_ImportCurrentItem = "Import failed";
+			m_ImportErrors.push_back("Import failed: unknown error");
+			m_ImportWorkerFinished = true;
+			m_ImportResultsConsumed = false;
+		}
+	}
+
+	void AssetBrowser::ConsumeFinishedExternalAssetImport() {
+		bool shouldConsume = false;
+		{
+			std::scoped_lock lock(m_ImportMutex);
+			shouldConsume = m_ImportWorkerFinished && !m_ImportResultsConsumed;
+		}
+
+		if (!shouldConsume) {
+			return;
+		}
+
+		if (m_ImportThread.joinable()) {
+			m_ImportThread.join();
+		}
+
+		std::vector<std::string> errors;
+		{
+			std::scoped_lock lock(m_ImportMutex);
+			m_PendingImportedAssetRegistrations = std::move(m_ImportImportedAssetPaths);
+			m_PendingImportRootPaths = std::move(m_ImportImportedRootPaths);
+			m_PendingImportRootCount = m_ImportImportedRootCount;
+			m_PendingImportDestinationDirectory = m_ImportDestinationDirectory;
+			m_PendingImportedAssetRegistrationIndex = 0;
+			errors = std::move(m_ImportErrors);
+			m_ImportResultsConsumed = true;
+		}
+
+		for (const std::string& error : errors) {
+			IDX_CORE_WARN_TAG("AssetBrowser", "{}", error);
+		}
+	}
+
+	void AssetBrowser::ProcessPendingImportedAssetRegistrations() {
+		if (!m_ImportActive.load(std::memory_order_acquire)) {
+			return;
+		}
+
+		const bool workerDone = [&]() {
+			std::scoped_lock lock(m_ImportMutex);
+			return m_ImportWorkerFinished && m_ImportResultsConsumed;
+		}();
+
+		if (!workerDone) {
+			return;
+		}
+
+		const auto start = std::chrono::steady_clock::now();
+		constexpr auto kBudget = std::chrono::milliseconds(4);
+		std::size_t processedThisFrame = 0;
+
+		while (m_PendingImportedAssetRegistrationIndex < m_PendingImportedAssetRegistrations.size()) {
+			const std::string& path = m_PendingImportedAssetRegistrations[m_PendingImportedAssetRegistrationIndex];
+			AssetRegistry::ImportAssetPathIncremental(path);
+			m_Thumbnails.Invalidate(path);
+			++m_PendingImportedAssetRegistrationIndex;
+			++processedThisFrame;
+
+			if (processedThisFrame >= 1 && std::chrono::steady_clock::now() - start >= kBudget) {
+				return;
+			}
+		}
+
+		if (m_PendingImportRootCount > 0) {
+			if (m_CurrentDirectory == m_PendingImportDestinationDirectory) {
+				m_SelectedPaths = m_PendingImportRootPaths;
+				m_SelectedPath = m_PendingImportRootPaths.empty() ? std::string{} : m_PendingImportRootPaths.back();
+				m_LastSelectionIndex = -1;
+			}
+			m_SkipRegistrySyncOnNextRefresh = true;
+			m_NeedsRefresh = true;
+			m_SuppressNextAssetWatcherRefresh.store(true, std::memory_order_release);
+			IDX_CORE_INFO_TAG("AssetBrowser",
+				"Imported {} item(s) into {}",
+				m_PendingImportRootCount,
+				m_PendingImportDestinationDirectory);
+		}
+
+		m_PendingImportedAssetRegistrations.clear();
+		m_PendingImportRootPaths.clear();
+		m_PendingImportedAssetRegistrationIndex = 0;
+		m_PendingImportRootCount = 0;
+		m_PendingImportDestinationDirectory.clear();
+		m_ImportActive.store(false, std::memory_order_release);
+	}
+
+	void AssetBrowser::UpdateExternalAssetImportProgressWindow() {
+		if (!m_ImportActive.load(std::memory_order_acquire)) {
+			if (m_ImportProgressWindowVisible) {
+				Win32BuildProgressWindow::Hide();
+				m_ImportProgressWindowVisible = false;
+			}
+			return;
+		}
+
+		if (!m_ImportProgressWindowVisible) {
+			Win32BuildProgressWindow::Show("Importing Assets...");
+			m_ImportProgressWindowVisible = true;
+		}
+
+		float progress = 0.0f;
+		std::string stage = "Preparing...";
+
+		const bool workerDone = [&]() {
+			std::scoped_lock lock(m_ImportMutex);
+			return m_ImportWorkerFinished && m_ImportResultsConsumed;
+		}();
+
+		if (workerDone) {
+			const std::size_t total = m_PendingImportedAssetRegistrations.size();
+			if (total > 0) {
+				progress = 0.90f + 0.10f * (
+					static_cast<float>(m_PendingImportedAssetRegistrationIndex) /
+					static_cast<float>(total));
+				stage = "Indexing assets...";
+			}
+			else {
+				progress = 1.0f;
+				stage = "Done";
+			}
+		}
+		else {
+			std::uintmax_t totalBytes = 0;
+			std::uintmax_t copiedBytes = 0;
+			std::size_t totalRoots = 0;
+			std::size_t processedRoots = 0;
+			{
+				std::scoped_lock lock(m_ImportMutex);
+				totalBytes = m_ImportTotalBytes;
+				copiedBytes = m_ImportCopiedBytes;
+				totalRoots = m_ImportTotalRootItems;
+				processedRoots = m_ImportProcessedRootItems;
+				stage = m_ImportCurrentItem.empty() ? "Copying..." : m_ImportCurrentItem;
+			}
+
+			if (totalBytes > 0) {
+				progress = 0.90f * std::min(
+					1.0f,
+					static_cast<float>(copiedBytes) / static_cast<float>(totalBytes));
+			}
+			else if (totalRoots > 0) {
+				progress = 0.10f * (
+					static_cast<float>(processedRoots) / static_cast<float>(totalRoots));
+			}
+		}
+
+		Win32BuildProgressWindow::Update(progress, stage);
+	}
+
+	void AssetBrowser::PumpExternalAssetImport() {
+		ConsumeFinishedExternalAssetImport();
+		ProcessPendingImportedAssetRegistrations();
+		UpdateExternalAssetImportProgressWindow();
+	}
+
 	void AssetBrowser::OnExternalFileDrop(const std::vector<std::string>& paths) {
 		if (m_CurrentDirectory.empty()) return;
 		if (paths.empty()) return;
 
-		// Import is synchronous; drive the progress popup directly since the frame loop is blocked.
-		Win32BuildProgressWindow::Show("Importing Assets...");
-		const size_t total = paths.size();
+		StartExternalAssetImport(paths, m_CurrentDirectory);
+	}
 
-		int imported = 0;
-		for (size_t i = 0; i < paths.size(); ++i) {
-			const std::string& sourcePath = paths[i];
+	void AssetBrowser::StartAssetDeletion(std::vector<std::string> paths) {
+		if (paths.empty()) {
+			return;
+		}
 
-			std::string itemName;
-			try { itemName = std::filesystem::path(sourcePath).filename().string(); }
-			catch (...) { itemName = sourcePath; }
-			Win32BuildProgressWindow::Update(
-				static_cast<float>(i) / static_cast<float>(total),
-				itemName);
+		// The Win32 progress popup and the AssetRegistry are single-owner, shared
+		// resources. If an import or a prior delete is still in flight, fall back to a
+		// synchronous delete (only this rare overlap can briefly block) rather than
+		// racing the other operation for the window / registry maps.
+		if (m_ImportActive.load(std::memory_order_acquire) || m_DeleteActive.load(std::memory_order_acquire)) {
+			for (const std::string& path : paths) {
+				DeleteEntry(path);
+			}
+			return;
+		}
 
-			try {
-				std::filesystem::path src(sourcePath);
-				if (!std::filesystem::exists(src)) continue;
+		// A finished-but-not-yet-reaped worker can linger if the editor closed the
+		// progress flow early; drain it before reusing the thread handle.
+		if (m_DeleteThread.joinable()) {
+			m_DeleteThread.join();
+		}
 
-				std::filesystem::path destDir(m_CurrentDirectory);
-				std::filesystem::path importedPath;
+		// Main-thread, pre-spawn bookkeeping. The actual filesystem removal is the slow
+		// part and runs on the worker; everything that needs the files to still exist
+		// (native-mirror resolution) or touches render/UI state happens here, and the
+		// registry/scene/selection cleanup is deferred to the pump once the worker
+		// reports which roots actually got deleted.
+		std::vector<DeleteRootInfo> roots;
+		roots.reserve(paths.size());
+		for (const std::string& path : paths) {
+			// Defer thumbnail invalidation to next frame's Render() exactly as the sync
+			// DeleteEntry did — destroying the GPU texture now would dangle a
+			// WGPUTextureView mid-frame (see m_PendingThumbnailInvalidates docs).
+			m_PendingThumbnailInvalidates.push_back(path);
 
-				if (std::filesystem::is_directory(src)) {
-					std::filesystem::path dest = destDir / src.filename();
-					std::filesystem::copy(src, dest,
-						std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing);
-					importedPath = dest;
-					imported++;
-				}
-				else {
-					std::filesystem::path dest = destDir / src.filename();
+			DeleteRootInfo info;
+			info.Path = path;
+			std::error_code ec;
+			info.IsDirectory = std::filesystem::is_directory(path, ec) && !ec;
 
-					if (std::filesystem::exists(dest)) {
-						std::string stem = dest.stem().string();
-						std::string ext = dest.extension().string();
-						int counter = 1;
-						while (std::filesystem::exists(dest)) {
-							dest = destDir / (stem + " (" + std::to_string(counter) + ")" + ext);
-							counter++;
-						}
+			const std::filesystem::path mirror = ResolveNativeScriptMirrorPath(path);
+			info.NativeMirrorPath = mirror.empty() ? std::string{} : mirror.string();
+
+			const std::filesystem::path pathFs(path);
+			if (!info.IsDirectory && pathFs.extension() == ".scene") {
+				info.SceneStem = pathFs.stem().string();
+			}
+
+			roots.push_back(std::move(info));
+		}
+
+		// A pending rename targeting one of these paths would otherwise resolve against
+		// a vanished file; cancel it now (matches the old sync DeleteEntry).
+		CancelRename();
+
+		{
+			std::scoped_lock lock(m_DeleteMutex);
+			m_DeleteWorkerFinished = false;
+			m_DeleteResultsConsumed = true;
+			m_DeleteCurrentItem = "Preparing...";
+			m_DeleteForgetAssetPaths.clear();
+			m_DeleteSucceededRoots.clear();
+			m_DeleteErrors.clear();
+		}
+		// m_DeleteRoots / m_DeleteStartTime need no atomics or lock: the std::thread
+		// constructor below establishes a happens-before edge, so every write here is
+		// visible to the worker, and the worker is join()ed before they are touched
+		// again (pump / next Start). m_DeleteStartTime is then only ever read on the
+		// main thread.
+		m_DeleteRoots = std::move(roots);
+		m_DeleteTotalEntries.store(0, std::memory_order_release);
+		m_DeleteProcessedEntries.store(0, std::memory_order_release);
+		m_DeleteStartTime = std::chrono::steady_clock::now();
+		m_DeleteActive.store(true, std::memory_order_release);
+
+		try {
+			m_DeleteThread = std::thread(&AssetBrowser::RunAssetDeletion, this);
+		}
+		catch (const std::exception& e) {
+			m_DeleteActive.store(false, std::memory_order_release);
+			IDX_CORE_ERROR_TAG("AssetBrowser", "Failed to start asset deletion worker: {}", e.what());
+			// Worker never launched — complete the user's action synchronously.
+			std::vector<DeleteRootInfo> fallback = std::move(m_DeleteRoots);
+			m_DeleteRoots.clear();
+			for (const DeleteRootInfo& info : fallback) {
+				DeleteEntry(info.Path);
+			}
+		}
+	}
+
+	void AssetBrowser::RunAssetDeletion() {
+		namespace fs = std::filesystem;
+
+		// Boundary guard: a throw escaping this std::thread body calls std::terminate
+		// and kills the editor. fs calls use error_code, but allocation (the path
+		// vectors) can still throw — catch and publish a finished+error state so the
+		// deletion UI recovers instead.
+		try {
+
+		auto publishCurrentItem = [this](const std::string& item) {
+			std::scoped_lock lock(m_DeleteMutex);
+			m_DeleteCurrentItem = item;
+		};
+
+		// --- Pass 1: enumerate every entry up front so the progress bar is determinate. ---
+		struct RootPlan {
+			const DeleteRootInfo* Info = nullptr;
+			std::vector<fs::path> Removal;        // ordered children-before-parents
+			std::vector<std::string> AssetPaths;  // non-.meta assets to forget on success
+		};
+
+		publishCurrentItem("Scanning...");
+		std::vector<RootPlan> plans;
+		plans.reserve(m_DeleteRoots.size());
+		std::size_t totalEntries = 0;
+
+		for (const DeleteRootInfo& info : m_DeleteRoots) {
+			if (!m_DeleteActive.load(std::memory_order_acquire)) {
+				break;
+			}
+
+			RootPlan plan;
+			plan.Info = &info;
+
+			std::error_code ec;
+			if (info.IsDirectory) {
+				std::vector<fs::path> descendants;
+				for (fs::recursive_directory_iterator it(
+					 info.Path, fs::directory_options::skip_permission_denied, ec), end;
+					 it != end; it.increment(ec)) {
+					// Bail a huge scan on shutdown (Shutdown sets m_DeleteActive=false).
+					if (!m_DeleteActive.load(std::memory_order_acquire)) {
+						break;
+					}
+					if (ec) { ec.clear(); continue; }
+
+					// Never descend INTO a symlink/junction directory: it can point back
+					// up the tree and spin the iterator into unbounded growth. The link
+					// entry itself is still recorded below so the link is removed.
+					std::error_code symEc;
+					if (it->is_symlink(symEc)) {
+						it.disable_recursion_pending();
 					}
 
-					std::filesystem::copy_file(src, dest);
-					importedPath = dest;
-					imported++;
-				}
+					descendants.push_back(it->path());
 
-				if (!importedPath.empty()) {
-					RegisterImportedAssetPath(importedPath);
-					m_Thumbnails.Invalidate(importedPath.string());
+					std::error_code fileEc;
+					if (it->is_regular_file(fileEc) && !fileEc
+						&& !AssetRegistry::IsMetaFilePath(it->path().string())) {
+						plan.AssetPaths.push_back(it->path().string());
+					}
+				}
+				// recursive_directory_iterator is pre-order (parent before children);
+				// reversing it removes children before their parent. The root directory
+				// itself is appended last so it is empty by the time we remove it.
+				plan.Removal.assign(descendants.rbegin(), descendants.rend());
+				plan.Removal.emplace_back(info.Path);
+			}
+			else {
+				plan.Removal.emplace_back(info.Path);
+				if (!AssetRegistry::IsMetaFilePath(info.Path)) {
+					plan.AssetPaths.push_back(info.Path);
 				}
 			}
-			catch (const std::exception& e) {
-				IDX_CORE_WARN_TAG("AssetBrowser", "Failed to import '{}': {}", sourcePath, e.what());
+
+			totalEntries += plan.Removal.size();
+			plans.push_back(std::move(plan));
+		}
+
+		m_DeleteTotalEntries.store(totalEntries, std::memory_order_release);
+
+		// --- Pass 2: remove entries bottom-up, publishing progress per entry. ---
+		std::vector<std::string> forgetAssetPaths;
+		std::vector<std::string> succeededRoots;
+		std::vector<std::string> errors;
+
+		for (const RootPlan& plan : plans) {
+			if (!m_DeleteActive.load(std::memory_order_acquire)) {
+				break;
+			}
+
+			const fs::path rootPath(plan.Info->Path);
+			publishCurrentItem(rootPath.filename().empty()
+				? plan.Info->Path : rootPath.filename().string());
+
+			for (const fs::path& entry : plan.Removal) {
+				if (!m_DeleteActive.load(std::memory_order_acquire)) {
+					break;
+				}
+				std::error_code ec;
+				fs::remove(entry, ec);
+				m_DeleteProcessedEntries.fetch_add(1, std::memory_order_acq_rel);
+			}
+
+			if (!plan.Info->NativeMirrorPath.empty()) {
+				std::error_code ec;
+				fs::remove(plan.Info->NativeMirrorPath, ec);
+			}
+
+			// Treat the root as deleted only if it is provably gone: fs::exists returns
+			// false on error too, so without the !existsEc guard a stat failure on a
+			// still-present folder would wrongly forget its assets from the registry.
+			std::error_code existsEc;
+			const bool stillExists = fs::exists(plan.Info->Path, existsEc);
+			if (!stillExists && !existsEc) {
+				succeededRoots.push_back(plan.Info->Path);
+				forgetAssetPaths.insert(forgetAssetPaths.end(),
+					plan.AssetPaths.begin(), plan.AssetPaths.end());
+			}
+			else {
+				errors.push_back("Failed to fully delete '" + plan.Info->Path + "'");
 			}
 		}
 
-		Win32BuildProgressWindow::Update(1.0f, "Done");
-		Win32BuildProgressWindow::Hide();
-
-		if (imported > 0) {
-			AssetRegistry::MarkDirty();
-			m_NeedsRefresh = true;
-			IDX_CORE_INFO_TAG("AssetBrowser", "Imported {} file(s) into {}", imported, m_CurrentDirectory);
+		{
+			std::scoped_lock lock(m_DeleteMutex);
+			m_DeleteCurrentItem = m_DeleteActive.load(std::memory_order_acquire) ? "Delete complete" : "Cancelled";
+			m_DeleteForgetAssetPaths = std::move(forgetAssetPaths);
+			m_DeleteSucceededRoots = std::move(succeededRoots);
+			m_DeleteErrors = std::move(errors);
+			m_DeleteWorkerFinished = true;
+			m_DeleteResultsConsumed = false;
 		}
+
+		}
+		catch (const std::exception& e) {
+			IDX_CORE_ERROR_TAG("AssetBrowser", "Asset deletion worker crashed: {}", e.what());
+			std::scoped_lock lock(m_DeleteMutex);
+			m_DeleteCurrentItem = "Delete failed";
+			m_DeleteErrors.push_back(std::string("Delete failed: ") + e.what());
+			m_DeleteWorkerFinished = true;
+			m_DeleteResultsConsumed = false;
+		}
+		catch (...) {
+			IDX_CORE_ERROR_TAG("AssetBrowser", "Asset deletion worker crashed: unknown exception");
+			std::scoped_lock lock(m_DeleteMutex);
+			m_DeleteCurrentItem = "Delete failed";
+			m_DeleteErrors.push_back("Delete failed: unknown error");
+			m_DeleteWorkerFinished = true;
+			m_DeleteResultsConsumed = false;
+		}
+	}
+
+	void AssetBrowser::ConsumeAndApplyFinishedAssetDeletion() {
+		bool shouldApply = false;
+		{
+			std::scoped_lock lock(m_DeleteMutex);
+			shouldApply = m_DeleteWorkerFinished && !m_DeleteResultsConsumed;
+		}
+		if (!shouldApply) {
+			return;
+		}
+
+		if (m_DeleteThread.joinable()) {
+			m_DeleteThread.join();
+		}
+
+		std::vector<std::string> forgetAssetPaths;
+		std::vector<std::string> succeededRoots;
+		std::vector<std::string> errors;
+		{
+			std::scoped_lock lock(m_DeleteMutex);
+			forgetAssetPaths = std::move(m_DeleteForgetAssetPaths);
+			succeededRoots = std::move(m_DeleteSucceededRoots);
+			errors = std::move(m_DeleteErrors);
+			m_DeleteResultsConsumed = true;
+		}
+
+		const std::unordered_set<std::string> succeeded(succeededRoots.begin(), succeededRoots.end());
+
+		// All of this is main-thread-only: AssetRegistry and SceneManager keep
+		// unsynchronized global state, and selection fields are read by Render().
+		for (const DeleteRootInfo& info : m_DeleteRoots) {
+			if (succeeded.find(info.Path) == succeeded.end()) {
+				continue;
+			}
+
+			// A single-file root's companion .meta sidecar is a sibling (not under the
+			// deleted path), so the worker never removed it — do it here, which also
+			// forgets the asset from the registry.
+			if (!info.IsDirectory) {
+				AssetRegistry::DeleteCompanionMetadata(info.Path);
+			}
+
+			// Drop the SceneDefinition so a script-side LoadScene of the deleted name
+			// can't resurrect an empty Scene from the stale definition.
+			if (!info.SceneStem.empty()) {
+				SceneManager::Get().UnregisterScene(info.SceneStem);
+			}
+
+			if (m_SelectedPath == info.Path) {
+				m_SelectedPath.clear();
+			}
+			m_SelectedPaths.erase(
+				std::remove(m_SelectedPaths.begin(), m_SelectedPaths.end(), info.Path),
+				m_SelectedPaths.end());
+			if (m_PressedPath == info.Path) {
+				m_PressedPath.clear();
+			}
+		}
+
+		ForgetRegistryAssetPaths(forgetAssetPaths);
+
+		for (const std::string& error : errors) {
+			IDX_CORE_WARN_TAG("AssetBrowser", "{}", error);
+		}
+
+		m_DeleteRoots.clear();
+		m_NeedsRefresh = true;
+		// Mirror the import path: suppress the single asset-watcher refresh that would
+		// otherwise fire right after we mutate the tree. Import and delete never overlap
+		// (StartAssetDeletion serializes them), so reusing the import flag is safe.
+		m_SuppressNextAssetWatcherRefresh.store(true, std::memory_order_release);
+		m_DeleteActive.store(false, std::memory_order_release);
+	}
+
+	void AssetBrowser::UpdateAssetDeletionProgressWindow() {
+		if (!m_DeleteActive.load(std::memory_order_acquire)) {
+			if (m_DeleteProgressWindowVisible) {
+				Win32BuildProgressWindow::Hide();
+				m_DeleteProgressWindowVisible = false;
+			}
+			return;
+		}
+
+		if (!m_DeleteProgressWindowVisible) {
+			// Grace period: a fast delete (a single small file) finishes before this
+			// elapses, so the popup never flashes. Only genuinely slow deletes — big
+			// folders, large or Defender-throttled removals — surface the window.
+			constexpr auto kGrace = std::chrono::milliseconds(200);
+			if (std::chrono::steady_clock::now() - m_DeleteStartTime < kGrace) {
+				return;
+			}
+			Win32BuildProgressWindow::Show("Deleting Assets...");
+			m_DeleteProgressWindowVisible = true;
+		}
+
+		const std::size_t total = m_DeleteTotalEntries.load(std::memory_order_acquire);
+		const std::size_t processed = m_DeleteProcessedEntries.load(std::memory_order_acquire);
+		const float progress = total > 0
+			? std::min(1.0f, static_cast<float>(processed) / static_cast<float>(total))
+			: 0.0f;
+
+		std::string stage;
+		{
+			std::scoped_lock lock(m_DeleteMutex);
+			stage = m_DeleteCurrentItem.empty() ? "Deleting..." : m_DeleteCurrentItem;
+		}
+
+		Win32BuildProgressWindow::Update(progress, stage);
+	}
+
+	void AssetBrowser::PumpAssetDeletion() {
+		ConsumeAndApplyFinishedAssetDeletion();
+		UpdateAssetDeletionProgressWindow();
 	}
 
 }

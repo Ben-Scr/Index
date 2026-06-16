@@ -52,6 +52,18 @@ public class RectTransform : Component
         set => InternalCalls.RectTransform_SetAnchoredPosition(RequireComponent<RectTransform>(), value.X, value.Y);
     }
 
+    // Screen-space center position in UI pixels. Matches Input.MousePosition.
+    public Vector2 Position
+    {
+        get
+        {
+            ulong id = RequireComponent<RectTransform>();
+            InternalCalls.RectTransform_GetScreenPosition(id, out float x, out float y);
+            return new Vector2(x, y);
+        }
+        set => InternalCalls.RectTransform_SetScreenPosition(RequireComponent<RectTransform>(), value.X, value.Y);
+    }
+
     public Vector2 SizeDelta
     {
         get
@@ -115,51 +127,6 @@ public class RectTransform : Component
             ulong entityId = InternalCalls.Transform2D_GetEntity(RequireComponent<Transform2D>());
             return entityId != 0 ? new Entity(entityId) : null;
         }
-    }
-
-    public Entity? Child => GetChildAt(0);
-
-    public Entity? Parent
-    {
-        get
-        {
-            ulong parentId = InternalCalls.Transform2D_GetParent(RequireComponent<Transform2D>());
-            return parentId != 0 ? new Entity(parentId) : null;
-        }
-    }
-
-    public int ChildCount => InternalCalls.Transform2D_GetChildCount(RequireComponent<Transform2D>());
-
-    public Entity[] GetChildren()
-    {
-        ulong entityId = RequireComponent<Transform2D>();
-        int count = InternalCalls.Transform2D_GetChildCount(entityId);
-        if (count <= 0) return Array.Empty<Entity>();
-
-        ulong[] ids = new ulong[count];
-        int actual = InternalCalls.Transform2D_GetChildren(entityId, ids);
-
-        var result = new List<Entity>(actual);
-        for (int i = 0; i < actual; i++)
-        {
-            if (ids[i] == 0) continue;
-            result.Add(new Entity(ids[i]));
-        }
-        return result.ToArray();
-    }
-
-    public Entity? GetChildAt(int index)
-    {
-        if (index < 0) return null;
-        ulong childId = InternalCalls.Transform2D_GetChildAt(RequireComponent<Transform2D>(), index);
-        return childId != 0 ? new Entity(childId) : null;
-    }
-
-    public bool SetParent(Entity? newParent)
-    {
-        ulong entityId = RequireComponent<Transform2D>();
-        ulong parentId = newParent != null && newParent != Entity.Invalid ? newParent.ID : 0;
-        return InternalCalls.Transform2D_SetParent(entityId, parentId);
     }
 }
 
@@ -714,6 +681,14 @@ public class InputField : Component
     {
         get => InternalCalls.InputField_GetCharacterLimit(RequireComponent<InputField>());
         set => InternalCalls.InputField_SetCharacterLimit(RequireComponent<InputField>(), value);
+    }
+
+    // When true, Enter inserts a newline instead of submitting, paste keeps newlines,
+    // and Up/Down navigate visual lines. Leave the Text child's WrapMode at None.
+    public bool Multiline
+    {
+        get => InternalCalls.InputField_GetMultiline(RequireComponent<InputField>());
+        set => InternalCalls.InputField_SetMultiline(RequireComponent<InputField>(), value);
     }
 
     // Text setter alone never raises OnValueChanged; this method fans out to subscribers and bumps the dispatcher cache.

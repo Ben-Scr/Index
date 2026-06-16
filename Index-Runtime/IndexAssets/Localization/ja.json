@@ -12,6 +12,7 @@
     "launcher.action.execute_selected": "\u5b9f\u884c",
 
     "launcher.progress.opening_project": "プロジェクトを開いています",
+    "launcher.progress.downloading_language": "言語をダウンロード中…",
     "launcher.progress.working": "処理中...",
     "launcher.progress.launching_editor": "エディタを起動中...",
 
@@ -80,10 +81,11 @@
     "launcher.settings.language": "言語",
     "launcher.settings.language.auto_format": "自動 ({0})",
     "launcher.settings.language.not_installed_suffix": " (未インストール)",
-    "launcher.settings.language.downloading": "{0} をダウンロード中…",
     "launcher.settings.language.download_failed": "ダウンロードに失敗しました: {0}",
+    "launcher.settings.language.restart_title": "再起動が必要です",
     "launcher.settings.language.restart_required": "CJK文字を表示するにはランチャーを再起動してください。",
     "launcher.settings.language.restart_now": "今すぐ再起動",
+    "launcher.settings.language.restart_later": "後で",
     "launcher.settings.theme": "\u30c6\u30fc\u30de",
     "launcher.settings.theme.auto_format": "\u81ea\u52d5 ({0})",
     "launcher.settings.theme.dark": "\u30c0\u30fc\u30af",

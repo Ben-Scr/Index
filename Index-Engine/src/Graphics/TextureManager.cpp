@@ -157,7 +157,10 @@ namespace Index {
 		// Filter::Default is a renderer-component sentinel ("use the texture's own
 		// filter"), not a real sampler value — resolve it here so the slot key and
 		// sampler stay concrete. (.meta still wins upstream in LoadTextureByUUID.)
-		if (filter == Filter::Default) filter = Filter::Bilinear;
+		// The no-meta default is Point: it keeps pixel art crisp and matches what an
+		// original entity renders, so a duplicate — which re-resolves Default here —
+		// keys onto the same Point slot instead of a separate Bilinear one.
+		if (filter == Filter::Default) filter = Filter::Point;
 
 		TextureHandle existing = FindTextureByPath(pathStr, filter, u, v);
 		// IsValid already rejects the {0xFFFF,0} miss handle (index out of range), so
@@ -212,12 +215,11 @@ namespace Index {
 			return TextureHandle{};
 		}
 
-		std::string path = AssetRegistry::ResolvePath(assetId);
-		if (path.empty()) {
-			AssetRegistry::MarkDirty();
-			AssetRegistry::Sync();
-			path = AssetRegistry::ResolvePath(assetId);
-		}
+		// ResolvePath self-recovers once on a miss (a single bounded rescan, then caches the
+		// miss in s_KnownMissingIds). Don't MarkDirty()+Sync() here: MarkDirty clears that
+		// negative cache, so a dangling GUID would force a full O(N) Assets/ rescan ×3, and
+		// re-arm every other missing GUID to rescan too.
+		const std::string path = AssetRegistry::ResolvePath(assetId);
 		if (path.empty()) return TextureHandle{};
 
 		const TextureMeta meta = AssetRegistry::ReadTextureMeta(path);

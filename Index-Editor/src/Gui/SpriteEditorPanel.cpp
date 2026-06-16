@@ -5,6 +5,7 @@
 #include "Core/Log.hpp"
 #include "Graphics/SpriteUVResolver.hpp"
 #include "Graphics/Texture2D.hpp"
+#include "Gui/ImGuiUtils.hpp"
 #include "Graphics/TextureManager.hpp"
 
 #include "Graphics/ImageData.hpp"
@@ -355,8 +356,10 @@ namespace Index {
 		const ImVec2 imageMax(imageMin.x + m_TexWidth * m_Zoom, imageMin.y + m_TexHeight * m_Zoom);
 		drawList->PushClipRect(canvasMin, canvasMax, true);
 		if (Texture2D* tex = TextureManager::GetTexture(m_PreviewHandle); tex && tex->IsValid()) {
-			drawList->AddImage((ImTextureID)(intptr_t)tex->GetHandle(),
-				imageMin, imageMax, ImVec2(0, 0), ImVec2(1, 1));
+			// Honor the sprite sheet's filter so pixel-art slicing isn't done
+			// against a blurry (shared-bilinear) canvas.
+			ImGuiUtils::AddImageFiltered(drawList, (ImTextureID)(intptr_t)tex->GetHandle(),
+				imageMin, imageMax, tex->GetFilter(), ImVec2(0, 0), ImVec2(1, 1));
 		}
 		// Border around the texture so the user sees its extents.
 		drawList->AddRect(imageMin, imageMax, RGBA(180, 180, 180, 200));
@@ -989,6 +992,7 @@ namespace Index {
 			return;
 		}
 		m_Dirty = false;
+		m_SlicesApplied = true;   // editor polls this to refresh the Asset Browser's slice cache
 		// Bumping the epoch lazily invalidates cached SpriteUVResolver entries so SpriteRenderers see the new rects next frame.
 		NotifySpriteSliceEpochBumped();
 	}

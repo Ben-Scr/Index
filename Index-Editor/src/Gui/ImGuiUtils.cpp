@@ -514,8 +514,24 @@ namespace Index::ImGuiUtils {
 			drawList->AddRect(min, max, IM_COL32(130, 130, 130, 220), 0.0f, 0, 1.5f);
 		}
 
+		// The WGPU ImGui backend binds one shared sampler (Linear by default) for
+		// every image; per-texture samplers are ignored. These emit the backend's
+		// platform_io sampler callbacks to switch group-0 sampling for the next
+		// draw, so a Point texture can render crisp. Push must be paired with Pop
+		// (restore Linear) — the state persists across draws until reset.
+		void PushPointSampler(ImDrawList* drawList)
+		{
+			if (ImDrawCallback cb = ImGui::GetPlatformIO().DrawCallback_SetSamplerNearest)
+				drawList->AddCallback(cb, nullptr);
+		}
+		void PopPointSampler(ImDrawList* drawList)
+		{
+			if (ImDrawCallback cb = ImGui::GetPlatformIO().DrawCallback_SetSamplerLinear)
+				drawList->AddCallback(cb, nullptr);
+		}
+
 		void DrawTexturePreviewImpl(uint64_t rendererId, float texWidth, float texHeight,
-			float previewSize, bool flippedY)
+			float previewSize, bool flippedY, Filter filter)
 		{
 			const ImVec2 previewMin = ImGui::GetCursorScreenPos();
 			const ImVec2 previewMax = ImVec2(previewMin.x + previewSize, previewMin.y + previewSize);
@@ -546,8 +562,11 @@ namespace Index::ImGuiUtils {
 			// stb uploads bottom-row-first when flipVertical=true; compensate with (0,1)→(1,0) UVs so the preview isn't upside-down.
 			const ImVec2 uv0 = flippedY ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f);
 			const ImVec2 uv1 = flippedY ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f);
+			const bool point = (filter == Filter::Point);
+			if (point) PushPointSampler(drawList);
 			drawList->AddImage((ImTextureID)(intptr_t)rendererId,
 				imageMin, imageMax, uv0, uv1);
+			if (point) PopPointSampler(drawList);
 
 			DrawPreviewBorder(drawList, previewMin, previewMax);
 
@@ -555,18 +574,39 @@ namespace Index::ImGuiUtils {
 		}
 	}
 
-	void DrawTexturePreview(uint64_t rendererId, float texWidth, float texHeight, float previewSize)
+	void DrawTexturePreview(uint64_t rendererId, float texWidth, float texHeight, float previewSize, Filter filter)
 	{
 		// Raw-handle overload: assumes the natural top-down sprite/UI load
 		// path. New call sites should prefer the Texture2D overload below
 		// so the canonical flip rule applies automatically.
-		DrawTexturePreviewImpl(rendererId, texWidth, texHeight, previewSize, /*flippedY=*/false);
+		DrawTexturePreviewImpl(rendererId, texWidth, texHeight, previewSize, /*flippedY=*/false, filter);
 	}
 
-	void DrawTexturePreview(const Texture2D& tex, float previewSize)
+	void DrawTexturePreview(const Texture2D& tex, float previewSize, std::optional<Filter> filterOverride)
 	{
+		const Filter filter = filterOverride.value_or(tex.GetFilter());
 		DrawTexturePreviewImpl(tex.GetHandle(), tex.GetWidth(), tex.GetHeight(),
-			previewSize, tex.IsFlippedY());
+			previewSize, tex.IsFlippedY(), filter);
+	}
+
+	void ImageFiltered(ImTextureID texId, const ImVec2& size, Filter filter,
+		const ImVec2& uv0, const ImVec2& uv1)
+	{
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		const bool point = (filter == Filter::Point);
+		if (point) PushPointSampler(drawList);
+		ImGui::Image(texId, size, uv0, uv1);
+		if (point) PopPointSampler(drawList);
+	}
+
+	void AddImageFiltered(ImDrawList* drawList, ImTextureID texId,
+		const ImVec2& pMin, const ImVec2& pMax, Filter filter,
+		const ImVec2& uv0, const ImVec2& uv1, ImU32 tintCol)
+	{
+		const bool point = (filter == Filter::Point);
+		if (point) PushPointSampler(drawList);
+		drawList->AddImage(texId, pMin, pMax, uv0, uv1, tintCol);
+		if (point) PopPointSampler(drawList);
 	}
 
 	void DrawTexturePlaceholder(float previewSize)

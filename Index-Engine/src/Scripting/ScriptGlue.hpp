@@ -125,11 +125,12 @@ namespace Index {
 		void  (*Transform2D_SetLocalRotation)(uint64_t entityID, float rotation);
 		void  (*Transform2D_GetLocalScale)(uint64_t entityID, float* outX, float* outY);
 		void  (*Transform2D_SetLocalScale)(uint64_t entityID, float x, float y);
-		uint64_t (*Transform2D_GetParent)(uint64_t entityID);
-		int   (*Transform2D_SetParent)(uint64_t entityID, uint64_t parentEntityID);
-		int   (*Transform2D_GetChildCount)(uint64_t entityID);
-		uint64_t (*Transform2D_GetChildAt)(uint64_t entityID, int index);
-		int   (*Transform2D_GetChildren)(uint64_t entityID, uint64_t* outIDs, int maxOut);
+		// Parent/child hierarchy is entity-level (HierarchyComponent); kept in this slot range to preserve the locked callback order.
+		uint64_t (*Entity_GetParent)(uint64_t entityID);
+		int   (*Entity_SetParent)(uint64_t entityID, uint64_t parentEntityID, int worldPositionStays);
+		int   (*Entity_GetChildCount)(uint64_t entityID);
+		uint64_t (*Entity_GetChildAt)(uint64_t entityID, int index);
+		int   (*Entity_GetChildren)(uint64_t entityID, uint64_t* outIDs, int maxOut);
 
 		// ── SpriteRenderer ───────────────────────────────────────────
 		void (*SpriteRenderer_GetColor)(uint64_t entityID, float* r, float* g, float* b, float* a);
@@ -152,8 +153,12 @@ namespace Index {
 		void        (*TextRenderer_SetColor)(uint64_t entityID, float r, float g, float b, float a);
 		float       (*TextRenderer_GetLetterSpacing)(uint64_t entityID);
 		void        (*TextRenderer_SetLetterSpacing)(uint64_t entityID, float spacing);
+		float       (*TextRenderer_GetLineSpacing)(uint64_t entityID);
+		void        (*TextRenderer_SetLineSpacing)(uint64_t entityID, float spacing);
 		int         (*TextRenderer_GetHAlign)(uint64_t entityID);
 		void        (*TextRenderer_SetHAlign)(uint64_t entityID, int alignment);
+		int         (*TextRenderer_GetVAlign)(uint64_t entityID);
+		void        (*TextRenderer_SetVAlign)(uint64_t entityID, int alignment);
 		int         (*TextRenderer_GetWrapMode)(uint64_t entityID);
 		void        (*TextRenderer_SetWrapMode)(uint64_t entityID, int mode);
 		// WrapWidth slots removed — wrap area is now derived from
@@ -975,6 +980,18 @@ namespace Index {
 		void (*Gizmo_DrawSquare)(float cx, float cy, float sx, float sy, float degrees);
 		void (*Gizmo_DrawCircle)(float cx, float cy, float radius, int segments);
 		void (*Gizmo_DrawText)(const char* text, float x, float y, float rotation, float size);
+
+		// ── UI: hovered entity (appended for binary compat; keep in lock-step with NativeBindingsStruct) ──
+		// Writes the front-most hovered Interactable entity id and returns 1; returns 0 when nothing is hovered.
+		int (*UI_GetHoveredEntity)(uint64_t* entityID);
+
+		// RectTransform screen position (appended for binary compat; keep in lock-step with NativeBindingsStruct).
+		void (*RectTransform_GetScreenPosition)(uint64_t entityID, float* outX, float* outY);
+		void (*RectTransform_SetScreenPosition)(uint64_t entityID, float x, float y);
+
+		// InputField multiline toggle (appended for binary compat; keep in lock-step with NativeBindingsStruct).
+		int (*InputField_GetMultiline)(uint64_t entityID);
+		void (*InputField_SetMultiline)(uint64_t entityID, int value);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.
@@ -1066,6 +1083,12 @@ namespace Index {
 		void        (*SetDataAssetField)(uint64_t guid, const char* fieldName, const char* value);
 		int         (*DataAssetClassExists)(const char* typeName);
 		int         (*GetDataAssetTypes)(char* outBuffer, int capacity);
+
+		// ── Native→managed entity invalidation (appended for binary compat) ──
+		// Engine-side destruction (DestroyEntityInternal / ClearEntities / scene
+		// unload) calls this so the C# component store drops cached wrappers for the
+		// dead UUID instead of leaking them until the next assembly unload.
+		void        (*NotifyEntityDestroyed)(uint64_t entityID);
 	};
 
 } // namespace Index

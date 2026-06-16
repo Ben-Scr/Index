@@ -280,46 +280,81 @@ internal static class ScriptInstanceManager
         return Marshal.PtrToStringUTF8((IntPtr)value) ?? "";
     }
 
+    // ── Input / Window / Scene / Application event raisers ──────────────
+    // Each [UnmanagedCallersOnly] method below is a reverse-pinvoke entry point: a
+    // managed exception that unwinds past it into the native caller is FATAL (the
+    // CLR fail-fasts the whole process). These raisers fan out to public
+    // `event Action<>`s that user scripts subscribe to, and those events have no
+    // per-subscriber guard — so a bug in a game handler (e.g. an NRE in OnMouseDown)
+    // must be caught and logged here, never allowed to escape. The try/catch is
+    // inlined per method rather than via a shared Action helper to stay
+    // allocation-free in the per-frame input path (RaiseMouseMove). Log.* is itself
+    // boundary-safe (Log.RaiseLogMessage swallows throwing subscribers).
+
     [UnmanagedCallersOnly]
     public static void RaiseApplicationStart()
     {
-        Application.RaiseApplicationStart();
-        DispatchToScripts(script => script.OnApplicationStart(), nameof(EntityScript.OnApplicationStart));
+        try
+        {
+            Application.RaiseApplicationStart();
+            DispatchToScripts(script => script.OnApplicationStart(), nameof(EntityScript.OnApplicationStart));
+        }
+        catch (Exception ex) { Log.Error($"Exception in Application.OnStart handler: {ex}"); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseApplicationPaused()
     {
-        Application.RaiseApplicationPaused();
-        DispatchToScripts(script => script.OnApplicationPaused(), nameof(EntityScript.OnApplicationPaused));
-        DispatchToSceneSystems(system => system.OnApplicationPaused(), nameof(SceneSystem.OnApplicationPaused));
-        DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
+        try
+        {
+            Application.RaiseApplicationPaused();
+            DispatchToScripts(script => script.OnApplicationPaused(), nameof(EntityScript.OnApplicationPaused));
+            DispatchToSceneSystems(system => system.OnApplicationPaused(), nameof(SceneSystem.OnApplicationPaused));
+            DispatchToGlobalSystems(system => system.OnApplicationPaused(), nameof(GlobalSystem.OnApplicationPaused));
+        }
+        catch (Exception ex) { Log.Error($"Exception in Application.OnPaused handler: {ex}"); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseApplicationQuit()
     {
-        Application.RaiseApplicationQuit();
-        DispatchToScripts(script => script.OnApplicationQuit(), nameof(EntityScript.OnApplicationQuit));
-        DispatchToSceneSystems(system => system.OnApplicationQuit(), nameof(SceneSystem.OnApplicationQuit));
-        DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
+        try
+        {
+            Application.RaiseApplicationQuit();
+            DispatchToScripts(script => script.OnApplicationQuit(), nameof(EntityScript.OnApplicationQuit));
+            DispatchToSceneSystems(system => system.OnApplicationQuit(), nameof(SceneSystem.OnApplicationQuit));
+            DispatchToGlobalSystems(system => system.OnApplicationQuit(), nameof(GlobalSystem.OnApplicationQuit));
+        }
+        catch (Exception ex) { Log.Error($"Exception in Application.OnQuit handler: {ex}"); }
     }
 
     [UnmanagedCallersOnly]
     public static void RaiseFocusChanged(int focused)
     {
-        bool isFocused = focused != 0;
-        Window.RaiseFocusChanged(isFocused);
-        DispatchToScripts(script => script.OnFocusChanged(isFocused), nameof(EntityScript.OnFocusChanged));
-        DispatchToSceneSystems(system => system.OnFocusChanged(isFocused), nameof(SceneSystem.OnFocusChanged));
-        DispatchToGlobalSystems(system => system.OnFocusChanged(isFocused), nameof(GlobalSystem.OnFocusChanged));
+        try
+        {
+            bool isFocused = focused != 0;
+            Window.RaiseFocusChanged(isFocused);
+            DispatchToScripts(script => script.OnFocusChanged(isFocused), nameof(EntityScript.OnFocusChanged));
+            DispatchToSceneSystems(system => system.OnFocusChanged(isFocused), nameof(SceneSystem.OnFocusChanged));
+            DispatchToGlobalSystems(system => system.OnFocusChanged(isFocused), nameof(GlobalSystem.OnFocusChanged));
+        }
+        catch (Exception ex) { Log.Error($"Exception in Window.FocusChanged handler: {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void RaiseKeyDown(int key) => Input.RaiseKeyDown((KeyCode)key);
+    public static void RaiseKeyDown(int key)
+    {
+        try { Input.RaiseKeyDown((KeyCode)key); }
+        catch (Exception ex) { Log.Error($"Exception in Input.KeyDown handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static void RaiseKeyUp(int key) => Input.RaiseKeyUp((KeyCode)key);
+    public static void RaiseKeyUp(int key)
+    {
+        try { Input.RaiseKeyUp((KeyCode)key); }
+        catch (Exception ex) { Log.Error($"Exception in Input.KeyUp handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
     public static void RaiseEnterChar(uint codepoint)
@@ -327,37 +362,71 @@ internal static class ScriptInstanceManager
         if (codepoint > char.MaxValue) return;
         char c = (char)codepoint;
         if (char.IsControl(c)) return;
-        Input.RaiseEnterChar(c);
+        try { Input.RaiseEnterChar(c); }
+        catch (Exception ex) { Log.Error($"Exception in Input.EnterChar handler: {ex}"); }
     }
 
     [UnmanagedCallersOnly]
-    public static void RaiseMouseDown(int button) => Input.RaiseMouseDown((MouseButton)button);
+    public static void RaiseMouseDown(int button)
+    {
+        try { Input.RaiseMouseDown((MouseButton)button); }
+        catch (Exception ex) { Log.Error($"Exception in Input.MouseDown handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static void RaiseMouseUp(int button) => Input.RaiseMouseUp((MouseButton)button);
+    public static void RaiseMouseUp(int button)
+    {
+        try { Input.RaiseMouseUp((MouseButton)button); }
+        catch (Exception ex) { Log.Error($"Exception in Input.MouseUp handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static void RaiseMouseScroll(float delta) => Input.RaiseMouseScroll(delta);
+    public static void RaiseMouseScroll(float delta)
+    {
+        try { Input.RaiseMouseScroll(delta); }
+        catch (Exception ex) { Log.Error($"Exception in Input.MouseScroll handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static void RaiseMouseMove(float x, float y) => Input.RaiseMouseMove(new Vector2(x, y));
+    public static void RaiseMouseMove(float x, float y)
+    {
+        try { Input.RaiseMouseMove(new Vector2(x, y)); }
+        catch (Exception ex) { Log.Error($"Exception in Input.MouseMove handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static unsafe void RaiseBeforeSceneLoaded(byte* sceneName) => SceneManager.RaiseBeforeSceneLoaded(PtrToString(sceneName));
+    public static unsafe void RaiseBeforeSceneLoaded(byte* sceneName)
+    {
+        try { SceneManager.RaiseBeforeSceneLoaded(PtrToString(sceneName)); }
+        catch (Exception ex) { Log.Error($"Exception in SceneManager.BeforeSceneLoaded handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static unsafe void RaiseSceneLoaded(byte* sceneName) => SceneManager.RaiseSceneLoaded(PtrToString(sceneName));
+    public static unsafe void RaiseSceneLoaded(byte* sceneName)
+    {
+        try { SceneManager.RaiseSceneLoaded(PtrToString(sceneName)); }
+        catch (Exception ex) { Log.Error($"Exception in SceneManager.SceneLoaded handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName) => SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName));
+    public static unsafe void RaiseBeforeSceneUnloaded(byte* sceneName)
+    {
+        try { SceneManager.RaiseBeforeSceneUnloaded(PtrToString(sceneName)); }
+        catch (Exception ex) { Log.Error($"Exception in SceneManager.BeforeSceneUnloaded handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
-    public static unsafe void RaiseSceneUnloaded(byte* sceneName) => SceneManager.RaiseSceneUnloaded(PtrToString(sceneName));
+    public static unsafe void RaiseSceneUnloaded(byte* sceneName)
+    {
+        try { SceneManager.RaiseSceneUnloaded(PtrToString(sceneName)); }
+        catch (Exception ex) { Log.Error($"Exception in SceneManager.SceneUnloaded handler: {ex}"); }
+    }
 
     [UnmanagedCallersOnly]
     public static void RaiseWindowResize()
     {
-        Window.InvokeResize();
+        try { Window.InvokeResize(); }
+        catch (Exception ex) { Log.Error($"Exception in Window.OnResize handler: {ex}"); }
     }
 
     [UnmanagedCallersOnly]
@@ -406,6 +475,29 @@ internal static class ScriptInstanceManager
         {
             Log.Warn($"{strayHandlers} registered event(s) still active. Register and unregister events using OnEnable() and OnDisable().");
         }
+
+        // Drop cached managed Component wrappers (Slot, Button, ...) so they don't carry
+        // runtime-mutated field values into the next play session. s_ManagedComponentStore is
+        // keyed by the stable entity UUID, which the scene reload restores identically — without
+        // this, a plain Stop (no assembly reload) leaves the previous session's wrappers cached,
+        // and GetComponent<T>() returns them WITHOUT re-applying the authored PendingFieldValues
+        // (those are only applied on first wrapper creation). The native reload already destroyed
+        // the entities and re-seeded authored values, so the next fetch rebuilds wrappers cleanly.
+        // (EntityScript instances revert correctly because they ARE torn down each session.)
+        Entity.ClearManagedComponentStore();
+    }
+
+    // Native→managed: the engine destroyed an entity outside any C# path
+    // (Scene::DestroyEntityInternal / ClearEntities / scene unload), so drop the
+    // cached managed Component wrappers for its UUID. Without this they leak in
+    // Entity.s_ManagedComponentStore until the next assembly unload. Called per
+    // entity on teardown, so the empty-store fast path lives in
+    // Entity.OnNativeEntityDestroyed.
+    [UnmanagedCallersOnly]
+    public static void NotifyEntityDestroyed(ulong entityID)
+    {
+        try { Entity.OnNativeEntityDestroyed(entityID); }
+        catch (Exception ex) { Log.Error($"NotifyEntityDestroyed failed: {ex}"); }
     }
 
     // AssemblyUnload: strip all user-assembly handlers. PlayModeExit: strip only EntityScript/SceneSystem handlers; GlobalSystem subscriptions remain valid.
@@ -1362,14 +1454,69 @@ internal static class ScriptInstanceManager
         return null;
     }
 
-    // Wire tag for a list element type, or null when the element can't be a list
-    // item (nested collection, struct, Graph, or otherwise unsupported).
+    // Base declaring types whose members are skipped when reflecting an object-
+    // list element's inline fields (engine plumbing, not the user's data).
+    private static readonly Type[] s_ObjectListBaseSkip =
+    {
+        typeof(object), typeof(Component), typeof(EntityScript),
+        typeof(SceneSystem), typeof(GlobalSystem), typeof(DataAsset),
+    };
+
+    // Ordered inline sub-fields of an object-list element: writable, editor-visible
+    // members declared on the type itself that map to a supported LEAF type. This
+    // order is the canonical encode/decode order, so encode, decode, and the
+    // itemFields schema all iterate it. Collection sub-fields are excluded (no
+    // nested lists in v1) which also breaks recursion on self-referential types.
+    private static List<EditorMember> GetObjectListFields(Type elem)
+    {
+        var result = new List<EditorMember>();
+        foreach (var m in CollectEditorMembers(elem))
+        {
+            if (m.DeclaringType != null && Array.IndexOf(s_ObjectListBaseSkip, m.DeclaringType) >= 0) continue;
+            if (!IsMemberEditorVisible(m)) continue;
+            if (!m.CanWrite) continue;
+            if (GetListElementType(m.ValueType) != null) continue;  // no list/array sub-fields (v1)
+            string tag = MapFieldType(m.ValueType);
+            if (tag == "unsupported" || tag == "graph") continue;   // leaf scalar/ref/enum/component/dataasset only
+            result.Add(m);
+        }
+        return result;
+    }
+
+    // True for a type whose list elements render as an INLINE object (edited
+    // field-by-field) rather than a reference. Plain data classes/structs and
+    // managed Component data classes qualify; native IComponent structs (which
+    // forward to ECS storage) and field-less types do not.
+    private static bool IsObjectListable(Type t)
+    {
+        if (t.IsPrimitive || t.IsEnum || t.IsArray || t.IsPointer) return false;
+        if (t == typeof(string)) return false;
+        if (t.IsGenericType) return false;
+        if (t.IsAbstract || t.IsInterface) return false;
+        if (typeof(Delegate).IsAssignableFrom(t)) return false;
+        if (t.IsValueType && typeof(Index.Components.IComponent).IsAssignableFrom(t)) return false;
+        if (t.Namespace != null && t.Namespace.StartsWith("System", StringComparison.Ordinal)) return false;
+        if (!t.IsValueType && t.GetConstructor(Type.EmptyTypes) == null) return false;
+        return GetObjectListFields(t).Count > 0;
+    }
+
+    // Wire tag for a list element type, or null when it can't be a list item. Leaf
+    // scalar/reference types map directly; component-typed or plain data-class
+    // elements with inline fields become an "object" (inline) list; a registered
+    // native component with no inline fields stays a reference list.
     private static string? MapListItemType(Type elem)
     {
         if (GetListElementType(elem) != null) return null;  // no nested lists
         string tag = MapFieldType(elem);
-        if (tag == "unsupported" || tag == "graph") return null;
-        return tag;
+        // A registered native component (built-in wrapper like Transform2D, or a
+        // native struct) forwards to ECS storage, so it can't hold data by value —
+        // it stays a reference list. This must win over IsObjectListable.
+        if (tag.StartsWith("component:", StringComparison.Ordinal)) return tag;
+        if (tag != "unsupported" && tag != "graph") return tag;   // leaf scalar/ref/enum/dataasset
+        // Plain data class/struct or a user-defined (non-native) managed component
+        // data class -> inline object list.
+        if (IsObjectListable(elem)) return "object";
+        return null;
     }
 
     private static string MapFieldType(Type t)
@@ -1551,12 +1698,31 @@ internal static class ScriptInstanceManager
         }
 
         // List<T> / T[]: each element formatted by its own type, joined with the
-        // newline+backslash codec the editor's list drawer decodes.
+        // newline+backslash codec the editor's list drawer decodes. Object items
+        // are two-level: each element's leaf fields are inner-encoded, then the
+        // elements are outer-encoded (the outer pass escapes the inner strings).
         if (GetListElementType(t) is Type listElem)
         {
             var parts = new List<string>();
             if (val is System.Collections.IEnumerable en)
-                foreach (var item in en) parts.Add(FormatFieldValue(listElem, item));
+            {
+                bool isObject = MapListItemType(listElem) == "object";
+                var fields = isObject ? GetObjectListFields(listElem) : null;
+                foreach (var item in en)
+                {
+                    if (isObject)
+                    {
+                        var fieldStrs = new List<string>(fields!.Count);
+                        foreach (var f in fields!)
+                            fieldStrs.Add(FormatFieldValue(f.ValueType, item == null ? null : TryGetMemberValue(f, item)));
+                        parts.Add(EncodeListString(fieldStrs));
+                    }
+                    else
+                    {
+                        parts.Add(FormatFieldValue(listElem, item));
+                    }
+                }
+            }
             return EncodeListString(parts);
         }
 
@@ -1720,16 +1886,18 @@ internal static class ScriptInstanceManager
             if (GetListElementType(t) is Type listElem)
             {
                 var pieces = DecodeListString(s);
+                bool isObject = MapListItemType(listElem) == "object";
                 if (t.IsArray)
                 {
                     Array arr = Array.CreateInstance(listElem, pieces.Count);
                     for (int i = 0; i < pieces.Count; i++)
-                        arr.SetValue(ParseListElement(listElem, pieces[i]), i);
+                        arr.SetValue(isObject ? ParseObjectListElement(listElem, pieces[i]) : ParseListElement(listElem, pieces[i]), i);
                     return arr;
                 }
                 var list = (System.Collections.IList)Activator.CreateInstance(
                     typeof(List<>).MakeGenericType(listElem))!;
-                foreach (var piece in pieces) list.Add(ParseListElement(listElem, piece));
+                foreach (var piece in pieces)
+                    list.Add(isObject ? ParseObjectListElement(listElem, piece) : ParseListElement(listElem, piece));
                 return list;
             }
         }
@@ -1792,6 +1960,26 @@ internal static class ScriptInstanceManager
         object? parsed = ParseFieldValue(elem, piece);
         if (parsed == null && elem.IsValueType) parsed = Activator.CreateInstance(elem);
         return parsed;
+    }
+
+    // Parse one inline-object list element: inner-decode the leaf field values and
+    // write them into a fresh instance (in GetObjectListFields order).
+    private static object? ParseObjectListElement(Type elem, string piece)
+    {
+        object? obj;
+        try { obj = Activator.CreateInstance(elem); }
+        catch { return elem.IsValueType ? Activator.CreateInstance(elem) : null; }
+        if (obj == null) return null;
+
+        var fields = GetObjectListFields(elem);
+        var fieldStrs = DecodeListString(piece);
+        for (int i = 0; i < fields.Count && i < fieldStrs.Count; i++)
+        {
+            object? fv = ParseFieldValue(fields[i].ValueType, fieldStrs[i]);
+            if (fv == null && fields[i].ValueType.IsValueType) fv = Activator.CreateInstance(fields[i].ValueType);
+            try { fields[i].SetValue(obj, fv); } catch { /* skip a field that rejects the value */ }
+        }
+        return obj;
     }
 
     private static string EscapeJson(string s)
@@ -2000,7 +2188,8 @@ internal static class ScriptInstanceManager
         // List<enum>) so the editor's list drawer picks the per-row widget.
         if (GetListElementType(member.ValueType) is Type listElem)
         {
-            sb.Append(",\"itemType\":\"").Append(EscapeJson(MapListItemType(listElem) ?? "")).Append('"');
+            string itemTag = MapListItemType(listElem) ?? "";
+            sb.Append(",\"itemType\":\"").Append(EscapeJson(itemTag)).Append('"');
             if (listElem.IsEnum)
             {
                 bool isFlags = listElem.GetCustomAttribute<FlagsAttribute>() != null;
@@ -2016,6 +2205,41 @@ internal static class ScriptInstanceManager
                     sb.Append("{\"name\":\"").Append(EscapeJson(name))
                       .Append("\",\"value\":").Append(underlying.ToString(ic))
                       .Append('}');
+                }
+                sb.Append(']');
+            }
+            if (itemTag == "object")
+            {
+                // Schema for the inline sub-fields, in encode/decode order, so the
+                // editor can render and edit each element's fields.
+                sb.Append(",\"itemFields\":[");
+                bool firstField = true;
+                foreach (var f in GetObjectListFields(listElem))
+                {
+                    if (!firstField) sb.Append(',');
+                    firstField = false;
+                    string ftag = MapFieldType(f.ValueType);
+                    var fShow = f.GetCustomAttribute<ShowInEditorAttribute>();
+                    string fdisplay = (fShow != null && !string.IsNullOrEmpty(fShow.DisplayName)) ? fShow.DisplayName : f.Name;
+                    sb.Append("{\"name\":\"").Append(EscapeJson(f.Name))
+                      .Append("\",\"displayName\":\"").Append(EscapeJson(fdisplay))
+                      .Append("\",\"type\":\"").Append(EscapeJson(ftag)).Append('"');
+                    if (f.ValueType.IsEnum)
+                    {
+                        bool fIsFlags = f.ValueType.GetCustomAttribute<FlagsAttribute>() != null;
+                        sb.Append(",\"enumIsFlags\":").Append(fIsFlags ? "true" : "false");
+                        sb.Append(",\"enumOptions\":[");
+                        bool fo = true;
+                        foreach (var nm in Enum.GetNames(f.ValueType))
+                        {
+                            long u = Convert.ToInt64(Enum.Parse(f.ValueType, nm), ic);
+                            if (!fo) sb.Append(',');
+                            fo = false;
+                            sb.Append("{\"name\":\"").Append(EscapeJson(nm)).Append("\",\"value\":").Append(u.ToString(ic)).Append('}');
+                        }
+                        sb.Append(']');
+                    }
+                    sb.Append('}');
                 }
                 sb.Append(']');
             }

@@ -249,6 +249,7 @@ namespace Index {
 			ClearInheritedDisabled(*m_Registry, m_EntityHandle);
 			if (m_Scene) {
 				m_Scene->MarkTransformDirty(m_EntityHandle);
+				m_Scene->MarkHierarchyStructureDirty();
 			}
 			return;
 		}
@@ -271,6 +272,7 @@ namespace Index {
 
 		if (m_Scene) {
 			m_Scene->MarkTransformDirty(m_EntityHandle);
+			m_Scene->MarkHierarchyStructureDirty();
 		}
 	}
 

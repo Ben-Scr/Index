@@ -33,6 +33,11 @@ namespace Index {
 		// Missing key: falls back to English, then logs once and returns a reference into a side map keyed by  so the raw identifier shows in the UI.
 		INDEX_API const std::string& Get(std::string_view key);
 
+		// English-fallback lookup, ignoring the active language. Use for UI shown
+		// before a freshly-selected language's font is available (e.g. CJK), where
+		// the localized text would render as missing-glyph boxes.
+		INDEX_API const std::string& GetFallback(std::string_view key);
+
 		INDEX_API const std::vector<LanguageInfo>& GetAvailableLanguages();
 		INDEX_API const std::string& GetCurrentLanguage();
 
@@ -50,6 +55,7 @@ namespace Index {
 			std::string Code;
 			std::string Stage;
 			float Progress = 0.0f;
+			bool Running = false;
 			bool Failed = false;
 			bool RestartRequired = false;
 			std::string Error;
@@ -77,6 +83,18 @@ namespace Index {
 			}
 			catch (const std::format_error&) {
 				// Untrusted downloaded strings may have malformed format specs; degrade to raw template rather than throw.
+				return tmpl;
+			}
+		}
+
+		// Format() against the English fallback string (see GetFallback).
+		template <typename... Args>
+		std::string FormatFallback(std::string_view key, Args&&... args) {
+			const std::string& tmpl = GetFallback(key);
+			try {
+				return std::vformat(tmpl, std::make_format_args(args...));
+			}
+			catch (const std::format_error&) {
 				return tmpl;
 			}
 		}

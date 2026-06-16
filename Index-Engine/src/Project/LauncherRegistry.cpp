@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <fstream>
 #include <filesystem>
+#include <system_error>
 
 namespace Index {
 	namespace {
@@ -22,6 +23,30 @@ namespace Index {
 #else
 			return localtime_r(&value, &outTime) != nullptr;
 #endif
+		}
+
+		// Pre-subfolder location: launcher.json once sat directly in LocalAppData/Index.
+		std::string LegacyRegistryPath() {
+			return Path::Combine(
+				Path::GetSpecialFolderPath(SpecialFolder::LocalAppData),
+				"Index", "launcher.json");
+		}
+
+		// One-time move of the legacy registry into the Launcher/ subfolder so an
+		// existing project list survives the relocation. No-op once migrated.
+		void MigrateLegacyRegistry(const std::string& newPath) {
+			const std::string legacy = LegacyRegistryPath();
+			if (legacy == newPath || File::Exists(newPath) || !File::Exists(legacy)) return;
+
+			std::error_code ec;
+			std::filesystem::create_directories(std::filesystem::path(newPath).parent_path(), ec);
+			std::filesystem::rename(legacy, newPath, ec);
+			if (ec) {
+				ec.clear();
+				std::filesystem::copy_file(legacy, newPath,
+					std::filesystem::copy_options::overwrite_existing, ec);
+				if (!ec) std::filesystem::remove(legacy, ec);
+			}
 		}
 	}
 
@@ -39,12 +64,13 @@ namespace Index {
 	std::string LauncherRegistry::GetRegistryPath() {
 		return Path::Combine(
 			Path::GetSpecialFolderPath(SpecialFolder::LocalAppData),
-			"Index", "launcher.json");
+			"Index", "Launcher", "launcher.json");
 	}
 
 	void LauncherRegistry::Load() {
 		m_Projects.clear();
 		std::string path = GetRegistryPath();
+		MigrateLegacyRegistry(path);
 
 		if (!File::Exists(path)) return;
 

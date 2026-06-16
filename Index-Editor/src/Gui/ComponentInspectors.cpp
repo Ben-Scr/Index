@@ -232,7 +232,7 @@ namespace Index {
 		{
 			const float texWidth = texture->GetWidth();
 			const float texHeight = texture->GetHeight();
-			ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight);
+			ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texWidth, texHeight, 96.0f, texture->GetFilter());
 			ImGui::Text("%.0f x %.0f", texWidth, texHeight);
 		}
 		else {
@@ -315,7 +315,7 @@ namespace Index {
 			Texture2D* texture = previewHandle.IsValid()
 				? TextureManager::GetTexture(previewHandle) : nullptr;
 			if (texture) {
-				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texture->GetWidth(), texture->GetHeight());
+				ImGuiUtils::DrawTexturePreview(texture->GetHandle(), texture->GetWidth(), texture->GetHeight(), 96.0f, texture->GetFilter());
 			}
 			else {
 				ImGuiUtils::DrawTexturePlaceholder();
@@ -430,8 +430,8 @@ namespace Index {
 			}
 			if (e.HasComponent<TextRendererComponent>()) {
 				const auto& text = e.GetComponent<TextRendererComponent>();
-				if (text.WrapMode == TextWrapMode::None) {
-					// FitTextNaturalSize in UILayoutSystem overwrites both axes.
+				if (text.WrapMode == TextWrapMode::None && text.AutoSize) {
+					// FitTextNaturalSize (only while AutoSize is on) overwrites both axes.
 					sizeAxisDisabled[0] = true;
 					sizeAxisDisabled[1] = true;
 				}

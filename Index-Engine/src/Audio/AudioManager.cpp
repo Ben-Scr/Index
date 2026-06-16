@@ -302,7 +302,18 @@ namespace Index {
 			resolvedPath = rootPath;
 			audio = std::make_unique<Audio>();
 			if (resolvedPath.empty() || !audio->LoadFromFile(resolvedPath)) {
-				IDX_CORE_ERROR("[{}] AudioManager: Failed to load audio: {}", ErrorCodeToString(IndexErrorCode::LoadFailed), requestedPath);
+				std::string ext = std::filesystem::path(requestedPath).extension().string();
+				std::transform(ext.begin(), ext.end(), ext.begin(),
+					[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+				if (ext == ".ogg" || ext == ".opus") {
+					// Default miniaudio decodes wav/mp3/flac only — Vorbis/Opus aren't compiled in,
+					// so these fail to load. Surface the real reason instead of a generic error.
+					IDX_CORE_ERROR("[{}] AudioManager: '{}' is {} (Vorbis/Opus), which this build's audio backend cannot decode. Convert it to .wav, .mp3, or .flac.",
+						ErrorCodeToString(IndexErrorCode::LoadFailed), requestedPath, ext);
+				}
+				else {
+					IDX_CORE_ERROR("[{}] AudioManager: Failed to load audio: {}", ErrorCodeToString(IndexErrorCode::LoadFailed), requestedPath);
+				}
 				return AudioHandle();
 			}
 		}
@@ -323,21 +334,16 @@ namespace Index {
 			return AudioHandle();
 		}
 
-		// Probe registry without Sync first; only do the expensive filesystem scan on a miss.
-		bool isAudio = AssetRegistry::IsAudio(assetId);
-		std::string path = isAudio ? AssetRegistry::ResolvePath(assetId) : std::string{};
-
-		if (!isAudio || path.empty()) {
-			AssetRegistry::MarkDirty();
-			AssetRegistry::Sync();
-			isAudio = AssetRegistry::IsAudio(assetId);
-			if (!isAudio) {
-				return AudioHandle();
-			}
-			path = AssetRegistry::ResolvePath(assetId);
-			if (path.empty()) {
-				return AudioHandle();
-			}
+		// IsAudio/ResolvePath each self-recover once on a miss (a single bounded rescan, then
+		// cache the miss). Don't MarkDirty()+Sync() here: MarkDirty clears that negative cache,
+		// so a dangling GUID would force a full O(N) Assets/ rescan ×3 and re-arm every other
+		// missing GUID to rescan too.
+		if (!AssetRegistry::IsAudio(assetId)) {
+			return AudioHandle();
+		}
+		const std::string path = AssetRegistry::ResolvePath(assetId);
+		if (path.empty()) {
+			return AudioHandle();
 		}
 
 		return LoadAudio(path);
@@ -527,6 +533,20 @@ namespace Index {
 
 		if (s_IsInitialized && s_Backend) {
 			s_Backend->SetMasterVolume(s_masterVolume);
+		}
+	}
+
+	void AudioManager::PauseAll() {
+		IDX_CORE_ASSERT(Application::IsMainThread(), IndexErrorCode::Undefined, "AudioManager::PauseAll must be called on the main thread");
+		if (s_IsInitialized && s_Backend) {
+			s_Backend->SetSuspended(true);
+		}
+	}
+
+	void AudioManager::ResumeAll() {
+		IDX_CORE_ASSERT(Application::IsMainThread(), IndexErrorCode::Undefined, "AudioManager::ResumeAll must be called on the main thread");
+		if (s_IsInitialized && s_Backend) {
+			s_Backend->SetSuspended(false);
 		}
 	}
 

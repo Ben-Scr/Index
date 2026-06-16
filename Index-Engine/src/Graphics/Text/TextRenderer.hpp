@@ -46,8 +46,13 @@ namespace Index {
         float Y = 0.0f;
         float Scale = 1.0f;
         float LetterSpacing = 0.0f;
+        // Extra per-line advance in baked-atlas pixels (added to the font's line height).
+        float LineSpacing = 0.0f;
         Color Tint{};
         TextAlignment Align = TextAlignment::Left;
+        // Distributes a multi-line block above/below cmd.Y. Top is the natural
+        // "Y is the first baseline" default that single-line callers (gizmos) assume.
+        TextVerticalAlignment VAlign = TextVerticalAlignment::Top;
         // WrapWidthPixels in atlas-pixel units (no Scale baked in); 0/negative short-circuits to no-wrap.
         TextWrapMode Wrap = TextWrapMode::None;
         float WrapWidthPixels = 0.0f;
@@ -96,7 +101,17 @@ namespace Index {
         static Font* ResolveFontAtPixelSize(TextRendererComponent& text, float pixelSize);
 
         // Returns size in atlas-pixel units; caller converts to screen pixels via (FontSize / font.GetPixelSize()).
-        static Vec2 MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing);
+        // lineSpacing widens the multi-line height by (lineCount-1)*lineSpacing.
+        static Vec2 MeasureNaturalSize(Font& font, std::string_view text, float letterSpacing,
+            float lineSpacing = 0.0f);
+
+        // Visual line byte-ranges [begin,end) for the text under the given wrap settings,
+        // identical to what EmitText renders, so caret/selection/hit-test agree with the
+        // wrapped rows. wrapWidthPixels is in baked-atlas pixels; pass 0 or WrapMode::None
+        // to split on '\n' only.
+        static void ComputeVisualLines(Font& font, std::string_view text, float letterSpacing,
+        	TextWrapMode wrapMode, float wrapWidthPixels,
+        	std::vector<std::pair<size_t, size_t>>& out);
 
         // Drop GL state. Must run while the GL context is still alive.
         void Shutdown();
@@ -122,7 +137,8 @@ namespace Index {
         void EmitText(Font& font, std::string_view text,
             float worldX, float worldY,
             float scale, const Color& color,
-            TextAlignment alignment, float letterSpacing,
+            TextAlignment alignment, TextVerticalAlignment verticalAlignment,
+            float letterSpacing, float lineSpacing,
             TextWrapMode wrapMode = TextWrapMode::None,
             float wrapWidthPixels = 0.0f,
             float rotation = 0.0f, Vec2 pivot = Vec2{ 0.0f, 0.0f },

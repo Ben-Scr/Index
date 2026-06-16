@@ -94,7 +94,16 @@ namespace Index {
 		}
 
 		void ApplySpriteIfChanged(ImageComponent& image, UUID desired) {
-			if (static_cast<uint64_t>(desired) == 0) return;
+			if (static_cast<uint64_t>(desired) == 0) {
+				// State slot empty and no NormalSprite fallback: revert to the default
+				// square so an unset state visibly clears instead of keeping whatever
+				// sprite the previous state left on the image.
+				const TextureHandle square = TextureManager::GetDefaultTexture(DefaultTexture::Square);
+				if (static_cast<uint64_t>(image.TextureAssetId) == 0 && image.TextureHandle == square) return;
+				image.TextureAssetId = UUID{ 0 };
+				image.TextureHandle = square;
+				return;
+			}
 			if (image.TextureAssetId == desired) return;
 			image.TextureAssetId = desired;
 			image.TextureHandle = TextureManager::LoadTextureByUUID(
@@ -241,8 +250,10 @@ namespace Index {
 
 		// ── ContentType filtering ───────────────────────────────────
 		bool ContentTypeAllowsCodepoint(InputContentType type, std::uint32_t cp,
-			std::string_view existing, int caretByte)
+			std::string_view existing, int caretByte, bool allowNewline)
 		{
+			// Multiline fields keep newlines; everything else stays a single line.
+			if (allowNewline && cp == '\n') return true;
 			// Reject control characters (newlines, tabs) outright — even
 			// in Standard mode an input field is a single line.
 			if (cp < 0x20) return false;
@@ -285,11 +296,12 @@ namespace Index {
 
 		// Simulates each codepoint insertion in order so numeric field constraints (one '-', one '.') stay valid during paste.
 		std::string FilterByContentType(InputContentType type, std::string_view src,
-			std::string_view existing, int caretByte)
+			std::string_view existing, int caretByte, bool allowNewline)
 		{
 			if (type == InputContentType::Standard) {
 				// Still strip control chars so newlines from clipboard
 				// can't sneak in and break the single-line layout.
+				// Multiline fields keep '\n' (see allowNewline).
 				std::string out;
 				out.reserve(src.size());
 				int idx = 0;
@@ -298,7 +310,7 @@ namespace Index {
 					std::uint32_t cp; int len;
 					if (!Utf8Decode(src, idx, cp, len)) break;
 					if (idx + len > n) break;
-					if (cp >= 0x20 && cp != 0x7F) {
+					if ((cp >= 0x20 && cp != 0x7F) || (allowNewline && cp == '\n')) {
 						out.append(src.data() + idx, len);
 					}
 					idx += len;
@@ -318,7 +330,7 @@ namespace Index {
 				if (!Utf8Decode(src, idx, cp, len)) break;
 				if (idx + len > n) break;
 
-				if (ContentTypeAllowsCodepoint(type, cp, simulated, simCaret)) {
+				if (ContentTypeAllowsCodepoint(type, cp, simulated, simCaret, allowNewline)) {
 					out.append(src.data() + idx, len);
 					simulated.insert(simCaret, src.data() + idx, len);
 					simCaret += len;
@@ -408,6 +420,45 @@ namespace Index {
 			field.Text.erase(field.CaretBytePos, next - field.CaretBytePos);
 		}
 
+		// ── Multiline line model (hard '\n' breaks) ─────────────────
+		// Visual lines split on '\n' only — soft word-wrap is not folded into caret
+		// math, so a multiline field should leave its Text child's WrapMode at None
+		// (otherwise rendered glyph rows and the caret would disagree).
+
+		// Visual line index of the line that contains byte offset `byteIdx`.
+		int LineIndexAtByte(std::string_view text, int byteIdx) {
+			byteIdx = std::clamp(byteIdx, 0, static_cast<int>(text.size()));
+			int line = 0;
+			for (int i = 0; i < byteIdx; ++i) {
+				if (text[i] == '\n') ++line;
+			}
+			return line;
+		}
+
+		// Total visual line count ( newline count + 1 ).
+		int LineCount(std::string_view text) {
+			int count = 1;
+			for (char c : text) if (c == '\n') ++count;
+			return count;
+		}
+
+		// [start, end) byte range of `lineIndex`; end excludes the trailing '\n'.
+		// Clamps to an empty range at end-of-text when lineIndex is past the last line.
+		std::pair<int, int> LineRange(std::string_view text, int lineIndex) {
+			const int n = static_cast<int>(text.size());
+			if (lineIndex < 0) lineIndex = 0;
+			int start = 0;
+			int seen = 0;
+			while (seen < lineIndex && start < n) {
+				if (text[start] == '\n') ++seen;
+				++start;
+			}
+			if (seen < lineIndex) return { n, n };
+			int end = start;
+			while (end < n && text[end] != '\n') ++end;
+			return { start, end };
+		}
+
 		// ── Glyph metrics for caret/selection geometry ──────────────
 
 		// Mirrors EmitText's advance/kerning/letter-spacing so caret X aligns to the actual rendered glyph positions.
@@ -467,7 +518,7 @@ namespace Index {
 				const float midX = accX + advanceScreen * 0.5f;
 				if (relX < midX) return idx;
 				accX += advanceScreen;
-				if (g) { ++glyphCount; prev = cp; }
+				if (g) { ++glyphCount; prev = cp; } else { prev = 0; } // mirror MeasureUpToByte/EmitText kerning reset
 				idx += len;
 			}
 			return n;
@@ -479,8 +530,17 @@ namespace Index {
 			float OriginX = 0.0f;
 			float Scale = 1.0f;
 			float LetterSpacing = 0.0f;
+			float LineSpacing = 0.0f;
 			Font* FontPtr = nullptr;
 			TextAlignment Align = TextAlignment::Left;
+			// Multiline geometry: line 0 is centred at CenterY; each subsequent line steps down by LineHeight.
+			float CenterY = 0.0f;
+			float LineHeight = 0.0f;
+			// Right edge of the field's content area (rect right minus inset); with OriginX
+			// it bounds the horizontal-scroll window for left-aligned text.
+			float ContentRightX = 0.0f;
+			TextWrapMode WrapMode = TextWrapMode::None;
+			float WrapWidthPixels = 0.0f;
 		};
 
 		InputTextLayout ResolveInputTextLayout(entt::registry& registry,
@@ -512,15 +572,147 @@ namespace Index {
 			out.Valid = true;
 			out.OriginX = originX;
 			out.Scale = (tc.FontSize / bakedSize) * uniformScale;
+			out.WrapMode = tc.WrapMode;
+			out.WrapWidthPixels = 0.0f;
+			if (tc.WrapMode != TextWrapMode::None && out.Scale > 0.0f) {
+				const float padPixels = 8.0f * uniformScale;
+				const float marginPixels = (tc.Margin.x + tc.Margin.z) * uniformScale;
+				out.WrapWidthPixels = std::max(0.0f, ((tr.x - bl.x) - padPixels - marginPixels) / out.Scale);
+			}
 			out.LetterSpacing = tc.LetterSpacing;
+			out.LineSpacing = tc.LineSpacing;
 			out.FontPtr = font;
 			out.Align = tc.HAlign;
+			// Line-0 caret centre, anchored to the text's vertical alignment so
+			// click-to-line maps onto the rows GuiRenderer actually draws. Mirrors
+			// GuiRenderer's firstLineCaretCenterY (text baseline + cap-height lift,
+			// margins ignored). Block offset uses the current line count.
+			const float lineHeightW = (font->GetLineHeight() + out.LineSpacing) * out.Scale;
+			const float ascentW  = font->GetAscent()  * out.Scale;
+			const float descentW = font->GetDescent() * out.Scale; // negative (below baseline)
+			const float capOffset = tc.FontSize * uniformScale * 0.35f;
+			std::vector<std::pair<size_t, size_t>> vlinesTmp;
+			TextRenderer::ComputeVisualLines(*font, field.Text, out.LetterSpacing, out.WrapMode, out.WrapWidthPixels, vlinesTmp);
+			const float blockSpan = static_cast<float>(std::max<size_t>(1, vlinesTmp.size()) - 1) * lineHeightW;
+			switch (tc.VAlign) {
+			case TextVerticalAlignment::Top:
+				out.CenterY = tr.y - ascentW + capOffset;
+				break;
+			case TextVerticalAlignment::Bottom:
+				out.CenterY = bl.y - descentW + capOffset + blockSpan;
+				break;
+			case TextVerticalAlignment::Middle:
+			default:
+				out.CenterY = bl.y + (tr.y - bl.y) * 0.5f + blockSpan * 0.5f;
+				break;
+			}
+			out.LineHeight = lineHeightW;
+			out.ContentRightX = tr.x - 4.0f * uniformScale;
 			return out;
+		}
+
+		// Visual line byte-ranges for the field's text, wrap-aware (matches the renderer).
+		std::vector<std::pair<int, int>> InputVisualLines(const InputTextLayout& layout, std::string_view text) {
+			std::vector<std::pair<size_t, size_t>> raw;
+			TextRenderer::ComputeVisualLines(*layout.FontPtr, text, layout.LetterSpacing,
+				layout.WrapMode, layout.WrapWidthPixels, raw);
+			std::vector<std::pair<int, int>> lines;
+			lines.reserve(raw.size());
+			for (const auto& p : raw) lines.emplace_back(static_cast<int>(p.first), static_cast<int>(p.second));
+			if (lines.empty()) lines.emplace_back(0, 0);
+			return lines;
+		}
+
+		// Visual line for caret byte b: the latest line whose start <= b. Char-wrap ranges
+		// touch, so this puts the caret on the lower line; a '\n'/word-wrap gap keeps the
+		// byte before the break on the upper line. (Line starts are monotonic.)
+		int VisualLineOfByte(const std::vector<std::pair<int, int>>& lines, int b) {
+			int result = 0;
+			for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+				if (lines[i].first <= b) result = i;
+				else break;
+			}
+			return result;
+		}
+
+		// Horizontal text scroll for a left-aligned input field: the rendered text,
+		// caret and selection shift left by the returned amount so the caret stays
+		// inside the field's content width. Non-left alignment keeps text anchored (0);
+		// Single-line only: multiline fields never horizontal-scroll.
+		float ComputeInputScrollX(entt::registry& registry, const InputFieldComponent& field) {
+			InputTextLayout layout = ResolveInputTextLayout(registry, field);
+			if (!layout.Valid || layout.Align != TextAlignment::Left || field.Multiline) return 0.0f;
+
+			const float windowWidth = layout.ContentRightX - layout.OriginX;
+			if (windowWidth <= 0.0f) return 0.0f;
+
+			int ls = 0;
+			int le = static_cast<int>(field.Text.size());
+			if (field.Multiline) {
+				const auto lr = LineRange(field.Text, LineIndexAtByte(field.Text, field.CaretBytePos));
+				ls = lr.first;
+				le = lr.second;
+			}
+			const int caretInLine = std::clamp(field.CaretBytePos, ls, le) - ls;
+			std::string_view lineView{ field.Text.data() + ls, static_cast<size_t>(le - ls) };
+
+			// Secret single-line fields render a 1-char-per-codepoint mask; measure that
+			// so the scroll matches the masked glyph advances.
+			std::string maskBuffer;
+			std::string_view measureView = lineView;
+			int caretMeasureByte = caretInLine;
+			if (field.IsSecret && !field.Multiline && !lineView.empty()) {
+				maskBuffer = MaskTextForSecret(lineView);
+				measureView = maskBuffer;
+				int idx = 0;
+				int cp = 0;
+				while (idx < caretInLine) {
+					int len = Utf8CodepointLength(field.Text, idx);
+					if (len <= 0) break;
+					idx += len;
+					++cp;
+				}
+				caretMeasureByte = cp;
+			}
+
+			const float caretX = MeasureUpToByte(*layout.FontPtr, measureView, caretMeasureByte,
+				layout.LetterSpacing) * layout.Scale;
+			const float lineW = MeasureUpToByte(*layout.FontPtr, measureView,
+				static_cast<int>(measureView.size()), layout.LetterSpacing) * layout.Scale;
+
+			float scroll = field.ScrollOffsetX;
+			if (caretX - scroll > windowWidth) scroll = caretX - windowWidth; // caret past right edge
+			if (caretX - scroll < 0.0f)        scroll = caretX;               // caret past left edge
+			const float maxScroll = std::max(0.0f, lineW - windowWidth);
+			return std::clamp(scroll, 0.0f, maxScroll);
 		}
 
 		int ByteFromMouseX(entt::registry& registry, const InputFieldComponent& field, Vec2 mouseUi) {
 			InputTextLayout layout = ResolveInputTextLayout(registry, field);
 			if (!layout.Valid) return 0;
+
+			// Multiline: pick the visual line by Y first, then the byte by X within it.
+			// (Secret masking is intentionally ignored — secret multiline is nonsensical.)
+			if (field.Multiline && layout.LineHeight > 0.0f) {
+				std::vector<std::pair<int, int>> lines = InputVisualLines(layout, field.Text);
+				int line = static_cast<int>(std::lround((layout.CenterY - mouseUi.y) / layout.LineHeight));
+				line = std::clamp(line, 0, static_cast<int>(lines.size()) - 1);
+				auto [ls, le] = lines[line];
+				std::string_view lineView{ field.Text.data() + ls, static_cast<size_t>(le - ls) };
+				float relX = mouseUi.x - layout.OriginX + field.ScrollOffsetX;
+				if (layout.Align == TextAlignment::Center) {
+					const float lineW = MeasureUpToByte(*layout.FontPtr, lineView,
+						static_cast<int>(lineView.size()), layout.LetterSpacing) * layout.Scale;
+					relX += lineW * 0.5f;
+				}
+				else if (layout.Align == TextAlignment::Right) {
+					const float lineW = MeasureUpToByte(*layout.FontPtr, lineView,
+						static_cast<int>(lineView.size()), layout.LetterSpacing) * layout.Scale;
+					relX += lineW;
+				}
+				return ls + ByteFromRelativeX(*layout.FontPtr, lineView, relX,
+					layout.Scale, layout.LetterSpacing);
+			}
 
 			// Secret: measure the masked string (widths differ from real text), then map the mask byte back to a field.Text codepoint offset.
 			std::string maskBuffer;
@@ -530,7 +722,7 @@ namespace Index {
 				measureView = maskBuffer;
 			}
 
-			float relX = mouseUi.x - layout.OriginX;
+			float relX = mouseUi.x - layout.OriginX + field.ScrollOffsetX;
 			if (layout.Align == TextAlignment::Center) {
 				const float lineW = MeasureUpToByte(*layout.FontPtr, measureView,
 					static_cast<int>(measureView.size()), layout.LetterSpacing) * layout.Scale;
@@ -855,6 +1047,8 @@ namespace Index {
 
 	void UIEventSystem::Update(Scene& scene) {
 		INDEX_PROFILE_SCOPE("UIEvent.Update");
+		// Cleared each frame so early-outs (no app / no game-view surface) correctly report nothing hovered to scripts.
+		m_HoveredEntity = entt::null;
 		Application* app = Application::GetInstance();
 		if (!app) return;
 		Input& input = app->GetInput();
@@ -1187,6 +1381,9 @@ namespace Index {
 			m_PressedEntity = entt::null;
 		}
 
+		// Front-most hovered Interactable this frame; surfaced to C# via UIEventSystem::GetHoveredEntity.
+		m_HoveredEntity = hovered;
+
 		// ── 3a. Cursor swap (UI hover variant) ──────────────────────
 		if (Window* win = Application::GetWindow()) {
 			bool overInteractable = false;
@@ -1448,24 +1645,30 @@ namespace Index {
 					if (isMouseDown) {
 						cs.PressMouseAngle = cursorAngle;
 						cs.PressValue = cs.Value;
+						cs.DragAccumAngle = 0.0f;
 						cs.IsDragging = false;
 					}
 
-					// Wrap angular delta into [-π, π] so a press near 179°
-					// followed by a small drag past 180° doesn't read as a
-					// near-full-circle jump in the other direction.
-					float delta = cursorAngle - cs.PressMouseAngle;
-					while (delta >  k_Pi) delta -= 2.0f * k_Pi;
-					while (delta < -k_Pi) delta += 2.0f * k_Pi;
+					// Accumulate per-frame steps (each wrapped into [-π, π]) into an
+					// UNWRAPPED total. Wrapping only the tiny frame step — never the whole
+					// press-to-cursor delta — lets travel exceed ±π smoothly; otherwise the
+					// atan2-bounded total aliases past 180° and Value flips by the full range
+					// (the 0→1 jump across the ring seam). Rebuilding Value from PressValue
+					// each frame keeps WholeNumbers from losing sub-step progress.
+					float step = cursorAngle - cs.PressMouseAngle;
+					while (step >  k_Pi) step -= 2.0f * k_Pi;
+					while (step < -k_Pi) step += 2.0f * k_Pi;
+					cs.PressMouseAngle = cursorAngle;
+					cs.DragAccumAngle += step;
 
-					if (!cs.IsDragging && std::abs(delta) >= k_CircularSliderDragThresholdRad) {
+					if (!cs.IsDragging && std::abs(cs.DragAccumAngle) >= k_CircularSliderDragThresholdRad) {
 						cs.IsDragging = true;
 					}
 					if (cs.IsDragging) {
 						const float sweepRad = cs.SweepDegrees * k_Deg2Rad;
 						if (sweepRad > 0.0f) {
 							const float range = cs.MaxValue - cs.MinValue;
-							const float signedDelta = cs.Clockwise ? -delta : delta;
+							const float signedDelta = cs.Clockwise ? -cs.DragAccumAngle : cs.DragAccumAngle;
 							float newValue = cs.PressValue + (signedDelta / sweepRad) * range;
 							const float lo = std::min(cs.MinValue, cs.MaxValue);
 							const float hi = std::max(cs.MinValue, cs.MaxValue);
@@ -1493,7 +1696,12 @@ namespace Index {
 					const float sweepRad = cs.SweepDegrees * k_Deg2Rad
 						* (cs.Clockwise ? -1.0f : 1.0f);
 					const float angle = startRad + sweepRad * t;
-					const Vec2 size = rect.GetSize();
+					// Derive the radius from the authored SizeDelta, not rect.GetSize() (the
+					// resolved screen size). AnchoredPosition is authored-local and UILayoutSystem
+					// re-multiplies it by the parent's world scale, so using the already-scaled
+					// screen size double-applies the canvas UI-scale and the handle drifts off the
+					// ring at any non-reference resolution (game view, resized/non-fullscreen window).
+					const Vec2 size = rect.SizeDelta;
 					const float outerRadius = std::min(size.x, size.y) * 0.5f;
 					const float thickness   = std::min(cs.RingThickness, outerRadius);
 					const float meanRadius  = outerRadius - thickness * 0.5f;
@@ -1892,6 +2100,8 @@ namespace Index {
 						field.SelectionAnchorBytePos = byte;
 					}
 					field.MouseSelecting = true;
+					field.MouseDownX = mouseUi.x;
+					field.MouseDownY = mouseUi.y;
 				}
 				else {
 					field.IsFocused = false;
@@ -1911,8 +2121,15 @@ namespace Index {
 		// The anchor stays put, so the selection grows / shrinks naturally.
 		for (auto&& [entity, interact, field] : inputView.each()) {
 			if (field.MouseSelecting && mouseHeld) {
-				const int byte = ByteFromMouseX(registry, field, mouseUi);
-				field.CaretBytePos = byte;
+				// Only extend the selection once the cursor moves past a few pixels (or a
+				// selection already exists). A jittery click otherwise creates a tiny
+				// unintended selection that the next keystroke would replace, snapping the caret back.
+				const float ddx = mouseUi.x - field.MouseDownX;
+				const float ddy = mouseUi.y - field.MouseDownY;
+				if (ddx * ddx + ddy * ddy > 16.0f || field.CaretBytePos != field.SelectionAnchorBytePos) {
+					field.CaretBytePos = ByteFromMouseX(registry, field, mouseUi);
+					field.CaretDesiredX = -1.0f; // mouse caret move resets the vertical goal column
+				}
 			}
 			if (!mouseHeld) {
 				field.MouseSelecting = false;
@@ -1938,13 +2155,25 @@ namespace Index {
 				field.LeftRepeatAccumulator = 0.0f;
 				field.RightHoldTime = 0.0f;
 				field.RightRepeatAccumulator = 0.0f;
+				field.UpHoldTime = 0.0f;
+				field.UpRepeatAccumulator = 0.0f;
+				field.DownHoldTime = 0.0f;
+				field.DownRepeatAccumulator = 0.0f;
+				field.CaretDesiredX = -1.0f;
 				continue;
 			}
 
 			ClampCaret(field);
 
 			// ── Shortcuts ─────────────────────────────────────────
-			if (ctrlDown) {
+			// Goal-column bookkeeping: the goal column survives consecutive Up/Down
+				// presses but is invalidated by any horizontal caret change or edit, which
+				// we detect at the end of the block by diffing against this snapshot.
+				const int caretBefore = field.CaretBytePos;
+				const size_t textSizeBefore = field.Text.size();
+				bool didVerticalNav = false;
+
+				if (ctrlDown) {
 				if (input.GetKeyDown(KeyCode::A)) {
 					field.SelectionAnchorBytePos = 0;
 					field.CaretBytePos = static_cast<int>(field.Text.size());
@@ -1966,14 +2195,13 @@ namespace Index {
 					if (Window* w = Application::GetWindow()) {
 						const std::string clip = w->GetClipboardString();
 						if (!clip.empty()) {
-							// Strip CR / LF — single-line input fields
-							// shouldn't accept newlines from clipboard.
-							std::string sanitized;
-							sanitized.reserve(clip.size());
-							for (char c : clip) {
-								if (c != '\r' && c != '\n') sanitized.push_back(c);
-							}
-							// Simulate post-selection deletion before filtering so e.g. pasting "1.2" over a "." still accepts the dot.
+							// Only multiline Standard fields keep line breaks; CR, LF and
+							// CRLF all normalise to a single '\n'. Every other field type
+							// (and non-multiline) is single-line, so breaks are dropped.
+							const bool keepNewlines = field.Multiline
+								&& field.ContentType == InputContentType::Standard;
+							// The paste replaces the active selection; simulate that deletion up front so both
+							// the content-type filter and the line-limit budget see the post-delete text.
 							auto [lo, hi] = SelectionRange(field);
 							std::string existingAfterDelete = field.Text;
 							int caretAfterDelete = field.CaretBytePos;
@@ -1981,9 +2209,26 @@ namespace Index {
 								existingAfterDelete.erase(lo, hi - lo);
 								caretAfterDelete = lo;
 							}
+							// Multiline LineLimit: a paste may add at most (LineLimit - lines after delete) breaks.
+							const int maxNewBreaks = (field.LineLimit > 0)
+								? std::max(0, field.LineLimit - LineCount(existingAfterDelete))
+								: -1; // -1 = unlimited
+							int addedBreaks = 0;
+							std::string sanitized;
+							sanitized.reserve(clip.size());
+							for (size_t ci = 0; ci < clip.size(); ++ci) {
+								const char c = clip[ci];
+								if (c == '\r') {
+									if (keepNewlines && (maxNewBreaks < 0 || addedBreaks < maxNewBreaks)) { sanitized.push_back('\n'); ++addedBreaks; }
+									if (ci + 1 < clip.size() && clip[ci + 1] == '\n') ++ci; // swallow LF of CRLF
+									continue;
+								}
+								if (c == '\n') { if (keepNewlines && (maxNewBreaks < 0 || addedBreaks < maxNewBreaks)) { sanitized.push_back('\n'); ++addedBreaks; } continue; }
+								sanitized.push_back(c);
+							}
 							const std::string filtered = FilterByContentType(
 								field.ContentType, sanitized,
-								existingAfterDelete, caretAfterDelete);
+								existingAfterDelete, caretAfterDelete, keepNewlines);
 							if (!filtered.empty()) {
 								InsertAtCaret(field, filtered);
 							}
@@ -2016,11 +2261,46 @@ namespace Index {
 				}
 			};
 
-			if (input.GetKeyDown(KeyCode::Left)) {
-				moveLeftOnce();
-				field.LeftHoldTime = 0.0f;
-				field.LeftRepeatAccumulator = 0.0f;
-			}
+			// Up/Down: move the caret to the visual line above/below, keeping the goal
+				// column (CaretDesiredX). dir = -1 (up) / +1 (down). Past the first/last line
+				// the caret snaps to the very start/end, mirroring common text editors.
+				auto moveVerticalOnce = [&](int dir) {
+					didVerticalNav = true;
+					const InputTextLayout layout = ResolveInputTextLayout(registry, field);
+					if (!layout.Valid) return; // font not ready this frame; skip the move
+					std::vector<std::pair<int, int>> lines = InputVisualLines(layout, field.Text);
+					const int li = VisualLineOfByte(lines, std::clamp(field.CaretBytePos, 0, static_cast<int>(field.Text.size())));
+					const int targetLine = li + dir;
+					if (targetLine < 0) {
+						field.CaretBytePos = 0;
+						if (!shiftDown) field.SelectionAnchorBytePos = field.CaretBytePos;
+						return;
+					}
+					if (targetLine > static_cast<int>(lines.size()) - 1) {
+						field.CaretBytePos = static_cast<int>(field.Text.size());
+						if (!shiftDown) field.SelectionAnchorBytePos = field.CaretBytePos;
+						return;
+					}
+					const auto [curStart, curEnd] = lines[li];
+					std::string_view curLine{ field.Text.data() + curStart, static_cast<size_t>(curEnd - curStart) };
+					const auto [tStart, tEnd] = lines[targetLine];
+					std::string_view targetView{ field.Text.data() + tStart, static_cast<size_t>(tEnd - tStart) };
+					// Establish the goal column on the first vertical move, then reuse it.
+					if (field.CaretDesiredX < 0.0f) {
+						const int withinCur = std::clamp(field.CaretBytePos - curStart, 0, curEnd - curStart);
+						field.CaretDesiredX = MeasureUpToByte(*layout.FontPtr, curLine, withinCur, layout.LetterSpacing) * layout.Scale;
+					}
+					const int newCaret = tStart + ByteFromRelativeX(*layout.FontPtr, targetView,
+						field.CaretDesiredX, layout.Scale, layout.LetterSpacing);
+					field.CaretBytePos = std::clamp(newCaret, tStart, tEnd);
+					if (!shiftDown) field.SelectionAnchorBytePos = field.CaretBytePos;
+				};
+
+				if (input.GetKeyDown(KeyCode::Left)) {
+					moveLeftOnce();
+					field.LeftHoldTime = 0.0f;
+					field.LeftRepeatAccumulator = 0.0f;
+				}
 			else if (input.GetKey(KeyCode::Left)) {
 				field.LeftHoldTime += dt;
 				if (field.LeftHoldTime >= k_KeyHoldDelay) {
@@ -2055,10 +2335,53 @@ namespace Index {
 				field.RightHoldTime = 0.0f;
 				field.RightRepeatAccumulator = 0.0f;
 			}
-			if (input.GetKeyDown(KeyCode::Home)) {
-				field.CaretBytePos = 0;
-				if (!shiftDown) field.SelectionAnchorBytePos = 0;
-			}
+			if (input.GetKeyDown(KeyCode::Up)) {
+					moveVerticalOnce(-1);
+					field.UpHoldTime = 0.0f;
+					field.UpRepeatAccumulator = 0.0f;
+				}
+				else if (input.GetKey(KeyCode::Up)) {
+					didVerticalNav = true; // hold keeps the goal column alive between repeats
+					field.UpHoldTime += dt;
+					if (field.UpHoldTime >= k_KeyHoldDelay) {
+						field.UpRepeatAccumulator += dt;
+						while (field.UpRepeatAccumulator >= k_KeyHoldRate) {
+							field.UpRepeatAccumulator -= k_KeyHoldRate;
+							moveVerticalOnce(-1);
+						}
+					}
+				}
+				else {
+					field.UpHoldTime = 0.0f;
+					field.UpRepeatAccumulator = 0.0f;
+				}
+
+				// Down arrow is KeyCode::Bottom (GLFW KEY_DOWN = 264).
+				if (input.GetKeyDown(KeyCode::Bottom)) {
+					moveVerticalOnce(1);
+					field.DownHoldTime = 0.0f;
+					field.DownRepeatAccumulator = 0.0f;
+				}
+				else if (input.GetKey(KeyCode::Bottom)) {
+					didVerticalNav = true;
+					field.DownHoldTime += dt;
+					if (field.DownHoldTime >= k_KeyHoldDelay) {
+						field.DownRepeatAccumulator += dt;
+						while (field.DownRepeatAccumulator >= k_KeyHoldRate) {
+							field.DownRepeatAccumulator -= k_KeyHoldRate;
+							moveVerticalOnce(1);
+						}
+					}
+				}
+				else {
+					field.DownHoldTime = 0.0f;
+					field.DownRepeatAccumulator = 0.0f;
+				}
+
+				if (input.GetKeyDown(KeyCode::Home)) {
+					field.CaretBytePos = 0;
+					if (!shiftDown) field.SelectionAnchorBytePos = 0;
+				}
 			if (input.GetKeyDown(KeyCode::End)) {
 				field.CaretBytePos = static_cast<int>(field.Text.size());
 				if (!shiftDown) field.SelectionAnchorBytePos = field.CaretBytePos;
@@ -2117,17 +2440,37 @@ namespace Index {
 				}
 				const std::string filtered = FilterByContentType(
 					field.ContentType, typedText,
-					existingAfterDelete, caretAfterDelete);
+					existingAfterDelete, caretAfterDelete, (field.Multiline && field.ContentType == InputContentType::Standard));
 				if (!filtered.empty()) {
 					InsertAtCaret(field, filtered);
 				}
 			}
 
 			if (enterPressed) {
-				field.SubmittedThisFrame = true;
+				if (field.Multiline && !field.IsReadOnly && field.ContentType == InputContentType::Standard) {
+					// Multiline Standard fields: Enter inserts a newline (no-op once the line limit is hit).
+					// Enter replaces the selection with a newline; count lines after that deletion so
+					// replacing a multi-line selection at the limit isn't wrongly blocked.
+					auto [elo, ehi] = SelectionRange(field);
+					std::string afterDelete = field.Text;
+					if (elo != ehi) afterDelete.erase(elo, ehi - elo);
+					if (field.LineLimit <= 0 || LineCount(afterDelete) < field.LineLimit) {
+						InsertAtCaret(field, "\n");
+					}
+				}
+				else {
+					field.SubmittedThisFrame = true;
+				}
 			}
 
-			ClampCaret(field);
+				// Any non-vertical caret move or edit this frame drops the goal column;
+				// idle frames and consecutive Up/Down keep it (see moveVerticalOnce).
+				if (!didVerticalNav
+					&& (field.CaretBytePos != caretBefore || field.Text.size() != textSizeBefore)) {
+					field.CaretDesiredX = -1.0f;
+				}
+
+				ClampCaret(field);
 		}
 
 		// ── Input field event dispatch ────────────────────────────────
@@ -2157,6 +2500,7 @@ namespace Index {
 
 		// Caret/selection are painted as separate quads by GuiRenderer — not injected into Text — so layout stays stable.
 		for (auto&& [entity, interact, field] : inputView.each()) {
+			field.ScrollOffsetX = ComputeInputScrollX(registry, field);
 			if (field.TextEntity == entt::null || !registry.valid(field.TextEntity)) continue;
 			if (!registry.all_of<TextRendererComponent>(field.TextEntity)) continue;
 			auto& tc = registry.get<TextRendererComponent>(field.TextEntity);

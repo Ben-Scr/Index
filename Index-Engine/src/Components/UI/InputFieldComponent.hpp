@@ -27,11 +27,16 @@ namespace Index {
 		bool IsFocused = false;
 		bool SubmittedThisFrame = false;     // Enter pressed while focused
 		int CharacterLimit = 0;              // 0 = unlimited
+		// 0 = unlimited. Max number of lines a Multiline field accepts (Enter / paste);
+		// ignored when Multiline is false.
+		int LineLimit = 0;
 
 		InputContentType ContentType = InputContentType::Standard;
 		bool IsSecret = false;
 		// Read-only still allows focus/scroll/Copy/SelectAll; rejects Backspace/Delete/type/Cut/Paste. Visual styling unchanged.
 		bool IsReadOnly = false;
+		// Enter inserts a newline instead of submitting, paste keeps newlines, and Up/Down navigate visual lines.
+		bool Multiline = false;
 		float CaretBlinkRate = 1.0f;
 
 		// Caret bar width in pixels. Range exposed in the inspector
@@ -44,6 +49,11 @@ namespace Index {
 
 		// Transient (not serialized). Hold timers drive auto-repeat for Backspace/Delete/Left/Right; without arrow timers, holding only moved one codepoint.
 		bool MouseSelecting = false;
+		// Mouse-down position (UI px) for the drag-select threshold: extending the
+		// selection only begins once the cursor moves past a few pixels, so a jittery
+		// click doesn't leave a tiny unintended selection the next key would replace.
+		float MouseDownX = 0.0f;
+		float MouseDownY = 0.0f;
 		float BackspaceHoldTime = 0.0f;
 		float BackspaceRepeatAccumulator = 0.0f;
 		float DeleteHoldTime = 0.0f;
@@ -52,6 +62,20 @@ namespace Index {
 		float LeftRepeatAccumulator = 0.0f;
 		float RightHoldTime = 0.0f;
 		float RightRepeatAccumulator = 0.0f;
+		float UpHoldTime = 0.0f;
+		float UpRepeatAccumulator = 0.0f;
+		float DownHoldTime = 0.0f;
+		float DownRepeatAccumulator = 0.0f;
+
+		// Goal column for vertical (Up/Down) navigation: the caret's within-line X in
+		// UI pixels. -1 = recompute from the current caret. Reset to -1 on any horizontal
+		// caret change so column tracking only persists across consecutive Up/Down presses.
+		float CaretDesiredX = -1.0f;
+
+		// Transient horizontal text scroll in UI pixels. The rendered text, caret and
+		// selection shift left by this so the caret stays inside a left-aligned field
+		// whose text overflows. Recomputed each frame from the caret; not serialized.
+		float ScrollOffsetX = 0.0f;
 
 		EntityHandle TextEntity = kNullEntity;
 

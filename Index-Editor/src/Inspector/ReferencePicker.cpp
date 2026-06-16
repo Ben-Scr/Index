@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Index::ReferencePicker {
@@ -42,6 +43,11 @@ namespace Index::ReferencePicker {
 			Style Style = Style::Plain;
 			bool UseEntityTabs = false;
 			EntryGroup ActiveEntityTab = EntryGroup::Scene;
+			std::vector<std::size_t> VisibleEntryIndices;
+			std::string LastFilter;
+			bool LastIncludeBuiltIns = true;
+			EntryGroup LastEntityTab = EntryGroup::Any;
+			bool VisibleEntriesDirty = true;
 
 			bool IncludeBuiltIns = true;
 
@@ -60,6 +66,16 @@ namespace Index::ReferencePicker {
 
 		// Module-level (not local static) so Shutdown() can reset it on reload — a local static would stick true and skip the re-walk.
 		bool s_BuiltInsDone = false;
+
+		struct AssetEntryCache {
+			uint64_t RegistryVersion = 0;
+			std::vector<Entry> Entries;
+		};
+		std::unordered_map<int, AssetEntryCache> s_AssetEntryCache;
+
+		int MakeAssetEntryCacheKey(AssetKind kind, bool includeSlices) {
+			return (static_cast<int>(kind) << 1) | (includeSlices ? 1 : 0);
+		}
 
 		void EnsureThumbnailCacheInitialized() {
 			if (!s_State.ThumbnailsInitialized) {
@@ -80,6 +96,35 @@ namespace Index::ReferencePicker {
 				return static_cast<char>(std::tolower(ch));
 			});
 			return value;
+		}
+
+		void RebuildVisibleEntriesIfNeeded() {
+			const std::string filter = ToLowerCopy(std::string(s_State.Search));
+			if (!s_State.VisibleEntriesDirty
+				&& filter == s_State.LastFilter
+				&& s_State.IncludeBuiltIns == s_State.LastIncludeBuiltIns
+				&& s_State.ActiveEntityTab == s_State.LastEntityTab) {
+				return;
+			}
+
+			s_State.VisibleEntryIndices.clear();
+			s_State.VisibleEntryIndices.reserve(s_State.Entries.size());
+			for (std::size_t i = 0; i < s_State.Entries.size(); ++i) {
+				const Entry& entry = s_State.Entries[i];
+				if (s_State.UseEntityTabs
+					&& entry.Group != EntryGroup::Any
+					&& entry.Group != s_State.ActiveEntityTab) {
+					continue;
+				}
+				if (!s_State.IncludeBuiltIns && entry.IsBuiltIn) continue;
+				if (!filter.empty() && entry.SearchKey.find(filter) == std::string::npos) continue;
+				s_State.VisibleEntryIndices.push_back(i);
+			}
+
+			s_State.LastFilter = filter;
+			s_State.LastIncludeBuiltIns = s_State.IncludeBuiltIns;
+			s_State.LastEntityTab = s_State.ActiveEntityTab;
+			s_State.VisibleEntriesDirty = false;
 		}
 
 		std::string GetEntityName(const Scene& scene, EntityHandle handle, uint64_t entityId) {
@@ -153,7 +198,15 @@ namespace Index::ReferencePicker {
 	std::vector<Entry> CollectAssetsByKind(AssetKind kind, bool includeSlices) {
 		EnsureBuiltInsRegisteredInEditor();
 
-		AssetRegistry::MarkDirty();
+		const int cacheKey = MakeAssetEntryCacheKey(kind, includeSlices);
+		const uint64_t registryVersion = AssetRegistry::GetChangeVersion();
+		if (auto cacheIt = s_AssetEntryCache.find(cacheKey); cacheIt != s_AssetEntryCache.end()) {
+			if (cacheIt->second.RegistryVersion == registryVersion
+				|| (AssetRegistry::IsDirty() && !cacheIt->second.Entries.empty())) {
+				return cacheIt->second.Entries;
+			}
+		}
+
 		AssetRegistry::Sync();
 
 		// Filter out IndexAssets/Textures/Editor entries (editor chrome icons) from all asset-kind listings.
@@ -213,6 +266,7 @@ namespace Index::ReferencePicker {
 			if (a.Label == b.Label) return a.Secondary < b.Secondary;
 			return a.Label < b.Label;
 		});
+		s_AssetEntryCache[cacheKey] = AssetEntryCache{ AssetRegistry::GetChangeVersion(), entries };
 		return entries;
 	}
 
@@ -243,7 +297,6 @@ namespace Index::ReferencePicker {
 		});
 
 		if (includePrefabAssets) {
-			AssetRegistry::MarkDirty();
 			AssetRegistry::Sync();
 			for (const AssetRegistry::Record& record : AssetRegistry::GetAssetsByKind(AssetKind::Prefab)) {
 				Entry entry;
@@ -315,6 +368,11 @@ namespace Index::ReferencePicker {
 		s_State.Style = style;
 		s_State.UseEntityTabs = useEntityTabs;
 		s_State.ActiveEntityTab = EntryGroup::Scene;
+		s_State.VisibleEntriesDirty = true;
+		s_State.VisibleEntryIndices.clear();
+		s_State.LastFilter.clear();
+		s_State.LastIncludeBuiltIns = s_State.IncludeBuiltIns;
+		s_State.LastEntityTab = EntryGroup::Any;
 		if (style == Style::Thumbnails) {
 			EnsureThumbnailCacheInitialized();
 			s_State.DiscardPending = true;
@@ -392,7 +450,9 @@ namespace Index::ReferencePicker {
 		const float searchWidth = std::max(60.0f,
 			ImGui::GetContentRegionAvail().x - toggleWidth - style.ItemSpacing.x);
 		ImGui::SetNextItemWidth(searchWidth);
-		ImGui::InputTextWithHint("##ReferenceSearch", "Search...", s_State.Search, sizeof(s_State.Search));
+		if (ImGui::InputTextWithHint("##ReferenceSearch", "Search...", s_State.Search, sizeof(s_State.Search))) {
+			s_State.VisibleEntriesDirty = true;
+		}
 		ImGui::SameLine();
 		bool toggleClicked = false;
 		if (eyeIcon != 0) {
@@ -415,6 +475,7 @@ namespace Index::ReferencePicker {
 		}
 		if (toggleClicked) {
 			s_State.IncludeBuiltIns = !s_State.IncludeBuiltIns;
+			s_State.VisibleEntriesDirty = true;
 		}
 		if (ImGui::IsItemHovered()) {
 			ImGui::SetTooltip(showingBuiltIns
@@ -425,31 +486,24 @@ namespace Index::ReferencePicker {
 		if (s_State.UseEntityTabs) {
 			if (ImGui::BeginTabBar("##EntityReferenceTabs")) {
 				if (ImGui::BeginTabItem("Scene")) {
-					s_State.ActiveEntityTab = EntryGroup::Scene;
+					if (s_State.ActiveEntityTab != EntryGroup::Scene) {
+						s_State.ActiveEntityTab = EntryGroup::Scene;
+						s_State.VisibleEntriesDirty = true;
+					}
 					ImGui::EndTabItem();
 				}
 				if (ImGui::BeginTabItem("Assets")) {
-					s_State.ActiveEntityTab = EntryGroup::Assets;
+					if (s_State.ActiveEntityTab != EntryGroup::Assets) {
+						s_State.ActiveEntityTab = EntryGroup::Assets;
+						s_State.VisibleEntriesDirty = true;
+					}
 					ImGui::EndTabItem();
 				}
 				ImGui::EndTabBar();
 			}
 		}
 
-		const std::string filter = ToLowerCopy(std::string(s_State.Search));
-
-		std::vector<const Entry*> visible;
-		visible.reserve(s_State.Entries.size());
-		for (const Entry& entry : s_State.Entries) {
-			if (s_State.UseEntityTabs
-				&& entry.Group != EntryGroup::Any
-				&& entry.Group != s_State.ActiveEntityTab) {
-				continue;
-			}
-			if (!s_State.IncludeBuiltIns && entry.IsBuiltIn) continue;
-			if (!filter.empty() && entry.SearchKey.find(filter) == std::string::npos) continue;
-			visible.push_back(&entry);
-		}
+		RebuildVisibleEntriesIfNeeded();
 
 		auto applySelection = [&](const Entry* entry) {
 			s_State.PendingFieldKey = s_State.TargetFieldKey;
@@ -469,10 +523,11 @@ namespace Index::ReferencePicker {
 			ImDrawList* drawList = ImGui::GetWindowDrawList();
 
 			ImGuiListClipper clipper;
-			clipper.Begin(static_cast<int>(visible.size()), rowHeight);
+			clipper.Begin(static_cast<int>(s_State.VisibleEntryIndices.size()), rowHeight);
 			while (clipper.Step()) {
 				for (int index = clipper.DisplayStart; index < clipper.DisplayEnd; ++index) {
-					const Entry& entry = *visible[static_cast<std::size_t>(index)];
+					const Entry& entry = s_State.Entries[
+						s_State.VisibleEntryIndices[static_cast<std::size_t>(index)]];
 					const bool hasThumbnail = !entry.Secondary.empty();
 					if (hasThumbnail) {
 						visiblePaths.insert(entry.Secondary);
@@ -483,12 +538,15 @@ namespace Index::ReferencePicker {
 					const float rowWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0f);
 					const ImVec2 rowMin = ImGui::GetCursorScreenPos();
 					const ImVec2 rowMax(rowMin.x + rowWidth, rowMin.y + rowHeight);
-					ImGui::InvisibleButton("##Row", ImVec2(rowWidth, rowHeight));
+					// Use the button's click result (press AND release on this row), not
+					// IsItemClicked (which fires on mouse-down) — so a drag/scroll that
+					// starts on a row, or releases off it, doesn't select it.
+					const bool clicked = ImGui::InvisibleButton("##Row", ImVec2(rowWidth, rowHeight));
 					const bool hovered = ImGui::IsItemHovered();
 					if (hovered) {
 						drawList->AddRectFilled(rowMin, rowMax, IM_COL32(70, 78, 92, 120), 4.0f);
 					}
-					if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+					if (clicked) {
 						applySelection(&entry);
 					}
 
@@ -530,9 +588,10 @@ namespace Index::ReferencePicker {
 								thumbMin.x + (thumbnailSize - drawWidth) * 0.5f,
 								thumbMin.y + (thumbnailSize - drawHeight) * 0.5f);
 							const ImVec2 imageMax(imageMin.x + drawWidth, imageMin.y + drawHeight);
-							drawList->AddImage(
+							ImGuiUtils::AddImageFiltered(drawList,
 								static_cast<ImTextureID>(static_cast<intptr_t>(thumbnail)),
-								imageMin, imageMax, ImVec2(u0, v0), ImVec2(u1, v1));
+								imageMin, imageMax, texture->GetFilter(),
+								ImVec2(u0, v0), ImVec2(u1, v1));
 						}
 						else {
 							ThumbnailCache::DrawAssetIcon(AssetType::Image, thumbMin, thumbnailSize);
@@ -578,8 +637,8 @@ namespace Index::ReferencePicker {
 			}
 		}
 		else {
-			for (const Entry* entryPtr : visible) {
-				const Entry& entry = *entryPtr;
+			for (std::size_t entryIndex : s_State.VisibleEntryIndices) {
+				const Entry& entry = s_State.Entries[entryIndex];
 				ImGui::PushID(entry.UniqueId.c_str());
 				bool truncated = false;
 				const std::string label = ImGuiUtils::Ellipsize(entry.Label, ImGui::GetContentRegionAvail().x, &truncated);
@@ -612,7 +671,7 @@ namespace Index::ReferencePicker {
 			}
 		}
 
-		if (visible.empty()) ImGui::TextDisabled("No matching items");
+		if (s_State.VisibleEntryIndices.empty()) ImGui::TextDisabled("No matching items");
 		ImGui::EndChild();
 		ImGui::End();
 
@@ -776,6 +835,7 @@ namespace Index::ReferencePicker {
 		}
 		s_State = {};
 		s_BuiltInsDone = false; // H22: rerun built-in registration on next open.
+		s_AssetEntryCache.clear();
 	}
 
 } // namespace Index::ReferencePicker
