@@ -4,7 +4,7 @@
 
 Index is a lightweight C++20 2D game engine mainly focused on performance and modularity.
 
-## Preview
+## Preview Images
 
 ### Editor
 

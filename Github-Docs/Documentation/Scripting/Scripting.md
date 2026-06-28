@@ -102,18 +102,18 @@ Public fields can be shown and edited in the editor's Inspector using **attribut
 ```csharp
 public class Enemy : EntityScript
 {
-    \[Header("Stats")]
-    \[ShowInEditor("Move Speed")] public float Speed = 3.0f;
-    \[ClampValue(0f, 100f)]       public float Health = 100f;
+    [Header("Stats")]
+    [ShowInEditor("Move Speed")] public float Speed = 3.0f;
+    [ClampValue(0f, 100f)]       public float Health = 100f;
 
-    \[Space(8f)]
-    \[ToolTip("Seconds between attacks")]
+    [Space(8f)]
+    [ToolTip("Seconds between attacks")]
     public float AttackCooldown = 1.5f;
 
-    \[EnabledIf("UseCustomColor", true)] public Color Tint = Color.White;
+    [EnabledIf("UseCustomColor", true)] public Color Tint = Color.White;
     public bool UseCustomColor = false;
 
-    \[HideFromEditor] public int internalCounter;  // public but hidden
+    [HideFromEditor] public int internalCounter;  // public but hidden
 }
 ```
 
@@ -121,15 +121,15 @@ The main attributes:
 
 |Attribute|Effect|
 |-|-|
-|`\[ShowInEditor("Label")]`|Show the field (optionally with a custom label, and read-only if you want).|
-|`\[ClampValue(min, max)]`|Limit a numeric field to a range.|
-|`\[Header("Text")]`|A bold section header above the field.|
-|`\[ToolTip("Text")]`|Hover text explaining the field.|
-|`\[Space(pixels)]`|Vertical gap for grouping.|
-|`\[EnabledIf("Field", value)]`|Only enable this field when another field has a given value.|
-|`\[EditorReadOnly]`|Visible but not editable.|
-|`\[HideFromEditor]`|Hide a public field.|
-|`\[EditorIgnore]`|Hide all fields of a whole type.|
+|`[ShowInEditor("Label")]`|Show the field (optionally with a custom label, and read-only if you want).|
+|`[ClampValue(min, max)]`|Limit a numeric field to a range.|
+|`[Header("Text")]`|A bold section header above the field.|
+|`[ToolTip("Text")]`|Hover text explaining the field.|
+|`[Space(pixels)]`|Vertical gap for grouping.|
+|`[EnabledIf("Field", value)]`|Only enable this field when another field has a given value.|
+|`[EditorReadOnly]`|Visible but not editable.|
+|`[HideFromEditor]`|Hide a public field.|
+|`[EditorIgnore]`|Hide all fields of a whole type.|
 
 You can also expose **asset slots** (a texture, audio clip, etc.) using reference types — drag an asset onto the slot in the Inspector. See [Assets](../Assets/Assets.md#referencing-assets-from-c-scripts).
 
