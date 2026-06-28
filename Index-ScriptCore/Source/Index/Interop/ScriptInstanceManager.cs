@@ -484,7 +484,9 @@ internal static class ScriptInstanceManager
         // (those are only applied on first wrapper creation). The native reload already destroyed
         // the entities and re-seeded authored values, so the next fetch rebuilds wrappers cleanly.
         // (EntityScript instances revert correctly because they ARE torn down each session.)
-        Entity.ClearManagedComponentStore();
+        // invalidate:false — the reloaded edit-scene instances already hold freshly-resolved wrappers
+        // for live entities; invalidating them here would orphan restored component refs (shows "(None)").
+        Entity.ClearManagedComponentStore(invalidate: false);
     }
 
     // Native→managed: the engine destroyed an entity outside any C# path
@@ -1308,6 +1310,18 @@ internal static class ScriptInstanceManager
         }
     }
 
+    // Resolve an inspector write. ParseFieldValue returns null for BOTH a parse
+    // failure AND an empty reference value (a cleared Texture -> FromAssetUUID(0)
+    // == null). The first must be skipped so stale/malformed posts don't clobber
+    // data; the second is an explicit "Clear" and must write null. Disambiguate by
+    // input: an empty string targeting a reference type is a clear.
+    private static bool TryResolveInspectorWrite(Type memberType, string valueStr, out object? value)
+    {
+        value = ParseFieldValue(memberType, valueStr);
+        if (value != null) return true;
+        return valueStr.Length == 0 && !memberType.IsValueType;
+    }
+
     // Fields first (faster), then properties; silently skips on miss/parse failure since the editor may post stale names after a script edit.
     private static unsafe void ApplyFieldEdit(object instance, byte* fieldNamePtr, byte* valuePtr)
     {
@@ -1327,8 +1341,8 @@ internal static class ScriptInstanceManager
         var field = type.GetField(fieldName, k_Flags);
         if (field != null)
         {
-            object? parsed = ParseFieldValue(field.FieldType, valueStr);
-            if (parsed != null) field.SetValue(instance, parsed);
+            if (TryResolveInspectorWrite(field.FieldType, valueStr, out object? parsed))
+                field.SetValue(instance, parsed);
             return;
         }
 
@@ -1339,8 +1353,8 @@ internal static class ScriptInstanceManager
         if (!property.CanWrite || property.SetMethod == null || !property.SetMethod.IsPublic)
             return;
 
-        object? parsedProp = ParseFieldValue(property.PropertyType, valueStr);
-        if (parsedProp == null) return;
+        if (!TryResolveInspectorWrite(property.PropertyType, valueStr, out object? parsedProp))
+            return;
 
         try
         {
@@ -1390,8 +1404,8 @@ internal static class ScriptInstanceManager
 
         MemberInfo? leaf = GetPathMember(chain[^1].GetType(), segs[^1], k_Flags);
         if (leaf == null) return;
-        object? parsed = ParseFieldValue(PathMemberType(leaf), valueStr);
-        if (parsed == null) return;
+        if (!TryResolveInspectorWrite(PathMemberType(leaf), valueStr, out object? parsed))
+            return;
         if (!TrySetPathMember(leaf, chain[^1], parsed)) return;
 
         for (int i = segs.Length - 2; i >= 0; i--)

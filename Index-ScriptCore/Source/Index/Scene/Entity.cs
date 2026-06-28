@@ -340,10 +340,17 @@ public class Entity : IEquatable<Entity>
     }
 
     // MUST clear on assembly unload: s_ManagedComponentStore roots user Component subclasses, preventing the AssemblyLoadContext from unloading until every entry is removed.
-    internal static void ClearManagedComponentStore()
+    // invalidate=false (play-exit): the scene reload already rebuilt the live entities and re-applied
+    // authored values onto fresh wrappers, so drop the store (forcing future GetComponent<T> to re-fetch)
+    // but DON'T invalidate — invalidating orphans the just-restored component refs still held by live
+    // script fields, so the inspector reads them back as "(None)". Unload invalidates: all is going away.
+    internal static void ClearManagedComponentStore(bool invalidate = true)
     {
-        foreach (var component in s_ManagedComponentStore.Values)
-            component.Invalidate();
+        if (invalidate)
+        {
+            foreach (var component in s_ManagedComponentStore.Values)
+                component.Invalidate();
+        }
         s_ManagedComponentStore.Clear();
     }
 

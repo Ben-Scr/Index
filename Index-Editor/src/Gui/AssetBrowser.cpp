@@ -11,6 +11,7 @@
 #include "Scene/Scene.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Core/Log.hpp"
+#include "Core/Platform/Win32BuildProgressWindow.hpp"
 #include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Gui/EditorTheme.hpp"
@@ -711,6 +712,13 @@ namespace Index {
 				IDX_CORE_WARN_TAG("AssetBrowser", "Native file drag skipped because none of the selected paths exist.");
 				return false;
 			}
+
+			// DoDragDrop runs a modal loop that parks the main thread for the whole
+			// drag. The compile/build progress popup is an owned top-level window on
+			// this thread; left up, its message queue can't be pumped and DoDragDrop
+			// deadlocks against it → editor freezes forever. Drop it for the drag;
+			// the chrome render re-Shows it next frame if the build is still running.
+			Win32BuildProgressWindow::Hide();
 
 			const HRESULT oleResult = OleInitialize(nullptr);
 			if (oleResult == RPC_E_CHANGED_MODE) {

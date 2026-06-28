@@ -992,6 +992,12 @@ namespace Index {
 		// InputField multiline toggle (appended for binary compat; keep in lock-step with NativeBindingsStruct).
 		int (*InputField_GetMultiline)(uint64_t entityID);
 		void (*InputField_SetMultiline)(uint64_t entityID, int value);
+		uint64_t (*InputField_GetVerticalScrollbarEntity)(uint64_t entityID);
+		void     (*InputField_SetVerticalScrollbarEntity)(uint64_t entityID, uint64_t refUuid);
+
+		// Gizmo enable toggle (appended for binary compat; keep in lock-step with C# NativeBindings).
+		int  (*Gizmo_GetEnabled)();
+		void (*Gizmo_SetEnabled)(int enabled);
 	};
 
 	/// Layout must match C# ManagedCallbacksStruct exactly.

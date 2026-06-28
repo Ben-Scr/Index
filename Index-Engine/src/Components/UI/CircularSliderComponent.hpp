@@ -5,6 +5,8 @@
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
 
+#include <cstdint>
+
 namespace Index {
 
 	// Hit-test is annulus-based (cursor must be between innerRadius and outerRadius); donut hole is not clickable.
@@ -28,6 +30,10 @@ namespace Index {
 		// Visual.
 		Color BackgroundColor{ 0.18f, 0.20f, 0.24f, 1.0f };
 		Color FillColor      { 0.30f, 0.55f, 0.95f, 1.0f };
+
+		// Render sort: within a SortingLayer, higher SortingOrder draws on top (mirrors ImageComponent).
+		int16_t SortingOrder{ 0 };
+		uint8_t SortingLayer{ 0 };
 
 		EntityHandle HandleEntity = kNullEntity;
 

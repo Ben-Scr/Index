@@ -28,6 +28,7 @@ namespace Index {
 		void Destroy() override;
 	private:
 		Vec2 m_LocalSize{ 1.0f, 1.0f };
+		Vec2 m_Center{ 0.0f, 0.0f };
 		Vec2 m_LastAppliedScale{ 0.0f, 0.0f };
 		// Track the local size used during the last polygon rebuild — without this,
 		// SyncWithTransform short-circuits when only m_LocalSize changes (e.g. via

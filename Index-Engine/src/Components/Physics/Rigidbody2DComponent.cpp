@@ -10,6 +10,7 @@ namespace Index {
 	#define IDX_RB_GUARD() do { if (!IsValid()) return; } while (0)
 
 	void Rigidbody2DComponent::SetBodyType(BodyType bodyType) {
+		m_BodyType = bodyType;
 		IDX_RB_GUARD();
 		switch (bodyType) {
 		case BodyType::Static:
@@ -25,7 +26,7 @@ namespace Index {
 	}
 
 	BodyType Rigidbody2DComponent::GetBodyType() const {
-		if (!IsValid()) return BodyType::Static;
+		if (!IsValid()) return m_BodyType;
 		switch (b2Body_GetType(m_BodyId)) {
 		case b2_staticBody:
 			return BodyType::Static;
@@ -45,6 +46,9 @@ namespace Index {
 		return b2Body_IsAwake(m_BodyId);
 	}
 
+	// Velocity is runtime physics state, not a serialized field, so it is NOT
+	// logical-first: on a body-less component (prefab edit) it stays at zero rather
+	// than presenting an editable value the save would silently drop.
 	void Rigidbody2DComponent::SetVelocity(const Vec2& velocity) {
 		IDX_RB_GUARD();
 		b2Body_SetLinearVelocity(m_BodyId, b2Vec2(velocity.x, velocity.y));
@@ -65,15 +69,17 @@ namespace Index {
 	}
 
 	void Rigidbody2DComponent::SetGravityScale(float gravityScale) {
+		m_GravityScale = gravityScale;
 		IDX_RB_GUARD();
 		b2Body_SetGravityScale(m_BodyId, gravityScale);
 	}
 	float Rigidbody2DComponent::GetGravityScale() const {
-		if (!IsValid()) return 0.0f;
+		if (!IsValid()) return m_GravityScale;
 		return b2Body_GetGravityScale(m_BodyId);
 	}
 
 	void Rigidbody2DComponent::SetMass(float mass) {
+		m_Mass = mass;
 		IDX_RB_GUARD();
 		auto massData = b2Body_GetMassData(m_BodyId);
 		const float previousMass = massData.mass;
@@ -88,7 +94,7 @@ namespace Index {
 		b2Body_SetMassData(m_BodyId, massData);
 	}
 	float Rigidbody2DComponent::GetMass() const {
-		if (!IsValid()) return 0.0f;
+		if (!IsValid()) return m_Mass;
 		return b2Body_GetMass(m_BodyId);
 	}
 
@@ -125,33 +131,36 @@ namespace Index {
 	}
 
 	void Rigidbody2DComponent::SetFreezePositionX(bool freeze) {
+		m_FreezeX = freeze;
 		IDX_RB_GUARD();
 		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
 		locks.linearX = freeze;
 		b2Body_SetMotionLocks(m_BodyId, locks);
 	}
 	void Rigidbody2DComponent::SetFreezePositionY(bool freeze) {
+		m_FreezeY = freeze;
 		IDX_RB_GUARD();
 		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
 		locks.linearY = freeze;
 		b2Body_SetMotionLocks(m_BodyId, locks);
 	}
 	void Rigidbody2DComponent::SetFreezeRotation(bool freeze) {
+		m_FreezeRot = freeze;
 		IDX_RB_GUARD();
 		b2MotionLocks locks = b2Body_GetMotionLocks(m_BodyId);
 		locks.angularZ = freeze;
 		b2Body_SetMotionLocks(m_BodyId, locks);
 	}
 	bool Rigidbody2DComponent::GetFreezePositionX() const {
-		if (!IsValid()) return false;
+		if (!IsValid()) return m_FreezeX;
 		return b2Body_GetMotionLocks(m_BodyId).linearX;
 	}
 	bool Rigidbody2DComponent::GetFreezePositionY() const {
-		if (!IsValid()) return false;
+		if (!IsValid()) return m_FreezeY;
 		return b2Body_GetMotionLocks(m_BodyId).linearY;
 	}
 	bool Rigidbody2DComponent::GetFreezeRotation() const {
-		if (!IsValid()) return false;
+		if (!IsValid()) return m_FreezeRot;
 		return b2Body_GetMotionLocks(m_BodyId).angularZ;
 	}
 

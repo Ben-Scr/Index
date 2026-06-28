@@ -255,13 +255,16 @@ namespace Index {
 						std::uint32_t count = 0;
 						if (!ReadU32(count)) return false;
 						out = Value::MakeObject();
+						out.ReserveMembers(count);
 						for (std::uint32_t i = 0; i < count; ++i) {
 							std::string key;
 							Value memberValue;
 							if (!ReadString(key) || !ReadValue(memberValue, depth + 1)) {
 								return false;
 							}
-							out.AddMember(std::move(key), std::move(memberValue));
+							// Keys were de-duplicated when the object was built before serialization,
+							// so a fresh decode can skip AddMember's per-insert dup scan (O(n^2) -> O(n)).
+							out.AddMemberUnchecked(std::move(key), std::move(memberValue));
 						}
 						return true;
 					}
@@ -269,6 +272,7 @@ namespace Index {
 						std::uint32_t count = 0;
 						if (!ReadU32(count)) return false;
 						out = Value::MakeArray();
+						out.EnsureArray().reserve(count);
 						for (std::uint32_t i = 0; i < count; ++i) {
 							Value item;
 							if (!ReadValue(item, depth + 1)) {
@@ -283,6 +287,57 @@ namespace Index {
 				}
 
 				bool AtEnd() const { return m_Offset == m_Bytes.size(); }
+
+				std::size_t Tell() const { return m_Offset; }
+				void Seek(std::size_t offset) { m_Offset = offset; }
+
+				bool SkipBytes(std::size_t count) {
+					if (Remaining() < count) return false;
+					m_Offset += count;
+					return true;
+				}
+
+				bool SkipString() {
+					std::uint32_t size = 0;
+					return ReadU32(size) && SkipBytes(size);
+				}
+
+				// Advances past one value without materializing it — used to walk over the
+				// "entities" array so the rest of the scene header can be decoded before the
+				// entities are streamed back one at a time.
+				bool SkipValue(int depth = 0) {
+					constexpr int k_MaxDepth = 256;
+					if (depth > k_MaxDepth) return false;
+
+					std::uint8_t rawTag = 0;
+					if (!ReadU8(rawTag)) return false;
+
+					switch (static_cast<BinaryValueTag>(rawTag)) {
+					case BinaryValueTag::Null:   return true;
+					case BinaryValueTag::Bool:   return SkipBytes(1);
+					case BinaryValueTag::Double:
+					case BinaryValueTag::Int64:
+					case BinaryValueTag::UInt64: return SkipBytes(8);
+					case BinaryValueTag::String: return SkipString();
+					case BinaryValueTag::Object: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						for (std::uint32_t i = 0; i < count; ++i) {
+							if (!SkipString() || !SkipValue(depth + 1)) return false;
+						}
+						return true;
+					}
+					case BinaryValueTag::Array: {
+						std::uint32_t count = 0;
+						if (!ReadU32(count)) return false;
+						for (std::uint32_t i = 0; i < count; ++i) {
+							if (!SkipValue(depth + 1)) return false;
+						}
+						return true;
+					}
+					}
+					return false;
+				}
 
 			private:
 				std::size_t Remaining() const { return m_Bytes.size() - m_Offset; }
@@ -341,6 +396,129 @@ namespace Index {
 		INDEX_API bool IsBinaryData(const std::vector<std::uint8_t>& bytes) {
 			return bytes.size() >= sizeof(k_BinaryMagic)
 				&& std::equal(std::begin(k_BinaryMagic), std::end(k_BinaryMagic), bytes.begin());
+		}
+
+		// Streaming binary load: decode the scene header (every root member EXCEPT the
+		// "entities" array) into `outHeader`, and leave `outCursor` positioned at the first
+		// entity. The entities are then pulled one at a time via ReadNextBinaryEntity so the
+		// whole-file DOM (one fat Json::Value subtree per entity, all alive at once) never
+		// has to exist — only a single entity is materialized at a time. JSON scenes keep the
+		// plain whole-DOM path; this is binary-only.
+		INDEX_API bool BeginBinaryScene(
+			const std::vector<std::uint8_t>& bytes,
+			Value& outHeader,
+			BinarySceneEntityCursor& outCursor,
+			std::string* outError) {
+			outCursor = BinarySceneEntityCursor{};
+
+			if (!IsBinaryData(bytes)) {
+				if (outError) *outError = "Missing Index binary scene magic";
+				return false;
+			}
+
+			BinaryReader reader(bytes);
+			for (std::size_t i = 0; i < sizeof(k_BinaryMagic); ++i) {
+				std::uint8_t ignored = 0;
+				if (!reader.ReadU8(ignored)) {
+					if (outError) *outError = "Truncated binary scene header";
+					return false;
+				}
+			}
+
+			std::uint32_t version = 0;
+			if (!reader.ReadU32(version)) {
+				if (outError) *outError = "Truncated binary scene version";
+				return false;
+			}
+			if (version > k_BinaryStorageVersion) {
+				if (outError) *outError = "Binary scene version is newer than this engine";
+				return false;
+			}
+
+			std::uint8_t rootTag = 0;
+			if (!reader.ReadU8(rootTag) ||
+				static_cast<BinaryValueTag>(rootTag) != BinaryValueTag::Object) {
+				if (outError) *outError = "Binary scene root is not an object";
+				return false;
+			}
+
+			std::uint32_t memberCount = 0;
+			if (!reader.ReadU32(memberCount)) {
+				if (outError) *outError = "Truncated binary scene root";
+				return false;
+			}
+
+			outHeader = Value::MakeObject();
+			outHeader.ReserveMembers(memberCount);
+
+			// Decode every member except "entities" into the header. "entities" is recorded
+			// (offset + count) and skipped here, then streamed later — independent of whether
+			// it is the first, last, or a middle member of the root object.
+			for (std::uint32_t i = 0; i < memberCount; ++i) {
+				std::string key;
+				if (!reader.ReadString(key)) {
+					if (outError) *outError = "Truncated binary scene member key";
+					return false;
+				}
+
+				if (key == "entities") {
+					std::uint8_t arrayTag = 0;
+					if (!reader.ReadU8(arrayTag) ||
+						static_cast<BinaryValueTag>(arrayTag) != BinaryValueTag::Array) {
+						if (outError) *outError = "Binary scene 'entities' is not an array";
+						return false;
+					}
+					std::uint32_t entityCount = 0;
+					if (!reader.ReadU32(entityCount)) {
+						if (outError) *outError = "Truncated binary scene 'entities' count";
+						return false;
+					}
+					outCursor.bytes = &bytes;
+					outCursor.offset = reader.Tell();
+					outCursor.remaining = entityCount;
+					for (std::uint32_t e = 0; e < entityCount; ++e) {
+						if (!reader.SkipValue()) {
+							if (outError) *outError = "Truncated binary scene entity";
+							outCursor = BinarySceneEntityCursor{};
+							return false;
+						}
+					}
+				}
+				else {
+					Value memberValue;
+					if (!reader.ReadValue(memberValue)) {
+						if (outError) *outError = "Failed to decode binary scene header member";
+						return false;
+					}
+					outHeader.AddMemberUnchecked(std::move(key), std::move(memberValue));
+				}
+			}
+
+			if (!reader.AtEnd()) {
+				if (outError) *outError = "Binary scene has trailing bytes";
+				return false;
+			}
+			return true;
+		}
+
+		INDEX_API bool ReadNextBinaryEntity(
+			BinarySceneEntityCursor& cursor,
+			Value& outEntity,
+			std::string* outError) {
+			if (cursor.bytes == nullptr || cursor.remaining == 0) {
+				return false;
+			}
+
+			BinaryReader reader(*cursor.bytes);
+			reader.Seek(cursor.offset);
+			if (!reader.ReadValue(outEntity)) {
+				if (outError) *outError = "Failed to decode binary scene entity";
+				cursor.remaining = 0;
+				return false;
+			}
+			cursor.offset = reader.Tell();
+			--cursor.remaining;
+			return true;
 		}
 
 		INDEX_API bool ReadRootFromFile(const std::string& path, Value& outRoot, std::string* outError) {
@@ -1077,7 +1255,16 @@ namespace Index {
 
 			if (registry.all_of<BoxCollider2DComponent>(entity)) {
 				auto& collider = registry.get<BoxCollider2DComponent>(entity);
-				const Vec2 scale = collider.GetScale();
+				// Serialize the LOGICAL size (m_LocalSize x transform scale), never the
+				// live b2 polygon span. GetScale() reflects the SafeHalfExtent clamp, so
+				// a sub-0.02 collider would persist ~20x too large, and it returns {0,0}
+				// with no live shape (detached prefab edit). The logical size matches the
+				// inspector and round-trips with or without a live shape.
+				const Vec2 localSize = collider.GetLocalScale(scene);
+				Vec2 scale = localSize;
+				if (const auto* tr = registry.try_get<Transform2DComponent>(entity)) {
+					scale = { tr->Scale.x * localSize.x, tr->Scale.y * localSize.y };
+				}
 				const Vec2 center = collider.GetCenter();
 				Value colliderValue = Value::MakeObject();
 				colliderValue.AddMember("scaleX", Value(scale.x));
@@ -1242,6 +1429,28 @@ namespace Index {
 					}
 					particleValue.AddMember("scaleOverLifetimeKeys", std::move(solKeys));
 				}
+				{
+					const auto& col = particleSystem.ParticleSettings.ColorOverLifetime;
+					particleValue.AddMember("colorOverLifetimeEnabled", Value(col.Enabled));
+					Value colorKeys = Value::MakeArray();
+					for (const auto& key : col.Gradient.ColorKeys) {
+						Value keyValue = Value::MakeObject();
+						keyValue.AddMember("t", Value(key.Position));
+						keyValue.AddMember("r", Value(key.R));
+						keyValue.AddMember("g", Value(key.G));
+						keyValue.AddMember("b", Value(key.B));
+						colorKeys.Append(std::move(keyValue));
+					}
+					particleValue.AddMember("colorOverLifetimeColorKeys", std::move(colorKeys));
+					Value alphaKeys = Value::MakeArray();
+					for (const auto& key : col.Gradient.AlphaKeys) {
+						Value keyValue = Value::MakeObject();
+						keyValue.AddMember("t", Value(key.Position));
+						keyValue.AddMember("a", Value(key.Alpha));
+						alphaKeys.Append(std::move(keyValue));
+					}
+					particleValue.AddMember("colorOverLifetimeAlphaKeys", std::move(alphaKeys));
+				}
 				particleValue.AddMember("emitOverTime", Value(static_cast<int>(particleSystem.EmissionSettings.EmitOverTime)));
 				particleValue.AddMember(
 					"rateOverDistance",
@@ -1384,6 +1593,17 @@ namespace Index {
 					[&](const std::type_index&, const ComponentInfo& info) {
 						if (!info.serialize || !info.has || info.serializedName.empty()) return;
 						if (!info.has(entityWrapper)) return;
+						// Dynamic (C# IComponent) rows live in the GLOBAL storage keyed by the
+						// raw per-scene entity handle, so a cross-scene / recycled-handle
+						// collision can make info.has() true for an entity that never had the
+						// component (a ghost row). Use the same source of truth the inspector
+						// uses — the entity's ScriptComponent list — so serialize and the
+						// inspector can never disagree.
+						if (info.isDynamic) {
+							if (!scene.HasComponent<ScriptComponent>(entity)) return;
+							const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+							if (!sc.HasScript(info.serializedName) && !sc.HasManagedComponent(info.serializedName)) return;
+						}
 						try {
 							Value componentValue = info.serialize(entityWrapper);
 							entityValue.AddMember(info.serializedName, std::move(componentValue));

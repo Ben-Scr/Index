@@ -50,7 +50,12 @@ public:
 	void ConfigureScenes() override {
 		Application::SetIsPlaying(false);
 
-		SceneDefinition& editorScene = GetSceneManager()->RegisterScene("SampleScene");
+		// Reserved, non-user-facing name for the editor's single working-scene definition
+		// ("whatever scene is currently open" — loads LastOpenedScene). It must NOT be a name a
+		// user might give a real scene: a project scene literally named "SampleScene" would
+		// otherwise collide here, and a script's LoadScene("SampleScene") would resolve to this
+		// def and reload the working scene instead of loading the user's SampleScene.scene.
+		SceneDefinition& editorScene = GetSceneManager()->RegisterScene("$EditorWorkingScene");
 		editorScene.OnLoad([](Scene& scene) {
 			IndexProject* project = ProjectManager::GetCurrentProject();
 			if (project) {
@@ -67,6 +72,9 @@ public:
 				}
 			}
 
+			// No scene file resolved — start fresh. Name it for the user rather than leaking
+			// the internal definition name ("$EditorWorkingScene").
+			scene.SetName("SampleScene");
 			EntityHelper::CreateCamera2DEntity(scene);
 		});
 		editorScene.SetAsStartupScene();

@@ -168,6 +168,179 @@ namespace Index {
 			return frameDelta;
 		}
 
+		// ── UI resize alignment guides ──────────────────────────────────────
+		// Bounds (Rect) tool analogue of ApplyUIAlignmentSnap: snaps only the dragged
+		// edge(s) of a UI rect to other UI elements' edges/centers and draws the guide
+		// lines. blWorld/trWorld are the rect's current world AABB; xe/ye (-1/0/+1) pick
+		// which edge moves per axis; worldDelta is this frame's raw edge motion (world).
+		// Returns the snapped delta. Caller gates on a single, unrotated selection.
+		Vec2 ApplyUIResizeAlignmentSnap(
+			Scene& scene, EntityHandle dragged,
+			const Vec2& blWorld, const Vec2& trWorld, int xe, int ye,
+			float worldScale, Vec2 worldDelta,
+			const AABB& camAABB, const Vec2& imageTopLeft, const Vec2& viewportSize)
+		{
+			const float worldPerPxX = (camAABB.Max.x - camAABB.Min.x) / std::max(1.0f, viewportSize.x);
+			const float worldPerPxY = (camAABB.Max.y - camAABB.Min.y) / std::max(1.0f, viewportSize.y);
+			const float thrPx = EditorPreferences::GetAlignmentSnapThreshold();
+			const float thrX = thrPx * worldPerPxX;
+			const float thrY = thrPx * worldPerPxY;
+
+			auto isSelfOrDescendant = [&](EntityHandle e) -> bool {
+				EntityHandle cur = e; int guard = 0;
+				while (cur != entt::null && guard++ < 4096) {
+					if (cur == dragged) return true;
+					if (!scene.HasComponent<HierarchyComponent>(cur)) break;
+					cur = scene.GetComponent<HierarchyComponent>(cur).Parent;
+				}
+				return false;
+			};
+
+			// Moving-edge world positions after the raw delta (only the active axes matter).
+			const float movX = (xe > 0 ? trWorld.x : blWorld.x) + worldDelta.x;
+			const float movY = (ye > 0 ? trWorld.y : blWorld.y) + worldDelta.y;
+
+			struct AxisMatch { bool active = false; float dist = 0.f, snap = 0.f, guide = 0.f, spanLo = 0.f, spanHi = 0.f; };
+			AxisMatch mx, my;
+
+			auto view = scene.GetRegistry().view<RectTransform2DComponent>(entt::exclude<DisabledTag>);
+			for (auto&& [e, c] : view.each()) {
+				if (isSelfOrDescendant(e)) continue;
+				const Vec2 cbl = c.GetBottomLeft();
+				const Vec2 ctr = c.GetTopRight();
+				const Vec2 cMin{ cbl.x * worldScale, cbl.y * worldScale };
+				const Vec2 cMax{ ctr.x * worldScale, ctr.y * worldScale };
+				const float cEdgeX[3] = { cMin.x, (cMin.x + cMax.x) * 0.5f, cMax.x };
+				const float cEdgeY[3] = { cMin.y, (cMin.y + cMax.y) * 0.5f, cMax.y };
+				if (xe != 0) {
+					for (int j = 0; j < 3; ++j) {
+						const float dx = std::abs(movX - cEdgeX[j]);
+						if (dx <= thrX && (!mx.active || dx < mx.dist)) {
+							mx.active = true; mx.dist = dx; mx.snap = cEdgeX[j] - movX; mx.guide = cEdgeX[j];
+							mx.spanLo = std::min(cMin.y, std::min(blWorld.y, trWorld.y));
+							mx.spanHi = std::max(cMax.y, std::max(blWorld.y, trWorld.y));
+						}
+					}
+				}
+				if (ye != 0) {
+					for (int j = 0; j < 3; ++j) {
+						const float dy = std::abs(movY - cEdgeY[j]);
+						if (dy <= thrY && (!my.active || dy < my.dist)) {
+							my.active = true; my.dist = dy; my.snap = cEdgeY[j] - movY; my.guide = cEdgeY[j];
+							my.spanLo = std::min(cMin.x, std::min(blWorld.x, trWorld.x));
+							my.spanHi = std::max(cMax.x, std::max(blWorld.x, trWorld.x));
+						}
+					}
+				}
+			}
+
+			if (mx.active) worldDelta.x += mx.snap;
+			if (my.active) worldDelta.y += my.snap;
+
+			if (mx.active || my.active) {
+				auto toScreen = [&](float wx, float wy) -> ImVec2 {
+					const float u = (wx - camAABB.Min.x) / std::max(1e-6f, camAABB.Max.x - camAABB.Min.x);
+					const float v = (camAABB.Max.y - wy) / std::max(1e-6f, camAABB.Max.y - camAABB.Min.y);
+					return ImVec2(imageTopLeft.x + u * viewportSize.x, imageTopLeft.y + v * viewportSize.y);
+				};
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				const ImU32 col = IM_COL32(255, 90, 170, 230);
+				if (mx.active) dl->AddLine(toScreen(mx.guide, mx.spanLo), toScreen(mx.guide, mx.spanHi), col, 1.0f);
+				if (my.active) dl->AddLine(toScreen(my.spanLo, my.guide), toScreen(my.spanHi, my.guide), col, 1.0f);
+			}
+			return worldDelta;
+		}
+
+		// ── UI scale alignment guides ───────────────────────────────────────
+		// Scale-gizmo analogue: with this frame's per-axis `factor` about pivotWorld,
+		// snap whichever box edge lands nearest another element's edge/center by adjusting
+		// the factor on that axis (edge maps pivot + (edge-pivot)*factor), and draws the
+		// guide. blWorld/trWorld = current world AABB. Single-select, unrotated. Returns
+		// the adjusted factor.
+		Vec2 ApplyUIScaleAlignmentSnap(
+			Scene& scene, EntityHandle dragged,
+			const Vec2& blWorld, const Vec2& trWorld, const Vec2& pivotWorld,
+			float worldScale, Vec2 factor,
+			const AABB& camAABB, const Vec2& imageTopLeft, const Vec2& viewportSize)
+		{
+			const float worldPerPxX = (camAABB.Max.x - camAABB.Min.x) / std::max(1.0f, viewportSize.x);
+			const float worldPerPxY = (camAABB.Max.y - camAABB.Min.y) / std::max(1.0f, viewportSize.y);
+			const float thrPx = EditorPreferences::GetAlignmentSnapThreshold();
+			const float thrX = thrPx * worldPerPxX;
+			const float thrY = thrPx * worldPerPxY;
+
+			auto isSelfOrDescendant = [&](EntityHandle e) -> bool {
+				EntityHandle cur = e; int guard = 0;
+				while (cur != entt::null && guard++ < 4096) {
+					if (cur == dragged) return true;
+					if (!scene.HasComponent<HierarchyComponent>(cur)) break;
+					cur = scene.GetComponent<HierarchyComponent>(cur).Parent;
+				}
+				return false;
+			};
+
+			const float edgesX[2] = { blWorld.x, trWorld.x };
+			const float edgesY[2] = { blWorld.y, trWorld.y };
+
+			struct AxisMatch { bool active = false; float dist = 0.f, newFactor = 1.f, guide = 0.f, spanLo = 0.f, spanHi = 0.f; };
+			AxisMatch mx, my;
+
+			auto view = scene.GetRegistry().view<RectTransform2DComponent>(entt::exclude<DisabledTag>);
+			for (auto&& [e, c] : view.each()) {
+				if (isSelfOrDescendant(e)) continue;
+				const Vec2 cbl = c.GetBottomLeft();
+				const Vec2 ctr = c.GetTopRight();
+				const Vec2 cMin{ cbl.x * worldScale, cbl.y * worldScale };
+				const Vec2 cMax{ ctr.x * worldScale, ctr.y * worldScale };
+				const float cEdgeX[3] = { cMin.x, (cMin.x + cMax.x) * 0.5f, cMax.x };
+				const float cEdgeY[3] = { cMin.y, (cMin.y + cMax.y) * 0.5f, cMax.y };
+				for (int k = 0; k < 2; ++k) {
+					const float denomX = edgesX[k] - pivotWorld.x;
+					if (std::abs(denomX) >= 1e-4f) {
+						const float postX = pivotWorld.x + denomX * factor.x;
+						for (int j = 0; j < 3; ++j) {
+							const float dx = std::abs(postX - cEdgeX[j]);
+							if (dx <= thrX && (!mx.active || dx < mx.dist)) {
+								mx.active = true; mx.dist = dx; mx.guide = cEdgeX[j];
+								mx.newFactor = (cEdgeX[j] - pivotWorld.x) / denomX;
+								mx.spanLo = std::min(cMin.y, std::min(blWorld.y, trWorld.y));
+								mx.spanHi = std::max(cMax.y, std::max(blWorld.y, trWorld.y));
+							}
+						}
+					}
+					const float denomY = edgesY[k] - pivotWorld.y;
+					if (std::abs(denomY) >= 1e-4f) {
+						const float postY = pivotWorld.y + denomY * factor.y;
+						for (int j = 0; j < 3; ++j) {
+							const float dy = std::abs(postY - cEdgeY[j]);
+							if (dy <= thrY && (!my.active || dy < my.dist)) {
+								my.active = true; my.dist = dy; my.guide = cEdgeY[j];
+								my.newFactor = (cEdgeY[j] - pivotWorld.y) / denomY;
+								my.spanLo = std::min(cMin.x, std::min(blWorld.x, trWorld.x));
+								my.spanHi = std::max(cMax.x, std::max(blWorld.x, trWorld.x));
+							}
+						}
+					}
+				}
+			}
+
+			if (mx.active) factor.x = mx.newFactor;
+			if (my.active) factor.y = my.newFactor;
+
+			if (mx.active || my.active) {
+				auto toScreen = [&](float wx, float wy) -> ImVec2 {
+					const float u = (wx - camAABB.Min.x) / std::max(1e-6f, camAABB.Max.x - camAABB.Min.x);
+					const float v = (camAABB.Max.y - wy) / std::max(1e-6f, camAABB.Max.y - camAABB.Min.y);
+					return ImVec2(imageTopLeft.x + u * viewportSize.x, imageTopLeft.y + v * viewportSize.y);
+				};
+				ImDrawList* dl = ImGui::GetWindowDrawList();
+				const ImU32 col = IM_COL32(255, 90, 170, 230);
+				if (mx.active) dl->AddLine(toScreen(mx.guide, mx.spanLo), toScreen(mx.guide, mx.spanHi), col, 1.0f);
+				if (my.active) dl->AddLine(toScreen(my.spanLo, my.guide), toScreen(my.spanHi, my.guide), col, 1.0f);
+			}
+			return factor;
+		}
+
 		// ── Sprite selection outline ────────────────────────────────────────
 		// The editor selection gizmo traces a sprite's opaque silhouette rather
 		// than its rectangular quad. We extract the texture's alpha contour —
@@ -394,7 +567,11 @@ namespace Index {
 				}
 			}
 
-			if (withGizmos && Gizmo::IsEnabled()) {
+			// NOT gated on Gizmo::IsEnabled(): that flag is the user/script Shared-layer
+			// toggle, and EditorOnly component gizmos must stay visible in play mode even
+			// when a game script sets Gizmo.IsEnabled = false. The layer mask below selects
+			// which layers render; disabled user gizmos already self-skip at draw time.
+			if (withGizmos) {
 				const GizmoLayerMask layerMask = sharedGizmosOnly ? GizmoLayerMask::Shared : gizmoLayerMask;
 				GizmoRenderer2D::RenderWithVP(vp, layerMask);
 			}
@@ -651,37 +828,64 @@ namespace Index {
 	
 			if (scene.HasComponent<BoxCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<BoxCollider2DComponent>(m_SelectedEntity);
-				if (collider.IsValid()) {
+				// A detached prefab-edit scene has no live b2 shape, so IsValid() is false
+				// and GetScale() returns 0. Fall back to the authored logical size
+				// (transform-scaled) so the collider gizmo still draws while editing the
+				// prefab — same shape as the FastBox no-live-collider fallback below.
+				const Vec2 localScale = collider.GetLocalScale(scene);
+				const Vec2 worldSize = collider.IsValid()
+					? collider.GetScale()
+					: Vec2{ transform.Scale.x * localScale.x, transform.Scale.y * localScale.y };
+				if (worldSize.x != 0.0f && worldSize.y != 0.0f) {
 					const Vec2 center = transform.Position + Rotated(collider.GetCenter(), transform.Rotation);
 					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
 					Gizmo::SetLineWidth(2.0f);
-					Gizmo::DrawWireSquare(center, collider.GetScale(), rotationDegrees);
+					Gizmo::DrawWireSquare(center, worldSize, rotationDegrees);
 				}
 			}
 	
 			if (scene.HasComponent<CircleCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<CircleCollider2DComponent>(m_SelectedEntity);
-				if (collider.IsValid()) {
+				// Detached prefab-edit scene: no live shape → GetRadius() is 0. Fall back to
+				// the authored logical radius scaled by the larger transform axis (matches
+				// CircleCollider2DComponent::ComputeWorldRadius).
+				const float worldRadius = collider.IsValid()
+					? collider.GetRadius()
+					: collider.GetLocalRadius(scene) * std::max(std::abs(transform.Scale.x), std::abs(transform.Scale.y));
+				if (worldRadius > 0.0f) {
 					const Vec2 center = transform.Position + Rotated(collider.GetCenter(), transform.Rotation);
 					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
 					Gizmo::SetLineWidth(2.0f);
-					Gizmo::DrawWireCircle(center, collider.GetRadius());
+					Gizmo::DrawWireCircle(center, worldRadius);
 				}
 			}
 	
 			if (scene.HasComponent<PolygonCollider2DComponent>(m_SelectedEntity)) {
 				auto& collider = scene.GetComponent<PolygonCollider2DComponent>(m_SelectedEntity);
-				if (collider.IsValid()) {
-					const std::vector<Vec2> worldPoints = collider.GetWorldPoints();
-					if (worldPoints.size() >= 3) {
-						Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
-						Gizmo::SetLineWidth(2.0f);
-						const float rot = transform.Rotation;
-						for (size_t i = 0; i < worldPoints.size(); ++i) {
-							const Vec2 a = transform.Position + Rotated(worldPoints[i], rot);
-							const Vec2 b = transform.Position + Rotated(worldPoints[(i + 1) % worldPoints.size()], rot);
-							Gizmo::DrawLine(a, b);
-						}
+				// A live shape gives hull vertices in entity-local space; a detached
+				// prefab-edit scene has none (GetWorldPoints() empty), so rebuild the local
+				// outline from the authored points exactly as RebuildPolygon does
+				// (points * transform.scale * localSize + center) so the gizmo still draws.
+				std::vector<Vec2> worldPoints = collider.GetWorldPoints();
+				if (worldPoints.empty()) {
+					const std::vector<Vec2>& localPoints = collider.GetLocalPoints();
+					const Vec2 localSize = collider.GetSize();
+					const Vec2 center = collider.GetCenter();
+					worldPoints.reserve(localPoints.size());
+					for (const Vec2& p : localPoints) {
+						worldPoints.push_back(Vec2{
+							p.x * transform.Scale.x * localSize.x + center.x,
+							p.y * transform.Scale.y * localSize.y + center.y });
+					}
+				}
+				if (worldPoints.size() >= 3) {
+					Gizmo::SetColor(Color(0.20f, 1.0f, 0.35f, 1.0f));
+					Gizmo::SetLineWidth(2.0f);
+					const float rot = transform.Rotation;
+					for (size_t i = 0; i < worldPoints.size(); ++i) {
+						const Vec2 a = transform.Position + Rotated(worldPoints[i], rot);
+						const Vec2 b = transform.Position + Rotated(worldPoints[(i + 1) % worldPoints.size()], rot);
+						Gizmo::DrawLine(a, b);
 					}
 				}
 			}
@@ -910,7 +1114,7 @@ namespace Index {
 			{
 				auto& previousParticleSystem = renderScene->GetComponent<ParticleSystem2DComponent>(m_ParticlePreviewEntity);
 				if (previousParticleSystem.IsEmitting() || previousParticleSystem.IsSimulating()) {
-					previousParticleSystem.Stop();
+					previousParticleSystem.StopAndReset();
 					renderScene->MarkDirty();
 				}
 			}
@@ -1390,7 +1594,7 @@ namespace Index {
 						}
 						ImGui::SameLine();
 						if (ImGui::Button("Stop", ImVec2(64.0f, 0.0f))) {
-							particleSystem.Stop();
+							particleSystem.StopAndReset();
 							renderScene->MarkDirty();
 						}
 					}
@@ -1497,8 +1701,32 @@ namespace Index {
 								0.0f, 0, 1.6f);
 							if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
 								const ImVec2 md = ImGui::GetIO().MouseDelta;
-								const float dWorldX = md.x * worldPerScreenPxX;
-								const float dWorldY = -md.y * worldPerScreenPxY;
+								float dWorldX = md.x * worldPerScreenPxX;
+								float dWorldY = -md.y * worldPerScreenPxY;
+
+								// Smart alignment guides: snap the dragged edge(s) to nearby UI edges/centers.
+								// Single, unrotated UI rects only; Ctrl bypasses for free placement.
+								if (rect && boxRot == 0.0f
+									&& EditorPreferences::GetAlignmentGuidesEnabled()
+									&& !ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+									// Snap against the true edge position (current + accumulated debt +
+									// this frame's raw motion), then carry forward how much the snap held
+									// back. Without the debt the snap compares the already-snapped edge to
+									// the guide and never lets go until one frame's motion exceeds it.
+									const Vec2 rawDelta{ dWorldX, dWorldY };
+									const Vec2 input{ rawDelta.x + m_AlignSnapDebt.x, rawDelta.y + m_AlignSnapDebt.y };
+									const Vec2 snapped = ApplyUIResizeAlignmentSnap(*renderScene, m_SelectedEntity,
+										blWorld, trWorld, h.xe, h.ye, worldScale, input,
+										camAABB, Vec2{ imageTopLeft.x, imageTopLeft.y },
+										Vec2{ viewportSize.x, viewportSize.y });
+									m_AlignSnapDebt.x += rawDelta.x - snapped.x;
+									m_AlignSnapDebt.y += rawDelta.y - snapped.y;
+									dWorldX = snapped.x;
+									dWorldY = snapped.y;
+								}
+								else {
+									m_AlignSnapDebt = Vec2{ 0.0f, 0.0f };
+								}
 
 								if (rect) {
 									// SizeDelta / AnchoredPosition in the rect's local pixels (the move
@@ -1929,12 +2157,47 @@ namespace Index {
 						: Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };
 					const Vec2 pivotWorld{ pivotCanvas.x * worldScale, pivotCanvas.y * worldScale };
 
-					glm::mat4 model =
-						glm::translate(glm::mat4(1.0f), glm::vec3(pivotWorld.x, pivotWorld.y, 0.0f)) *
-						glm::rotate(glm::mat4(1.0f), rect.Rotation, glm::vec3(0.0f, 0.0f, 1.0f));
-					if (m_GizmoMode != EditorGizmoMode::Translate) {
-						model = model * glm::scale(glm::mat4(1.0f),
-							glm::vec3(rect.Scale.x, rect.Scale.y, 1.0f));
+					// Centroid of every selected UI entity's pivot (canvas space). With more
+					// than one selected the gizmo sits there and drives a group transform about
+					// it; with one it collapses to the primary's pivot (single-entity path).
+					Vec2 centroidSum{ 0.0f, 0.0f };
+					int uiSelectedCount = 0;
+					for (EntityHandle handle : GetSelectedEntities(*renderScene)) {
+						RectTransform2DComponent* r = nullptr;
+						if (renderScene->TryGetComponent<RectTransform2DComponent>(handle, r) && r
+							&& !renderScene->HasComponent<Transform2DComponent>(handle)) {
+							const Vec2 rbl = r->GetBottomLeft();
+							const Vec2 rtr = r->GetTopRight();
+							const Vec2 rp = r->ResolvedValid
+								? r->ResolvedPivot
+								: Vec2{ (rbl.x + rtr.x) * 0.5f, (rbl.y + rtr.y) * 0.5f };
+							centroidSum.x += rp.x;
+							centroidSum.y += rp.y;
+							++uiSelectedCount;
+						}
+					}
+					const bool groupTransform = uiSelectedCount > 1;
+					const Vec2 gizmoStartWorld = groupTransform
+						? Vec2{ (centroidSum.x / static_cast<float>(uiSelectedCount)) * worldScale,
+								(centroidSum.y / static_cast<float>(uiSelectedCount)) * worldScale }
+						: pivotWorld;
+
+					// Multi-select uses an identity-oriented gizmo at the centroid (all modes);
+					// single-select keeps the primary's orientation so the handles align to a
+					// rotated/scaled entity.
+					glm::mat4 model;
+					if (groupTransform) {
+						model = glm::translate(glm::mat4(1.0f),
+							glm::vec3(gizmoStartWorld.x, gizmoStartWorld.y, 0.0f));
+					}
+					else {
+						model =
+							glm::translate(glm::mat4(1.0f), glm::vec3(pivotWorld.x, pivotWorld.y, 0.0f)) *
+							glm::rotate(glm::mat4(1.0f), rect.Rotation, glm::vec3(0.0f, 0.0f, 1.0f));
+						if (m_GizmoMode != EditorGizmoMode::Translate) {
+							model = model * glm::scale(glm::mat4(1.0f),
+								glm::vec3(rect.Scale.x, rect.Scale.y, 1.0f));
+						}
 					}
 
 					// Same world-space camera framing as the Transform2D path.
@@ -1983,51 +2246,89 @@ namespace Index {
 						&model[0][0], nullptr, snapPtr);
 					gizmoActive = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
 
+					// Between drags reset the group-scale accumulator so the next starts clean.
+					if (!ImGuizmo::IsUsing()) {
+						m_GizmoGroupScalePrev = Vec2{ 1.0f, 1.0f };
+					}
+
 					// Snapshot the rect on the drag's first frame so the whole drag is one undo step.
 					if (ImGuizmo::IsUsing() && !m_GizmoDragActive) {
 						BeginGizmoTransformDrag(*renderScene);
 					}
 
 					if (ImGuizmo::IsUsing()) {
-						// AnchoredPosition is offset by parentScale in ResolveRect; LocalScale is
-						// world Scale / parentScale. Derive parentScale = world / local so the maths
-						// holds for nested UI too (parentScale == uiScale for a root).
-						const Vec2 parentScale{
-							rect.LocalScale.x != 0.0f ? rect.Scale.x / rect.LocalScale.x : rect.Scale.x,
-							rect.LocalScale.y != 0.0f ? rect.Scale.y / rect.LocalScale.y : rect.Scale.y
-						};
 						if (m_GizmoMode == EditorGizmoMode::Translate) {
-							// This frame's gizmo motion as a world-space delta on the pivot.
-							Vec2 frameDelta{ model[3][0] - pivotWorld.x, model[3][1] - pivotWorld.y };
+							// This frame's gizmo motion as a world-space delta on the group pivot.
+							Vec2 frameDelta{ model[3][0] - gizmoStartWorld.x, model[3][1] - gizmoStartWorld.y };
 
-							// Smart alignment guides snap the delta to nearby UI edges and
-							// draw the guide lines. Ctrl temporarily bypasses them for free
-							// placement (it forces grid/rot/scale snap elsewhere, but the UI
-							// translate path has no grid snap, so the key is free to repurpose).
+							// Smart alignment guides snap the delta to nearby UI edges and draw the
+							// guide lines (driven by the primary). Ctrl bypasses them for free
+							// placement; the whole selection then moves rigidly by the same delta.
 							if (EditorPreferences::GetAlignmentGuidesEnabled() && !snapOverride) {
-								frameDelta = ApplyUIAlignmentSnap(*renderScene, m_SelectedEntity,
-									bl, tr, worldScale, frameDelta, camAABB,
+								// Compare against the true cursor position (current + held-back debt +
+								// this frame's motion) so the snap releases when the mouse passes the
+								// threshold instead of sticking to the already-snapped position.
+								const Vec2 rawDelta = frameDelta;
+								const Vec2 input{ rawDelta.x + m_AlignSnapDebt.x, rawDelta.y + m_AlignSnapDebt.y };
+								const Vec2 applied = ApplyUIAlignmentSnap(*renderScene, m_SelectedEntity,
+									bl, tr, worldScale, input, camAABB,
 									Vec2{ imageTopLeft.x, imageTopLeft.y },
 									Vec2{ viewportSize.x, viewportSize.y });
+								m_AlignSnapDebt.x += rawDelta.x - applied.x;
+								m_AlignSnapDebt.y += rawDelta.y - applied.y;
+								frameDelta = applied;
+							}
+							else {
+								m_AlignSnapDebt = Vec2{ 0.0f, 0.0f };
 							}
 
 							const Vec2 deltaCanvas{ frameDelta.x / worldScale, frameDelta.y / worldScale };
-							if (parentScale.x != 0.0f) rect.AnchoredPosition.x += deltaCanvas.x / parentScale.x;
-							if (parentScale.y != 0.0f) rect.AnchoredPosition.y += deltaCanvas.y / parentScale.y;
+							ApplyUIGroupTranslate(*renderScene, deltaCanvas);
 						}
 						else if (m_GizmoMode == EditorGizmoMode::Rotate) {
-							const float newRot = std::atan2(model[0][1], model[0][0]);
-							rect.LocalRotation += (newRot - rect.Rotation);
+							// Group gizmo is identity-oriented, so the matrix is THIS frame's increment;
+							// single-select carries the entity's rotation, so subtract it back out.
+							const float rawAngle = std::atan2(model[0][1], model[0][0]);
+							const float deltaAngle = groupTransform ? rawAngle : (rawAngle - rect.Rotation);
+							ApplyUIGroupRotationScale(*renderScene, gizmoStartWorld, deltaAngle,
+								Vec2{ 1.0f, 1.0f }, worldScale);
 						}
-						else { // Scale: ImGuizmo gives the absolute world scale; convert the ratio.
-							const Vec2 newWorldScale{
+						else { // Scale
+							const Vec2 totalScale{
 								std::sqrt(model[0][0] * model[0][0] + model[0][1] * model[0][1]),
 								std::sqrt(model[1][0] * model[1][0] + model[1][1] * model[1][1])
 							};
-							if (rect.Scale.x != 0.0f) rect.LocalScale.x *= newWorldScale.x / rect.Scale.x;
-							if (rect.Scale.y != 0.0f) rect.LocalScale.y *= newWorldScale.y / rect.Scale.y;
+							// Group model is identity-scaled, so ImGuizmo returns the TOTAL since the
+							// drag began (divide by the previous total for this frame's factor); the
+							// single model carries the entity's scale, so the ratio is taken vs. that.
+							Vec2 factor;
+							if (groupTransform) {
+								factor = {
+									m_GizmoGroupScalePrev.x != 0.0f ? totalScale.x / m_GizmoGroupScalePrev.x : 1.0f,
+									m_GizmoGroupScalePrev.y != 0.0f ? totalScale.y / m_GizmoGroupScalePrev.y : 1.0f
+								};
+								m_GizmoGroupScalePrev = totalScale;
+							}
+							else {
+								factor = {
+									rect.Scale.x != 0.0f ? totalScale.x / rect.Scale.x : 1.0f,
+									rect.Scale.y != 0.0f ? totalScale.y / rect.Scale.y : 1.0f
+								};
+							}
+							// Smart alignment guides: snap whichever box edge lands nearest another
+							// element's edge/center by adjusting the factor. Single, unrotated UI rects
+							// only; Ctrl bypasses. (Group/rotated scale keeps the increment snap.)
+							if (!groupTransform && rect.Rotation == 0.0f
+								&& EditorPreferences::GetAlignmentGuidesEnabled() && !snapOverride) {
+								factor = ApplyUIScaleAlignmentSnap(*renderScene, m_SelectedEntity,
+									Vec2{ bl.x * worldScale, bl.y * worldScale },
+									Vec2{ tr.x * worldScale, tr.y * worldScale },
+									pivotWorld, worldScale, factor, camAABB,
+									Vec2{ imageTopLeft.x, imageTopLeft.y },
+									Vec2{ viewportSize.x, viewportSize.y });
+							}
+							ApplyUIGroupRotationScale(*renderScene, gizmoStartWorld, 0.0f, factor, worldScale);
 						}
-						renderScene->MarkDirty();
 					}
 
 					// Commit one undo step for the whole drag once it releases.

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Index;
 [StructLayout(LayoutKind.Explicit, Size = 8)]
-public struct Vector2 : IEquatable<Vector2>
+public struct Vector2 : IEquatable<Vector2>, ISpanFormattable
 {
     [FieldOffset(0)] public float X;
     [FieldOffset(4)] public float Y;
@@ -90,7 +90,32 @@ public struct Vector2 : IEquatable<Vector2>
     public bool Equals(Vector2 other) => X == other.X && Y == other.Y;
     public override bool Equals(object? obj) => obj is Vector2 other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y);
-    public override string ToString() => $"Vector2({X}, {Y})";
+    public override string ToString() => ToString(null, null);
+
+    public string ToString(string? format, IFormatProvider? formatProvider = null) =>
+        $"Vector2({X.ToString(format, formatProvider)}, {Y.ToString(format, formatProvider)})";
+
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+    {
+        charsWritten = 0;
+        int pos = 0;
+        if (!TryAppend(destination, ref pos, "Vector2(")) return false;
+        if (!X.TryFormat(destination[pos..], out int w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ", ")) return false;
+        if (!Y.TryFormat(destination[pos..], out w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ")")) return false;
+        charsWritten = pos;
+        return true;
+
+        static bool TryAppend(Span<char> dest, ref int pos, ReadOnlySpan<char> text)
+        {
+            if (!text.TryCopyTo(dest[pos..])) return false;
+            pos += text.Length;
+            return true;
+        }
+    }
 
     // ── Conversions ─────────────────────────────────────────────
     public static implicit operator Vector3(Vector2 v) => new(v.X, v.Y, 0f);

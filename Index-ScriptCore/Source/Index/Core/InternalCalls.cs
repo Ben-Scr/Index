@@ -874,6 +874,8 @@ internal static unsafe class InternalCalls
     internal static void Gizmo_SetMaxVertices(int maxVertices) => NativeCallbacks.Bindings.Gizmo_SetMaxVertices(maxVertices);
     internal static int Gizmo_GetMaxVertices() => NativeCallbacks.Bindings.Gizmo_GetMaxVertices();
     internal static int Gizmo_GetRegisteredVertices() => NativeCallbacks.Bindings.Gizmo_GetRegisteredVertices();
+    internal static bool Gizmo_GetEnabled() => NativeCallbacks.Bindings.Gizmo_GetEnabled() != 0;
+    internal static void Gizmo_SetEnabled(bool enabled) => NativeCallbacks.Bindings.Gizmo_SetEnabled(enabled ? 1 : 0);
 
     // ── Physics2D ───────────────────────────────────────────────────
 
@@ -1261,6 +1263,8 @@ internal static unsafe class InternalCalls
     internal static void InputField_SetCharacterLimit(ulong id, int v) => NativeCallbacks.Bindings.InputField_SetCharacterLimit(id, v);
     internal static bool InputField_GetMultiline(ulong id) => NativeCallbacks.Bindings.InputField_GetMultiline(id) != 0;
     internal static void InputField_SetMultiline(ulong id, bool v) => NativeCallbacks.Bindings.InputField_SetMultiline(id, v ? 1 : 0);
+    internal static ulong InputField_GetVerticalScrollbarEntity(ulong id) => NativeCallbacks.Bindings.InputField_GetVerticalScrollbarEntity(id);
+    internal static void InputField_SetVerticalScrollbarEntity(ulong id, ulong refUuid) => NativeCallbacks.Bindings.InputField_SetVerticalScrollbarEntity(id, refUuid);
     internal static void InputField_GetNormalColor(ulong id, out float r, out float g, out float b, out float a)
     { float cr, cg, cb, ca; NativeCallbacks.Bindings.InputField_GetNormalColor(id, &cr, &cg, &cb, &ca); r = cr; g = cg; b = cb; a = ca; }
     internal static void InputField_SetNormalColor(ulong id, float r, float g, float b, float a)

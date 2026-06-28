@@ -15,6 +15,14 @@ namespace Index {
 		Custom,
 	};
 
+	// How the Inspector renders a component's script fields. Detailed additionally
+	// surfaces read-only / computed values (get-only properties, const/readonly
+	// fields) that Normal hides to keep the editing view uncluttered.
+	enum class InspectorComponentView : uint8_t {
+		Normal = 0,
+		Detailed,
+	};
+
 	class EditorPreferences {
 	public:
 		// Call once during editor OnAttach BEFORE ApplyTheme(). Idempotent.
@@ -67,6 +75,12 @@ namespace Index {
 		static float GetHierarchyRowScale();
 		// Clamped to [k_MinHierarchyRowScale, k_MaxHierarchyRowScale].
 		static void SetHierarchyRowScale(float value);
+
+		// ── Inspector ─────────────────────────────────────────────
+		// Normal (default) shows only editable component fields; Detailed also
+		// shows read-only / computed script values as disabled rows.
+		static InspectorComponentView GetInspectorComponentView();
+		static void SetInspectorComponentView(InspectorComponentView value);
 
 		// ── Behavior (migrated from IndexProject) ─────────────────
 		static bool GetRunInBackground();

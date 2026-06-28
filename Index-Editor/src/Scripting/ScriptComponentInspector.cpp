@@ -2,6 +2,7 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Core/Application.hpp"
+#include "Editor/EditorPreferences.hpp"
 #include "Editor/ExternalEditor.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
@@ -752,8 +753,22 @@ namespace Index {
 				}
 			}
 
+			// Normal view hides read-only / computed values (get-only properties,
+			// const/readonly fields); Detailed shows them as disabled rows. Filter
+			// before grouping so an all-readonly nested struct leaves no empty header;
+			// the full `records` is still the [EnabledIf] sibling list.
+			const bool detailedView = EditorPreferences::GetInspectorComponentView()
+				== InspectorComponentView::Detailed;
+			std::vector<EditorFieldRecord> filteredRecords;
+			if (!detailedView) {
+				for (const EditorFieldRecord& r : records) {
+					if (!r.ReadOnly) filteredRecords.push_back(r);
+				}
+			}
+			const std::vector<EditorFieldRecord>& displayRecords = detailedView ? records : filteredRecords;
+
 			ImGui::Indent(8.0f);
-			RenderRecordsGrouped(records, MakeFieldKey(scriptIndex, className, ""),
+			RenderRecordsGrouped(displayRecords, MakeFieldKey(scriptIndex, className, ""),
 				[&](const EditorFieldRecord& rec) {
 					const std::string fieldKey = MakeFieldKey(scriptIndex, className, rec.Name);
 					PropertyDescriptor descriptor = BuildScriptFieldDescriptor(
@@ -904,9 +919,23 @@ namespace Index {
 				}
 			}
 
+			// Normal view hides read-only / computed values (get-only properties,
+			// const/readonly fields); Detailed shows them as disabled rows. Filter
+			// before grouping so an all-readonly nested struct leaves no empty header;
+			// the full `records` is still the [EnabledIf] sibling list.
+			const bool detailedView = EditorPreferences::GetInspectorComponentView()
+				== InspectorComponentView::Detailed;
+			std::vector<EditorFieldRecord> filteredRecords;
+			if (!detailedView) {
+				for (const EditorFieldRecord& r : records) {
+					if (!r.ReadOnly) filteredRecords.push_back(r);
+				}
+			}
+			const std::vector<EditorFieldRecord>& displayRecords = detailedView ? records : filteredRecords;
+
 			ImGui::Indent(8.0f);
 			const std::string idPrefix = className + "#component" + std::to_string(componentIndex);
-			RenderRecordsGrouped(records, idPrefix, [&](const EditorFieldRecord& rec) {
+			RenderRecordsGrouped(displayRecords, idPrefix, [&](const EditorFieldRecord& rec) {
 				const std::string fieldKey = idPrefix + "." + rec.Name;
 				PropertyDescriptor descriptor = BuildManagedComponentFieldDescriptor(rec, className, perEntityValues, records);
 				PropertyDrawer::Draw(entities, descriptor, fieldKey);

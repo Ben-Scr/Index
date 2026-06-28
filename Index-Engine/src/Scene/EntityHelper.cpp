@@ -15,6 +15,7 @@
 #include "Components/UI/GridLayoutGroupComponent.hpp"
 #include "Components/UI/HorizontalLayoutGroupComponent.hpp"
 #include "Components/UI/InteractableComponent.hpp"
+#include "Components/UI/MaskComponent.hpp"
 #include "Components/UI/ScrollRectComponent.hpp"
 #include "Components/UI/ScrollbarComponent.hpp"
 #include "Components/UI/SliderComponent.hpp"
@@ -117,7 +118,7 @@ namespace Index {
 		labelText.Text = "Button";
 		labelText.Color = Color{ 1.0f, 1.0f, 1.0f, 1.0f };
 		labelText.HAlign = TextAlignment::Center;
-		labelText.FontSize = 36.0f;
+		labelText.FontSize = 20.0f;
 		label.SetParent(entity);
 
 		return entity;
@@ -252,7 +253,7 @@ namespace Index {
 		auto& tc = textChild.GetComponent<TextRendererComponent>();
 		tc.Text = "Enter text...";
 		tc.Color = Color{ 0.55f, 0.55f, 0.55f, 1.0f };
-		tc.FontSize = 32.0f;
+		tc.FontSize = 16.0f;
 		tc.HAlign = TextAlignment::Left;
 		textChild.SetParent(entity);
 
@@ -283,7 +284,7 @@ namespace Index {
 		auto& tc = labelChild.GetComponent<TextRendererComponent>();
 		tc.Text = dd.Options.empty() ? "" : dd.Options[0];
 		tc.Color = Color{ 0.10f, 0.10f, 0.10f, 1.0f };
-		tc.FontSize = 32.0f;
+		tc.FontSize = 16.0f;
 		tc.HAlign = TextAlignment::Left;
 		labelChild.SetParent(entity);
 
@@ -341,8 +342,11 @@ namespace Index {
 	}
 
 	Entity EntityHelper::CreateUIScrollRect(Scene& scene) {
+		// MaskComponent on the root clips the content (and scrollbars) to the
+		// scroll view's rect — ResolveClipForEntity intersects every masking
+		// ancestor, so children no longer spill outside the frame.
 		Entity entity = CreateWith<RectTransform2DComponent, ImageComponent,
-			InteractableComponent, ScrollRectComponent>(scene);
+			InteractableComponent, ScrollRectComponent, MaskComponent>(scene);
 		entity.AddComponent<NameComponent>(NameComponent("Scroll View"));
 		auto& rect = entity.GetComponent<RectTransform2DComponent>();
 		rect.SizeDelta = Vec2{ 320.0f, 220.0f };

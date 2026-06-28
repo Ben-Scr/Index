@@ -7,7 +7,7 @@ namespace Index;
 /// and other four-component data. Layout matches glm::vec4.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = 16)]
-public struct Vector4 : IEquatable<Vector4>
+public struct Vector4 : IEquatable<Vector4>, ISpanFormattable
 {
     [FieldOffset(0)]  public float X;
     [FieldOffset(4)]  public float Y;
@@ -54,7 +54,38 @@ public struct Vector4 : IEquatable<Vector4>
     public bool Equals(Vector4 other) => X == other.X && Y == other.Y && Z == other.Z && W == other.W;
     public override bool Equals(object? obj) => obj is Vector4 other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z, W);
-    public override string ToString() => $"Vector4({X}, {Y}, {Z}, {W})";
+    public override string ToString() => ToString(null, null);
+
+    public string ToString(string? format, IFormatProvider? formatProvider = null) =>
+        $"Vector4({X.ToString(format, formatProvider)}, {Y.ToString(format, formatProvider)}, {Z.ToString(format, formatProvider)}, {W.ToString(format, formatProvider)})";
+
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+    {
+        charsWritten = 0;
+        int pos = 0;
+        if (!TryAppend(destination, ref pos, "Vector4(")) return false;
+        if (!X.TryFormat(destination[pos..], out int w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ", ")) return false;
+        if (!Y.TryFormat(destination[pos..], out w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ", ")) return false;
+        if (!Z.TryFormat(destination[pos..], out w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ", ")) return false;
+        if (!W.TryFormat(destination[pos..], out w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ")")) return false;
+        charsWritten = pos;
+        return true;
+
+        static bool TryAppend(Span<char> dest, ref int pos, ReadOnlySpan<char> text)
+        {
+            if (!text.TryCopyTo(dest[pos..])) return false;
+            pos += text.Length;
+            return true;
+        }
+    }
 
     // ── Conversions ─────────────────────────────────────────────
     public static explicit operator Vector2(Vector4 v) => new(v.X, v.Y);

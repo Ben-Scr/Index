@@ -28,6 +28,7 @@ namespace Index {
 		void Destroy() override;
 	private:
 		float m_LocalRadius{ 0.5f };
+		Vec2 m_Center{ 0.0f, 0.0f };
 		Vec2 m_LastAppliedScale{ 0.0f, 0.0f };
 		// Track the local radius used during the last circle rebuild so
 		// SyncWithTransform doesn't short-circuit when the inspector edits

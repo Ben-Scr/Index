@@ -1140,6 +1140,26 @@ artifacts/
 				ImGui::EndPopup();
 			}
 
+			// Zebra striping: alternate visible rows get a subtly lighter /
+			// darker fill (symmetric around ChildBg, so it works in both the
+			// dark and light themes without a theme check). Keyed on the
+			// visible index (shownCount) so search-filtered rows don't break
+			// the alternation. Drawn square + flush so the stripes tile into a
+			// continuous band; the rounded selected/hover highlight overlays it.
+			{
+				const ImVec4 base = ImGui::GetStyleColorVec4(ImGuiCol_ChildBg);
+				const float d = (shownCount % 2 == 1) ? 0.02f : -0.02f;
+				const ImU32 zebra = ImGui::GetColorU32(ImVec4(
+					std::clamp(base.x + d, 0.0f, 1.0f),
+					std::clamp(base.y + d, 0.0f, 1.0f),
+					std::clamp(base.z + d, 0.0f, 1.0f),
+					1.0f));
+				ImGui::GetWindowDrawList()->AddRectFilled(
+					cursorPos,
+					ImVec2(cursorPos.x + rowWidth, cursorPos.y + rowHeight),
+					zebra);
+			}
+
 			// Draw hover/selected highlight. Selected rows use the active
 			// header colour so they stay visible even when the cursor moves
 			// off the row; hover stacks on top with the standard tint.

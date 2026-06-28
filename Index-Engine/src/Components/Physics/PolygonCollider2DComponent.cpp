@@ -76,9 +76,6 @@ namespace Index {
 	}
 
 	void PolygonCollider2DComponent::SetPoints(const std::vector<Vec2>& localPoints, const Scene& scene) {
-		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetPoints");
-		if (!tr) return;
-
 		const int count = static_cast<int>(localPoints.size());
 		if (count < k_MinVertices || count > k_MaxVertices) {
 			IDX_CORE_WARN_TAG("PolygonCollider2D",
@@ -88,6 +85,10 @@ namespace Index {
 		}
 
 		m_LocalPoints = localPoints;
+
+		if (!b2Shape_IsValid(m_ShapeId)) return; // no live shape (prefab edit) — stored above is enough
+		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetPoints");
+		if (!tr) return;
 		RebuildPolygon(*tr);
 	}
 
@@ -104,26 +105,29 @@ namespace Index {
 	}
 
 	void PolygonCollider2DComponent::SetSides(int sides, const Scene& scene) {
+		m_LocalPoints = MakeRegularPolygon(sides);
+
+		if (!b2Shape_IsValid(m_ShapeId)) return;
 		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetSides");
 		if (!tr) return;
-
-		m_LocalPoints = MakeRegularPolygon(sides);
 		RebuildPolygon(*tr);
 	}
 
 	void PolygonCollider2DComponent::SetSize(const Vec2& size, const Scene& scene) {
+		m_LocalSize = size;
+
+		if (!b2Shape_IsValid(m_ShapeId)) return;
 		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetSize");
 		if (!tr) return;
-
-		m_LocalSize = size;
 		RebuildPolygon(*tr);
 	}
 
 	void PolygonCollider2DComponent::SetCenter(const Vec2& center, const Scene& scene) {
+		m_Center = center;
+
+		if (!b2Shape_IsValid(m_ShapeId)) return;
 		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetCenter");
 		if (!tr) return;
-
-		m_Center = center;
 		RebuildPolygon(*tr);
 	}
 
@@ -145,6 +149,7 @@ namespace Index {
 	}
 
 	void PolygonCollider2DComponent::SetSensor(bool sensor, Scene& scene) {
+		m_Sensor = sensor;
 		if (!IsValid() || IsSensor() == sensor) {
 			return;
 		}

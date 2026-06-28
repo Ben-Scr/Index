@@ -71,8 +71,16 @@ namespace Index {
 		static void SetLineWidth(float width) { s_LineWidth = Max(0.001f, width); }
 		static float GetLineWidth() { return s_LineWidth; }
 
+		// s_IsEnabled is the user/script toggle (Gizmo.IsEnabled). It gates ONLY
+		// Shared-layer (user) gizmos — the editor's EditorOnly component gizmos stay
+		// visible regardless, so a game script setting Gizmo.IsEnabled = false cannot
+		// hide component gizmos in the editor view.
 		static void SetEnabled(bool enabled) { s_IsEnabled = enabled; }
 		static bool IsEnabled() { return s_IsEnabled; }
+
+		// True when a draw on the CURRENT layer is permitted. EditorOnly draws are
+		// always allowed; Shared (user) draws honour s_IsEnabled.
+		static bool IsCurrentLayerEnabled() { return s_IsEnabled || s_Layer != GizmoLayer::Shared; }
 
 		static void SetShowInRuntime(bool show) { s_ShowInRuntime = show; }
 		static bool GetShowInRuntime() { return s_ShowInRuntime; }

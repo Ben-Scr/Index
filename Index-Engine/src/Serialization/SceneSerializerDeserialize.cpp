@@ -22,6 +22,8 @@
 #include "Components/Graphics/ImageComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/General/UUIDComponent.hpp"
+#include "Components/General/EntityMetaDataComponent.hpp"
+#include "Profiling/Profiler.hpp"
 #include "Scene/Entity.hpp"
 #include "Components/Tags.hpp"
 #include "Scripting/ScriptComponent.hpp"
@@ -749,17 +751,38 @@ namespace Index {
 	} // namespace
 
 	bool SceneSerializer::LoadFromFile(Scene& scene, const std::string& path) {
+		INDEX_PROFILE_SCOPE("SceneSerializer::LoadFromFile");
 		try {
 			if (!File::Exists(path)) {
 				IDX_CORE_WARN_TAG("SceneSerializer", "Scene file not found: {}", path);
 				return false;
 			}
 
-			Value root;
-			std::string readError;
-			if (!SceneSerializerStorage::ReadRootFromFile(path, root, &readError) || !root.IsObject()) {
-				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to parse scene {}: {}", path, readError);
+			std::vector<std::uint8_t> bytes;
+			{
+				INDEX_PROFILE_SCOPE("SceneSerializer::ReadFileBytes");
+				bytes = File::ReadAllBytes(path);
+			}
+			if (bytes.empty()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to read scene (empty file): {}", path);
 				return false;
+			}
+
+			// Binary scenes stream entities one at a time (no whole-file DOM); JSON keeps the
+			// plain parse-then-walk path.
+			if (SceneSerializerStorage::IsBinaryData(bytes)) {
+				return DeserializeSceneStreamingBinary(scene, bytes, path);
+			}
+
+			Value root;
+			{
+				INDEX_PROFILE_SCOPE("SceneSerializer::ParseJson");
+				std::string parseError;
+				const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+				if (!Json::TryParse(text, root, &parseError) || !root.IsObject()) {
+					IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to parse scene {}: {}", path, parseError);
+					return false;
+				}
 			}
 
 			return DeserializeScene(scene, root, path);
@@ -770,13 +793,8 @@ namespace Index {
 		}
 	}
 
-	bool SceneSerializer::DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source) {
-		if (!root.IsObject()) {
-			IDX_CORE_ERROR_TAG("SceneSerializer", "DeserializeScene requires an object root");
-			return false;
-		}
-
-		const int version = GetIntMember(root, "version", 1);
+	bool SceneSerializer::ProcessSceneHeader(Scene& scene, const Json::Value& header, std::string_view source) {
+		const int version = GetIntMember(header, "version", 1);
 		if (version > SCENE_FORMAT_VERSION) {
 			IDX_CORE_WARN_TAG(
 				"SceneSerializer",
@@ -786,7 +804,7 @@ namespace Index {
 		}
 
 		const std::string sourcePath(source);
-		const std::string serializedName = GetStringMember(root, "name");
+		const std::string serializedName = GetStringMember(header, "name");
 		// Prefer the serialized name when present â€” file-stem fallback is only for
 		// legacy scenes that never wrote a "name" field. Previously the file stem
 		// always won, making the serialized "name" a write-only field.
@@ -797,14 +815,14 @@ namespace Index {
 			scene.SetName(std::filesystem::path(sourcePath).stem().string());
 		}
 
-		const uint64_t sceneId = GetUInt64Member(root, "sceneId", 0);
+		const uint64_t sceneId = GetUInt64Member(header, "sceneId", 0);
 		if (sceneId != 0) {
 			scene.SetSceneId(UUID(sceneId));
 		}
 
 		const bool restartLifecycle = scene.BeginContentReplacement();
 
-		if (const Value* systemsValue = GetArrayMember(root, "systems")) {
+		if (const Value* systemsValue = GetArrayMember(header, "systems")) {
 			for (const Value& systemValue : systemsValue->GetArray()) {
 				// Two accepted shapes for forward / backward compatibility:
 				//   1. "MySceneSystem"                                        (legacy / no overrides)
@@ -839,42 +857,36 @@ namespace Index {
 			}
 		}
 
-		// Two-pass load: pass 1 creates all entities, pass 2 wires parentUuid links; pass 3 re-sorts children by authored childIndex.
-		std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
-		std::unordered_map<uint32_t, int> childIndexByEntity;
-		if (const Value* entitiesValue = GetArrayMember(root, "entities")) {
-			for (const Value& entityValue : entitiesValue->GetArray()) {
-				if (!entityValue.IsObject()) {
-					continue;
-				}
-				EntityHandle handle = DeserializeEntity(scene, entityValue);
-				if (handle == entt::null) continue;
+		return restartLifecycle;
+	}
 
-				const std::string parentUuidStr = GetStringMember(entityValue, "parentUuid", std::string{});
-				if (!parentUuidStr.empty()) {
-					try {
-						const uint64_t parentUuid = std::stoull(parentUuidStr);
-						if (parentUuid != 0) pendingParents.emplace_back(handle, parentUuid);
-					} catch (...) {
-						// Malformed UUID â€” ignore; entity becomes a root.
-					}
-				}
-
-				const int childIdx = GetIntMember(entityValue, "childIndex", -1);
-				if (childIdx >= 0) {
-					childIndexByEntity[static_cast<uint32_t>(handle)] = childIdx;
-				}
-			}
+	void SceneSerializer::ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state) {
+		if (!entityValue.IsObject()) {
+			return;
 		}
-		else {
-			if (!sourcePath.empty()) {
-				IDX_CORE_WARN_TAG("SceneSerializer", "No entities array in scene file: {}", sourcePath);
-			}
-			else {
-				IDX_CORE_WARN_TAG("SceneSerializer", "No entities array in scene data");
+		EntityHandle handle = DeserializeEntity(scene, entityValue);
+		if (handle == entt::null) return;
+
+		const std::string parentUuidStr = GetStringMember(entityValue, "parentUuid", std::string{});
+		if (!parentUuidStr.empty()) {
+			try {
+				const uint64_t parentUuid = std::stoull(parentUuidStr);
+				if (parentUuid != 0) state.pendingParents.emplace_back(handle, parentUuid);
+			} catch (...) {
+				// Malformed UUID â€” ignore; entity becomes a root.
 			}
 		}
 
+		const int childIdx = GetIntMember(entityValue, "childIndex", -1);
+		if (childIdx >= 0) {
+			state.childIndexByEntity[static_cast<uint32_t>(handle)] = childIdx;
+		}
+	}
+
+	void SceneSerializer::FinalizeSceneLoad(Scene& scene, const SceneLoadState& state, bool restartLifecycle) {
+		// Pass 2 wires parentUuid links; pass 3 re-sorts children by authored childIndex.
+		const auto& pendingParents = state.pendingParents;
+		const auto& childIndexByEntity = state.childIndexByEntity;
 		if (!pendingParents.empty()) {
 			std::unordered_map<uint64_t, EntityHandle> byUuid;
 			byUuid.reserve(pendingParents.size() * 2);
@@ -926,6 +938,97 @@ namespace Index {
 		scene.ClearDirty();
 		scene.EndContentReplacement(restartLifecycle);
 		IDX_CORE_INFO_TAG("SceneSerializer", "Loaded scene: {}", scene.GetName());
+	}
+
+	bool SceneSerializer::DeserializeScene(Scene& scene, const Json::Value& root, std::string_view source) {
+		INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeScene");
+		if (!root.IsObject()) {
+			IDX_CORE_ERROR_TAG("SceneSerializer", "DeserializeScene requires an object root");
+			return false;
+		}
+
+		const bool restartLifecycle = ProcessSceneHeader(scene, root, source);
+
+		// Two-pass load: pass 1 creates all entities, passes 2-3 (in FinalizeSceneLoad) wire parents / child order.
+		SceneLoadState state;
+		if (const Value* entitiesValue = GetArrayMember(root, "entities")) {
+			INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeEntities");
+			// Pre-size storages and identity maps to the known entity count so the create loop
+			// doesn't repeatedly rehash the GUID/runtime maps or grow the hot component pools.
+			const std::size_t entityCount = entitiesValue->GetArray().size();
+			scene.ReserveForLoad<
+				EntityMetaDataComponent,
+				UUIDComponent,
+				Transform2DComponent,
+				NameComponent>(entityCount);
+			state.pendingParents.reserve(entityCount);
+			state.childIndexByEntity.reserve(entityCount);
+			for (const Value& entityValue : entitiesValue->GetArray()) {
+				ProcessLoadedEntity(scene, entityValue, state);
+			}
+		}
+		else {
+			if (!source.empty()) {
+				IDX_CORE_WARN_TAG("SceneSerializer", "No entities array in scene file: {}", std::string(source));
+			}
+			else {
+				IDX_CORE_WARN_TAG("SceneSerializer", "No entities array in scene data");
+			}
+		}
+
+		FinalizeSceneLoad(scene, state, restartLifecycle);
+		return true;
+	}
+
+	bool SceneSerializer::DeserializeSceneStreamingBinary(
+		Scene& scene,
+		const std::vector<std::uint8_t>& bytes,
+		std::string_view source) {
+		INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeSceneStreamingBinary");
+
+		Value header;
+		SceneSerializerStorage::BinarySceneEntityCursor cursor;
+		std::string decodeError;
+		{
+			INDEX_PROFILE_SCOPE("SceneSerializer::BeginBinaryScene");
+			if (!SceneSerializerStorage::BeginBinaryScene(bytes, header, cursor, &decodeError) || !header.IsObject()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Failed to decode binary scene {}: {}",
+					std::string(source), decodeError);
+				return false;
+			}
+		}
+
+		const bool restartLifecycle = ProcessSceneHeader(scene, header, source);
+
+		SceneLoadState state;
+		if (cursor.remaining > 0) {
+			INDEX_PROFILE_SCOPE("SceneSerializer::DeserializeEntities");
+			const std::size_t entityCount = cursor.remaining;
+			scene.ReserveForLoad<
+				EntityMetaDataComponent,
+				UUIDComponent,
+				Transform2DComponent,
+				NameComponent>(entityCount);
+			state.pendingParents.reserve(entityCount);
+			state.childIndexByEntity.reserve(entityCount);
+
+			// Only one entity subtree is materialized at a time — that is the win over the
+			// whole-file DOM: not 300k fat Json::Value subtrees alive (and cache-cold) at once.
+			Value entityValue;
+			std::string entityError;
+			while (SceneSerializerStorage::ReadNextBinaryEntity(cursor, entityValue, &entityError)) {
+				ProcessLoadedEntity(scene, entityValue, state);
+			}
+			if (!entityError.empty()) {
+				IDX_CORE_ERROR_TAG("SceneSerializer", "Binary scene {} entity stream aborted: {}",
+					std::string(source), entityError);
+			}
+		}
+		else {
+			IDX_CORE_WARN_TAG("SceneSerializer", "No entities in scene file: {}", std::string(source));
+		}
+
+		FinalizeSceneLoad(scene, state, restartLifecycle);
 		return true;
 	}
 
@@ -1277,6 +1380,40 @@ namespace Index {
 					solKeyList = Curve::DefaultKeys();
 				}
 			}
+			particleSystem.ParticleSettings.ColorOverLifetime.Enabled =
+				GetBoolMember(*particleValue, "colorOverLifetimeEnabled", false);
+			if (const Value* colorKeys = GetArrayMember(*particleValue, "colorOverLifetimeColorKeys")) {
+				auto& colorKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.ColorKeys;
+				colorKeyList.clear();
+				for (const Value& keyValue : colorKeys->GetArray()) {
+					Gradient::ColorKey key;
+					key.Position = GetFloatMember(keyValue, "t", 0.0f);
+					key.R = GetFloatMember(keyValue, "r", 1.0f);
+					key.G = GetFloatMember(keyValue, "g", 1.0f);
+					key.B = GetFloatMember(keyValue, "b", 1.0f);
+					colorKeyList.push_back(key);
+				}
+				std::sort(colorKeyList.begin(), colorKeyList.end(),
+					[](const auto& a, const auto& b) { return a.Position < b.Position; });
+				if (colorKeyList.empty()) {
+					colorKeyList = Gradient::DefaultColorKeys();
+				}
+			}
+			if (const Value* alphaKeys = GetArrayMember(*particleValue, "colorOverLifetimeAlphaKeys")) {
+				auto& alphaKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.AlphaKeys;
+				alphaKeyList.clear();
+				for (const Value& keyValue : alphaKeys->GetArray()) {
+					Gradient::AlphaKey key;
+					key.Position = GetFloatMember(keyValue, "t", 0.0f);
+					key.Alpha = GetFloatMember(keyValue, "a", 1.0f);
+					alphaKeyList.push_back(key);
+				}
+				std::sort(alphaKeyList.begin(), alphaKeyList.end(),
+					[](const auto& a, const auto& b) { return a.Position < b.Position; });
+				if (alphaKeyList.empty()) {
+					alphaKeyList = Gradient::DefaultAlphaKeys();
+				}
+			}
 			particleSystem.EmissionSettings.EmitOverTime =
 				static_cast<uint16_t>(GetIntMember(*particleValue, "emitOverTime", 10));
 			particleSystem.EmissionSettings.RateOverDistance =
@@ -1326,6 +1463,20 @@ namespace Index {
 				&textureAssetId);
 			if (textureHandle.IsValid()) {
 				particleSystem.SetTexture(textureHandle, textureAssetId);
+			}
+
+			particleSystem.ClearBursts();
+			if (const Value* burstsValue = GetArrayMember(*particleValue, "bursts")) {
+				for (const Value& burstValue : burstsValue->GetArray()) {
+					if (!burstValue.IsObject()) {
+						continue;
+					}
+					ParticleSystem2DComponent::Burst burst;
+					burst.Count = static_cast<uint32_t>(GetUInt64Member(burstValue, "count", burst.Count));
+					burst.Interval = GetFloatMember(burstValue, "interval", burst.Interval);
+					burst.TimeUntilNext = 0.0f;
+					particleSystem.AddBurst(burst);
+				}
 			}
 		}
 
@@ -1561,31 +1712,65 @@ namespace Index {
 		}
 
 		// Registry-driven deserialize for package components.
+		// Iterate the entity's actual members and resolve each name against the registry
+		// (O(1) hashed lookup, covers both static and dynamic components) instead of
+		// scanning every registered component type per entity. Same set of components is
+		// processed; the registry already iterated in unordered order, so member order is fine.
 		if (Application* app = Application::GetInstance(); app && app->GetSceneManager()) {
 			Entity entityWrapper = scene.GetEntity(entity);
-			app->GetSceneManager()->GetComponentRegistry().ForEachComponentInfo(
-				[&](const std::type_index&, const ComponentInfo& info) {
-					if (!info.deserialize || !info.has || !info.add || info.serializedName.empty()) return;
-					const Value* compValue = entityValue.FindMember(info.serializedName.c_str());
-					if (!compValue) return;
-					try {
-						if (!info.has(entityWrapper)) {
-							info.add(entityWrapper);
-						}
-						info.deserialize(entityWrapper, *compValue);
-					} catch (const std::exception& e) {
-						// Include the entity handle so the editor's log clicker can
-						// jump to the offending entity even when many components fail
-						// in a corrupt scene load.
-						IDX_CORE_ERROR_TAG("SceneSerializer",
-							"Package component '{}' deserialize threw on entity {}: {}",
-							info.serializedName, static_cast<uint32_t>(entity), e.what());
-					} catch (...) {
-						IDX_CORE_ERROR_TAG("SceneSerializer",
-							"Package component '{}' deserialize threw an unknown exception on entity {}",
-							info.serializedName, static_cast<uint32_t>(entity));
+			const ComponentRegistry& componentRegistryRef =
+				app->GetSceneManager()->GetComponentRegistry();
+			for (const auto& [memberName, memberValue] : entityValue.GetObject()) {
+				const ComponentInfo* info = componentRegistryRef.FindBySerializedName(memberName);
+				if (!info || !info->deserialize || !info->has || !info->add) continue;
+				try {
+					if (!info->has(entityWrapper)) {
+						info->add(entityWrapper);
 					}
-				});
+					info->deserialize(entityWrapper, memberValue);
+				} catch (const std::exception& e) {
+					// Include the entity handle so the editor's log clicker can
+					// jump to the offending entity even when many components fail
+					// in a corrupt scene load.
+					IDX_CORE_ERROR_TAG("SceneSerializer",
+						"Package component '{}' deserialize threw on entity {}: {}",
+						info->serializedName, static_cast<uint32_t>(entity), e.what());
+				} catch (...) {
+					IDX_CORE_ERROR_TAG("SceneSerializer",
+						"Package component '{}' deserialize threw an unknown exception on entity {}",
+						info->serializedName, static_cast<uint32_t>(entity));
+				}
+			}
+		}
+
+		// Materialize native/dynamic (IComponent) rows listed only in the entity's
+		// managed script/component list. The registry-driven loop above adds any
+		// dynamic component that carries a top-level data block; a prefab saved
+		// before its type was registered (or with no live row at save time) has
+		// only the "Scripts"/"ManagedComponents" name entry and no data block.
+		// ScriptEngine::RestoreDynamicComponentsForScene fixes that, but it only runs
+		// at scene-start/assembly-reload — never on a runtime Instantiate — so without
+		// this the component is silently absent on spawned prefabs and Scene.Query<T>()
+		// / GetComponent<T> miss it. Adds a default-initialized row when missing.
+		// Skip detached scenes (prefab inspector): they edit via the ScriptComponent list,
+		// not live dynamic rows, and materializing into the GLOBAL storage at their low
+		// handles leaks rows that later ghost onto unrelated entities (those rows are never
+		// scrubbed — ~Scene clears the registry without ScrubEntity).
+		if (Application* app = Application::GetInstance();
+			app && app->GetSceneManager() && !scene.IsDetached() && scene.HasComponent<ScriptComponent>(entity)) {
+			Entity entityWrapper = scene.GetEntity(entity);
+			const ComponentRegistry& registry = app->GetSceneManager()->GetComponentRegistry();
+			const ScriptComponent& sc = scene.GetComponent<ScriptComponent>(entity);
+			auto materializeDynamic = [&](const std::string& className) {
+				if (className.empty()) return;
+				const ComponentInfo* info = registry.FindBySerializedName(className);
+				if (!info || !info->isDynamic || !info->add || !info->has) return;
+				if (!info->has(entityWrapper)) {
+					info->add(entityWrapper);
+				}
+			};
+			for (const ScriptInstance& instance : sc.Scripts) materializeDynamic(instance.GetClassName());
+			for (const std::string& className : sc.ManagedComponents) materializeDynamic(className);
 		}
 
 		rollback.Commit();
@@ -2013,6 +2198,40 @@ namespace Index {
 					[](const auto& a, const auto& b) { return a.Pos.x < b.Pos.x; });
 				if (solKeyList.size() < 2) {
 					solKeyList = Curve::DefaultKeys();
+				}
+			}
+			particleSystem.ParticleSettings.ColorOverLifetime.Enabled =
+				GetBoolMember(componentValue, "colorOverLifetimeEnabled", false);
+			if (const Value* colorKeys = GetArrayMember(componentValue, "colorOverLifetimeColorKeys")) {
+				auto& colorKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.ColorKeys;
+				colorKeyList.clear();
+				for (const Value& keyValue : colorKeys->GetArray()) {
+					Gradient::ColorKey key;
+					key.Position = GetFloatMember(keyValue, "t", 0.0f);
+					key.R = GetFloatMember(keyValue, "r", 1.0f);
+					key.G = GetFloatMember(keyValue, "g", 1.0f);
+					key.B = GetFloatMember(keyValue, "b", 1.0f);
+					colorKeyList.push_back(key);
+				}
+				std::sort(colorKeyList.begin(), colorKeyList.end(),
+					[](const auto& a, const auto& b) { return a.Position < b.Position; });
+				if (colorKeyList.empty()) {
+					colorKeyList = Gradient::DefaultColorKeys();
+				}
+			}
+			if (const Value* alphaKeys = GetArrayMember(componentValue, "colorOverLifetimeAlphaKeys")) {
+				auto& alphaKeyList = particleSystem.ParticleSettings.ColorOverLifetime.Gradient.AlphaKeys;
+				alphaKeyList.clear();
+				for (const Value& keyValue : alphaKeys->GetArray()) {
+					Gradient::AlphaKey key;
+					key.Position = GetFloatMember(keyValue, "t", 0.0f);
+					key.Alpha = GetFloatMember(keyValue, "a", 1.0f);
+					alphaKeyList.push_back(key);
+				}
+				std::sort(alphaKeyList.begin(), alphaKeyList.end(),
+					[](const auto& a, const auto& b) { return a.Position < b.Position; });
+				if (alphaKeyList.empty()) {
+					alphaKeyList = Gradient::DefaultAlphaKeys();
 				}
 			}
 			particleSystem.EmissionSettings.EmitOverTime =
@@ -2500,6 +2719,17 @@ namespace Index {
 		if (preservedParent != entt::null && registry.valid(preservedParent)) {
 			scene.GetEntity(freshRoot).SetParent(scene.GetEntity(preservedParent));
 		}
+
+		// The destroy+create above swapped the instance onto a NEW entity handle. For a
+		// root-level, childless instance, preservedParent is null (so SetParent never runs)
+		// and the registry entity count is unchanged (one destroyed, one created) — so
+		// NOTHING bumps the hierarchy version. The editor's hierarchy-order cache rebuilds
+		// only on a version or entity-count change (ImGuiEditorLayer hierarchy reconcile),
+		// so it would keep the stale destroyed handle and never surface the rebuilt root
+		// until the scene is reloaded — the instance appears to vanish from the panel.
+		// Bump the structure version so the editor reconciles the swap this frame.
+		// (No-op cost at runtime: m_HierarchyVersion is read only by the editor.)
+		scene.MarkHierarchyStructureDirty();
 		return freshRoot;
 	}
 

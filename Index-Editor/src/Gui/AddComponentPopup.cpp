@@ -145,11 +145,25 @@ namespace Index {
 
 		const bool hasFilter = !filter.empty();
 
-		auto componentMissingFromAny = [&](const ComponentInfo& info) -> bool {
-			for (const Entity& e : entities) {
-				if (!info.has(e)) return true;
+		// Correct "does entity e have this component" check. For dynamic (C# IComponent)
+		// types, info.has() reads the GLOBAL DynamicComponentStorage keyed by the raw
+		// per-scene entity handle, which can GHOST (a cross-scene / recycled-handle
+		// collision makes it true for an entity that never had the component). Use the
+		// entity's ScriptComponent list instead — the same source of truth as the inspector.
+		auto entityHasComponent = [&](const ComponentInfo& info, const Entity& e) -> bool {
+			if (info.isDynamic) {
+				if (!e.HasComponent<ScriptComponent>()) return false;
+				const ScriptComponent& sc = e.GetComponent<ScriptComponent>();
+				return sc.HasScript(info.serializedName) || sc.HasManagedComponent(info.serializedName);
 			}
-			return false;
+			return info.has && info.has(e);
+		};
+		auto componentPresentOnAll = [&](const ComponentInfo& info) -> bool {
+			if (entities.empty()) return false;
+			for (const Entity& e : entities) {
+				if (!entityHasComponent(info, e)) return false;
+			}
+			return true;
 		};
 
 		// nativeScriptByClassName MUST be defined before addComponentToAll lambda captures it.
@@ -234,55 +248,55 @@ namespace Index {
 			return false;
 		};
 
+		// Render one component as a menu item. Already-present components are shown
+		// DISABLED (greyed) rather than hidden, so the user can see what the entity
+		// already has; conflicting components are likewise disabled with a reason.
+		auto renderComponentItem = [&](const std::type_index& typeId, const ComponentInfo& info) {
+			const bool alreadyAdded = componentPresentOnAll(info);
+			std::string conflictName;
+			const bool conflicts = !alreadyAdded && componentConflictsWithSelection(typeId, &conflictName);
+			const bool enabled = !alreadyAdded && !conflicts;
+			if (ImGuiUtils::MenuItemEllipsis(info.displayName, info.displayName.c_str(), nullptr, false, enabled, 260.0f)) {
+				if (enabled) {
+					addComponentToAll(info);
+					ImGui::CloseCurrentPopup();
+				}
+			}
+			if (!enabled && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+				if (alreadyAdded) {
+					ImGui::SetTooltip("Already added");
+				}
+				else {
+					ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
+				}
+			}
+		};
+
 		if (hasFilter) {
 			// Flat filtered list when searching across both built-in components
 			// and project scripts.
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
 				if (info.category != ComponentCategory::Component) return;
 				if (info.displayName == "Scripts") return;
-				if (!componentMissingFromAny(info)) return;
 				if (isHandMirror(info)) return;
 
 				std::string lowerName = info.displayName;
 				std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
 				if (lowerName.find(filter) == std::string::npos) return;
 
-				std::string conflictName;
-				const bool conflicts = componentConflictsWithSelection(typeId, &conflictName);
-				const bool enabled = !conflicts;
-				if (ImGuiUtils::MenuItemEllipsis(info.displayName, info.displayName.c_str(), nullptr, false, enabled, 260.0f)) {
-					if (enabled) {
-						addComponentToAll(info);
-						ImGui::CloseCurrentPopup();
-					}
-				}
-				if (conflicts && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-					ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
-				}
+				renderComponentItem(typeId, info);
 			});
 
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
 				if (info.category != ComponentCategory::Component) return;
 				if (info.displayName == "Scripts") return;
-				if (!componentMissingFromAny(info)) return;
 				if (!isHandMirror(info)) return;
 
 				std::string lowerName = info.displayName;
 				std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
 				if (lowerName.find(filter) == std::string::npos) return;
 
-				std::string conflictName;
-				const bool conflicts = componentConflictsWithSelection(typeId, &conflictName);
-				const bool enabled = !conflicts;
-				if (ImGuiUtils::MenuItemEllipsis(info.displayName, info.displayName.c_str(), nullptr, false, enabled, 260.0f)) {
-					if (enabled) {
-						addComponentToAll(info);
-						ImGui::CloseCurrentPopup();
-					}
-				}
-				if (conflicts && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-					ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
-				}
+				renderComponentItem(typeId, info);
 			});
 
 			for (const auto& scriptEntry : scriptEntries) {
@@ -334,7 +348,6 @@ namespace Index {
 			registry.ForEachComponentInfo([&](const std::type_index& typeId, const ComponentInfo& info) {
 				if (info.category != ComponentCategory::Component) return;
 				if (info.displayName == "Scripts") return;
-				if (!componentMissingFromAny(info)) return;
 				if (isHandMirror(info)) return;
 
 				std::string sub = info.subcategory.empty() ? "General" : info.subcategory;
@@ -352,19 +365,7 @@ namespace Index {
 
 				if (ImGui::TreeNode(subcategory.c_str())) {
 					for (const auto& entry : components) {
-						const ComponentInfo* info = entry.Info;
-						std::string conflictName;
-						const bool conflicts = componentConflictsWithSelection(entry.TypeId, &conflictName);
-						const bool enabled = !conflicts;
-						if (ImGuiUtils::MenuItemEllipsis(info->displayName, info->displayName.c_str(), nullptr, false, enabled, 260.0f)) {
-							if (enabled) {
-								addComponentToAll(*info);
-								ImGui::CloseCurrentPopup();
-							}
-						}
-						if (conflicts && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-							ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
-						}
+						renderComponentItem(entry.TypeId, *entry.Info);
 					}
 					ImGui::TreePop();
 				}
@@ -378,25 +379,12 @@ namespace Index {
 				if (info.category != ComponentCategory::Component) return;
 				if (info.displayName == "Scripts") return;
 				if (!isHandMirror(info)) return;
-				if (!componentMissingFromAny(info)) return;
 				nativeBackedComponents.push_back({ typeId, &info });
 			});
 			if (!nativeBackedComponents.empty()) {
 				if (ImGui::TreeNode("Native Components (C#)")) {
 					for (const auto& entry : nativeBackedComponents) {
-						const ComponentInfo* info = entry.Info;
-						std::string conflictName;
-						const bool conflicts = componentConflictsWithSelection(entry.TypeId, &conflictName);
-						const bool enabled = !conflicts;
-						if (ImGuiUtils::MenuItemEllipsis(info->displayName, info->displayName.c_str(), nullptr, false, enabled, 260.0f)) {
-							if (enabled) {
-								addComponentToAll(*info);
-								ImGui::CloseCurrentPopup();
-							}
-						}
-						if (conflicts && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-							ImGui::SetTooltip("Conflicts with %s", conflictName.c_str());
-						}
+						renderComponentItem(entry.TypeId, *entry.Info);
 					}
 					ImGui::TreePop();
 				}
@@ -415,24 +403,28 @@ namespace Index {
 						if (!scriptEntry.IsManagedComponent || scriptEntry.IsSceneSystem || scriptEntry.IsGlobalSystem) {
 							continue;
 						}
-						bool missingFromAny = false;
+						bool presentOnAll = !entities.empty();
 						for (const Entity& e : entities) {
 							if (!e.HasComponent<ScriptComponent>()
 								|| !e.GetComponent<ScriptComponent>().HasManagedComponent(scriptEntry.ClassName)) {
-								missingFromAny = true;
+								presentOnAll = false;
 								break;
 							}
 						}
-						if (!missingFromAny) continue;
 						const std::string label = BuildScriptMenuLabel(scriptEntry);
 						const std::string path = scriptEntry.Path.string();
-						if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, true, 260.0f)) {
-							bool added = false;
-							for (const Entity& e : entities) {
-								added |= AttachManagedComponentToEntity(const_cast<Entity&>(e), scene, scriptEntry);
+						if (ImGuiUtils::MenuItemEllipsis(label, path.c_str(), nullptr, false, !presentOnAll, 260.0f)) {
+							if (!presentOnAll) {
+								bool added = false;
+								for (const Entity& e : entities) {
+									added |= AttachManagedComponentToEntity(const_cast<Entity&>(e), scene, scriptEntry);
+								}
+								if (added) markChanged();
+								ImGui::CloseCurrentPopup();
 							}
-							if (added) markChanged();
-							ImGui::CloseCurrentPopup();
+						}
+						if (presentOnAll && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+							ImGui::SetTooltip("Already added");
 						}
 					}
 					ImGui::TreePop();

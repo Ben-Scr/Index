@@ -67,7 +67,7 @@ namespace Index {
 			std::vector<uint8_t> Bitmap;
 			std::vector<stbtt_packedchar> Packed;
 			std::vector<uint8_t> StbFontInfoStorage;  // raw bytes, copied back into Font
-			std::vector<uint8_t> TtfBuffer;           // ownership returns to Font after publish
+			std::shared_ptr<const std::vector<uint8_t>> TtfBuffer;  // shared with Font; read-only on the worker
 			std::string Filepath;
 			int   AtlasSide = 0;
 			float PixelSize = 0.0f;
@@ -226,21 +226,22 @@ namespace Index {
 			IDX_CORE_ERROR_TAG("Font", "TTF not found: {}", path);
 			return false;
 		}
-		m_TtfBuffer = File::ReadAllBytes(path);
-		if (m_TtfBuffer.empty()) {
+		std::vector<uint8_t> bytes = File::ReadAllBytes(path);
+		if (bytes.empty()) {
 			IDX_CORE_ERROR_TAG("Font", "TTF empty / unreadable: {}", path);
 			return false;
 		}
+		m_TtfBuffer = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
 		m_Filepath = path;
 		return BakeAtlas(pixelSize);
 	}
 
 	bool Font::LoadFromBuffer(const std::string& sourcePath,
-		const std::vector<uint8_t>& ttfBuffer, float pixelSize)
+		std::shared_ptr<const std::vector<uint8_t>> ttfBuffer, float pixelSize)
 	{
-		if (ttfBuffer.empty() || pixelSize <= 0.0f) return false;
+		if (!ttfBuffer || ttfBuffer->empty() || pixelSize <= 0.0f) return false;
 		Cleanup();
-		m_TtfBuffer = ttfBuffer;
+		m_TtfBuffer = std::move(ttfBuffer);
 		m_Filepath = sourcePath;
 		return BakeAtlas(pixelSize);
 	}
@@ -347,20 +348,20 @@ namespace Index {
 	}
 
 	bool Font::BakeAtlas(float pixelSize) {
-		if (m_TtfBuffer.empty() || pixelSize <= 0.0f) return false;
+		if (!m_TtfBuffer || m_TtfBuffer->empty() || pixelSize <= 0.0f) return false;
 		if (!WebGPUBackend::IsInitialized()) {
 			IDX_CORE_ERROR_TAG("Font", "BakeAtlas called before WebGPU backend initialized: {}",
 				m_Filepath);
-			m_TtfBuffer.clear();
+			m_TtfBuffer.reset();
 			return false;
 		}
 
 		CpuBakeResult result;
 		result.Filepath = m_Filepath;
-		if (!RasterizeAtlasCpu(m_TtfBuffer, pixelSize, result)) {
+		if (!RasterizeAtlasCpu(*m_TtfBuffer, pixelSize, result)) {
 			IDX_CORE_ERROR_TAG("Font", "Atlas pack failed (max {}px): {}", k_AtlasMaxSide, m_Filepath);
 			m_StbFontInfoStorage.clear();
-			m_TtfBuffer.clear();
+			m_TtfBuffer.reset();
 			return false;
 		}
 
@@ -368,7 +369,7 @@ namespace Index {
 		int      atlasSide    = 0;
 		if (!PublishAtlasGpu(result, atlasTexture, atlasSide)) {
 			m_StbFontInfoStorage.clear();
-			m_TtfBuffer.clear();
+			m_TtfBuffer.reset();
 			return false;
 		}
 
@@ -386,9 +387,9 @@ namespace Index {
 	}
 
 	bool Font::BeginAsyncBake(const std::string& sourcePath,
-		std::vector<uint8_t> ttfBuffer, float pixelSize)
+		std::shared_ptr<const std::vector<uint8_t>> ttfBuffer, float pixelSize)
 	{
-		if (ttfBuffer.empty() || pixelSize <= 0.0f) return false;
+		if (!ttfBuffer || ttfBuffer->empty() || pixelSize <= 0.0f) return false;
 		if (!WebGPUBackend::IsInitialized()) {
 			IDX_CORE_ERROR_TAG("Font", "BeginAsyncBake called before WebGPU backend initialized: {}",
 				sourcePath);
@@ -403,11 +404,12 @@ namespace Index {
 		m_AsyncBake->Result->TtfBuffer = std::move(ttfBuffer);
 
 		// Capture shared state by value into the worker so Font teardown
-		// doesn't dangle the worker's writes.
+		// doesn't dangle the worker's writes. The TtfBuffer is shared (read-only
+		// on the worker), so concurrent bakes of other sizes of the same font are safe.
 		std::shared_ptr<CpuBakeResult> result = m_AsyncBake->Result;
 		std::atomic<bool>* ready              = &m_AsyncBake->Ready;
 		m_AsyncBake->Worker = std::thread([result, ready, pixelSize]() {
-			RasterizeAtlasCpu(result->TtfBuffer, pixelSize, *result);
+			RasterizeAtlasCpu(*result->TtfBuffer, pixelSize, *result);
 			ready->store(true, std::memory_order_release);
 		});
 		return true;
@@ -475,7 +477,7 @@ namespace Index {
 			DeregisterAtlas(m_AtlasTexture);
 			m_AtlasTexture = 0;
 		}
-		m_TtfBuffer.clear();
+		m_TtfBuffer.reset();
 		m_Glyphs.clear();
 		m_AtlasWidth = 0;
 		m_AtlasHeight = 0;

@@ -15,7 +15,7 @@
 #include <string>
 #include <type_traits>
 
-namespace Index { class Texture2D; struct Curve; }
+namespace Index { class Texture2D; struct Curve; struct Gradient; }
 
 namespace Index::ImGuiUtils {
 	float GetInspectorLabelColumnWidth();
@@ -182,6 +182,14 @@ namespace Index::ImGuiUtils {
 	// disabled feature still shows its curve instead of vanishing). Returns true if
 	// the curve was edited this frame.
 	bool DrawCurveEditor(const char* id, Curve& curve, bool enabled = true);
+
+	// Reusable editable colour-gradient widget for Index::Gradient (Unity-style). Colour
+	// stops sit under the bar, alpha stops above it; the bar previews the resulting RGBA over
+	// a checkerboard. Drag a stop to move it, double-click the bar's lower/upper strip to add
+	// a colour/alpha stop, and edit or delete the selected stop in the row beneath. When
+	// 'enabled' is false the widget is greyed-out and non-interactive. Returns true if the
+	// gradient was edited this frame.
+	bool DrawGradientEditor(const char* id, Gradient& gradient, bool enabled = true);
 
 	void CenterNextModal();
 	std::string Ellipsize(const std::string& text, float maxWidth, bool* outTruncated = nullptr);

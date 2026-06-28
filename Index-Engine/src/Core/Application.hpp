@@ -295,7 +295,12 @@ namespace Index {
 		void Shutdown(bool invokeOnQuit = true);
 		void DispatchEvent(IndexEvent& event);
 		void RefreshBackgroundPauseState();
-		bool IsEnginePaused() const { return m_IsPaused || m_IsBackgroundPaused || m_IsMinimized; }
+		// Never report paused before the startup scene load has finished. That load
+		// (and the splash that requests it) run inside BeginFrame's `if (!enginePaused)`
+		// block, so pausing during startup — e.g. the editor launched unfocused, or with
+		// "Run in background" off before the window gains focus — would deadlock: the scene
+		// never loads, leaving a blank window with no active scene. Pause normally afterward.
+		bool IsEnginePaused() const { return m_StartupLoadComplete && (m_IsPaused || m_IsBackgroundPaused || m_IsMinimized); }
 		void CoreInput();
 		void ResetTimePoints();
 		void TryCompleteQuitRequest();

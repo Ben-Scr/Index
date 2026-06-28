@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Index {
@@ -65,6 +67,23 @@ namespace Index {
 		static bool HasPrefabInstanceOverrides(Scene& scene, EntityHandle entity);
 
 	private:
+		// Shared by the whole-DOM load (DeserializeScene) and the streaming binary load: the
+		// parent-link / child-order fixups deferred until every entity exists.
+		struct SceneLoadState {
+			std::vector<std::pair<EntityHandle, uint64_t>> pendingParents;
+			std::unordered_map<uint32_t, int> childIndexByEntity;
+		};
+
+		// Applies version/name/sceneId/systems from a scene root (or streamed header) and
+		// begins content replacement; returns whether the lifecycle should restart.
+		static bool ProcessSceneHeader(Scene& scene, const Json::Value& header, std::string_view source);
+		// Pass-1 body: create one entity and record its deferred parent/child-order links.
+		static void ProcessLoadedEntity(Scene& scene, const Json::Value& entityValue, SceneLoadState& state);
+		// Passes 2-3 + entity-ref fixups + finish content replacement.
+		static void FinalizeSceneLoad(Scene& scene, const SceneLoadState& state, bool restartLifecycle);
+		// Binary file load that streams entities one at a time instead of building a whole-file DOM.
+		static bool DeserializeSceneStreamingBinary(Scene& scene, const std::vector<std::uint8_t>& bytes, std::string_view source);
+
 		static EntityHandle DeserializeEntity(Scene& scene, const Json::Value& entityValue);
 		static EntityHandle DeserializeFullEntity(
 			Scene& scene,

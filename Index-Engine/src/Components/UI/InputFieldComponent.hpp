@@ -2,6 +2,7 @@
 
 #include "Collections/Color.hpp"
 #include "Components/UI/InspectorEventBinding.hpp"
+#include "Components/UI/ScrollRectComponent.hpp"
 #include "Components/UI/UITransitionMode.hpp"
 #include "Core/UUID.hpp"
 #include "Scene/EntityHandle.hpp"
@@ -77,7 +78,32 @@ namespace Index {
 		// whose text overflows. Recomputed each frame from the caret; not serialized.
 		float ScrollOffsetX = 0.0f;
 
+		// Transient vertical text scroll in UI pixels (Multiline + VerticalScrollbar
+		// only). The text block and caret/selection shift UP by this so later lines
+		// become visible; >= 0, clamped to the overflow each frame. Driven by the
+		// caret (auto-follow), the mouse wheel, and the scrollbar thumb. Not serialized.
+		float ScrollOffsetY = 0.0f;
+		// Caret byte the vertical scroll last auto-followed. Following only re-centres on
+		// the caret when it actually moves (typing / navigation), so the mouse wheel can
+		// scroll freely without being yanked back to the caret. -1 = not yet observed.
+		int   ScrollFollowCaretByte = -1;
+
 		EntityHandle TextEntity = kNullEntity;
+
+		// Multiline only: assign a UI Scrollbar entity (one with a ScrollbarComponent,
+		// typically TopToBottom) to scroll the text vertically. When set, the text
+		// top-anchors and clips to the field, scrolls on wheel / caret-follow / handle
+		// drag, and this field drives the scrollbar's Value + handle Size. kNullEntity =
+		// no scrollbar (the field renders all lines as before).
+		EntityHandle VerticalScrollbarEntity = kNullEntity;
+		// Visibility rule for the assigned scrollbar (canonical ScrollbarVisibility):
+		// Permanent always shows it; AutoHide / AutoHideAndExpandViewport hide it while
+		// the text fits. The InputField doesn't inset its text for the bar, so the two
+		// AutoHide variants behave the same here. No effect without a scrollbar assigned.
+		ScrollbarVisibility VerticalScrollbarVisibility = ScrollbarVisibility::AutoHide;
+		// Mouse-wheel scroll speed for a scrollable multiline field, in text lines per
+		// wheel notch (0 = wheel disabled). Caret-follow and handle drag are unaffected.
+		float ScrollSensitivity = 3.0f;
 
 		// Tint applied to TextEntity when Text is non-empty or the field
 		// is focused (so a caret-visible empty focused field also uses

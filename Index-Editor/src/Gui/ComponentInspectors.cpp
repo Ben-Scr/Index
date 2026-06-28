@@ -380,6 +380,24 @@ namespace Index {
 					ImGuiUtils::MarkSelectionDirty(entities);
 				}
 			}
+
+			ImGui::Spacing();
+			// "Color over Lifetime" as a collapsible tab with an inline on/off toggle; when
+			// enabled, each particle's emit colour is multiplied by this gradient sampled over
+			// its normalized lifetime (colour stops sit below the bar, alpha stops above).
+			auto& col = ps.ParticleSettings.ColorOverLifetime;
+			bool colEnabled = col.Enabled;
+			if (ImGui::Checkbox("##ColorOverLifetimeEnabled", &colEnabled)) {
+				col.Enabled = colEnabled;
+				ImGuiUtils::MarkSelectionDirty(entities);
+			}
+			ImGui::SameLine();
+			if (ImGui::CollapsingHeader("Color over Lifetime")) {
+				// Greyed-out + non-interactive (instead of vanishing) when the toggle is off.
+				if (ImGuiUtils::DrawGradientEditor("ColorOverLifetimeGradient", col.Gradient, col.Enabled)) {
+					ImGuiUtils::MarkSelectionDirty(entities);
+				}
+			}
 		}
 	}
 

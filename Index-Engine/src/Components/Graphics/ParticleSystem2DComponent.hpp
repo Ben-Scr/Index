@@ -5,6 +5,7 @@
 #include "Graphics/TextureHandle.hpp"
 #include "Collections/Color.hpp"
 #include "Collections/Curve.hpp"
+#include "Collections/Gradient.hpp"
 #include "Scene/EntityHandle.hpp"
 #include <cstddef>
 #include <variant>
@@ -30,6 +31,9 @@ namespace Index {
 			// final scale = StartScale * curve(age).
 			float StartLifeTime{ 1.f };
 			Vec2 StartScale{ 1.f, 1.f };
+			// Captured at emit for Color-over-Lifetime: the particle's colour lerps from
+			// StartColor toward the target colour over its normalized lifetime.
+			Index::Color StartColor{ Index::Color::White() };
 		};
 
 		enum class Space {
@@ -58,6 +62,14 @@ namespace Index {
 			float Evaluate(float t01) const { return Curve.Evaluate(t01); }
 		};
 
+		// Color-over-Lifetime: when Enabled, each particle's emit colour is multiplied by the
+		// gradient sampled at its normalized age (so a white gradient is a no-op and an
+		// alpha-fading gradient fades the particle out). Authored via DrawGradientEditor.
+		struct ColorOverLifetimeSettings {
+			bool Enabled{ false };
+			Gradient Gradient;
+		};
+
 		struct ParticleSettings {
 			float LifeTime{ 1.f };
 			float Speed{ 5.f };
@@ -67,6 +79,7 @@ namespace Index {
 			Vec2 Scale{ 1.f, 1.f };
 			Vec2 MoveDirection{ 0.f, 0.f };
 			ScaleOverLifetimeSettings ScaleOverLifetime;
+			ColorOverLifetimeSettings ColorOverLifetime;
 		};
 
 		struct EmissionSettings {
@@ -116,8 +129,11 @@ namespace Index {
 		// Info: Disables both emitting and simulating
 		void Pause() { m_IsEmitting = false; m_IsSimulating = false; }
 
-		// Info: Stops the preview/runtime simulation and clears live particles.
-		void Stop() { m_IsEmitting = false; m_IsSimulating = false; ResetSimulation(); }
+		// Info: Stops emission; live particles keep simulating until they expire (Unity-style StopEmitting).
+		void Stop() { m_IsEmitting = false; }
+
+		// Info: Halts the simulation and clears live particles — editor preview teardown / Stop button.
+		void StopAndReset() { m_IsEmitting = false; m_IsSimulating = false; ResetSimulation(); }
 
 		void Restart() { ResetSimulation(); Play(); }
 

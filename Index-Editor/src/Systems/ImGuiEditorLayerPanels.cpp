@@ -11,6 +11,7 @@
 #include "Graphics/ImageData.hpp"
 #include "Graphics/Texture2D.hpp"
 #include "Graphics/TextureManager.hpp"
+#include "Graphics/Text/FontManager.hpp"
 #include "Gui/EditorIcons.hpp"
 #include "Gui/ImGuiImplWebGPU.hpp"
 #include "Gui/ImGuiUtils.hpp"
@@ -36,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -727,6 +729,13 @@ namespace Index {
 			return "[Error] ";
 		}
 
+		// EditorIcons key matching the level — same icons as the filter buttons above the list.
+		const char* GetLogLevelIconName(Log::Level level) {
+			if (level <= Log::Level::Info) return "info";
+			if (level == Log::Level::Warn) return "warning";
+			return "error";
+		}
+
 		ImVec4 GetLogLevelColor(Log::Level level) {
 			if (level <= Log::Level::Info) {
 				const ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
@@ -748,84 +757,112 @@ namespace Index {
 				: ImVec4(0.45f, 0.68f, 1.00f, 1.0f);
 		}
 
-		// SameLine(0,0) joining is required for inline links — ImGui wrapping breaks with multi-segment lines, so link lines sacrifice wrap (parent BeginChild has HScrollbar).
-		void RenderLogMessageWithInlineLink(
-			std::string_view fullText,
+		// Word-wraps `text` to `wrapWidth` px. When `draw`, renders it via the window draw list at
+		// the current cursor: bytes in [linkStart, linkEnd) become an underlined, double-click-to-open
+		// link in `linkColor`, the rest in `textColor`. Honors embedded '\n'. Returns the wrapped
+		// block's pixel height. Measure (draw=false) and draw share one path, so a row's Selectable
+		// height always matches what is drawn beneath it.
+		float DrawWrappedLogMessage(
+			std::string_view text,
 			size_t linkStart,
 			size_t linkEnd,
 			const std::string& filePath,
 			int linkLine,
-			const ImVec4& textColor)
+			const ImVec4& textColor,
+			const ImVec4& linkColor,
+			float wrapWidth,
+			bool draw)
 		{
-			const ImVec4 linkColor = GetLogLinkColor();
-			const bool hasLink = !filePath.empty()
-				&& linkEnd > linkStart
-				&& linkEnd <= fullText.size();
+			ImFont* font = ImGui::GetFont();
+			const float fontSize = ImGui::GetFontSize();
+			const float lineHeight = ImGui::GetTextLineHeight();
+			if (wrapWidth < 1.0f) wrapWidth = 1.0f;
 
-			auto renderSegment = [&](std::string_view segment, bool isLink, bool firstOnLine) {
-				if (segment.empty()) return;
-				if (!firstOnLine) ImGui::SameLine(0.0f, 0.0f);
+			ImDrawList* drawList = draw ? ImGui::GetWindowDrawList() : nullptr;
+			const ImVec2 origin = draw ? ImGui::GetCursorScreenPos() : ImVec2(0.0f, 0.0f);
+			const ImU32 textCol = draw ? ImGui::GetColorU32(textColor) : 0u;
+			const ImU32 linkCol = draw ? ImGui::GetColorU32(linkColor) : 0u;
+			const bool hasLink = draw && !filePath.empty()
+				&& linkEnd > linkStart && linkEnd <= text.size();
+			const bool windowHovered = draw && ImGui::IsWindowHovered();
 
-				const ImVec4& color = isLink ? linkColor : textColor;
-				ImGui::PushStyleColor(ImGuiCol_Text, color);
-				ImGui::TextUnformatted(segment.data(), segment.data() + segment.size());
-				ImGui::PopStyleColor();
+			const char* const base = text.data();
+			const char* const textEnd = base + text.size();
+			float y = 0.0f;
 
-				if (!isLink) return;
-
-				const ImVec2 min = ImGui::GetItemRectMin();
-				const ImVec2 max = ImGui::GetItemRectMax();
-				ImGui::GetWindowDrawList()->AddLine(
-					ImVec2(min.x, max.y - 1.0f),
-					ImVec2(max.x, max.y - 1.0f),
-					ImGui::GetColorU32(linkColor),
-					1.0f);
-
-				if (ImGui::IsItemHovered()) {
-					ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-					ImGui::SetTooltip("Double-click to open");
-					if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-						ExternalEditor::OpenFile(filePath, linkLine);
+			// Draws one visual (already-wrapped) line [lineBegin, lineEnd), splitting runs at the
+			// link boundary so the link bytes get their own color, underline and hover/click rect.
+			auto drawVisualLine = [&](const char* lineBegin, const char* lineEnd) {
+				if (!draw || lineBegin >= lineEnd) return;
+				float penX = 0.0f;
+				const char* p = lineBegin;
+				while (p < lineEnd) {
+					const size_t idx = static_cast<size_t>(p - base);
+					const bool inLink = hasLink && idx >= linkStart && idx < linkEnd;
+					const char* runEnd = p;
+					while (runEnd < lineEnd) {
+						const size_t ridx = static_cast<size_t>(runEnd - base);
+						const bool rInLink = hasLink && ridx >= linkStart && ridx < linkEnd;
+						if (rInLink != inLink) break;
+						++runEnd;
 					}
+
+					const ImVec2 pos(origin.x + penX, origin.y + y);
+					drawList->AddText(pos, inLink ? linkCol : textCol, p, runEnd);
+					const float advance = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p, runEnd).x;
+
+					if (inLink) {
+						drawList->AddLine(
+							ImVec2(pos.x, pos.y + lineHeight - 1.0f),
+							ImVec2(pos.x + advance, pos.y + lineHeight - 1.0f),
+							linkCol, 1.0f);
+						if (windowHovered
+							&& ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + advance, pos.y + lineHeight))) {
+							ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+							ImGui::SetTooltip("Double-click to open");
+							if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+								ExternalEditor::OpenFile(filePath, linkLine);
+							}
+						}
+					}
+
+					penX += advance;
+					p = runEnd;
 				}
 			};
 
-			size_t pos = 0;
-			while (pos <= fullText.size()) {
-				const size_t newlinePos = fullText.find('\n', pos);
-				const size_t lineEnd = (newlinePos == std::string_view::npos)
-					? fullText.size()
-					: newlinePos;
+			const char* lineStart = base;
+			while (true) {
+				const char* nl = static_cast<const char*>(
+					std::memchr(lineStart, '\n', static_cast<size_t>(textEnd - lineStart)));
+				const char* logicalEnd = nl ? nl : textEnd;
 
-				if (lineEnd == pos) {
-					// Empty line — emit a blank line of standard text height
-					// so consecutive '\n's preserve their vertical gap.
-					ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));
-				}
-				else if (hasLink && linkStart < lineEnd && linkEnd > pos) {
-					const size_t segLinkStart = std::max(linkStart, pos);
-					const size_t segLinkEnd = std::min(linkEnd, lineEnd);
-
-					bool firstOnLine = true;
-					if (segLinkStart > pos) {
-						renderSegment(fullText.substr(pos, segLinkStart - pos), false, firstOnLine);
-						firstOnLine = false;
-					}
-					renderSegment(
-						fullText.substr(segLinkStart, segLinkEnd - segLinkStart),
-						true, firstOnLine);
-					firstOnLine = false;
-					if (segLinkEnd < lineEnd) {
-						renderSegment(fullText.substr(segLinkEnd, lineEnd - segLinkEnd), false, firstOnLine);
-					}
+				if (lineStart == logicalEnd) {
+					y += lineHeight; // blank line preserves vertical gap
 				}
 				else {
-					renderSegment(fullText.substr(pos, lineEnd - pos), false, true);
+					const char* p = lineStart;
+					while (p < logicalEnd) {
+						const char* wrapAt = font->CalcWordWrapPosition(fontSize, p, logicalEnd, wrapWidth);
+						if (wrapAt <= p) {
+							// Degenerate: one glyph wider than the whole wrap width. Step a full UTF-8
+							// code point (skip continuation bytes) so we force progress without splitting it.
+							wrapAt = p + 1;
+							while (wrapAt < logicalEnd && (static_cast<unsigned char>(*wrapAt) & 0xC0) == 0x80) ++wrapAt;
+						}
+						drawVisualLine(p, wrapAt);
+						y += lineHeight;
+						p = wrapAt;
+						while (p < logicalEnd && (*p == ' ' || *p == '\t')) ++p; // ImGui drops blanks after a wrap
+					}
 				}
 
-				if (newlinePos == std::string_view::npos) break;
-				pos = newlinePos + 1;
+				if (!nl) break;
+				lineStart = nl + 1;
+				if (lineStart == textEnd) { y += lineHeight; break; } // trailing '\n' -> trailing blank line
 			}
+
+			return y < lineHeight ? lineHeight : y;
 		}
 
 		struct SettingsIndexEntry {
@@ -843,6 +880,7 @@ namespace Index {
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Render Backend",  "render backend rendering api dawn webgpu vulkan d3d11 d3d12 opengl metal auto" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Post-Processing", "post processing post-processing pp bloom postfx effects pipeline kill switch" },
 			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Default Font",    "default font typeface text font asset" },
+			{ ImGuiEditorLayer::SettingsCategory::Graphics, "Font Baking",     "font baking atlas memory budget step granularity bake size lru cache vram ram" },
 
 			// Branding (RenderSettings_Branding)
 			{ ImGuiEditorLayer::SettingsCategory::Branding, "Splash Screen",   "splash screen logo intro startup fade duration enable image background color text preview" },
@@ -1007,51 +1045,102 @@ namespace Index {
 
 		ImGui::Separator();
 
-		ImGui::BeginChild("##LogEntries", ImVec2(-1.0f, -1.0f), true,
-			ImGuiWindowFlags_HorizontalScrollbar);
+		ImGui::BeginChild("##LogEntries", ImVec2(-1.0f, -1.0f), true);
 
 		const bool wasAtBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 4.0f;
-		for (const auto& entry : m_LogEntries) {
+		constexpr float kLogIconSize = 14.0f;
+		constexpr float kIconAdvance = kLogIconSize + 5.0f; // icon width + the SameLine spacing below
+		const ImVec4 linkColor = GetLogLinkColor();
+		// Wrap the message to the panel width minus the icon gutter. Captured once from the child's
+		// inner width so every row — and the measure/draw passes within a row — wrap identically.
+		const float wrapWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x - kIconAdvance);
+
+		for (size_t i = 0; i < m_LogEntries.size(); ++i) {
+			const LogEntry& entry = m_LogEntries[i];
 			if (!IsLogEntryVisible(entry.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)) {
 				continue;
 			}
 
-			const std::string prefix = std::string(GetLogLevelPrefix(entry.Level));
+			// "[HH:MM:SS] [Level] " precedes the message; the source-link byte span shifts by its length.
+			const std::string displayPrefix =
+				"[" + entry.Timestamp + "] " + std::string(GetLogLevelPrefix(entry.Level));
 			const ImVec4 levelColor = GetLogLevelColor(entry.Level);
+			const std::string fullText = displayPrefix + entry.Message;
 
 			const bool hasInlineLink = !entry.SourceFilePath.empty()
 				&& entry.SourceLinkEnd > entry.SourceLinkStart
 				&& entry.SourceLinkEnd <= entry.Message.size();
+			const size_t linkStart = hasInlineLink ? entry.SourceLinkStart + displayPrefix.size() : 0;
+			const size_t linkEnd = hasInlineLink ? entry.SourceLinkEnd + displayPrefix.size() : 0;
 
-			if (hasInlineLink) {
-				const std::string fullText = prefix + entry.Message;
-				RenderLogMessageWithInlineLink(
-					fullText,
-					entry.SourceLinkStart + prefix.size(),
-					entry.SourceLinkEnd + prefix.size(),
-					entry.SourceFilePath,
-					entry.SourceLine,
-					levelColor);
+			// Row height = the wrapped text height (measure pass; matches the draw pass exactly),
+			// never shorter than the severity icon.
+			const float textHeight = DrawWrappedLogMessage(fullText, linkStart, linkEnd,
+				entry.SourceFilePath, entry.SourceLine, levelColor, linkColor, wrapWidth, /*draw=*/false);
+			const float rowHeight = std::max(textHeight, kLogIconSize);
+
+			ImGui::PushID(static_cast<int>(i));
+
+			// A full-width Selectable underneath gives each row its own click/selection + highlight
+			// that spans the entire wrapped block; the icon and message draw on top. AllowOverlap
+			// keeps the inline source link's hover/click working through the selectable.
+			const ImVec2 rowStart = ImGui::GetCursorPos();
+			if (ImGui::Selectable("##logrow", m_SelectedLogIndex == static_cast<int>(i),
+				ImGuiSelectableFlags_AllowOverlap, ImVec2(0.0f, rowHeight))) {
+				m_SelectedLogIndex = static_cast<int>(i);
+			}
+			if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+				m_SelectedLogIndex = static_cast<int>(i);
+			}
+			const ImVec2 rowEnd = ImGui::GetCursorPos();
+
+			// Overlay the severity icon then the wrapped message, starting back at the row's origin.
+			ImGui::SetCursorPos(rowStart);
+			const uint64_t levelIcon = EditorIcons::Get(GetLogLevelIconName(entry.Level), 16);
+			if (levelIcon) {
+				ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(levelIcon)),
+					ImVec2(kLogIconSize, kLogIconSize), ImVec2(0, 1), ImVec2(1, 0));
 			}
 			else {
-				const std::string line = prefix + entry.Message;
-				ImGui::PushStyleColor(ImGuiCol_Text, levelColor);
-				ImGui::TextWrapped("%s", line.c_str());
-				ImGui::PopStyleColor();
+				// No icon (atlas load failure): still reserve the gutter so the message origin
+				// matches wrapWidth's kIconAdvance budget and text stays aligned across rows.
+				ImGui::Dummy(ImVec2(kLogIconSize, kLogIconSize));
 			}
+			ImGui::SameLine(0.0f, 5.0f);
+
+			DrawWrappedLogMessage(fullText, linkStart, linkEnd, entry.SourceFilePath,
+				entry.SourceLine, levelColor, linkColor, wrapWidth, /*draw=*/true);
+
+			// Resume below the row regardless of how tall the overlaid content turned out.
+			ImGui::SetCursorPos(rowEnd);
+			ImGui::PopID();
 		}
+
+		// The last row's SetCursorPos() isn't followed by an item, so ImGui won't grow the
+		// child's content/scroll region to it — submit a zero-size item to claim the extent.
+		ImGui::Dummy(ImVec2(0.0f, 0.0f));
 
 		if (wasAtBottom) {
 			ImGui::SetScrollHereY(1.0f);
 		}
 
 		if (ImGui::BeginPopupContextWindow("##LogTextCtx")) {
+			const bool hasSelection = m_SelectedLogIndex >= 0
+				&& m_SelectedLogIndex < static_cast<int>(m_LogEntries.size());
+			if (ImGui::MenuItem("Copy Selected", nullptr, false, hasSelection)) {
+				const LogEntry& sel = m_LogEntries[m_SelectedLogIndex];
+				std::string text;
+				if (!sel.Timestamp.empty()) text += "[" + sel.Timestamp + "] ";
+				text += std::string(GetLogLevelPrefix(sel.Level)) + sel.Message;
+				ImGui::SetClipboardText(text.c_str());
+			}
 			if (ImGui::MenuItem("Copy All Visible")) {
 				std::string all;
 				for (const auto& visibleEntry : m_LogEntries) {
 					if (!IsLogEntryVisible(visibleEntry.Level, m_ShowLogInfo, m_ShowLogWarn, m_ShowLogError)) {
 						continue;
 					}
+					if (!visibleEntry.Timestamp.empty()) all += "[" + visibleEntry.Timestamp + "] ";
 					all += std::string(GetLogLevelPrefix(visibleEntry.Level)) + visibleEntry.Message + "\n";
 				}
 				ImGui::SetClipboardText(all.c_str());
@@ -2293,6 +2382,48 @@ namespace Index {
 			ImGui::Unindent(8);
 		}
 		}  // end SectionVisible("Default Font")
+
+		if (SectionVisible(SettingsCategory::Graphics, "Font Baking", filterLower)) {
+		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
+		if (ImGui::CollapsingHeader("Font Baking", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+
+			// Bake-step: 0 = adaptive ladder, N = snap every N px. Applied live so
+			// the change takes effect without a restart.
+			int bakeStep = project.FontBakeStep;
+			ImGui::SetNextItemWidth(220.0f);
+			if (ImGui::SliderInt("Bake size step", &bakeStep, 0, 32,
+				bakeStep == 0 ? "Adaptive" : "%d px", ImGuiSliderFlags_AlwaysClamp)) {
+				project.FontBakeStep = bakeStep;
+				FontManager::SetBakeStep(bakeStep);
+				changed = true;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Pixel sizes the font auto-bakes at.\n"
+					"0 = Adaptive: fine steps for small text, coarse for large.\n"
+					"N = bake only at multiples of N px. Higher N = fewer atlases = less memory,\n"
+					"but in-between sizes are scaled from the nearest baked size.");
+			}
+
+			int budgetMB = project.FontAtlasBudgetMB;
+			ImGui::SetNextItemWidth(220.0f);
+			if (ImGui::SliderInt("Atlas memory budget", &budgetMB, 0, 512,
+				budgetMB == 0 ? "Unlimited" : "%d MB", ImGuiSliderFlags_AlwaysClamp)) {
+				project.FontAtlasBudgetMB = budgetMB;
+				FontManager::SetAtlasMemoryBudgetMB(budgetMB);
+				changed = true;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"Cap on resident font-atlas memory. When exceeded, the\n"
+					"least-recently-used baked sizes are evicted (and re-baked on demand).\n"
+					"0 = unlimited (atlases accumulate until the scene reloads).");
+			}
+
+			ImGui::Unindent(8);
+		}
+		}  // end SectionVisible("Font Baking")
 
 		// NoSavedSettings prevents a stale imgui.ini Pos= from pinning the dialog off-center.
 		if (s_RenderBackendChangePopup) {

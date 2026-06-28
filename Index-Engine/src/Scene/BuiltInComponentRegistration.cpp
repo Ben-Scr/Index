@@ -471,7 +471,7 @@ namespace Index {
 		particleProperties.push_back(Properties::MakeWith<uint16_t>("EmitOverTime", "Emit Over Time",
 			[](const Entity& e) { return e.GetComponent<PSC>().EmissionSettings.EmitOverTime; },
 			[](Entity& e, uint16_t v) { e.GetComponent<PSC>().EmissionSettings.EmitOverTime = v; },
-			Properties::Meta::Clamp(0.0, 65535.0, 1.0f).WithHeader("Emission")));
+			Properties::Meta::DragSpeed(1.0f).WithHeader("Emission")));
 		// Variant: Shape Type -> Circle / Square / Edge branches.
 		particleProperties.push_back(Properties::MakeVariantWith<ShapeType>("ShapeType", "Shape Type",
 			[](const Entity& e) -> ShapeType {
@@ -1009,13 +1009,13 @@ namespace Index {
 					[](Entity& e, float v) {
 						e.GetComponent<TextRendererComponent>().LetterSpacing = v;
 					},
-					Properties::Meta::Clamp(-64.0, 64.0, 0.1f)),
+					Properties::Meta::DragSpeed(0.1f)),
 				Properties::MakeWith<float>("LineSpacing", "Line Spacing",
 					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().LineSpacing; },
 					[](Entity& e, float v) {
 						e.GetComponent<TextRendererComponent>().LineSpacing = v;
 					},
-					Properties::Meta::Clamp(-64.0, 256.0, 0.25f)),
+					Properties::Meta::DragSpeed(0.25f)),
 				Properties::MakeWith<TextAlignment>("Alignment", "Alignment",
 					[](const Entity& e) { return e.GetComponent<TextRendererComponent>().HAlign; },
 					[](Entity& e, TextAlignment v) {
@@ -1085,7 +1085,7 @@ namespace Index {
 					[](Entity& e, float v) {
 						e.GetComponent<Rigidbody2DComponent>().SetGravityScale(v);
 					},
-					Properties::Meta::Clamp(0.0, 1.0)),
+					Properties::Meta::DragSpeed(0.01f)),
 				Properties::MakeWith<BodyType>("BodyType", "Body Type",
 					[](const Entity& e) {
 						return e.GetComponent<Rigidbody2DComponent>().GetBodyType();
@@ -1192,10 +1192,9 @@ namespace Index {
 					[](Entity& e, float radius) {
 						Scene* s = e.GetScene();
 						if (!s) return;
-						const float clamped = std::max(radius, 0.001f);
-						e.GetComponent<CircleCollider2DComponent>().SetRadius(clamped, *s);
+						e.GetComponent<CircleCollider2DComponent>().SetRadius(radius, *s);
 					},
-					Properties::Meta::Clamp(0.001, 1000.0, 0.05f)),
+					Properties::Meta::DragSpeed(0.05f)),
 				Properties::MakeWith<bool>("Sensor", "Sensor",
 					[](const Entity& e) { return e.GetComponent<CircleCollider2DComponent>().IsSensor(); },
 					[](Entity& e, bool v) {
@@ -1265,10 +1264,9 @@ namespace Index {
 					[](Entity& e, const Vec2& localSize) {
 						Scene* s = e.GetScene();
 						if (!s) return;
-						const Vec2 clamped{ std::max(localSize.x, 0.001f), std::max(localSize.y, 0.001f) };
-						e.GetComponent<PolygonCollider2DComponent>().SetSize(clamped, *s);
+						e.GetComponent<PolygonCollider2DComponent>().SetSize(localSize, *s);
 					},
-					Properties::Meta::Clamp(0.001, 1000.0, 0.05f).WithHideStepperButtons(true)),
+					Properties::Meta::DragSpeed(0.05f).WithHideStepperButtons(true)),
 				Properties::MakeWith<bool>("Sensor", "Sensor",
 					[](const Entity& e) { return e.GetComponent<PolygonCollider2DComponent>().IsSensor(); },
 					[](Entity& e, bool v) {
@@ -1323,7 +1321,7 @@ namespace Index {
 						body.Mass = v;
 						if (body.m_Body) body.m_Body->SetMass(v);
 					},
-					Properties::Meta::Clamp(0.001, 10000.0, 0.1f)),
+					Properties::Meta::DragSpeed(0.1f)),
 				Properties::MakeWith<bool>("UseGravity", "Use Gravity",
 					[](const Entity& e) { return e.GetComponent<FastBody2DComponent>().UseGravity; },
 					[](Entity& e, bool v) {
@@ -1359,7 +1357,7 @@ namespace Index {
 					[](Entity& e, float v) {
 						e.GetComponent<FastCircleCollider2DComponent>().SetRadius(v);
 					},
-					Properties::Meta::Clamp(0.01, 100.0, 0.05f)),
+					Properties::Meta::DragSpeed(0.05f)),
 			});
 
 		// ── Audio ───────────────────────────────────────────────────
@@ -1503,7 +1501,7 @@ namespace Index {
 		sliderInfo.properties = {
 			Properties::MakeWith<float>("Value", "Value",
 				[](const Entity& e) { return e.GetComponent<SliderComponent>().Value; },
-				[](Entity& e, float v) { e.GetComponent<SliderComponent>().Value = v; },
+				[](Entity& e, float v) { auto& c = e.GetComponent<SliderComponent>(); c.Value = std::clamp(v, std::min(c.MinValue, c.MaxValue), std::max(c.MinValue, c.MaxValue)); },
 				Properties::Meta::DragSpeed(0.01f)),
 			Properties::Make("Direction",    "Direction",     &SliderComponent::Direction),
 			Properties::Make("MinValue",     "Min Value",     &SliderComponent::MinValue),
@@ -1593,7 +1591,7 @@ namespace Index {
 		inputFieldInfo.serializedName = "InputField";
 		PropertyMetadata caretBlinkMeta = Properties::Meta::Clamp(0.0, 5.0, 0.05f).WithHeader("Caret & Colors");
 		PropertyMetadata caretWidthMeta = Properties::Meta::Clamp(1.0, 5.0, 0.05f);
-		PropertyMetadata lineLimitMeta = Properties::Meta::EnabledIf<InputFieldComponent>([](const InputFieldComponent& f) { return f.Multiline; });
+		PropertyMetadata multilineMeta = Properties::Meta::EnabledIf<InputFieldComponent>([](const InputFieldComponent& f) { return f.Multiline; });
 		inputFieldInfo.properties = {
 			Properties::Make("Text",            "Text",            &InputFieldComponent::Text),
 			Properties::Make("PlaceholderText", "Placeholder",     &InputFieldComponent::PlaceholderText),
@@ -1603,7 +1601,10 @@ namespace Index {
 			Properties::Make("IsSecret",        "Secret",          &InputFieldComponent::IsSecret),
 			Properties::Make("IsReadOnly",      "Read Only",       &InputFieldComponent::IsReadOnly),
 			Properties::Make("Multiline",       "Multiline",       &InputFieldComponent::Multiline),
-			Properties::Make("LineLimit",       "Line Limit",      &InputFieldComponent::LineLimit, lineLimitMeta),
+			MakeUiEntityRef<InputFieldComponent>("VerticalScrollbarEntity", "Vertical Scrollbar", &InputFieldComponent::VerticalScrollbarEntity),
+			Properties::Make("VerticalScrollbarVisibility", "Scrollbar Visibility", &InputFieldComponent::VerticalScrollbarVisibility, multilineMeta),
+			Properties::Make("ScrollSensitivity", "Scroll Sensitivity", &InputFieldComponent::ScrollSensitivity, multilineMeta),
+			Properties::Make("LineLimit",       "Line Limit",      &InputFieldComponent::LineLimit, multilineMeta),
 			Properties::MakeVariant("TransitionMode", "Transition Mode",
 				&InputFieldComponent::TransitionMode,
 				{
@@ -1646,6 +1647,9 @@ namespace Index {
 			v.AddMember("isSecret",         Json::Value(c.IsSecret));
 			v.AddMember("isReadOnly",       Json::Value(c.IsReadOnly));
 			v.AddMember("multiline",        Json::Value(c.Multiline));
+			v.AddMember("verticalScrollbarEntity", UIEntityHandleToJson(e, c.VerticalScrollbarEntity));
+			v.AddMember("verticalScrollbarVisibility", Json::Value(static_cast<int>(c.VerticalScrollbarVisibility)));
+			v.AddMember("scrollSensitivity", Json::Value(c.ScrollSensitivity));
 			v.AddMember("caretBlinkRate",   Json::Value(c.CaretBlinkRate));
 			v.AddMember("caretWidth",       Json::Value(c.CaretWidth));
 			v.AddMember("textColor",        UIColorToJson(c.TextColor));
@@ -1678,6 +1682,9 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("isSecret"))         c.IsSecret         = m->AsBoolOr(c.IsSecret);
 			if (const Json::Value* m = v.FindMember("isReadOnly"))       c.IsReadOnly       = m->AsBoolOr(c.IsReadOnly);
 			if (const Json::Value* m = v.FindMember("multiline"))        c.Multiline        = m->AsBoolOr(c.Multiline);
+			if (const Json::Value* m = v.FindMember("verticalScrollbarEntity")) UIEntityHandleFromJson(e, *m, c.VerticalScrollbarEntity);
+			if (const Json::Value* m = v.FindMember("verticalScrollbarVisibility")) c.VerticalScrollbarVisibility = static_cast<ScrollbarVisibility>(m->AsIntOr(static_cast<int>(c.VerticalScrollbarVisibility)));
+			if (const Json::Value* m = v.FindMember("scrollSensitivity")) c.ScrollSensitivity = static_cast<float>(m->AsDoubleOr(c.ScrollSensitivity));
 			if (const Json::Value* m = v.FindMember("caretBlinkRate"))   c.CaretBlinkRate   = static_cast<float>(m->AsDoubleOr(c.CaretBlinkRate));
 			if (const Json::Value* m = v.FindMember("caretWidth"))       c.CaretWidth       = static_cast<float>(m->AsDoubleOr(c.CaretWidth));
 			if (const Json::Value* m = v.FindMember("textColor"))        c.TextColor        = UIColorFromJson(*m, c.TextColor);
@@ -2058,7 +2065,9 @@ namespace Index {
 		ComponentInfo csInfo{ "Circular Slider", "UI", ComponentCategory::Component };
 		csInfo.serializedName = "CircularSlider";
 		csInfo.properties = {
-			Properties::Make("Value",        "Value",         &CircularSliderComponent::Value,
+			Properties::MakeWith<float>("Value", "Value",
+				[](const Entity& e) { return e.GetComponent<CircularSliderComponent>().Value; },
+				[](Entity& e, float v) { auto& c = e.GetComponent<CircularSliderComponent>(); c.Value = std::clamp(v, std::min(c.MinValue, c.MaxValue), std::max(c.MinValue, c.MaxValue)); },
 				Properties::Meta::DragSpeed(0.01f)),
 			Properties::Make("MinValue",     "Min Value",     &CircularSliderComponent::MinValue),
 			Properties::Make("MaxValue",     "Max Value",     &CircularSliderComponent::MaxValue),
@@ -2076,6 +2085,12 @@ namespace Index {
 			Properties::Make("BackgroundColor", "Background", &CircularSliderComponent::BackgroundColor,
 				Properties::Meta::Header("Visual")),
 			Properties::Make("FillColor",       "Fill",       &CircularSliderComponent::FillColor),
+			Properties::MakeWith<int16_t>("SortingOrder", "Sorting Order",
+				[](const Entity& e) { return e.GetComponent<CircularSliderComponent>().SortingOrder; },
+				[](Entity& e, int16_t v) { e.GetComponent<CircularSliderComponent>().SortingOrder = v; }),
+			Properties::MakeWith<uint8_t>("SortingLayer", "Sorting Layer",
+				[](const Entity& e) { return e.GetComponent<CircularSliderComponent>().SortingLayer; },
+				[](Entity& e, uint8_t v) { e.GetComponent<CircularSliderComponent>().SortingLayer = v; }),
 			MakeUiEntityRef<CircularSliderComponent>("HandleEntity", "Handle Rect", &CircularSliderComponent::HandleEntity),
 			Properties::Make("TransitionMode", "Transition",   &CircularSliderComponent::TransitionMode,
 				Properties::Meta::Header("Handle Transition")),
@@ -2105,6 +2120,8 @@ namespace Index {
 			v.AddMember("ringSegments", Json::Value(c.RingSegments));
 			v.AddMember("background",   UIColorToJson(c.BackgroundColor));
 			v.AddMember("fill",         UIColorToJson(c.FillColor));
+			v.AddMember("sortOrder",    Json::Value(static_cast<int>(c.SortingOrder)));
+			v.AddMember("sortLayer",    Json::Value(static_cast<int>(c.SortingLayer)));
 			v.AddMember("handleEntity", UIEntityHandleToJson(e, c.HandleEntity));
 			v.AddMember("transitionMode", Json::Value(static_cast<int>(c.TransitionMode)));
 			v.AddMember("normal",   UIColorToJson(c.NormalColor));
@@ -2133,6 +2150,8 @@ namespace Index {
 			if (const Json::Value* m = v.FindMember("ringSegments"))  c.RingSegments  = m->AsIntOr(c.RingSegments);
 			if (const Json::Value* m = v.FindMember("background"))    c.BackgroundColor = UIColorFromJson(*m, c.BackgroundColor);
 			if (const Json::Value* m = v.FindMember("fill"))          c.FillColor       = UIColorFromJson(*m, c.FillColor);
+			if (const Json::Value* m = v.FindMember("sortOrder"))     c.SortingOrder    = static_cast<int16_t>(m->AsIntOr(c.SortingOrder));
+			if (const Json::Value* m = v.FindMember("sortLayer"))     c.SortingLayer    = static_cast<uint8_t>(m->AsIntOr(c.SortingLayer));
 			if (const Json::Value* m = v.FindMember("handleEntity"))  UIEntityHandleFromJson(e, *m, c.HandleEntity);
 			if (const Json::Value* m = v.FindMember("transitionMode")) c.TransitionMode = static_cast<UITransitionMode>(m->AsIntOr(static_cast<int>(c.TransitionMode)));
 			if (const Json::Value* m = v.FindMember("normal"))   c.NormalColor   = UIColorFromJson(*m, c.NormalColor);

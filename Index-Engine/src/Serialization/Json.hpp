@@ -73,6 +73,15 @@ namespace Index::Json {
 		const Value* FindMember(std::string_view key) const;
 
 		Value& AddMember(std::string key, Value value);
+
+		// Append a member WITHOUT scanning for an existing key. ONLY safe when the caller
+		// guarantees the key is unique (e.g. decoding a freshly-serialized object, whose
+		// members were already de-duplicated at write time). Skips AddMember's O(n) dup scan,
+		// turning a bulk object decode from O(n^2) into O(n).
+		Value& AddMemberUnchecked(std::string key, Value value);
+		// Pre-size the backing member vector to avoid reallocation during a known-size decode.
+		void ReserveMembers(std::size_t count);
+
 		Value& Append(Value value);
 
 		// Structural equality (Int64(5) == UInt64(5) == Double(5.0)).

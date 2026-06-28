@@ -80,6 +80,16 @@ namespace Index {
 		b2ShapeId m_ShapeId{ b2_nullShapeId };
 
 		EntityHandle m_EntityHandle{ entt::null };
+
+		// Logical state — authoritative when there is no live b2 shape (prefab editing
+		// runs in a detached scene that never creates one). Setters mirror into Box2D
+		// when valid; getters read Box2D when valid, else these. Defaults match a
+		// freshly created shape (see Box2DWorld::CreateShape).
+		float m_Friction{ 0.3f };
+		float m_Bounciness{ 0.0f };
+		uint64_t m_Layer{ 1 };
+		bool m_Sensor{ false };
+		bool m_RegisterContacts{ false };
 	private:
 		void SetRotation(float radiant);
 		void SetPositionRotation(const Vec2& position, float radiant);

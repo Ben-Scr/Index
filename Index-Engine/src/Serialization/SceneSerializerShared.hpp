@@ -33,6 +33,24 @@ namespace Index::SceneSerializerStorage {
 	INDEX_API bool ReadRootFromFile(const std::string& path, Json::Value& outRoot, std::string* outError = nullptr);
 	INDEX_API bool WriteRootToFile(const std::string& path, const Json::Value& root, SceneSerializationFormat format);
 	INDEX_API bool IsBinaryData(const std::vector<std::uint8_t>& bytes);
+
+	// Cursor into a binary scene's "entities" array. `bytes` must outlive the cursor.
+	struct BinarySceneEntityCursor {
+		const std::vector<std::uint8_t>* bytes = nullptr;
+		std::size_t offset = 0;        // byte offset of the next entity element
+		std::uint32_t remaining = 0;   // entities not yet streamed
+	};
+
+	// Decode a binary scene's header (root minus the "entities" array) into outHeader and
+	// position outCursor at the first entity. Pull entities with ReadNextBinaryEntity. This
+	// avoids materializing the whole-file DOM; binary scenes only. Returns false on error.
+	INDEX_API bool BeginBinaryScene(const std::vector<std::uint8_t>& bytes, Json::Value& outHeader,
+		BinarySceneEntityCursor& outCursor, std::string* outError = nullptr);
+
+	// Decode the next entity into outEntity, advancing the cursor. Returns false when the
+	// array is exhausted (outError stays empty) or on a decode error (outError is set).
+	INDEX_API bool ReadNextBinaryEntity(BinarySceneEntityCursor& cursor, Json::Value& outEntity,
+		std::string* outError = nullptr);
 }
 
 namespace Index::Detail {

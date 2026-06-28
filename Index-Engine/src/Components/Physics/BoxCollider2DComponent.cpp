@@ -6,6 +6,19 @@
 
 namespace Index {
 	namespace {
+		// A zero/near-zero half-extent makes b2MakeBox a zero-area polygon; Box2D's
+		// mass-from-shapes then divides by area 0 -> NaN centre of mass -> NaN body
+		// transform once the body is Dynamic (Position reads -nan(ind)). Clamp so a
+		// degenerate collider can never poison the simulation. The floor is large
+		// enough that mass (= density * (2h)^2) is not vanishingly small either: a
+		// near-zero mass gives a huge inverse mass and the solver explodes velocities
+		// to inf ("Box2D: unstable:"). abs() because a flipped (negative) transform
+		// scale yields the same symmetric box.
+		constexpr float k_MinBoxHalfExtent = 1e-2f;
+		inline float SafeHalfExtent(float halfExtent) {
+			return std::max(std::abs(halfExtent), k_MinBoxHalfExtent);
+		}
+
 		const Transform2DComponent* TryGetTransform(const Scene& scene, EntityHandle entity, const char* context) {
 			if (entity == entt::null || !scene.IsValid(entity) || !scene.HasComponent<Transform2DComponent>(entity)) {
 				IDX_CORE_WARN_TAG("BoxCollider2D", "{} skipped because entity {} has no Transform2DComponent", context, static_cast<uint32_t>(entity));
@@ -17,15 +30,20 @@ namespace Index {
 	}
 
 	void BoxCollider2DComponent::SetScale(const Vec2& scale, const Scene& scene) {
-		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetScale");
-		if (!tr) return;
-
+		// Store the logical size first, unconditionally. Prefab editing runs in a
+		// detached scene where the construct hook never created a b2 shape and
+		// m_EntityHandle is null; the old order bailed here and dropped the edit, so
+		// the inspector value snapped back. When a live shape exists it is updated
+		// below, otherwise the stored size is enough to serialize and rebuild on spawn.
 		m_LocalSize = scale;
 
 		if (!b2Shape_IsValid(m_ShapeId)) return;
 
+		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetScale");
+		if (!tr) return;
+
 		Vec2 center = this->GetCenter();
-		b2Polygon polygon = b2MakeOffsetBox(tr->Scale.x * scale.x * 0.5f, tr->Scale.y * scale.y * 0.5f, b2Vec2(center.x, center.y), b2Rot_identity);
+		b2Polygon polygon = b2MakeOffsetBox(SafeHalfExtent(tr->Scale.x * scale.x * 0.5f), SafeHalfExtent(tr->Scale.y * scale.y * 0.5f), b2Vec2(center.x, center.y), b2Rot_identity);
 		b2Shape_SetPolygon(m_ShapeId, &polygon);
 		m_LastAppliedScale = tr->Scale;
 		m_LastAppliedLocalSize = m_LocalSize;
@@ -40,6 +58,7 @@ namespace Index {
 	}
 
 	void BoxCollider2DComponent::SetSensor(bool sensor, Scene& scene) {
+		m_Sensor = sensor;
 		if (!IsValid() || IsSensor() == sensor) {
 			return;
 		}
@@ -100,8 +119,8 @@ namespace Index {
 
 		Vec2 center = this->GetCenter();
 		b2Polygon polygon = b2MakeOffsetBox(
-			tr->Scale.x * m_LocalSize.x * 0.5f,
-			tr->Scale.y * m_LocalSize.y * 0.5f,
+			SafeHalfExtent(tr->Scale.x * m_LocalSize.x * 0.5f),
+			SafeHalfExtent(tr->Scale.y * m_LocalSize.y * 0.5f),
 			b2Vec2(center.x, center.y),
 			b2Rot_identity);
 		b2Shape_SetPolygon(m_ShapeId, &polygon);
@@ -110,13 +129,14 @@ namespace Index {
 	}
 
 	void BoxCollider2DComponent::SetCenter(const Vec2& center, const Scene& scene) {
+		m_Center = center;
+		if (!b2Shape_IsValid(m_ShapeId)) return;
 		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetCenter");
 		if (!tr) return;
-		if (!b2Shape_IsValid(m_ShapeId)) return;
 
 		b2Polygon polygon = b2MakeOffsetBox(
-			tr->Scale.x * m_LocalSize.x * 0.5f,
-			tr->Scale.y * m_LocalSize.y * 0.5f,
+			SafeHalfExtent(tr->Scale.x * m_LocalSize.x * 0.5f),
+			SafeHalfExtent(tr->Scale.y * m_LocalSize.y * 0.5f),
 			b2Vec2(center.x, center.y),
 			b2Rot_identity);
 		b2Shape_SetPolygon(m_ShapeId, &polygon);
@@ -125,7 +145,7 @@ namespace Index {
 	}
 
 	Vec2 BoxCollider2DComponent::GetCenter() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return Vec2{ 0.0f, 0.0f };
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Center;
 		b2Polygon polygon = b2Shape_GetPolygon(m_ShapeId);
 		return Vec2(polygon.centroid.x, polygon.centroid.y);
 	}

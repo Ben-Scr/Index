@@ -70,8 +70,15 @@ namespace Index {
 		shapeDef.enableSensorEvents = isSensor;
 
 		if (shapeType == ShapeType::Square) {
-
-			b2Polygon b2Polygon = b2MakeBox(0.5f * transform.Scale.x, 0.5f * transform.Scale.y);
+			// Never build a zero-area box: a degenerate polygon makes Box2D's
+			// mass-from-shapes divide by area 0, NaN-ing a Dynamic body's transform.
+			// The floor also keeps mass (= density * (2h)^2) from being vanishingly
+			// small, which would give a huge inverse mass and explode the solver
+			// ("Box2D: unstable:"). Matches k_MinBoxHalfExtent in BoxCollider2DComponent.
+			constexpr float kMinBoxHalfExtent = 1e-2f;
+			const float hx = std::max(std::abs(0.5f * transform.Scale.x), kMinBoxHalfExtent);
+			const float hy = std::max(std::abs(0.5f * transform.Scale.y), kMinBoxHalfExtent);
+			b2Polygon b2Polygon = b2MakeBox(hx, hy);
 			shapeId = b2CreatePolygonShape(bodyId, &shapeDef, &b2Polygon);
 		}
 		else if (shapeType == ShapeType::Circle)

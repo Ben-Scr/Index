@@ -21,12 +21,11 @@ namespace Index {
 	}
 
 	void CircleCollider2DComponent::SetRadius(float radius, const Scene& scene) {
-		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetRadius");
-		if (!tr) return;
-
 		m_LocalRadius = radius;
 
 		if (!b2Shape_IsValid(m_ShapeId)) return;
+		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetRadius");
+		if (!tr) return;
 
 		const Vec2 center = this->GetCenter();
 		b2Circle circle{ b2Vec2{ center.x, center.y }, ComputeWorldRadius(*tr, radius) };
@@ -44,6 +43,7 @@ namespace Index {
 	}
 
 	void CircleCollider2DComponent::SetSensor(bool sensor, Scene& scene) {
+		m_Sensor = sensor;
 		if (!IsValid() || IsSensor() == sensor) {
 			return;
 		}
@@ -100,9 +100,10 @@ namespace Index {
 	}
 
 	void CircleCollider2DComponent::SetCenter(const Vec2& center, const Scene& scene) {
+		m_Center = center;
+		if (!b2Shape_IsValid(m_ShapeId)) return;
 		const Transform2DComponent* tr = TryGetTransform(scene, m_EntityHandle, "SetCenter");
 		if (!tr) return;
-		if (!b2Shape_IsValid(m_ShapeId)) return;
 
 		b2Circle circle{ b2Vec2{ center.x, center.y }, ComputeWorldRadius(*tr, m_LocalRadius) };
 		b2Shape_SetCircle(m_ShapeId, &circle);
@@ -111,7 +112,7 @@ namespace Index {
 	}
 
 	Vec2 CircleCollider2DComponent::GetCenter() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return Vec2{ 0.0f, 0.0f };
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Center;
 		b2Circle circle = b2Shape_GetCircle(m_ShapeId);
 		return Vec2(circle.center.x, circle.center.y);
 	}

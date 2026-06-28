@@ -77,6 +77,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -85,6 +86,21 @@
 
 namespace Index {
 	namespace {
+		// Local "HH:MM:SS" stamp for a console entry, captured at log-receipt time.
+		std::string FormatLogClockTimestamp() {
+			const std::time_t now = std::time(nullptr);
+			std::tm local{};
+#if defined(_WIN32)
+			if (localtime_s(&local, &now) != 0) return "--:--:--";
+#else
+			if (!localtime_r(&now, &local)) return "--:--:--";
+#endif
+			char buffer[16];
+			std::snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d",
+				local.tm_hour, local.tm_min, local.tm_sec);
+			return std::string(buffer);
+		}
+
 		// Awakens entities that already exist when play begins; runtime-spawned ones are
 		// handled at instantiation (SceneSerializer::InstantiatePrefab). Both share the
 		// per-component PlayOnAwakeIfEnabled() rule.
@@ -712,7 +728,80 @@ namespace Index {
 		scene.MarkDirty();
 	}
 
+	void ImGuiEditorLayer::ApplyUIGroupTranslate(Scene& scene, const Vec2& deltaCanvas) {
+		if (deltaCanvas.x == 0.0f && deltaCanvas.y == 0.0f) return;
+
+		// Move every selected UI root by the same canvas-space delta; descendants
+		// follow through the layout. AnchoredPosition lives in the parent's space, so
+		// divide the shared delta by each root's parentScale (world / local scale).
+		for (EntityHandle handle : FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene))) {
+			RectTransform2DComponent* rect = nullptr;
+			if (!scene.TryGetComponent<RectTransform2DComponent>(handle, rect) || !rect) continue;
+			if (scene.HasComponent<Transform2DComponent>(handle)) continue;
+
+			const Vec2 parentScale{
+				rect->LocalScale.x != 0.0f ? rect->Scale.x / rect->LocalScale.x : rect->Scale.x,
+				rect->LocalScale.y != 0.0f ? rect->Scale.y / rect->LocalScale.y : rect->Scale.y
+			};
+			if (parentScale.x != 0.0f) rect->AnchoredPosition.x += deltaCanvas.x / parentScale.x;
+			if (parentScale.y != 0.0f) rect->AnchoredPosition.y += deltaCanvas.y / parentScale.y;
+		}
+		scene.MarkDirty();
+	}
+
+	void ImGuiEditorLayer::ApplyUIGroupRotationScale(Scene& scene, const Vec2& pivotWorld,
+		float deltaAngle, const Vec2& scaleFactor, float worldScale) {
+		const bool hasScale = (scaleFactor.x != 1.0f || scaleFactor.y != 1.0f);
+		const bool hasRotation = (deltaAngle != 0.0f);
+		if ((!hasScale && !hasRotation) || worldScale == 0.0f) return;
+
+		// Transform every selected UI root about the group pivot (world space). Each
+		// root's pivot is orbited/scaled about `pivotWorld`; the resulting world
+		// displacement folds back into AnchoredPosition, and the increment lands on
+		// LocalRotation / LocalScale. For a single selection the pivot is the entity's
+		// own, so the displacement is zero and only the authored field changes.
+		for (EntityHandle handle : FilterSelectedHierarchyRoots(scene, GetSelectedEntities(scene))) {
+			RectTransform2DComponent* rect = nullptr;
+			if (!scene.TryGetComponent<RectTransform2DComponent>(handle, rect) || !rect) continue;
+			if (scene.HasComponent<Transform2DComponent>(handle)) continue;
+
+			const Vec2 bl = rect->GetBottomLeft();
+			const Vec2 tr = rect->GetTopRight();
+			const Vec2 pivotCanvas = rect->ResolvedValid
+				? rect->ResolvedPivot
+				: Vec2{ (bl.x + tr.x) * 0.5f, (bl.y + tr.y) * 0.5f };
+			const Vec2 origWorld{ pivotCanvas.x * worldScale, pivotCanvas.y * worldScale };
+
+			Vec2 p = origWorld;
+			if (hasScale) {
+				p = { pivotWorld.x + (p.x - pivotWorld.x) * scaleFactor.x,
+					  pivotWorld.y + (p.y - pivotWorld.y) * scaleFactor.y };
+			}
+			if (hasRotation) {
+				p = pivotWorld + Rotate(p - pivotWorld, deltaAngle);
+			}
+
+			const Vec2 deltaCanvas{ (p.x - origWorld.x) / worldScale, (p.y - origWorld.y) / worldScale };
+			const Vec2 parentScale{
+				rect->LocalScale.x != 0.0f ? rect->Scale.x / rect->LocalScale.x : rect->Scale.x,
+				rect->LocalScale.y != 0.0f ? rect->Scale.y / rect->LocalScale.y : rect->Scale.y
+			};
+			if (parentScale.x != 0.0f) rect->AnchoredPosition.x += deltaCanvas.x / parentScale.x;
+			if (parentScale.y != 0.0f) rect->AnchoredPosition.y += deltaCanvas.y / parentScale.y;
+
+			if (hasRotation) rect->LocalRotation += deltaAngle;
+			if (hasScale) {
+				rect->LocalScale.x *= scaleFactor.x;
+				rect->LocalScale.y *= scaleFactor.y;
+			}
+		}
+		scene.MarkDirty();
+	}
+
 	void ImGuiEditorLayer::BeginGizmoTransformDrag(Scene& scene) {
+		// New drag — clear any alignment-snap offset left over from the previous one.
+		m_AlignSnapDebt = Vec2{ 0.0f, 0.0f };
+
 		// Recording during play is pointless — those edits are discarded on Stop.
 		if (Application::GetIsPlaying()) return;
 
@@ -886,6 +975,10 @@ namespace Index {
 			// try_lock to avoid blocking worker threads; entries that miss the lock go to a per-thread buffer and are drained on the next successful lock (entries from threads that never log again are lost, acceptable).
 			thread_local std::vector<LogEntry> tlBuf;
 
+			// Stamp at receipt (emit time) so ordering survives the buffered/deferred path.
+			LogEntry record{ entry.Message, entry.Level };
+			record.Timestamp = FormatLogClockTimestamp();
+
 			if (state->Mutex.try_lock()) {
 				std::lock_guard<std::mutex> guard(state->Mutex, std::adopt_lock);
 				if (!tlBuf.empty()) {
@@ -894,10 +987,10 @@ namespace Index {
 						std::make_move_iterator(tlBuf.end()));
 					tlBuf.clear();
 				}
-				state->PendingEntries.push_back({ entry.Message, entry.Level });
+				state->PendingEntries.push_back(std::move(record));
 			}
 			else {
-				tlBuf.push_back({ entry.Message, entry.Level });
+				tlBuf.push_back(std::move(record));
 			}
 			});
 	}
@@ -1246,6 +1339,11 @@ namespace Index {
 		m_LogEntries.push_back(std::move(entry));
 		if (m_LogEntries.size() > 2000) {
 			m_LogEntries.erase(m_LogEntries.begin(), m_LogEntries.begin() + 500);
+			// The erase shifts every surviving entry down by 500; re-pin the selection to the same
+			// log line (or drop it if that line was trimmed) so the highlight and Copy stay correct.
+			if (m_SelectedLogIndex >= 0) {
+				m_SelectedLogIndex = m_SelectedLogIndex >= 500 ? m_SelectedLogIndex - 500 : -1;
+			}
 		}
 	}
 
@@ -1314,6 +1412,7 @@ namespace Index {
 
 	void ImGuiEditorLayer::ClearLogEntries() {
 		m_LogEntries.clear();
+		m_SelectedLogIndex = -1;
 		if (m_LogDispatchState) {
 			std::scoped_lock lock(m_LogDispatchState->Mutex);
 			m_LogDispatchState->PendingEntries.clear();
@@ -1644,9 +1743,8 @@ namespace Index {
 				ImGui::SetTooltip("Launch Standalone (disabled — no project loaded)");
 			else
 				ImGui::SetTooltip(
-					"Saves the project and spawns Index-Runtime.exe in a separate\n"
-					"window. Use this to verify aspect-lock, OS input, fullscreen\n"
-					"mode, and other behaviour the Game View can't fully mirror.");
+					"Launches the game in\n"
+					"a separate window.");
 		}
 		ImGui::SameLine();
 		const char* statusText = !isPlaying ? "Editor" : (isPaused ? "Paused" : "Playing");
@@ -1709,7 +1807,21 @@ namespace Index {
 			return;
 		}
 
-		// Flush project settings; scene files are not auto-saved (standalone shows on-disk state).
+		// Persist the active scene so the standalone runtime (which loads scene
+		// files from disk) reflects the current edits. Skip in Play mode or during
+		// a reserialize: saving transient play-mode state would clobber the authored
+		// scene, and the reserialize worker owns the .scene tree.
+		if (!Application::GetIsPlaying() && m_ReserializeState == 0) {
+			if (Scene* active = SceneManager::Get().GetActiveScene(); active && active->IsDirty()) {
+				const std::string scenePath = project->GetSceneFilePath(active->GetName());
+				if (!scenePath.empty() && SceneSerializer::SaveToFile(*active, scenePath)) {
+					active->ClearDirty();
+					project->LastOpenedScene = active->GetName();
+				}
+			}
+		}
+
+		// Flush project settings (LastOpenedScene + prefs) to disk.
 		project->Save();
 
 		const std::string runtimeStr = runtimePath.string();
@@ -1862,6 +1974,13 @@ namespace Index {
 			});
 
 			for (const auto& [sceneName, scenePath] : m_PlayModeScenes) {
+				// Reloading a scene here runs content replacement (BeginContentReplacement →
+				// re-awake), which tears down and re-awakes systems incl. ScriptSystem. A
+				// failure in that re-awake re-throws (Scene::EndContentReplacement); left
+				// unguarded it propagates out of play-exit and HARD-CRASHES the editor — most
+				// visibly on the 2nd play session of a scene round-trip. Restore is editor-only
+				// cleanup: log a per-scene failure and keep going rather than die.
+				try {
 				if (stillLoaded.count(sceneName) > 0) {
 					if (auto loaded = SceneManager::Get().GetLoadedScene(sceneName).lock()) {
 						SceneSerializer::LoadFromFile(*loaded, scenePath);
@@ -1870,21 +1989,45 @@ namespace Index {
 				else {
 					// A play-mode script may have Single-unloaded the editor's working
 					// scene. Its name isn't a registered definition (the editor loads
-					// scene content into the one "SampleScene" definition), so reloading
+					// scene content into the one internal "$EditorWorkingScene" definition), so reloading
 					// by name would fail and leave the editor with no active scene —
 					// blanking the viewport and crashing on close. Register the
 					// definition from the snapshot path so the reload succeeds.
+					//
+					// Crucially, give it a file-loading OnLoad rather than a bare definition.
+					// A bare def (no OnLoad) persists in the SceneManager and poisons later
+					// in-play LoadScene(name) calls: ScriptBindings sees the name is "already
+					// defined", skips attaching its own file loader, and instantiates this empty
+					// def — so the scene silently comes back empty on the next play session.
+					// Loading via OnLoad also populates entities before systems awake, matching
+					// the normal load pipeline (and how the standalone build always behaves).
 					if (!SceneManager::Get().HasSceneDefinition(sceneName)) {
-						SceneManager::Get().RegisterScene(sceneName);
+						const std::string path = scenePath;
+						SceneManager::Get().RegisterScene(sceneName).OnLoad([path](Scene& s) {
+							if (File::Exists(path)) {
+								SceneSerializer::LoadFromFile(s, path);
+							}
+						});
 					}
-					if (auto loaded = SceneManager::Get().LoadSceneAdditive(sceneName).lock()) {
-						SceneSerializer::LoadFromFile(*loaded, scenePath);
-					}
+					SceneManager::Get().LoadSceneAdditive(sceneName);
+				}
+				}
+				catch (const std::exception& e) {
+					IDX_ERROR_TAG("PlayMode", "Failed to restore scene '{}' after play mode: {}", sceneName, e.what());
+				}
+				catch (...) {
+					IDX_ERROR_TAG("PlayMode", "Failed to restore scene '{}' after play mode (unknown error)", sceneName);
 				}
 			}
 
-			if (!m_PlayModeActiveScene.empty()) {
-				SceneManager::Get().SetActiveScene(m_PlayModeActiveScene);
+			// Guarantee a valid active scene even if a snapshot scene failed to reload:
+			// otherwise SetActiveScene leaves the prior (now-unloaded) pointer and the editor
+			// renders against nothing. Fall back to any still-loaded scene.
+			if (!m_PlayModeActiveScene.empty() && !SceneManager::Get().SetActiveScene(m_PlayModeActiveScene)) {
+				const std::vector<std::string> loadedNames = SceneManager::Get().GetLoadedSceneNames();
+				if (!loadedNames.empty()) {
+					SceneManager::Get().SetActiveScene(loadedNames.front());
+				}
 			}
 
 			m_PlayModeScenes.clear();
@@ -2896,7 +3039,7 @@ namespace Index {
 				created.GetComponent<RectTransform2DComponent>().SizeDelta = Vec2{ 100.0f, 100.0f };
 				auto& createdText = created.GetComponent<TextRendererComponent>();
 				createdText.HAlign = TextAlignment::Center;
-				createdText.FontSize = 64.0f;
+				createdText.FontSize = 32.0f;
 				if (!created.HasComponent<NameComponent>()) {
 					created.AddComponent<NameComponent>(NameComponent("Text"));
 				}
@@ -3423,6 +3566,12 @@ namespace Index {
 			m_LastEntitySelectionIndex = -1;
 		}
 		ImGui::Separator();
+
+		// Pin the header above (prefab breadcrumb + search bar) and scroll only the
+		// entity list: everything below lives in its own child so the search bar
+		// stays visible no matter how far the hierarchy is scrolled.
+		ImGui::BeginChild("##HierarchyScroll", ImVec2(0.0f, 0.0f),
+			ImGuiChildFlags_None, ImGuiWindowFlags_None);
 
 		Scene* activeScene = GetContextScene();
 
@@ -4422,6 +4571,9 @@ namespace Index {
 			ClearEntitySelection();
 		}
 
+		ImGui::EndChild(); // ##HierarchyScroll
+
+		// RootAndChildWindows so the scroll child counts as panel focus for shortcuts.
 		m_IsEntitiesPanelFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 		if (scaleHierarchyFont) {
 			ImGui::PopFont();
@@ -4619,10 +4771,45 @@ namespace Index {
 			std::snprintf(nameBuf, sizeof(nameBuf), "%s", m_InspectorCache.FirstName.c_str());
 		}
 		const char* nameHint = nameUniform ? "Entity" : "-";
-		ImGui::SetNextItemWidth(-1);
+		// Reserve a square button on the right of the name field for the
+		// component-view selector (Normal / Detailed).
+		const float viewButtonWidth = ImGui::GetFrameHeight();
+		const float viewButtonSpacing = ImGui::GetStyle().ItemInnerSpacing.x;
+		ImGui::SetNextItemWidth(-(viewButtonWidth + viewButtonSpacing));
 		const bool nameSubmitted = ImGui::InputTextWithHint(
 			"##EntityName", nameHint, nameBuf, sizeof(nameBuf),
 			ImGuiInputTextFlags_EnterReturnsTrue);
+
+		ImGui::SameLine(0.0f, viewButtonSpacing);
+		if (Icons::IconButton("##ComponentViewMode", Icons::Type::ArrowDown,
+			ImVec2(viewButtonWidth, viewButtonWidth))) {
+			ImGui::OpenPopup("ComponentViewModePopup");
+		}
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Component view: %s",
+				EditorPreferences::GetInspectorComponentView() == InspectorComponentView::Detailed
+					? "Detailed" : "Normal");
+		}
+		if (ImGui::BeginPopup("ComponentViewModePopup")) {
+			ImGui::TextDisabled("Component View");
+			ImGui::Separator();
+			const InspectorComponentView currentView = EditorPreferences::GetInspectorComponentView();
+			if (ImGui::MenuItem("Normal", nullptr, currentView == InspectorComponentView::Normal)) {
+				EditorPreferences::SetInspectorComponentView(InspectorComponentView::Normal);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Show editable component fields only.");
+			}
+			if (ImGui::MenuItem("Detailed", nullptr, currentView == InspectorComponentView::Detailed)) {
+				EditorPreferences::SetInspectorComponentView(InspectorComponentView::Detailed);
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip("Also show read-only / computed script values\n"
+					"(get-only properties, const and readonly fields).");
+			}
+			ImGui::EndPopup();
+		}
+
 		if (nameSubmitted) {
 			std::string newName(nameBuf);
 			for (Entity& e : selectedEntities) {

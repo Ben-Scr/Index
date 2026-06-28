@@ -77,6 +77,7 @@ namespace Index {
 		}
 		if (m_IsSimulating) {
 			const bool scaleOverLife = ParticleSettings.ScaleOverLifetime.Enabled;
+			const bool colorOverLife = ParticleSettings.ColorOverLifetime.Enabled;
 			for (auto& particle : m_Particles) {
 				if (ParticleSettings.UseGravity) {
 					particle.Velocity += ParticleSettings.Gravity * deltaTime;
@@ -84,11 +85,16 @@ namespace Index {
 
 				particle.Transform.Position += particle.Velocity * deltaTime;
 
-				if (scaleOverLife) {
+				if (scaleOverLife || colorOverLife) {
 					const float age01 = particle.StartLifeTime > 0.f
 						? std::clamp(1.0f - particle.LifeTime / particle.StartLifeTime, 0.0f, 1.0f)
 						: 1.0f;
-					particle.Transform.Scale = particle.StartScale * ParticleSettings.ScaleOverLifetime.Evaluate(age01);
+					if (scaleOverLife) {
+						particle.Transform.Scale = particle.StartScale * ParticleSettings.ScaleOverLifetime.Evaluate(age01);
+					}
+					if (colorOverLife) {
+						particle.Color = particle.StartColor * ParticleSettings.ColorOverLifetime.Gradient.Evaluate(age01);
+					}
 				}
 			}
 
@@ -169,6 +175,7 @@ namespace Index {
 			particle.Transform.Scale = scale;
 			particle.StartScale = scale;
 			particle.Color = ParticleSettings.UseRandomColors ? Index::Color(Random::NextFloat(0.f, 1.f), Random::NextFloat(0.f, 1.f), Random::NextFloat(0.f, 1.f)) : RenderingSettings.Color;
+			particle.StartColor = particle.Color;
 			m_Particles.push_back(particle);
 
 			if (m_Particles.size() >= maxParticles)

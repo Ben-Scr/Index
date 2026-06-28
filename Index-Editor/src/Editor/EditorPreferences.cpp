@@ -40,6 +40,8 @@ namespace Index {
 			int EditorFontZoomPercent = EditorPreferences::k_DefaultEditorFontZoomPercent;
 			float HierarchyRowScale = EditorPreferences::k_DefaultHierarchyRowScale;
 
+			InspectorComponentView InspectorView = InspectorComponentView::Normal;
+
 			bool RunInBackground = true;
 			bool ShowFileExtensions = false;
 			bool AutoRecompileScripts = true;
@@ -100,6 +102,19 @@ namespace Index {
 			if (value == "SystemDefault") return EditorThemeMode::SystemDefault;
 			if (value == "Custom")        return EditorThemeMode::Custom;
 			return EditorThemeMode::SystemDefault;
+		}
+
+		const char* InspectorViewToString(InspectorComponentView view) {
+			switch (view) {
+				case InspectorComponentView::Normal:   return "Normal";
+				case InspectorComponentView::Detailed: return "Detailed";
+			}
+			return "Normal";
+		}
+
+		InspectorComponentView InspectorViewFromString(std::string_view value) {
+			if (value == "Detailed") return InspectorComponentView::Detailed;
+			return InspectorComponentView::Normal;
 		}
 
 		int NormalizeFontZoomPercent(int percent) {
@@ -255,6 +270,9 @@ namespace Index {
 			s.HierarchyRowScale = ClampHierarchyRowScale(
 				static_cast<float>(v->AsDoubleOr(k_DefaultHierarchyRowScale)));
 		}
+		if (const Json::Value* v = root.FindMember("InspectorComponentView")) {
+			s.InspectorView = InspectorViewFromString(v->AsStringOr("Normal"));
+		}
 		if (const Json::Value* v = root.FindMember("ShowFileExtensions")) {
 			s.ShowFileExtensions = v->AsBoolOr(false);
 		}
@@ -367,6 +385,7 @@ namespace Index {
 		root.AddMember("EditorFontAssetId", Json::Value(std::to_string(s.EditorFontAssetId)));
 		root.AddMember("EditorFontZoomPercent", Json::Value(s.EditorFontZoomPercent));
 		root.AddMember("HierarchyRowScale", Json::Value(static_cast<double>(s.HierarchyRowScale)));
+		root.AddMember("InspectorComponentView", Json::Value(std::string(InspectorViewToString(s.InspectorView))));
 		root.AddMember("RunInBackground", Json::Value(s.RunInBackground));
 		root.AddMember("ShowFileExtensions", Json::Value(s.ShowFileExtensions));
 		root.AddMember("AutoRecompileScripts", Json::Value(s.AutoRecompileScripts));
@@ -535,6 +554,16 @@ namespace Index {
 		const float clamped = ClampHierarchyRowScale(value);
 		if (S().HierarchyRowScale == clamped) return;
 		S().HierarchyRowScale = clamped;
+		Save();
+	}
+
+	InspectorComponentView EditorPreferences::GetInspectorComponentView() {
+		return S().InspectorView;
+	}
+
+	void EditorPreferences::SetInspectorComponentView(InspectorComponentView value) {
+		if (S().InspectorView == value) return;
+		S().InspectorView = value;
 		Save();
 	}
 

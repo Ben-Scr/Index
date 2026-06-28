@@ -11,13 +11,17 @@
 
 #include <webgpu/webgpu_cpp.h>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/matrix.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cfloat>
 #include <span>
 #include <unordered_map>
+#include <utility>
 
 
 namespace Index {
@@ -89,6 +93,89 @@ namespace Index {
 			out[cursor++] = PosColorVertex{ x0, y0, 0.0f, rgba };
 			out[cursor++] = PosColorVertex{ x1, y1, 0.0f, rgba };
 			out[cursor++] = PosColorVertex{ x2, y2, 0.0f, rgba };
+		}
+
+		// World-space AABB of the region visible under `vp` — derived from the SAME matrix
+		// the scene is rendered with, so the gizmo cull can never disagree with what's on
+		// screen (no dependency on a cached per-camera viewport AABB, which goes stale when
+		// the camera moves). Set once per RenderWithVP; read by the Build* funcs below.
+		AABB g_CullAABB{ Vec2{ 0.0f, 0.0f }, Vec2{ 0.0f, 0.0f } };
+		bool g_CullActive = false;
+
+		AABB ViewAABBFromVP(const glm::mat4& vp) {
+			const glm::mat4 inv = glm::inverse(vp);
+			Vec2 mn{ FLT_MAX, FLT_MAX };
+			Vec2 mx{ -FLT_MAX, -FLT_MAX };
+			const glm::vec4 corners[4] = {
+				{ -1.0f, -1.0f, 0.0f, 1.0f }, {  1.0f, -1.0f, 0.0f, 1.0f },
+				{  1.0f,  1.0f, 0.0f, 1.0f }, { -1.0f,  1.0f, 0.0f, 1.0f },
+			};
+			for (const glm::vec4& c : corners) {
+				const glm::vec4 w = inv * c;
+				const float iw = (w.w != 0.0f) ? (1.0f / w.w) : 1.0f;
+				const float x = w.x * iw, y = w.y * iw;
+				mn.x = x < mn.x ? x : mn.x; mn.y = y < mn.y ? y : mn.y;
+				mx.x = x > mx.x ? x : mx.x; mx.y = y > mx.y ? y : mx.y;
+			}
+			return AABB{ mn, mx };
+		}
+		bool GizmoVisibleBounds(const Vec2& center, float radius) {
+			if (!g_CullActive) return true;
+			return center.x + radius >= g_CullAABB.Min.x && center.x - radius <= g_CullAABB.Max.x
+				&& center.y + radius >= g_CullAABB.Min.y && center.y - radius <= g_CullAABB.Max.y;
+		}
+		bool GizmoVisibleSquare(const Square& sq) {
+			// Half-diagonal radius bounds the square at any rotation.
+			return GizmoVisibleBounds(sq.Center,
+				std::sqrt(sq.HalfExtents.x * sq.HalfExtents.x + sq.HalfExtents.y * sq.HalfExtents.y));
+		}
+		bool GizmoVisibleSegment(const Vec2& a, const Vec2& b) {
+			if (!g_CullActive) return true;
+			const float minx = a.x < b.x ? a.x : b.x, maxx = a.x > b.x ? a.x : b.x;
+			const float miny = a.y < b.y ? a.y : b.y, maxy = a.y > b.y ? a.y : b.y;
+			return maxx >= g_CullAABB.Min.x && minx <= g_CullAABB.Max.x
+				&& maxy >= g_CullAABB.Min.y && miny <= g_CullAABB.Max.y;
+		}
+		// Thick lines render as a quad expanded by halfWidth perpendicular AND extended by
+		// halfWidth at each end (square caps), so pad the segment AABB by halfWidth on all
+		// sides — else a near-edge thick line whose quad pokes on-screen would be wrongly culled.
+		bool GizmoVisibleThickSegment(const Vec2& a, const Vec2& b, float halfWidth) {
+			if (!g_CullActive) return true;
+			const float minx = (a.x < b.x ? a.x : b.x) - halfWidth, maxx = (a.x > b.x ? a.x : b.x) + halfWidth;
+			const float miny = (a.y < b.y ? a.y : b.y) - halfWidth, maxy = (a.y > b.y ? a.y : b.y) + halfWidth;
+			return maxx >= g_CullAABB.Min.x && minx <= g_CullAABB.Max.x
+				&& maxy >= g_CullAABB.Min.y && miny <= g_CullAABB.Max.y;
+		}
+
+		// DISTANCE-PRIORITIZED render budget. The old budget dropped the *tail* of the emission
+		// (entity-iteration) order once cumulative visible cost passed Gizmo::s_MaxVertices. That
+		// flickered: the dropped set reshuffled every frame as the camera moved gizmos in/out of the
+		// cull region (so the cumulative cutoff slid) or as ECS storage reordered on entity destroy,
+		// so the gizmos sitting at the boundary blinked on/off. Instead, when the total VISIBLE gizmo
+		// cost exceeds the budget we keep the gizmos NEAREST the view centre and drop the farthest.
+		// The kept set is a disc around the view centre; once over budget that disc sits INSIDE the
+		// viewport, so gizmos churning across the screen edge fall in the already-dropped region and
+		// never perturb it — the kept set is stable frame-to-frame. Cost units match Gizmo::Draw*
+		// (line=1, square=4, circle=segments). g_KeepMaxDistSq is computed once per RenderWithVP by
+		// ComputeBudgetCutoff and shared by the filled + wire passes. The capacity pass still counts
+		// ALL visible verts (a safe over-estimate), so dropping here only shrinks the emitted set
+		// below the allocation — never an overflow.
+		Vec2  g_KeepCenter{ 0.0f, 0.0f };
+		float g_KeepMaxDistSq = FLT_MAX;  // FLT_MAX ⇒ under budget: keep everything
+		// (distSq-to-view-centre, cost) of every visible, in-layer gizmo; reused across frames.
+		std::vector<std::pair<float, uint32_t>> g_BudgetScratch;
+
+		inline float DistSqToKeepCenter(const Vec2& c) {
+			const float dx = c.x - g_KeepCenter.x;
+			const float dy = c.y - g_KeepCenter.y;
+			return dx * dx + dy * dy;
+		}
+		// True ⇒ this gizmo lies outside the kept disc and must be skipped this view.
+		inline bool GizmoBudgetDrop(const Vec2& center) {
+			return DistSqToKeepCenter(center) > g_KeepMaxDistSq;
+		}
+		inline Vec2 SegmentMidpoint(const Vec2& a, const Vec2& b) {
+			return Vec2{ (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f };
 		}
 
 		// Scratch for gizmo text commands; capacity persists across frames.
@@ -362,8 +449,81 @@ namespace Index {
 		Gizmo::Clear();
 	}
 
+	// Decide which gizmos survive the per-view render budget, by distance to the view centre.
+	// Under budget: g_KeepMaxDistSq stays FLT_MAX (keep all). Over budget: keep the nearest
+	// gizmos until the budget is spent and set g_KeepMaxDistSq to the cutoff radius² — a stable
+	// disc that doesn't reshuffle as the camera moves, so boundary gizmos no longer flicker.
+	void GizmoRenderer2D::ComputeBudgetCutoff(GizmoLayerMask layerMask) {
+		g_KeepMaxDistSq = FLT_MAX;          // default: keep everything
+		if (!g_CullActive) return;          // degenerate view → no spatial budgeting
+
+		g_KeepCenter = Vec2{ (g_CullAABB.Min.x + g_CullAABB.Max.x) * 0.5f,
+							 (g_CullAABB.Min.y + g_CullAABB.Max.y) * 0.5f };
+
+		const size_t budget = Gizmo::GetMaxVertices();
+
+		g_BudgetScratch.clear();
+		size_t total = 0;
+		auto consider = [&](const Vec2& center, bool visible, GizmoLayer layer, size_t cost) {
+			if (!visible || !HasAnyLayer(layer, layerMask)) return;
+			total += cost;
+			g_BudgetScratch.emplace_back(DistSqToKeepCenter(center), static_cast<uint32_t>(cost));
+		};
+
+		for (const Square& sq : Gizmo::s_Squares)
+			consider(sq.Center, GizmoVisibleSquare(sq), sq.Layer, Gizmo::k_BoxVertices);
+		for (const Square& sq : Gizmo::s_FilledSquares)
+			consider(sq.Center, GizmoVisibleSquare(sq), sq.Layer, Gizmo::k_BoxVertices);
+		for (const Line& ln : Gizmo::s_Lines)
+			consider(SegmentMidpoint(ln.Start, ln.End), GizmoVisibleSegment(ln.Start, ln.End),
+				ln.Layer, Gizmo::k_LineVertices);
+		for (const ThickLine& tl : Gizmo::s_ThickLines)
+			consider(SegmentMidpoint(tl.Start, tl.End),
+				GizmoVisibleThickSegment(tl.Start, tl.End, tl.HalfWidth), tl.Layer, Gizmo::k_ThickLineVertices);
+		for (const Circle& ci : Gizmo::s_Circles)
+			if (ci.Segments >= 3)
+				consider(ci.Center, GizmoVisibleBounds(ci.Center, ci.Radius), ci.Layer, static_cast<size_t>(ci.Segments));
+		for (const Circle& ci : Gizmo::s_FilledCircles)
+			if (ci.Segments >= 3)
+				consider(ci.Center, GizmoVisibleBounds(ci.Center, ci.Radius), ci.Layer, static_cast<size_t>(ci.Segments));
+
+		if (total <= budget) return;        // everything fits — keep all (cutoff stays FLT_MAX)
+
+		// Over budget: keep the nearest gizmos. Sort by distance, accumulate cost until the budget
+		// is reached; the last gizmo that fits sets the cutoff radius. Ties at the exact cutoff
+		// distance are kept (negligible, bounded overage; asteroid positions are distinct anyway).
+		std::sort(g_BudgetScratch.begin(), g_BudgetScratch.end(),
+			[](const std::pair<float, uint32_t>& a, const std::pair<float, uint32_t>& b) {
+				return a.first < b.first;
+			});
+		size_t acc = 0;
+		float cutoff = -1.0f;               // nothing fits → drop all (distSq is always ≥ 0)
+		for (const std::pair<float, uint32_t>& e : g_BudgetScratch) {
+			if (acc + e.second > budget) break;
+			acc += e.second;
+			cutoff = e.first;
+		}
+		g_KeepMaxDistSq = cutoff;
+
+		static bool s_Warned = false;
+		if (!s_Warned) {
+			s_Warned = true;
+			IDX_CORE_WARN_TAG("Gizmo",
+				"On-screen gizmo render budget ({}) exceeded this view; the gizmos farthest from the "
+				"view centre were dropped. Raise it via Gizmo::SetMaxVertices.", budget);
+		}
+	}
+
 	void GizmoRenderer2D::RenderWithVP(const glm::mat4& vp, GizmoLayerMask layerMask) {
 		if (!m_IsInitialized) return;
+		// Cull region for this pass, taken from the render matrix itself.
+		g_CullAABB = ViewAABBFromVP(vp);
+		g_CullActive = g_CullAABB.Max.x >= g_CullAABB.Min.x
+			&& std::isfinite(g_CullAABB.Min.x) && std::isfinite(g_CullAABB.Max.x)
+			&& std::isfinite(g_CullAABB.Min.y) && std::isfinite(g_CullAABB.Max.y);
+		// Pick the kept set for this view (distance-prioritized) before building geometry; shared
+		// by the filled + wire passes so they honour one combined budget.
+		ComputeBudgetCutoff(layerMask);
 		// Filled first so wireframe / lines paint on top of fills, then text on top of all.
 		FlushGizmosImpl(vp, BuildFilledGeometry(layerMask), /*filled=*/true);
 		FlushGizmosImpl(vp, BuildGeometry(layerMask),       /*filled=*/false);
@@ -373,34 +533,29 @@ namespace Index {
 
 	std::span<const PosColorVertex>
 	GizmoRenderer2D::BuildGeometry(GizmoLayerMask layerMask) {
-		std::size_t cap = Gizmo::s_Squares.size() * 8   // 4 edges × 2 verts
-		                + Gizmo::s_Lines.size()   * 2;
+		std::size_t cap = 0;
+		for (const Square& sq : Gizmo::s_Squares) if (GizmoVisibleSquare(sq)) cap += 8;
+		for (const Line& ln : Gizmo::s_Lines) if (GizmoVisibleSegment(ln.Start, ln.End)) cap += 2;
 		for (const Circle& ci : Gizmo::s_Circles) {
-			if (ci.Segments >= 3) {
+			if (ci.Segments >= 3 && GizmoVisibleBounds(ci.Center, ci.Radius)) {
 				cap += static_cast<std::size_t>(ci.Segments) * 2;
 			}
 		}
 		if (cap == 0) return {};
 
-		std::span<PosColorVertex> buf =
-			FrameArenas::Frame().CreateArray<PosColorVertex>(cap);
-		if (buf.empty()) {
-			static bool s_OverflowLogged = false;
-			if (!s_OverflowLogged) {
-				IDX_CORE_WARN_TAG("GizmoRenderer",
-					"Frame arena exhausted: {} verts requested ({} bytes). "
-					"Increase ApplicationConfig::FrameArenaCapacityBytes.",
-					cap, cap * sizeof(PosColorVertex));
-				s_OverflowLogged = true;
-			}
-			return {};
-		}
+		// Persistent, grow-only scratch instead of the shared per-frame arena: a zoomed-out
+		// view with thousands of on-screen gizmos would exhaust the arena and drop EVERY
+		// gizmo (all-or-nothing). The s_MaxVertices budget still bounds the worst case.
+		static std::vector<PosColorVertex> s_GeoScratch;
+		if (s_GeoScratch.size() < cap) s_GeoScratch.resize(cap);
 
-		PosColorVertex* out = buf.data();
+		PosColorVertex* out = s_GeoScratch.data();
 		std::size_t cursor = 0;
 
 		for (const Square& sq : Gizmo::s_Squares) {
 			if (!HasAnyLayer(sq.Layer, layerMask)) continue;
+			if (!GizmoVisibleSquare(sq)) continue;
+			if (GizmoBudgetDrop(sq.Center)) continue;
 			const uint32_t rgba = PackRgba(sq.Color);
 			const float cx = sq.Center.x;
 			const float cy = sq.Center.y;
@@ -426,11 +581,15 @@ namespace Index {
 
 		for (const Line& ln : Gizmo::s_Lines) {
 			if (!HasAnyLayer(ln.Layer, layerMask)) continue;
+			if (!GizmoVisibleSegment(ln.Start, ln.End)) continue;
+			if (GizmoBudgetDrop(SegmentMidpoint(ln.Start, ln.End))) continue;
 			EmitLine(out, cursor, ln.Start.x, ln.Start.y, ln.End.x, ln.End.y, PackRgba(ln.Color));
 		}
 
 		for (const Circle& ci : Gizmo::s_Circles) {
 			if (!HasAnyLayer(ci.Layer, layerMask)) continue;
+			if (!GizmoVisibleBounds(ci.Center, ci.Radius)) continue;
+			if (GizmoBudgetDrop(ci.Center)) continue;
 			if (ci.Segments < 3) continue;
 			const uint32_t rgba = PackRgba(ci.Color);
 			const float step = 6.28318530717958647692f / static_cast<float>(ci.Segments);
@@ -446,39 +605,34 @@ namespace Index {
 			}
 		}
 
-		return buf.first(cursor);
+		return std::span<const PosColorVertex>(s_GeoScratch.data(), cursor);
 	}
 
 	std::span<const PosColorVertex>
 	GizmoRenderer2D::BuildFilledGeometry(GizmoLayerMask layerMask) {
-		std::size_t cap = Gizmo::s_FilledSquares.size() * 6   // 2 tris × 3 verts
-		                + Gizmo::s_ThickLines.size()   * 6;  // 2 tris per thick segment
+		std::size_t cap = 0;
+		for (const Square& sq : Gizmo::s_FilledSquares) if (GizmoVisibleSquare(sq)) cap += 6;
+		for (const ThickLine& tl : Gizmo::s_ThickLines) if (GizmoVisibleThickSegment(tl.Start, tl.End, tl.HalfWidth)) cap += 6;
 		for (const Circle& ci : Gizmo::s_FilledCircles) {
-			if (ci.Segments >= 3) {
-				cap += static_cast<std::size_t>(ci.Segments) * 3;  // fan: Segments tris × 3 verts
+			if (ci.Segments >= 3 && GizmoVisibleBounds(ci.Center, ci.Radius)) {
+				cap += static_cast<std::size_t>(ci.Segments) * 3;
 			}
 		}
 		if (cap == 0) return {};
 
-		std::span<PosColorVertex> buf =
-			FrameArenas::Frame().CreateArray<PosColorVertex>(cap);
-		if (buf.empty()) {
-			static bool s_OverflowLogged = false;
-			if (!s_OverflowLogged) {
-				IDX_CORE_WARN_TAG("GizmoRenderer",
-					"Frame arena exhausted (filled): {} verts requested ({} bytes). "
-					"Increase ApplicationConfig::FrameArenaCapacityBytes.",
-					cap, cap * sizeof(PosColorVertex));
-				s_OverflowLogged = true;
-			}
-			return {};
-		}
+		// Persistent, grow-only scratch instead of the shared per-frame arena: a zoomed-out
+		// view with thousands of on-screen gizmos would exhaust the arena and drop EVERY
+		// gizmo (all-or-nothing). The s_MaxVertices budget still bounds the worst case.
+		static std::vector<PosColorVertex> s_GeoScratch;
+		if (s_GeoScratch.size() < cap) s_GeoScratch.resize(cap);
 
-		PosColorVertex* out = buf.data();
+		PosColorVertex* out = s_GeoScratch.data();
 		std::size_t cursor = 0;
 
 		for (const Square& sq : Gizmo::s_FilledSquares) {
 			if (!HasAnyLayer(sq.Layer, layerMask)) continue;
+			if (!GizmoVisibleSquare(sq)) continue;
+			if (GizmoBudgetDrop(sq.Center)) continue;
 			const uint32_t rgba = PackRgba(sq.Color);
 			const float cx = sq.Center.x;
 			const float cy = sq.Center.y;
@@ -502,6 +656,8 @@ namespace Index {
 
 		for (const Circle& ci : Gizmo::s_FilledCircles) {
 			if (!HasAnyLayer(ci.Layer, layerMask)) continue;
+			if (!GizmoVisibleBounds(ci.Center, ci.Radius)) continue;
+			if (GizmoBudgetDrop(ci.Center)) continue;
 			if (ci.Segments < 3) continue;
 			const uint32_t rgba = PackRgba(ci.Color);
 			const float step = 6.28318530717958647692f / static_cast<float>(ci.Segments);
@@ -523,6 +679,8 @@ namespace Index {
 		// continuous outline.
 		for (const ThickLine& tl : Gizmo::s_ThickLines) {
 			if (!HasAnyLayer(tl.Layer, layerMask)) continue;
+			if (!GizmoVisibleThickSegment(tl.Start, tl.End, tl.HalfWidth)) continue;
+			if (GizmoBudgetDrop(SegmentMidpoint(tl.Start, tl.End))) continue;
 			const uint32_t rgba = PackRgba(tl.Color);
 			float dx = tl.End.x - tl.Start.x;
 			float dy = tl.End.y - tl.Start.y;
@@ -539,7 +697,7 @@ namespace Index {
 			EmitTri(out, cursor, ax + nx, ay + ny, bx - nx, by - ny, ax - nx, ay - ny, rgba);
 		}
 
-		return buf.first(cursor);
+		return std::span<const PosColorVertex>(s_GeoScratch.data(), cursor);
 	}
 
 	void GizmoRenderer2D::FlushGizmosImpl(const glm::mat4& vp,

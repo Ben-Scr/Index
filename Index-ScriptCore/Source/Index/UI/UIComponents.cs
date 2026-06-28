@@ -691,6 +691,18 @@ public class InputField : Component
         set => InternalCalls.InputField_SetMultiline(RequireComponent<InputField>(), value);
     }
 
+    // Multiline only: the assigned UI Scrollbar entity that scrolls the text vertically
+    // (null = none). Setting it makes the text top-anchor, clip to the field, and scroll.
+    public Entity? VerticalScrollbar
+    {
+        get
+        {
+            ulong id = InternalCalls.InputField_GetVerticalScrollbarEntity(RequireComponent<InputField>());
+            return id == 0 ? null : new Entity(id);
+        }
+        set => InternalCalls.InputField_SetVerticalScrollbarEntity(RequireComponent<InputField>(), value?.ID ?? 0);
+    }
+
     // Text setter alone never raises OnValueChanged; this method fans out to subscribers and bumps the dispatcher cache.
     public void SetValue(string value, bool notifyEvent = true)
     {

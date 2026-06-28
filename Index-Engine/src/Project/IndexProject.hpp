@@ -125,6 +125,13 @@ namespace Index {
 
 		uint64_t DefaultFontAssetId = k_DefaultFontAssetId;
 
+		// Font atlas baking knobs (applied to FontManager on project load).
+		// FontBakeStep: 0 = adaptive ladder (fine small / coarse large); N>0 = bake
+		// only at multiples of N px (fewer atlases = less memory).
+		// FontAtlasBudgetMB: 0 = unlimited; otherwise LRU-evict atlases above this cap.
+		int FontBakeStep = 0;
+		int FontAtlasBudgetMB = 128;
+
 		enum class BuildProfile : uint8_t {
 			Development = 0,
 			Release     = 1,

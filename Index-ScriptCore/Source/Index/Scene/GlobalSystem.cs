@@ -14,7 +14,7 @@ public abstract class GlobalSystem
     protected Entity Instantiate(Entity prefabOrSource) => Entity.Instantiate(prefabOrSource);
     protected Entity Instantiate(Entity prefabOrSource, Entity? parent) => Entity.Instantiate(prefabOrSource, parent);
     protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Entity? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
-
+    protected void Destroy(Entity entity) => Entity.Destroy(entity);
 
     private CancellationTokenSource? m_CoroutineCts;
     private bool m_CoroutineCtsTerminated;

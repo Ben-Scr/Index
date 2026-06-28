@@ -4,6 +4,7 @@
 #include "Assets/AssetRegistry.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Core/Application.hpp"
+#include "Graphics/Text/FontManager.hpp"
 
 namespace Index {
 
@@ -11,6 +12,12 @@ namespace Index {
 
 	void ProjectManager::SetCurrentProject(std::unique_ptr<IndexProject> project, bool assetsImmutable) {
 		s_CurrentProject = std::move(project);
+
+		// Apply font baking knobs (pure static setters — safe even before FontManager::Initialize).
+		if (s_CurrentProject) {
+			FontManager::SetBakeStep(s_CurrentProject->FontBakeStep);
+			FontManager::SetAtlasMemoryBudgetMB(s_CurrentProject->FontAtlasBudgetMB);
+		}
 
 		// Set immutability before anything triggers a rebuild (see header). Standalone runtimes then
 		// trust the shipped manifest; the editor stays mutable so on-disk edits are detected.

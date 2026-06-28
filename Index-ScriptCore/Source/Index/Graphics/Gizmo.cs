@@ -4,6 +4,16 @@ namespace Index.Graphics;
 
 public static class Gizmo
 {
+    /// <summary>
+    /// Master switch for gizmo drawing. When false, every Gizmo.Draw* call is a
+    /// no-op for the rest of the session until set back to true.
+    /// </summary>
+    public static bool IsEnabled
+    {
+        get => InternalCalls.Gizmo_GetEnabled();
+        set => InternalCalls.Gizmo_SetEnabled(value);
+    }
+
     public static Color Color
     {
         get => GetColor();
@@ -23,13 +33,13 @@ public static class Gizmo
     }
 
     /// <summary>
-    /// Maximum number of gizmo "vertices" that may be registered per frame,
-    /// summed across ALL gizmo draws (lines, squares, circles, text). Once the
-    /// cap is reached, any further draw calls are silently dropped for the rest
-    /// of that frame — so a dense gizmo scene can appear to "stop drawing"
-    /// partway through. Raise this if that happens. Default: 100000.
-    /// Cost per draw: a line = 1, a (wire or filled) square = 4, a (wire or
-    /// filled) circle = its segment count (default 32), text = its length.
+    /// Per-frame render budget, summed across gizmo draws (lines, squares, circles,
+    /// text). Enforced per view on the VISIBLE gizmos only — off-screen gizmos are
+    /// frustum-culled BEFORE counting, so drawing thousands of off-screen gizmos can't
+    /// starve the on-screen ones. If a single view's on-screen gizmos exceed the
+    /// budget, the overflow is dropped (with a one-time log warning). Default: 100,000.
+    /// Cost: a line = 1, a (wire or filled) square = 4, a (wire or filled) circle = its
+    /// segment count (default 32), text = its length.
     /// </summary>
     public static int MaxVertices
     {
@@ -38,9 +48,9 @@ public static class Gizmo
     }
 
     /// <summary>
-    /// Gizmo vertices registered so far in the current frame (read-only).
-    /// Compare against <see cref="MaxVertices"/> to gauge how close you are
-    /// to the per-frame cap.
+    /// Total gizmo draws accumulated so far this frame (read-only, pre-cull). This is
+    /// the raw count across all draws; the render budget (<see cref="MaxVertices"/>) is
+    /// enforced separately, per view, on the on-screen subset.
     /// </summary>
     public static int RegisteredVertices => InternalCalls.Gizmo_GetRegisteredVertices();
 
@@ -73,6 +83,6 @@ public static class Gizmo
     /// in degrees (about the position); <paramref name="size"/> is in pixels (same
     /// convention as a Text component's font size).
     /// </summary>
-    public static void DrawText(string text, Vector2 position, float rotation = 0.0f, float size = 11.0f)
+    public static void DrawText(Vector2 position, string text, float rotation = 0.0f, float size = 28.0f)
         => InternalCalls.Gizmo_DrawText(text, position.X, position.Y, rotation, size);
 }

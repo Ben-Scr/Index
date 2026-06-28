@@ -187,9 +187,20 @@ namespace Index {
 				const auto* overrides = scene.GetSceneSystemFieldValues(m_ClassName);
 				if (!overrides) return;
 
+				// Entity-ref fields (e.g. a Transform2D pointing at the Player) resolve
+				// against ScriptEngine::GetScene(). In the standalone runtime these scene-
+				// system overrides are applied during the scene's Awake pass, BEFORE the
+				// scene is registered as loaded/active, so without a current-scene scope
+				// ResolveEntityReference has nothing to search and the ref silently
+				// resolves to null (the editor dodges this by applying scene-system fields
+				// at play-start, after the scene is live). Point the current scene at this
+				// one for the duration of the apply, mirroring ScriptSystem's ScriptSceneScope.
+				Scene* const previousScene = ScriptEngine::GetScene();
+				ScriptEngine::SetScene(&scene);
 				for (const auto& [fieldName, value] : *overrides) {
 					ScriptEngine::SetSceneSystemField(m_Handle, fieldName.c_str(), value.c_str());
 				}
+				ScriptEngine::SetScene(previousScene);
 			}
 
 			std::string m_ClassName;
@@ -340,7 +351,7 @@ namespace Index {
 		EntityHandle entityHandle = m_Registry.create();
 		++m_EntityCount;
 		SetEntityMetaData(entityHandle, origin, prefabGuid, sceneGuid, runtimeId);
-		if (origin != EntityOrigin::Runtime && !Application::GetIsPlaying()) {
+		if (origin != EntityOrigin::Runtime && (m_IsDetached || !Application::GetIsPlaying())) {
 			m_Dirty = true;
 		}
 		// MUST pulse in both editor and runtime: UIEventSystem preview path early-outs on !IsUIDirty(),
@@ -431,7 +442,7 @@ namespace Index {
 		}
 
 		RegisterEntityIdentity(entity);
-		if (origin != EntityOrigin::Runtime && !Application::GetIsPlaying()) {
+		if (origin != EntityOrigin::Runtime && (m_IsDetached || !Application::GetIsPlaying())) {
 			m_Dirty = true;
 		}
 	}
@@ -721,7 +732,12 @@ namespace Index {
 	}
 
 	void Scene::MarkDirty() {
-		if (!Application::GetIsPlaying()) m_Dirty = true;
+		// Detached scenes (the prefab-edit and prefab-inspector views) are NOT part of the
+		// play-mode snapshot/restore cycle, so they must still flag dirty during play — that
+		// is how their auto-save (RunPrefabAutoSaveTick / PrefabInspector) knows to write the
+		// .prefab. Regular managed scenes skip dirtying in play so transient play-time entity
+		// state is never saved back to disk.
+		if (m_IsDetached || !Application::GetIsPlaying()) m_Dirty = true;
 		m_UIDirty = true;
 		MarkStaticRenderDataDirty();
 	}
@@ -1024,7 +1040,7 @@ namespace Index {
 			return;
 		}
 
-		if (markDirty && !Application::GetIsPlaying()) {
+		if (markDirty && (m_IsDetached || !Application::GetIsPlaying())) {
 			m_Dirty = true;
 		}
 		// markDirty=false during cascade: outermost call already pulsed the flag.

@@ -930,6 +930,12 @@ internal unsafe struct NativeBindingsStruct
     // InputField multiline toggle (appended for binary compat; keep in lock-step with C++ NativeBindings).
     public delegate* unmanaged<ulong, int> InputField_GetMultiline;
     public delegate* unmanaged<ulong, int, void> InputField_SetMultiline;
+    public delegate* unmanaged<ulong, ulong> InputField_GetVerticalScrollbarEntity;
+    public delegate* unmanaged<ulong, ulong, void> InputField_SetVerticalScrollbarEntity;
+
+    // Gizmo enable toggle (appended for binary compat; keep in lock-step with C++ NativeBindings).
+    public delegate* unmanaged<int> Gizmo_GetEnabled;
+    public delegate* unmanaged<int, void> Gizmo_SetEnabled;
 }
 
 internal static unsafe class NativeCallbacks

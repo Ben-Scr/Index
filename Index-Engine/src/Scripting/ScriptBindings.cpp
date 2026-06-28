@@ -2428,9 +2428,9 @@ namespace Index {
 	static void Index_AudioSource_Resume(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, ); AudioManager::ResumeAudioSource(comp); }
 
 	static float Index_AudioSource_GetVolume(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 1.0f); return comp.GetVolume(); }
-	static void  Index_AudioSource_SetVolume(uint64_t entityID, float volume) { GET_COMPONENT(AudioSourceComponent, entityID, ); comp.SetVolume(volume); }
+	static void  Index_AudioSource_SetVolume(uint64_t entityID, float volume) { GET_COMPONENT(AudioSourceComponent, entityID, ); comp.SetVolume(std::clamp(volume, 0.0f, 1.0f)); }
 	static float Index_AudioSource_GetPitch(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 1.0f); return comp.GetPitch(); }
-	static void  Index_AudioSource_SetPitch(uint64_t entityID, float pitch) { GET_COMPONENT(AudioSourceComponent, entityID, ); comp.SetPitch(pitch); }
+	static void  Index_AudioSource_SetPitch(uint64_t entityID, float pitch) { GET_COMPONENT(AudioSourceComponent, entityID, ); comp.SetPitch(std::clamp(pitch, 0.1f, 3.0f)); }
 	static int   Index_AudioSource_GetLoop(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 0); return comp.IsLooping() ? 1 : 0; }
 	static void  Index_AudioSource_SetLoop(uint64_t entityID, int loop) { GET_COMPONENT(AudioSourceComponent, entityID, ); comp.SetLoop(loop != 0); }
 	static int   Index_AudioSource_IsPlaying(uint64_t entityID) { GET_COMPONENT(AudioSourceComponent, entityID, 0); return comp.IsPlaying() ? 1 : 0; }
@@ -2586,6 +2586,8 @@ namespace Index {
 	static void Index_Gizmo_SetMaxVertices(int maxVertices) { Gizmo::SetMaxVertices(static_cast<size_t>(maxVertices < 0 ? 0 : maxVertices)); }
 	static int Index_Gizmo_GetMaxVertices() { return static_cast<int>(Gizmo::GetMaxVertices()); }
 	static int Index_Gizmo_GetRegisteredVertices() { return static_cast<int>(Gizmo::GetRegisteredVertices()); }
+		static int Index_Gizmo_GetEnabled() { return Gizmo::IsEnabled() ? 1 : 0; }
+		static void Index_Gizmo_SetEnabled(int enabled) { Gizmo::SetEnabled(enabled != 0); }
 
 	// ── Physics2D ───────────────────────────────────────────────────────
 
@@ -3432,6 +3434,7 @@ namespace Index {
 	WIDGET_ENTITYREF_BINDING(SliderComponent,     BackgroundEntity, Index_Slider_GetBackgroundEntity,     Index_Slider_SetBackgroundEntity)
 	WIDGET_ENTITYREF_BINDING(ToggleComponent,     CheckmarkEntity,  Index_Toggle_GetCheckmarkEntity,      Index_Toggle_SetCheckmarkEntity)
 	WIDGET_ENTITYREF_BINDING(InputFieldComponent, TextEntity,       Index_InputField_GetTextEntity,       Index_InputField_SetTextEntity)
+	WIDGET_ENTITYREF_BINDING(InputFieldComponent, VerticalScrollbarEntity, Index_InputField_GetVerticalScrollbarEntity, Index_InputField_SetVerticalScrollbarEntity)
 	WIDGET_ENTITYREF_BINDING(DropdownComponent,   LabelEntity,      Index_Dropdown_GetLabelEntity,        Index_Dropdown_SetLabelEntity)
 
 	// New per-state popup option colors. Reuse the existing color
@@ -3464,7 +3467,7 @@ namespace Index {
 	}
 	static void Index_Slider_SetValue(uint64_t entityID, float value) {
 		GET_COMPONENT(SliderComponent, entityID, );
-		comp.Value = value;
+		comp.Value = std::clamp(value, std::min(comp.MinValue, comp.MaxValue), std::max(comp.MinValue, comp.MaxValue));
 	}
 	static float Index_Slider_GetMinValue(uint64_t entityID) {
 		GET_COMPONENT(SliderComponent, entityID, 0.0f);
@@ -3639,6 +3642,18 @@ namespace Index {
 			comp.MEMBER = value; \
 		}
 
+	// Like WIDGET_FLOAT_BINDING but clamps the value to [MINV, MAXV] so a scripted set
+	// can't push the field outside the range the inspector already enforces.
+	#define WIDGET_FLOAT_BINDING_CLAMPED(COMP, MEMBER, MINV, MAXV, GETTER, SETTER) \
+		static float GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0.0f); \
+			return comp.MEMBER; \
+		} \
+		static void SETTER(uint64_t entityID, float value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = std::clamp(value, static_cast<float>(MINV), static_cast<float>(MAXV)); \
+		}
+
 	#define WIDGET_INT_BINDING(COMP, MEMBER, GETTER, SETTER) \
 		static int GETTER(uint64_t entityID) { \
 			GET_COMPONENT(COMP, entityID, 0); \
@@ -3647,6 +3662,17 @@ namespace Index {
 		static void SETTER(uint64_t entityID, int value) { \
 			GET_COMPONENT(COMP, entityID, ); \
 			comp.MEMBER = value; \
+		}
+
+	// Like WIDGET_INT_BINDING but clamps the value to [MINV, MAXV] (same as the inspector).
+	#define WIDGET_INT_BINDING_CLAMPED(COMP, MEMBER, MINV, MAXV, GETTER, SETTER) \
+		static int GETTER(uint64_t entityID) { \
+			GET_COMPONENT(COMP, entityID, 0); \
+			return comp.MEMBER; \
+		} \
+		static void SETTER(uint64_t entityID, int value) { \
+			GET_COMPONENT(COMP, entityID, ); \
+			comp.MEMBER = std::clamp(value, static_cast<int>(MINV), static_cast<int>(MAXV)); \
 		}
 
 	#define WIDGET_BOOL_BINDING(COMP, MEMBER, GETTER, SETTER) \
@@ -3725,9 +3751,9 @@ namespace Index {
 		}
 
 	// ── Scrollbar ───────────────────────────────────────────────────────
-	WIDGET_FLOAT_BINDING(ScrollbarComponent, Value,         Index_Scrollbar_GetValue,         Index_Scrollbar_SetValue)
-	WIDGET_FLOAT_BINDING(ScrollbarComponent, Size,          Index_Scrollbar_GetSize,          Index_Scrollbar_SetSize)
-	WIDGET_INT_BINDING  (ScrollbarComponent, NumberOfSteps, Index_Scrollbar_GetNumberOfSteps, Index_Scrollbar_SetNumberOfSteps)
+	WIDGET_FLOAT_BINDING_CLAMPED(ScrollbarComponent, Value, 0.0f, 1.0f, Index_Scrollbar_GetValue, Index_Scrollbar_SetValue)
+	WIDGET_FLOAT_BINDING_CLAMPED(ScrollbarComponent, Size, 0.0f, 1.0f, Index_Scrollbar_GetSize, Index_Scrollbar_SetSize)
+	WIDGET_INT_BINDING_CLAMPED(ScrollbarComponent, NumberOfSteps, 0, 11, Index_Scrollbar_GetNumberOfSteps, Index_Scrollbar_SetNumberOfSteps)
 	WIDGET_ENUM_BINDING (ScrollbarComponent, Direction, ScrollbarDirection, Index_Scrollbar_GetDirection, Index_Scrollbar_SetDirection)
 	WIDGET_BOOL_BINDING (ScrollbarComponent, IsReadOnly,    Index_Scrollbar_GetIsReadOnly,    Index_Scrollbar_SetIsReadOnly)
 	WIDGET_ENTITYREF_BINDING(ScrollbarComponent, HandleEntity, Index_Scrollbar_GetHandleEntity, Index_Scrollbar_SetHandleEntity)
@@ -3765,8 +3791,8 @@ namespace Index {
 	WIDGET_ENUM_BINDING (ScrollRectComponent, MovementType, ScrollRectMovementType, Index_ScrollRect_GetMovementType, Index_ScrollRect_SetMovementType)
 	WIDGET_ENUM_BINDING (ScrollRectComponent, HorizontalScrollbarVisibility, ScrollbarVisibility, Index_ScrollRect_GetHorizontalScrollbarVisibility, Index_ScrollRect_SetHorizontalScrollbarVisibility)
 	WIDGET_ENUM_BINDING (ScrollRectComponent, VerticalScrollbarVisibility,   ScrollbarVisibility, Index_ScrollRect_GetVerticalScrollbarVisibility,   Index_ScrollRect_SetVerticalScrollbarVisibility)
-	WIDGET_FLOAT_BINDING(ScrollRectComponent, Elasticity,                  Index_ScrollRect_GetElasticity,                  Index_ScrollRect_SetElasticity)
-	WIDGET_FLOAT_BINDING(ScrollRectComponent, DecelerationRate,            Index_ScrollRect_GetDecelerationRate,            Index_ScrollRect_SetDecelerationRate)
+	WIDGET_FLOAT_BINDING_CLAMPED(ScrollRectComponent, Elasticity,       0.0f, 1.0f, Index_ScrollRect_GetElasticity,       Index_ScrollRect_SetElasticity)
+	WIDGET_FLOAT_BINDING_CLAMPED(ScrollRectComponent, DecelerationRate, 0.0f, 1.0f, Index_ScrollRect_GetDecelerationRate, Index_ScrollRect_SetDecelerationRate)
 	WIDGET_FLOAT_BINDING(ScrollRectComponent, ScrollSensitivity,           Index_ScrollRect_GetScrollSensitivity,           Index_ScrollRect_SetScrollSensitivity)
 	WIDGET_FLOAT_BINDING(ScrollRectComponent, HorizontalScrollbarSpacing,  Index_ScrollRect_GetHorizontalScrollbarSpacing,  Index_ScrollRect_SetHorizontalScrollbarSpacing)
 	WIDGET_FLOAT_BINDING(ScrollRectComponent, VerticalScrollbarSpacing,    Index_ScrollRect_GetVerticalScrollbarSpacing,    Index_ScrollRect_SetVerticalScrollbarSpacing)
@@ -3786,16 +3812,23 @@ namespace Index {
 	WIDGET_BOOL_BINDING(MaskComponent, ShowMaskGraphic, Index_Mask_GetShowMaskGraphic, Index_Mask_SetShowMaskGraphic)
 
 	// ── CircularSlider ──────────────────────────────────────────────────
-	WIDGET_FLOAT_BINDING(CircularSliderComponent, Value,             Index_CircularSlider_GetValue,             Index_CircularSlider_SetValue)
+	static float Index_CircularSlider_GetValue(uint64_t entityID) {
+		GET_COMPONENT(CircularSliderComponent, entityID, 0.0f);
+		return comp.Value;
+	}
+	static void Index_CircularSlider_SetValue(uint64_t entityID, float value) {
+		GET_COMPONENT(CircularSliderComponent, entityID, );
+		comp.Value = std::clamp(value, std::min(comp.MinValue, comp.MaxValue), std::max(comp.MinValue, comp.MaxValue));
+	}
 	WIDGET_FLOAT_BINDING(CircularSliderComponent, MinValue,          Index_CircularSlider_GetMinValue,          Index_CircularSlider_SetMinValue)
 	WIDGET_FLOAT_BINDING(CircularSliderComponent, MaxValue,          Index_CircularSlider_GetMaxValue,          Index_CircularSlider_SetMaxValue)
 	WIDGET_BOOL_BINDING (CircularSliderComponent, WholeNumbers,      Index_CircularSlider_GetWholeNumbers,      Index_CircularSlider_SetWholeNumbers)
 	WIDGET_BOOL_BINDING (CircularSliderComponent, IsReadOnly,        Index_CircularSlider_GetIsReadOnly,        Index_CircularSlider_SetIsReadOnly)
 	WIDGET_FLOAT_BINDING(CircularSliderComponent, StartAngleDegrees, Index_CircularSlider_GetStartAngleDegrees, Index_CircularSlider_SetStartAngleDegrees)
-	WIDGET_FLOAT_BINDING(CircularSliderComponent, SweepDegrees,      Index_CircularSlider_GetSweepDegrees,      Index_CircularSlider_SetSweepDegrees)
+	WIDGET_FLOAT_BINDING_CLAMPED(CircularSliderComponent, SweepDegrees, 1.0f, 360.0f, Index_CircularSlider_GetSweepDegrees, Index_CircularSlider_SetSweepDegrees)
 	WIDGET_BOOL_BINDING (CircularSliderComponent, Clockwise,         Index_CircularSlider_GetClockwise,         Index_CircularSlider_SetClockwise)
-	WIDGET_FLOAT_BINDING(CircularSliderComponent, RingThickness,     Index_CircularSlider_GetRingThickness,     Index_CircularSlider_SetRingThickness)
-	WIDGET_INT_BINDING  (CircularSliderComponent, RingSegments,      Index_CircularSlider_GetRingSegments,      Index_CircularSlider_SetRingSegments)
+	WIDGET_FLOAT_BINDING_CLAMPED(CircularSliderComponent, RingThickness, 0.5f, 1024.0f, Index_CircularSlider_GetRingThickness, Index_CircularSlider_SetRingThickness)
+	WIDGET_INT_BINDING_CLAMPED(CircularSliderComponent, RingSegments, 8, 256, Index_CircularSlider_GetRingSegments, Index_CircularSlider_SetRingSegments)
 	WIDGET_COLOR_BINDING(CircularSliderComponent, BackgroundColor,   Index_CircularSlider_GetBackgroundColor,   Index_CircularSlider_SetBackgroundColor)
 	WIDGET_COLOR_BINDING(CircularSliderComponent, FillColor,         Index_CircularSlider_GetFillColor,         Index_CircularSlider_SetFillColor)
 	WIDGET_ENTITYREF_BINDING(CircularSliderComponent, HandleEntity,  Index_CircularSlider_GetHandleEntity,      Index_CircularSlider_SetHandleEntity)
@@ -4123,6 +4156,8 @@ namespace Index {
 		b.Gizmo_SetMaxVertices = &Index_Gizmo_SetMaxVertices;
 		b.Gizmo_GetMaxVertices = &Index_Gizmo_GetMaxVertices;
 		b.Gizmo_GetRegisteredVertices = &Index_Gizmo_GetRegisteredVertices;
+		b.Gizmo_GetEnabled = &Index_Gizmo_GetEnabled;
+		b.Gizmo_SetEnabled = &Index_Gizmo_SetEnabled;
 
 		b.Physics2D_Raycast = &Index_Physics2D_Raycast;
 		b.Physics2D_OverlapCircle = &Index_Physics2D_OverlapCircle;
@@ -4243,6 +4278,8 @@ namespace Index {
 		b.InputField_SetCharacterLimit        = &Index_InputField_SetCharacterLimit;
 		b.InputField_GetMultiline             = &Index_InputField_GetMultiline;
 		b.InputField_SetMultiline             = &Index_InputField_SetMultiline;
+		b.InputField_GetVerticalScrollbarEntity = &Index_InputField_GetVerticalScrollbarEntity;
+		b.InputField_SetVerticalScrollbarEntity = &Index_InputField_SetVerticalScrollbarEntity;
 		b.InputField_GetNormalColor   = &Index_InputField_GetNormalColor;
 		b.InputField_SetNormalColor   = &Index_InputField_SetNormalColor;
 		b.InputField_GetHoveredColor  = &Index_InputField_GetHoveredColor;

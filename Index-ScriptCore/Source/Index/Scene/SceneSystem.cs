@@ -27,6 +27,8 @@ public abstract class SceneSystem
     protected Entity Instantiate(Entity prefabOrSource, Entity? parent) => Entity.Instantiate(prefabOrSource, parent);
     protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Entity? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
 
+    protected void Destroy(Entity entity) => Entity.Destroy(entity);
+
     protected void Print(object? obj) => Log.Print(obj);
 
     internal void _SetSceneName(string sceneName)

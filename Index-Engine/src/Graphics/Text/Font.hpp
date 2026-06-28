@@ -48,10 +48,10 @@ namespace Index {
         bool LoadFromFile(const std::string& path, float pixelSize);
 
         bool LoadFromBuffer(const std::string& sourcePath,
-            const std::vector<uint8_t>& ttfBuffer, float pixelSize);
+            std::shared_ptr<const std::vector<uint8_t>> ttfBuffer, float pixelSize);
 
         bool BeginAsyncBake(const std::string& sourcePath,
-            std::vector<uint8_t> ttfBuffer, float pixelSize);
+            std::shared_ptr<const std::vector<uint8_t>> ttfBuffer, float pixelSize);
 
         bool PollAsyncBake();
 
@@ -76,6 +76,12 @@ namespace Index {
         int GetAtlasWidth() const { return m_AtlasWidth; }
         int GetAtlasHeight() const { return m_AtlasHeight; }
 
+        // Resident atlas size in bytes (R8 coverage = 1 byte/texel). Used by the
+        // FontManager's LRU budget. 0 until the bake publishes.
+        size_t GetAtlasByteSize() const {
+            return static_cast<size_t>(m_AtlasWidth) * static_cast<size_t>(m_AtlasHeight);
+        }
+
         const std::string& GetFilepath() const { return m_Filepath; }
 
         // Optional kerning between two adjacent codepoints, in pixels.
@@ -89,7 +95,11 @@ namespace Index {
         // Returns false on any failure with all GL state cleaned up.
         bool BakeAtlas(float pixelSize);
 
-        std::vector<uint8_t> m_TtfBuffer;
+        // Shared across every baked size of the same font file (the FontManager
+        // owns the canonical copy and hands out this shared_ptr). The stbtt_fontinfo
+        // in m_StbFontInfoStorage points INTO these bytes for kerning, so the buffer
+        // must outlive this Font — the shared_ptr guarantees that.
+        std::shared_ptr<const std::vector<uint8_t>> m_TtfBuffer;
         std::unordered_map<uint32_t, GlyphMetrics> m_Glyphs;
 
         unsigned m_AtlasTexture = 0;

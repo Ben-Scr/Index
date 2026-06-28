@@ -520,21 +520,12 @@ namespace Index {
 		const float requested = pixelSize > 0.0f ? pixelSize : text.FontSize;
 		const float bakeRequest = std::min(requested, k_MaxBakedPixelSize);
 
-		auto quantizeBucket = [](float p) -> int {
-			int v = std::max(1, static_cast<int>(std::lround(p)));
-			auto snap = [](int value, int step) {
-				return ((value + step / 2) / step) * step;
-			};
-			if (v <= 16)  return v;
-			if (v <= 32)  return snap(v, 2);
-			if (v <= 64)  return snap(v, 4);
-			if (v <= 128) return snap(v, 8);
-			return snap(v, 16);
-		};
-
+		// Bucket via FontManager so the cached-font check matches exactly what
+		// LoadFontByUUIDAsync will key the slot under (incl. the user's bake-step setting).
 		if (FontManager::IsValid(text.ResolvedFont)) {
 			if (Font* font = FontManager::GetFont(text.ResolvedFont)) {
-				if (quantizeBucket(font->GetPixelSize()) == quantizeBucket(bakeRequest)) {
+				if (FontManager::QuantizeBakeSize(font->GetPixelSize())
+					== FontManager::QuantizeBakeSize(bakeRequest)) {
 					return font;
 				}
 			}

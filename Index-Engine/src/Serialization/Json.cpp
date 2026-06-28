@@ -837,6 +837,17 @@ namespace Index::Json {
 		return m_Object.back().second;
 	}
 
+	Value& Value::AddMemberUnchecked(std::string key, Value value) {
+		SetType(Type::Object);
+		m_Object.emplace_back(std::move(key), std::move(value));
+		return m_Object.back().second;
+	}
+
+	void Value::ReserveMembers(std::size_t count) {
+		SetType(Type::Object);
+		m_Object.reserve(count);
+	}
+
 	Value& Value::Append(Value value) {
 		SetType(Type::Array);
 		m_Array.emplace_back(std::move(value));

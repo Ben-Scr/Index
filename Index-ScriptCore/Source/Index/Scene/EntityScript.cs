@@ -9,11 +9,7 @@ namespace Index;
 /// <summary>Base class for user C# scripts; also acts as a Component so GetComponent/AddComponent/HasComponent work uniformly.</summary>
 public abstract class EntityScript : Component
 {
-    // Throws if entity has no Transform2D; use Entity.Transform (nullable) for tag entities.
-    public Transform2D Transform => Entity.Transform
-        ?? throw new InvalidOperationException(
-            $"EntityScript '{GetType().Name}' accessed `Transform` on an entity without a Transform2D. " +
-            "Probe `Entity.Transform` (nullable) when the script may run on tag entities.");
+    public Transform2D? Transform => Entity.Transform;
 
     internal void _SetEntityID(ulong id)
     {
@@ -39,6 +35,7 @@ public abstract class EntityScript : Component
     protected Entity Instantiate(Entity prefabOrSource, Entity? parent) => Entity.Instantiate(prefabOrSource, parent);
     protected Entity Instantiate(Entity prefabOrSource, Vector3 position, float rotation = 0.0f, Entity? parent = null) => Entity.Instantiate(prefabOrSource, position, rotation, parent);
 
+    protected void Destroy(Entity entity) => Entity.Destroy(entity);
     protected void Print(object? obj) => Log.Print(obj);
 
     private CancellationTokenSource? m_CoroutineCts;

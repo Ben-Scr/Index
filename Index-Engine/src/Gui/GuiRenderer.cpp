@@ -125,7 +125,7 @@ namespace Index {
 
 			auto& rect = registry.get<RectTransform2DComponent>(field.TextEntity);
 			auto& tc = registry.get<TextRendererComponent>(field.TextEntity);
-			Font* font = TextRenderer::ResolveFont(tc);
+			Font* font = TextRenderer::ResolveFontAtPixelSize(tc, tc.FontSize * std::max(0.01f, std::abs(rect.Scale.x))); // same bake as the text loop so GetLineHeight()/Scale match the render (fixes LineSpacing caret/selection drift)
 			if (!font || !font->IsLoaded()) return out;
 
 			const float uniformScale = rect.Scale.x;
@@ -712,20 +712,25 @@ namespace Index {
 					parentRot,
 					cs.BackgroundColor,
 					bgTexture,
-					0, 0,
+					cs.SortingOrder, cs.SortingLayer,
 					static_cast<std::uint32_t>(drawIndex));
 				ApplyMaskClipToInstance(clip, bg);
 				m_InstancesScratch.push_back(bg);
 			}
 
 			if (t > 0.0f) {
-				const int totalSegments = std::max(8, std::min(cs.RingSegments, 32));
+				// Cap matches the inspector range (8..256). The fill is a fan of chord-wide
+				// quads from the centre, so a low count leaves a blocky pinwheel at the apex;
+				// honouring the configured RingSegments lets the user smooth it out (the old
+				// hard cap of 32 ignored anything higher).
+				const int totalSegments = std::max(8, std::min(cs.RingSegments, 256));
 				const int fillSegments = std::max(1,
 					static_cast<int>(std::round(static_cast<float>(totalSegments) * t)));
 				emitFillSlice(centre, parentRot, cs.FillColor,
 					startRad, sweepRad * t, outerRadius, fillSegments,
 					static_cast<std::uint32_t>(drawIndex) + 1u,
-					/*sortOrder*/ 1, /*sortLayer*/ 0,
+					// Same sort key as the background; the +1 drawIndex above keeps the fill on top.
+					cs.SortingOrder, cs.SortingLayer,
 					clip);
 			}
 		}
@@ -827,8 +832,21 @@ namespace Index {
 			ApplyMaskClipToText(ResolveClipForEntity(registry, entity), cmd);
 			cmd.Rotation = rect.Rotation;
 			cmd.Pivot = rect.ResolvedPivot;
-			if (auto ifIt = inputFieldTextChildren.find(entity); ifIt != inputFieldTextChildren.end() && !ifIt->second->Multiline) {
-				cmd.X -= ifIt->second->ScrollOffsetX;
+			auto ifIt = inputFieldTextChildren.find(entity);
+			const InputFieldComponent* ifField = (ifIt != inputFieldTextChildren.end()) ? ifIt->second : nullptr;
+			bool clipToField = false;
+			if (ifField && !ifField->Multiline) {
+				cmd.X -= ifField->ScrollOffsetX;
+				clipToField = true;
+			}
+			else if (ifField && ifField->Multiline && ifField->VerticalScrollbarEntity != entt::null) {
+				// Scrollable multiline: top-anchor line 0 at the top inset and shift the block
+				// up by ScrollOffsetY; clip to the field so scrolled-out rows don't spill out.
+				cmd.Y = (tr.y - marginTopWorld - ascentWorld) + ifField->ScrollOffsetY;
+				cmd.VAlign = TextVerticalAlignment::Top;
+				clipToField = true;
+			}
+			if (clipToField) {
 				Vec2 fieldClipMin = bl;
 				Vec2 fieldClipMax = tr;
 				if (cmd.HasClip) {
@@ -893,13 +911,17 @@ namespace Index {
 				? dropdownFont->GetPixelSize() : fontPx;
 			const float uniformScale = rect.Scale.x;
 			const float textScale = (fontPx / bakedSize) * uniformScale;
+			// Rows are authored in reference-res units like the button — scale with the canvas.
+			// A raw OptionRowHeight was a fixed pixel height that only matched at viewport==reference
+			// (looked right in the Game view, wrong in the Scene view + standalone).
+			const float rowH = dd.OptionRowHeight * uniformScale;
 
 			const int popupDraw = ++counter;
 			for (int i = 0; i < static_cast<int>(dd.Options.size()); ++i) {
-				const float rowTop = topOfPopup - dd.OptionRowHeight * static_cast<float>(i);
-				const float rowBottom = rowTop - dd.OptionRowHeight;
+				const float rowTop = topOfPopup - rowH * static_cast<float>(i);
+				const float rowBottom = rowTop - rowH;
 				const Vec2 rowBL{ bl.x, rowBottom };
-				const Vec2 rowSize{ width, dd.OptionRowHeight };
+				const Vec2 rowSize{ width, rowH };
 
 				const bool hovered = mouseUi.x >= rowBL.x && mouseUi.x <= rowBL.x + rowSize.x
 					&& mouseUi.y >= rowBL.y && mouseUi.y <= rowBL.y + rowSize.y;
@@ -967,7 +989,7 @@ namespace Index {
 			// scrolled-out glyphs and the highlight don't spill past the edges. Multiline
 			// fields don't clip (they show all lines); inherited masks still apply.
 			UIMaskClip fieldClipRect = fieldClip;
-			if (!field.Multiline) {
+			if (!field.Multiline || field.VerticalScrollbarEntity != entt::null) {
 				if (!fieldClipRect.HasClip) {
 					fieldClipRect.HasClip = true;
 					fieldClipRect.ClipMin = layout.BL;
@@ -992,6 +1014,11 @@ namespace Index {
 				const float ascentWorld  = layout.FontPtr->GetAscent()  * layout.Scale;
 				const float descentWorld = layout.FontPtr->GetDescent() * layout.Scale; // negative (below baseline)
 				const float blockSpan = static_cast<float>(std::max(0, lineCount - 1)) * overlayLineHeight;
+				// Scrollable multiline: top-anchor + shift up by ScrollOffsetY (matches the text
+				// render and ResolveInputTextLayout); per-VAlign anchoring otherwise.
+				if (field.Multiline && field.VerticalScrollbarEntity != entt::null) {
+					return layout.TR.y - ascentWorld + overlayCapOffset + field.ScrollOffsetY;
+				}
 				switch (layout.VAlign) {
 				case TextVerticalAlignment::Top:
 					return layout.TR.y - ascentWorld + overlayCapOffset;

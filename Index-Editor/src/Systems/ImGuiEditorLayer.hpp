@@ -84,6 +84,8 @@ namespace Index {
 			// in the message text; equal start/end means no inline link.
 			size_t SourceLinkStart = 0;
 			size_t SourceLinkEnd = 0;
+			// Local wall-clock "HH:MM:SS" captured when the entry was received.
+			std::string Timestamp;
 		};
 
 		struct LogDispatchState {
@@ -267,6 +269,9 @@ namespace Index {
 		bool m_ShowLogInfo = true;
 		bool m_ShowLogWarn = true;
 		bool m_ShowLogError = true;
+		// Index into m_LogEntries of the click-selected log row, or -1. Stable across filter
+		// toggles (keyed by absolute index); reset on Clear.
+		int m_SelectedLogIndex = -1;
 		std::vector<PreviewTextureEntry> m_PreviewTextureCache;
 		std::unordered_map<std::string, size_t> m_PreviewTextureLookup;
 		std::uint64_t m_PreviewTextureTick = 0;
@@ -338,6 +343,12 @@ namespace Index {
 		// the whole drag is committed on the falling edge.
 		bool m_GizmoDragActive = false;
 		std::vector<std::pair<uint64_t, EntityTransformSnapshot>> m_GizmoDragBefore;
+		// Cumulative (raw - applied) world offset the alignment snap has held back
+		// during the active drag. Comparing the snap against the true mouse position
+		// (current edge + this debt + frame delta) instead of the already-snapped
+		// rect is what lets it release once the mouse passes the threshold instead of
+		// sticking. Reset on each drag's rising edge.
+		Vec2 m_AlignSnapDebt{ 0.0f, 0.0f };
 
 		// Unreal-style transient toast: fades in/out over the editor view to show
 		// the last undone/redone action. Rect is captured during RenderEditorView.
@@ -361,6 +372,14 @@ namespace Index {
 		// about `pivot` (the selection centroid); descendants follow via hierarchy.
 		void ApplyGroupRotationScale(Scene& scene, const Vec2& pivot,
 			float deltaAngle, const Vec2& scaleFactor);
+		// UI (RectTransform2D) analogues of the two above. Translate carries a shared
+		// canvas-space delta to every selected UI root; rotate/scale orbit each root's
+		// pivot about `pivotWorld` (the selection centroid) and add the increment to
+		// LocalRotation / LocalScale. A single selection reduces to the pivot being the
+		// entity's own, so it just edits the authored fields in place.
+		void ApplyUIGroupTranslate(Scene& scene, const Vec2& deltaCanvas);
+		void ApplyUIGroupRotationScale(Scene& scene, const Vec2& pivotWorld,
+			float deltaAngle, const Vec2& scaleFactor, float worldScale);
 		void BeginGizmoTransformDrag(Scene& scene);
 		void CommitGizmoTransformDrag(Scene& scene);
 		// Draws a faint EditorOnly grid at the snap spacing across the visible view.

@@ -46,6 +46,11 @@ namespace Index {
             std::span<const PosColorVertex> verts, bool filled);
         // World-space gizmo text, drawn on top via a private TextRenderer.
         static void RenderGizmoText(const glm::mat4& vp, GizmoLayerMask layerMask);
+        // Compute the distance-prioritized render-budget cutoff for this view: sets the
+        // TU-local g_KeepCenter / g_KeepMaxDistSq read by the Build* passes so that, when the
+        // visible gizmo cost exceeds Gizmo::s_MaxVertices, only the gizmos nearest the view
+        // centre are kept (a stable disc, instead of the old flicker-prone iteration-order tail).
+        static void ComputeBudgetCutoff(GizmoLayerMask layerMask);
 
         static bool m_IsInitialized;
         static std::unique_ptr<Shader> m_GizmoShader;

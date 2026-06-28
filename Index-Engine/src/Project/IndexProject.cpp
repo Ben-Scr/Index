@@ -842,6 +842,12 @@ endforeach()
 			root.AddMember("defaultFontAsset",
 				std::to_string(project.DefaultFontAssetId));
 		}
+		if (project.FontBakeStep != 0) {
+			root.AddMember("fontBakeStep", project.FontBakeStep);
+		}
+		if (project.FontAtlasBudgetMB != 128) {
+			root.AddMember("fontAtlasBudgetMb", project.FontAtlasBudgetMB);
+		}
 		if (!project.CustomDefines.empty()) {
 			Json::Value definesJson = Json::Value::MakeArray();
 			for (const std::string& d : project.CustomDefines) {
@@ -1542,6 +1548,12 @@ endforeach()
 					if (project.DefaultFontAssetId == 0) {
 						project.DefaultFontAssetId = k_DefaultFontAssetId;
 					}
+				}
+				if (const Json::Value* v = root.FindMember("fontBakeStep")) {
+					project.FontBakeStep = std::clamp(v->AsIntOr(0), 0, 256);
+				}
+				if (const Json::Value* v = root.FindMember("fontAtlasBudgetMb")) {
+					project.FontAtlasBudgetMB = std::max(0, v->AsIntOr(128));
 				}
 				if (const Json::Value* v = root.FindMember("customDefines"); v && v->IsArray()) {
 					project.CustomDefines.clear();

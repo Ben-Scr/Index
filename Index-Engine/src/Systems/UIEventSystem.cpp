@@ -552,7 +552,7 @@ namespace Index {
 
 			auto& rect = registry.get<RectTransform2DComponent>(field.TextEntity);
 			auto& tc = registry.get<TextRendererComponent>(field.TextEntity);
-			Font* font = TextRenderer::ResolveFont(tc);
+			Font* font = TextRenderer::ResolveFontAtPixelSize(tc, tc.FontSize * std::max(0.01f, std::abs(rect.Scale.x))); // same bake as the text loop so click-to-line height matches the render (fixes LineSpacing drift)
 			if (!font || !font->IsLoaded()) return out;
 
 			// MUST use rect.Scale.x to match GuiRenderer's glyph metrics — wrong scale shifts every click-to-caret byte.
@@ -605,6 +605,11 @@ namespace Index {
 			default:
 				out.CenterY = bl.y + (tr.y - bl.y) * 0.5f + blockSpan * 0.5f;
 				break;
+			}
+			// Scrollable multiline top-anchors the block and shifts it up by the scroll
+			// offset, so caret/click math matches the scrolled render (see GuiRenderer).
+			if (field.Multiline && field.VerticalScrollbarEntity != entt::null) {
+				out.CenterY = tr.y - ascentW + capOffset + field.ScrollOffsetY;
 			}
 			out.LineHeight = lineHeightW;
 			out.ContentRightX = tr.x - 4.0f * uniformScale;
@@ -685,6 +690,96 @@ namespace Index {
 			if (caretX - scroll < 0.0f)        scroll = caretX;               // caret past left edge
 			const float maxScroll = std::max(0.0f, lineW - windowWidth);
 			return std::clamp(scroll, 0.0f, maxScroll);
+		}
+
+		// Per-frame vertical scroll for a Multiline field with an assigned vertical
+		// Scrollbar entity. While the scrollbar handle is dragged it drives the text;
+		// otherwise the mouse wheel (when hovered) and caret-follow (only when the caret
+		// actually moves, so the wheel can scroll away from it) drive ScrollOffsetY,
+		// clamped to the content overflow. The result is mirrored back onto the
+		// scrollbar's Value (position) and Size (handle fraction). No scrollbar assigned
+		// -> scroll is cleared and the field renders all lines. Top-anchored geometry
+		// matches ResolveInputTextLayout and GuiRenderer.
+		void UpdateInputVerticalScroll(entt::registry& registry, const Input& input,
+			InputFieldComponent& field, bool hovered,
+			std::vector<std::pair<EntityHandle, bool>>& deferredEnable) {
+			const bool has = field.Multiline
+				&& field.VerticalScrollbarEntity != entt::null
+				&& registry.valid(field.VerticalScrollbarEntity)
+				&& registry.all_of<ScrollbarComponent>(field.VerticalScrollbarEntity);
+			if (!has) {
+				field.ScrollOffsetY = 0.0f;
+				field.ScrollFollowCaretByte = field.CaretBytePos;
+				return;
+			}
+			ScrollbarComponent& sb = registry.get<ScrollbarComponent>(field.VerticalScrollbarEntity);
+
+			InputTextLayout layout = ResolveInputTextLayout(registry, field);
+			if (!layout.Valid || layout.LineHeight <= 0.0f) {
+				field.ScrollOffsetY = 0.0f;
+				field.ScrollFollowCaretByte = field.CaretBytePos;
+				sb.Size = 1.0f;
+				sb.Value = 0.0f;
+				return;
+			}
+			auto& rect = registry.get<RectTransform2DComponent>(field.TextEntity);
+			const Vec2 bl = rect.GetBottomLeft();
+			const Vec2 tr = rect.GetTopRight();
+			const float viewHeight = tr.y - bl.y;
+			std::vector<std::pair<int, int>> lines = InputVisualLines(layout, field.Text);
+			const float contentHeight = static_cast<float>(lines.size()) * layout.LineHeight;
+			const float maxScroll = std::max(0.0f, contentHeight - viewHeight);
+
+			const bool caretMoved = (field.CaretBytePos != field.ScrollFollowCaretByte);
+			field.ScrollFollowCaretByte = field.CaretBytePos;
+
+			float desired = field.ScrollOffsetY;
+			bool followCaret = caretMoved && field.IsFocused;
+			if (sb.IsDragging && maxScroll > 0.0f) {
+				// Handle drives the text (TopToBottom: Value 0 = top).
+				desired = std::clamp(sb.Value, 0.0f, 1.0f) * maxScroll;
+				followCaret = false;
+			}
+			else if (hovered) {
+				const float wheel = input.ScrollValue(); // GLFW: + = up = toward top = less offset
+				if (wheel != 0.0f) desired -= wheel * field.ScrollSensitivity * layout.LineHeight;
+			}
+
+			float scroll = desired;
+			if (followCaret && maxScroll > 0.0f) {
+				// layout.CenterY already folds in the live ScrollOffsetY; recover the
+				// unscrolled line-0 centre so the band test doesn't depend on it.
+				const float baseFirstCenterY = layout.CenterY - field.ScrollOffsetY;
+				const int caretLine = std::clamp(
+					VisualLineOfByte(lines, std::clamp(field.CaretBytePos, 0,
+						static_cast<int>(field.Text.size()))),
+					0, static_cast<int>(lines.size()) - 1);
+				const float halfLine = layout.LineHeight * 0.5f;
+				const float caretBase = baseFirstCenterY
+					- static_cast<float>(caretLine) * layout.LineHeight;
+				const float topBound = tr.y - halfLine;
+				const float botBound = bl.y + halfLine;
+				if (caretBase + scroll > topBound) scroll = topBound - caretBase; // caret above top
+				if (caretBase + scroll < botBound) scroll = botBound - caretBase; // caret below bottom
+			}
+			field.ScrollOffsetY = std::clamp(scroll, 0.0f, maxScroll);
+
+			// Mirror the text scroll onto the handle (size + position) unless the handle
+			// is the one driving — then leave its dragged Value alone.
+			if (maxScroll > 0.0f && contentHeight > 0.0f) {
+				sb.Size = std::clamp(viewHeight / contentHeight, 0.05f, 1.0f);
+				if (!sb.IsDragging) sb.Value = std::clamp(field.ScrollOffsetY / maxScroll, 0.0f, 1.0f);
+			}
+			else {
+				sb.Size = 1.0f;
+				sb.Value = 0.0f;
+			}
+
+			// Visibility: Permanent always shows the scrollbar; AutoHide variants disable
+			// it while the text fits. Deferred — SetEnabled toggles DisabledTag, a
+			// structural change unsafe mid view-iteration.
+			deferredEnable.emplace_back(field.VerticalScrollbarEntity,
+				field.VerticalScrollbarVisibility == ScrollbarVisibility::Permanent ? true : (maxScroll > 0.0f));
 		}
 
 		int ByteFromMouseX(entt::registry& registry, const InputFieldComponent& field, Vec2 mouseUi) {
@@ -1246,10 +1341,12 @@ namespace Index {
 			const Vec2 tr = rect.GetTopRight();
 			const float width = tr.x - bl.x;
 			const float topOfPopup = bl.y;
+			// Match GuiRenderer: rows scale with the canvas, so the hit-test must too.
+			const float rowH = dd.OptionRowHeight * rect.Scale.x;
 
 			for (int i = 0; i < static_cast<int>(dd.Options.size()); ++i) {
-				const float rowTop = topOfPopup - dd.OptionRowHeight * static_cast<float>(i);
-				const float rowBottom = rowTop - dd.OptionRowHeight;
+				const float rowTop = topOfPopup - rowH * static_cast<float>(i);
+				const float rowBottom = rowTop - rowH;
 				if (mouseUi.x >= bl.x && mouseUi.x <= bl.x + width
 					&& mouseUi.y >= rowBottom && mouseUi.y <= rowTop)
 				{
@@ -1621,6 +1718,13 @@ namespace Index {
 					cs.LastObservedValue = cs.Value;
 					cs.ValueObserved = true;
 				}
+
+				// Keep Value within [MinValue, MaxValue] however it was set (inspector, script,
+				// deserialize). Drag already clamps; a direct write would otherwise persist out
+				// of range (e.g. Value 2.885 with Max 1).
+				cs.Value = std::clamp(cs.Value,
+					std::min(cs.MinValue, cs.MaxValue),
+					std::max(cs.MinValue, cs.MaxValue));
 
 				// Handle press OR ring press both start drag: handle hovering suppresses ring's annulus hit, leaving thumb inert otherwise.
 				InteractableComponent* handleInteract = nullptr;
@@ -2499,8 +2603,10 @@ namespace Index {
 		}
 
 		// Caret/selection are painted as separate quads by GuiRenderer — not injected into Text — so layout stays stable.
+			std::vector<std::pair<EntityHandle, bool>> deferredInputScrollbarEnable;
 		for (auto&& [entity, interact, field] : inputView.each()) {
 			field.ScrollOffsetX = ComputeInputScrollX(registry, field);
+			UpdateInputVerticalScroll(registry, input, field, interact.IsHovered, deferredInputScrollbarEnable);
 			if (field.TextEntity == entt::null || !registry.valid(field.TextEntity)) continue;
 			if (!registry.all_of<TextRendererComponent>(field.TextEntity)) continue;
 			auto& tc = registry.get<TextRendererComponent>(field.TextEntity);
@@ -2515,6 +2621,12 @@ namespace Index {
 			}
 			tc.Color = useText ? field.TextColor : field.PlaceholderColor;
 		}
+
+			// Apply scrollbar auto-hide after the inputView iteration (SetEnabled toggles
+			// DisabledTag, a structural change unsafe mid view-iteration). Mirrors ScrollRect.
+			for (const auto& [scrollbar, desiredEnabled] : deferredInputScrollbarEnable) {
+				SetEntityEnabled(scene, scrollbar, desiredEnabled);
+			}
 
 		// ── 9. Dropdowns: open/close, sync label ─────────────────────
 		for (auto&& [entity, rect, dd] : dropdownView.each()) {
@@ -2614,6 +2726,16 @@ namespace Index {
 		auto sliderView = registry.view<SliderComponent, RectTransform2DComponent>(entt::exclude<DisabledTag>);
 		for (auto&& [entity, slider, rect] : sliderView.each()) {
 			ApplySliderVisuals(registry, slider, rect);
+		}
+
+		// Circular sliders aren't processed by Update in edit mode; clamp their Value
+		// here too so the inspector can't hold a value outside [Min, Max].
+		auto circularPreview = registry.view<CircularSliderComponent>(entt::exclude<DisabledTag>);
+		for (auto csEntity : circularPreview) {
+			auto& cs = circularPreview.get<CircularSliderComponent>(csEntity);
+			cs.Value = std::clamp(cs.Value,
+				std::min(cs.MinValue, cs.MaxValue),
+				std::max(cs.MinValue, cs.MaxValue));
 		}
 
 		// ── Scrollbars: Handle position + size from Value / Size ──

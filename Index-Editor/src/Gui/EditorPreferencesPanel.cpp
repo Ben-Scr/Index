@@ -113,20 +113,30 @@ namespace Index {
 			ImGui::EndChild();
 		}
 		else if (ImGui::BeginTabBar("##EditorPrefsTabs", ImGuiTabBarFlags_None)) {
+			// Each tab's body lives in a scrolling child so the search bar and
+			// the tab bar stay pinned at the top while a long tab scrolls.
 			if (ImGui::BeginTabItem("Appearance")) {
+				ImGui::BeginChild("##AppearanceScroll", ImVec2(0, 0), false);
 				RenderAppearanceTab();
+				ImGui::EndChild();
 				ImGui::EndTabItem();
 			}
 			if (ImGui::BeginTabItem("Scripting")) {
+				ImGui::BeginChild("##ScriptingScroll", ImVec2(0, 0), false);
 				RenderScriptingTab();
+				ImGui::EndChild();
 				ImGui::EndTabItem();
 			}
 			if (ImGui::BeginTabItem("Layouts")) {
+				ImGui::BeginChild("##LayoutsScroll", ImVec2(0, 0), false);
 				RenderLayoutsTab();
+				ImGui::EndChild();
 				ImGui::EndTabItem();
 			}
 			if (ImGui::BeginTabItem("Behavior")) {
+				ImGui::BeginChild("##BehaviorScroll", ImVec2(0, 0), false);
 				RenderBehaviorTab();
+				ImGui::EndChild();
 				ImGui::EndTabItem();
 			}
 			ImGui::EndTabBar();
@@ -190,11 +200,7 @@ namespace Index {
 			ImGui::EndCombo();
 		}
 		if (ImGui::IsItemHovered()) {
-			ImGui::SetTooltip(
-				"Auto: follow the Windows app theme.\n"
-				"Dark: Index's dark palette + sizing.\n"
-				"Light: stock ImGui light palette.\n"
-				"Custom: enable the per-color editors below.");
+			ImGui::SetTooltip("The theme of the editor ui");
 		}
 
 		ImGui::Spacing();
@@ -212,9 +218,7 @@ namespace Index {
 		}
 		if (ImGui::IsItemHovered() && customActive) {
 			ImGui::SetTooltip(
-				"Reset the editable swatches to the default theme\n"
-				"(Dark or Light, following the system setting), giving\n"
-				"you a clean base to start customising from.");
+				"Resets the custom theme back to it's default");
 		}
 
 		// Scrollable region so the long ImGuiCol_ list doesn't push the

@@ -290,8 +290,10 @@ namespace Index {
 		void MarkStaticRenderDataDirty();
 		uint64_t GetStaticRenderDataVersion() const { return m_StaticRenderDataVersion; }
 
-		// Bumped on any parent/child topology change (Entity::SetParent). The editor hierarchy panel polls this to rebuild
-		// its cached row order when a reparent doesn't change the entity count — e.g. a script reparenting at runtime.
+		// Bumped on any change to the entity set/topology that the entity COUNT can't detect: parent/child changes
+		// (Entity::SetParent) and prefab-instance refresh (RefreshPrefabInstance's balanced destroy+create). The editor
+		// hierarchy panel polls this to rebuild its cached row order — e.g. a script reparenting at runtime, or a
+		// root-level childless prefab instance being swapped to a fresh handle without changing the entity count.
 		void MarkHierarchyStructureDirty();
 		uint64_t GetHierarchyVersion() const { return m_HierarchyVersion; }
 

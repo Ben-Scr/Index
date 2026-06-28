@@ -7,7 +7,7 @@ namespace Index;
 /// Layout matches glm::vec3 for direct interop.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = 12)]
-public struct Vector3 : IEquatable<Vector3>
+public struct Vector3 : IEquatable<Vector3>, ISpanFormattable
 {
     [FieldOffset(0)] public float X;
     [FieldOffset(4)] public float Y;
@@ -74,7 +74,35 @@ public struct Vector3 : IEquatable<Vector3>
     public bool Equals(Vector3 other) => X == other.X && Y == other.Y && Z == other.Z;
     public override bool Equals(object? obj) => obj is Vector3 other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z);
-    public override string ToString() => $"Vector3({X}, {Y}, {Z})";
+    public override string ToString() => ToString(null, null);
+
+    public string ToString(string? format, IFormatProvider? formatProvider = null) =>
+        $"Vector3({X.ToString(format, formatProvider)}, {Y.ToString(format, formatProvider)}, {Z.ToString(format, formatProvider)})";
+
+    public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
+    {
+        charsWritten = 0;
+        int pos = 0;
+        if (!TryAppend(destination, ref pos, "Vector3(")) return false;
+        if (!X.TryFormat(destination[pos..], out int w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ", ")) return false;
+        if (!Y.TryFormat(destination[pos..], out w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ", ")) return false;
+        if (!Z.TryFormat(destination[pos..], out w, format, provider)) return false;
+        pos += w;
+        if (!TryAppend(destination, ref pos, ")")) return false;
+        charsWritten = pos;
+        return true;
+
+        static bool TryAppend(Span<char> dest, ref int pos, ReadOnlySpan<char> text)
+        {
+            if (!text.TryCopyTo(dest[pos..])) return false;
+            pos += text.Length;
+            return true;
+        }
+    }
 
     // ── Conversions ─────────────────────────────────────────────
     public static explicit operator Vector2(Vector3 v) => new(v.X, v.Y);

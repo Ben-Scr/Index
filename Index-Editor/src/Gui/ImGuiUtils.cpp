@@ -3,6 +3,7 @@
 #include "Graphics/Texture2D.hpp"
 #include "Scene/Scene.hpp"
 #include "Collections/Curve.hpp"
+#include "Collections/Gradient.hpp"
 #include <imgui.h>
 #include <cmath>
 
@@ -338,6 +339,284 @@ namespace Index::ImGuiUtils {
 			const bool sel = enabled && (static_cast<int>(i) == s_Selected);
 			dl->AddCircleFilled(sp, kKeyR, sel ? col(255, 230, 120, 255) : col(120, 200, 255, 255));
 		}
+
+		ImGui::PopID();
+		return changed;
+	}
+
+	bool DrawGradientEditor(const char* id, Gradient& gradient, bool enabled)
+	{
+		using ColorKey = Gradient::ColorKey;
+		using AlphaKey = Gradient::AlphaKey;
+		auto& colorKeys = gradient.ColorKeys;
+		auto& alphaKeys = gradient.AlphaKeys;
+		if (colorKeys.empty()) colorKeys = Gradient::DefaultColorKeys();
+		if (alphaKeys.empty()) alphaKeys = Gradient::DefaultAlphaKeys();
+
+		constexpr float kStripH = 14.0f;     // marker strips above (alpha) + below (colour) the bar
+		constexpr float kBarH = 26.0f;       // gradient preview bar
+		constexpr float kMarkerHalf = 6.0f;  // marker triangle half-width
+		constexpr float kHitR = 8.0f;        // marker grab radius (x)
+
+		ImGui::PushID(id);
+		bool changed = false;
+
+		const ImVec2 origin = ImGui::GetCursorScreenPos();
+		const float fullW = std::max(120.0f, ImGui::GetContentRegionAvail().x);
+		const float totalH = kStripH + kBarH + kStripH;
+		ImGui::InvisibleButton("##gradient", ImVec2(fullW, totalH),
+			ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+		const bool hovered = enabled && ImGui::IsItemHovered();
+		ImDrawList* dl = ImGui::GetWindowDrawList();
+
+		const float barX0 = origin.x;
+		const float barX1 = origin.x + fullW;
+		const float barY0 = origin.y + kStripH;
+		const float barY1 = barY0 + kBarH;
+		const float barW = barX1 - barX0;
+
+		// Dim every drawn element when disabled so the widget reads as inactive (greyed).
+		auto col = [&](int r, int g, int b, int a) -> ImU32 {
+			return IM_COL32(r, g, b, enabled ? a : a * 35 / 100);
+		};
+		auto tToX = [&](float t) { return barX0 + std::clamp(t, 0.0f, 1.0f) * barW; };
+		auto xToT = [&](float x) { return std::clamp((x - barX0) / std::max(1.0f, barW), 0.0f, 1.0f); };
+		auto u8 = [](float v) { return static_cast<int>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+
+		// Checkerboard behind the bar so partial alpha is visible.
+		{
+			constexpr float kCell = 6.0f;
+			dl->PushClipRect(ImVec2(barX0, barY0), ImVec2(barX1, barY1), true);
+			int row = 0;
+			for (float y = barY0; y < barY1; y += kCell, ++row) {
+				int cell = row;
+				for (float x = barX0; x < barX1; x += kCell, ++cell) {
+					const ImU32 c = (cell & 1) ? col(120, 120, 120, 255) : col(80, 80, 80, 255);
+					dl->AddRectFilled(ImVec2(x, y), ImVec2(std::min(x + kCell, barX1), std::min(y + kCell, barY1)), c);
+				}
+			}
+			dl->PopClipRect();
+		}
+
+		// Gradient fill: draw a horizontal multi-colour rect between each pair of adjacent
+		// breakpoints (the union of colour + alpha key positions). Between two breakpoints
+		// neither RGB nor alpha has a key, so both interpolate linearly — exactly what
+		// AddRectFilledMultiColor produces.
+		{
+			const int dimA = enabled ? 255 : 89;
+			auto sampleU32 = [&](float t) -> ImU32 {
+				const Color c = gradient.Evaluate(t);
+				const int a = static_cast<int>(std::lround(std::clamp(c.a, 0.0f, 1.0f) * dimA));
+				return IM_COL32(u8(c.r), u8(c.g), u8(c.b), a);
+			};
+			std::vector<float> stops;
+			stops.reserve(colorKeys.size() + alphaKeys.size() + 2);
+			stops.push_back(0.0f);
+			stops.push_back(1.0f);
+			for (const auto& k : colorKeys) stops.push_back(std::clamp(k.Position, 0.0f, 1.0f));
+			for (const auto& k : alphaKeys) stops.push_back(std::clamp(k.Position, 0.0f, 1.0f));
+			std::sort(stops.begin(), stops.end());
+			stops.erase(std::unique(stops.begin(), stops.end(),
+				[](float a, float b) { return std::abs(a - b) < 1e-5f; }), stops.end());
+			for (std::size_t i = 1; i < stops.size(); ++i) {
+				const float tL = stops[i - 1], tR = stops[i];
+				const ImU32 cL = sampleU32(tL), cR = sampleU32(tR);
+				dl->AddRectFilledMultiColor(ImVec2(tToX(tL), barY0), ImVec2(tToX(tR), barY1), cL, cR, cR, cL);
+			}
+			dl->AddRect(ImVec2(barX0, barY0), ImVec2(barX1, barY1), col(70, 70, 78, 255));
+		}
+
+		// Persistent selection + drag target, keyed to this gradient's address so it resets
+		// when a different gradient is shown. List: 0 = colour key, 1 = alpha key.
+		static const void* s_Owner = nullptr;
+		static int s_SelList = -1, s_SelIdx = -1;
+		static int s_DragList = -1, s_DragIdx = -1;
+		// t at which the context menu was opened, so "Add ... Stop" inserts where the user
+		// right-clicked rather than wherever the menu item happens to sit.
+		static float s_CtxT = 0.5f;
+		if (s_Owner != static_cast<const void*>(&gradient)) {
+			s_Owner = static_cast<const void*>(&gradient);
+			s_SelList = s_SelIdx = s_DragList = s_DragIdx = -1;
+		}
+		if (s_SelList == 0 && s_SelIdx >= static_cast<int>(colorKeys.size())) { s_SelList = -1; s_SelIdx = -1; }
+		if (s_SelList == 1 && s_SelIdx >= static_cast<int>(alphaKeys.size())) { s_SelList = -1; s_SelIdx = -1; }
+
+		const ImVec2 mouse = ImGui::GetMousePos();
+		const float colTipY = barY1;            // colour markers: tip at bar bottom, base below
+		const float colBaseY = barY1 + kStripH;
+		const float alphaTipY = barY0;          // alpha markers: tip at bar top, base above
+		const float alphaBaseY = barY0 - kStripH;
+
+		auto hitColorMarker = [&](int i) {
+			const float x = tToX(colorKeys[i].Position);
+			return std::abs(mouse.x - x) <= kHitR && mouse.y >= colTipY - 2.0f && mouse.y <= colBaseY + 2.0f;
+		};
+		auto hitAlphaMarker = [&](int i) {
+			const float x = tToX(alphaKeys[i].Position);
+			return std::abs(mouse.x - x) <= kHitR && mouse.y >= alphaBaseY - 2.0f && mouse.y <= alphaTipY + 2.0f;
+		};
+		auto addColorKey = [&](float t) {
+			const Color c = gradient.EvaluateRGB(t);
+			ColorKey nk; nk.Position = std::clamp(t, 0.0f, 1.0f); nk.R = c.r; nk.G = c.g; nk.B = c.b;
+			int idx = 0;
+			while (idx < static_cast<int>(colorKeys.size()) && colorKeys[idx].Position < nk.Position) ++idx;
+			colorKeys.insert(colorKeys.begin() + idx, nk);
+			s_SelList = 0; s_SelIdx = idx;
+		};
+		auto addAlphaKey = [&](float t) {
+			AlphaKey nk; nk.Position = std::clamp(t, 0.0f, 1.0f); nk.Alpha = gradient.EvaluateAlpha(t);
+			int idx = 0;
+			while (idx < static_cast<int>(alphaKeys.size()) && alphaKeys[idx].Position < nk.Position) ++idx;
+			alphaKeys.insert(alphaKeys.begin() + idx, nk);
+			s_SelList = 1; s_SelIdx = idx;
+		};
+
+		if (enabled) {
+			// Resolve the marker under the cursor (prefer the selected one for stable grabbing).
+			int hitList = -1, hitIdx = -1;
+			if (s_SelList == 1 && s_SelIdx >= 0 && s_SelIdx < static_cast<int>(alphaKeys.size()) && hitAlphaMarker(s_SelIdx)) { hitList = 1; hitIdx = s_SelIdx; }
+			else if (s_SelList == 0 && s_SelIdx >= 0 && s_SelIdx < static_cast<int>(colorKeys.size()) && hitColorMarker(s_SelIdx)) { hitList = 0; hitIdx = s_SelIdx; }
+			if (hitList < 0) {
+				for (int i = 0; i < static_cast<int>(alphaKeys.size()); ++i) { if (hitAlphaMarker(i)) { hitList = 1; hitIdx = i; break; } }
+			}
+			if (hitList < 0) {
+				for (int i = 0; i < static_cast<int>(colorKeys.size()); ++i) { if (hitColorMarker(i)) { hitList = 0; hitIdx = i; break; } }
+			}
+
+			if (ImGui::IsItemActive() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hitList >= 0) {
+				s_SelList = hitList; s_SelIdx = hitIdx;
+				s_DragList = hitList; s_DragIdx = hitIdx;
+			}
+			if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { s_DragList = -1; s_DragIdx = -1; }
+
+			// Drag the grabbed marker along x, clamped between its neighbours so the list stays
+			// sorted and the index stays stable.
+			if (s_DragList == 0 && s_DragIdx >= 0 && s_DragIdx < static_cast<int>(colorKeys.size())
+				&& ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+				float t = xToT(mouse.x);
+				const float lo = s_DragIdx > 0 ? colorKeys[s_DragIdx - 1].Position + 1e-4f : 0.0f;
+				const float hi = s_DragIdx < static_cast<int>(colorKeys.size()) - 1 ? colorKeys[s_DragIdx + 1].Position - 1e-4f : 1.0f;
+				t = std::clamp(t, std::min(lo, hi), std::max(lo, hi));
+				if (t != colorKeys[s_DragIdx].Position) { colorKeys[s_DragIdx].Position = t; changed = true; }
+			}
+			else if (s_DragList == 1 && s_DragIdx >= 0 && s_DragIdx < static_cast<int>(alphaKeys.size())
+				&& ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+				float t = xToT(mouse.x);
+				const float lo = s_DragIdx > 0 ? alphaKeys[s_DragIdx - 1].Position + 1e-4f : 0.0f;
+				const float hi = s_DragIdx < static_cast<int>(alphaKeys.size()) - 1 ? alphaKeys[s_DragIdx + 1].Position - 1e-4f : 1.0f;
+				t = std::clamp(t, std::min(lo, hi), std::max(lo, hi));
+				if (t != alphaKeys[s_DragIdx].Position) { alphaKeys[s_DragIdx].Position = t; changed = true; }
+			}
+
+			// Double-click an empty strip to add a stop: below the bar => colour, above => alpha.
+			if (hovered && hitList < 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+				const float t = xToT(mouse.x);
+				if (mouse.y >= barY1) { addColorKey(t); changed = true; }
+				else if (mouse.y <= barY0) { addAlphaKey(t); changed = true; }
+				else { addColorKey(t); changed = true; } // double-click on the bar => colour stop
+			}
+
+			// Right-click: remember the cursor's t for "Add ... Stop", and select the marker
+			// under the cursor (if any) so "Delete stop" targets it.
+			if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+				s_CtxT = xToT(mouse.x);
+				if (hitList >= 0) { s_SelList = hitList; s_SelIdx = hitIdx; }
+			}
+			// Delete the selected stop (keep at least one per list). Suppressed while a
+			// text/drag field is being edited so Backspace there doesn't erase a stop.
+			const bool deletePressed = hovered && !ImGui::GetIO().WantTextInput
+				&& (ImGui::IsKeyPressed(ImGuiKey_Delete) || ImGui::IsKeyPressed(ImGuiKey_Backspace));
+			if (deletePressed && s_SelList == 0 && colorKeys.size() > 1) {
+				colorKeys.erase(colorKeys.begin() + s_SelIdx); s_SelList = -1; s_SelIdx = -1; changed = true;
+			}
+			else if (deletePressed && s_SelList == 1 && alphaKeys.size() > 1) {
+				alphaKeys.erase(alphaKeys.begin() + s_SelIdx); s_SelList = -1; s_SelIdx = -1; changed = true;
+			}
+
+			if (ImGui::BeginPopupContextItem("##gradCtx")) {
+				if (ImGui::MenuItem("Add Color Stop")) {
+					addColorKey(s_CtxT); changed = true;
+				}
+				if (ImGui::MenuItem("Add Alpha Stop")) {
+					addAlphaKey(s_CtxT); changed = true;
+				}
+				ImGui::Separator();
+				const bool canDelete = (s_SelList == 0 && colorKeys.size() > 1) || (s_SelList == 1 && alphaKeys.size() > 1);
+				if (ImGui::MenuItem("Delete stop", nullptr, false, canDelete)) {
+					if (s_SelList == 0) colorKeys.erase(colorKeys.begin() + s_SelIdx);
+					else if (s_SelList == 1) alphaKeys.erase(alphaKeys.begin() + s_SelIdx);
+					s_SelList = -1; s_SelIdx = -1; changed = true;
+				}
+				ImGui::Separator();
+				if (ImGui::MenuItem("Reset to default")) {
+					colorKeys = Gradient::DefaultColorKeys();
+					alphaKeys = Gradient::DefaultAlphaKeys();
+					s_SelList = -1; s_SelIdx = -1; changed = true;
+				}
+				ImGui::EndPopup();
+			}
+		}
+
+		// Alpha markers (top), then colour markers (bottom), so the selected one reads clearly.
+		for (int i = 0; i < static_cast<int>(alphaKeys.size()); ++i) {
+			const float x = tToX(alphaKeys[i].Position);
+			const bool sel = enabled && s_SelList == 1 && i == s_SelIdx;
+			const int g = u8(alphaKeys[i].Alpha);
+			dl->AddTriangleFilled(ImVec2(x, alphaTipY), ImVec2(x - kMarkerHalf, alphaBaseY), ImVec2(x + kMarkerHalf, alphaBaseY), col(g, g, g, 255));
+			dl->AddTriangle(ImVec2(x, alphaTipY), ImVec2(x - kMarkerHalf, alphaBaseY), ImVec2(x + kMarkerHalf, alphaBaseY),
+				sel ? col(255, 230, 120, 255) : col(20, 20, 20, 255), sel ? 2.0f : 1.0f);
+		}
+		for (int i = 0; i < static_cast<int>(colorKeys.size()); ++i) {
+			const float x = tToX(colorKeys[i].Position);
+			const bool sel = enabled && s_SelList == 0 && i == s_SelIdx;
+			const ColorKey& k = colorKeys[i];
+			dl->AddTriangleFilled(ImVec2(x, colTipY), ImVec2(x - kMarkerHalf, colBaseY), ImVec2(x + kMarkerHalf, colBaseY), col(u8(k.R), u8(k.G), u8(k.B), 255));
+			dl->AddTriangle(ImVec2(x, colTipY), ImVec2(x - kMarkerHalf, colBaseY), ImVec2(x + kMarkerHalf, colBaseY),
+				sel ? col(255, 230, 120, 255) : col(20, 20, 20, 255), sel ? 2.0f : 1.0f);
+		}
+
+		// Editor row for the selected stop (greyed-out with the widget when disabled).
+		auto dragLocation = [&](float& position, int idx, const std::vector<float>& neighbourPositions) {
+			float locPct = position * 100.0f;
+			ImGui::SetNextItemWidth(110.0f);
+			if (ImGui::DragFloat("##gradLoc", &locPct, 0.5f, 0.0f, 100.0f, "Loc %.0f%%")) {
+				float t = std::clamp(locPct / 100.0f, 0.0f, 1.0f);
+				const float lo = idx > 0 ? neighbourPositions[idx - 1] + 1e-4f : 0.0f;
+				const float hi = idx < static_cast<int>(neighbourPositions.size()) - 1 ? neighbourPositions[idx + 1] - 1e-4f : 1.0f;
+				t = std::clamp(t, std::min(lo, hi), std::max(lo, hi));
+				position = t; changed = true;
+			}
+		};
+		ImGui::BeginDisabled(!enabled);
+		if (s_SelList == 0 && s_SelIdx >= 0 && s_SelIdx < static_cast<int>(colorKeys.size())) {
+			ColorKey& k = colorKeys[s_SelIdx];
+			float rgb[3] = { k.R, k.G, k.B };
+			if (ImGui::ColorEdit3("##gradColorEdit", rgb, ImGuiColorEditFlags_NoInputs)) { k.R = rgb[0]; k.G = rgb[1]; k.B = rgb[2]; changed = true; }
+			ImGui::SameLine();
+			std::vector<float> positions; positions.reserve(colorKeys.size());
+			for (const auto& c : colorKeys) positions.push_back(c.Position);
+			dragLocation(k.Position, s_SelIdx, positions);
+			ImGui::SameLine();
+			ImGui::BeginDisabled(colorKeys.size() <= 1);
+			if (ImGui::Button("Delete##gradDelColor")) { colorKeys.erase(colorKeys.begin() + s_SelIdx); s_SelList = -1; s_SelIdx = -1; changed = true; }
+			ImGui::EndDisabled();
+		}
+		else if (s_SelList == 1 && s_SelIdx >= 0 && s_SelIdx < static_cast<int>(alphaKeys.size())) {
+			AlphaKey& k = alphaKeys[s_SelIdx];
+			float a = k.Alpha;
+			ImGui::SetNextItemWidth(140.0f);
+			if (ImGui::SliderFloat("##gradAlphaEdit", &a, 0.0f, 1.0f, "A %.2f")) { k.Alpha = std::clamp(a, 0.0f, 1.0f); changed = true; }
+			ImGui::SameLine();
+			std::vector<float> positions; positions.reserve(alphaKeys.size());
+			for (const auto& c : alphaKeys) positions.push_back(c.Position);
+			dragLocation(k.Position, s_SelIdx, positions);
+			ImGui::SameLine();
+			ImGui::BeginDisabled(alphaKeys.size() <= 1);
+			if (ImGui::Button("Delete##gradDelAlpha")) { alphaKeys.erase(alphaKeys.begin() + s_SelIdx); s_SelList = -1; s_SelIdx = -1; changed = true; }
+			ImGui::EndDisabled();
+		}
+
+		ImGui::EndDisabled();
 
 		ImGui::PopID();
 		return changed;

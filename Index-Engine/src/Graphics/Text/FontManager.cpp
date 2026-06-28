@@ -2,6 +2,7 @@
 #include "Graphics/Text/FontManager.hpp"
 
 #include "Assets/AssetRegistry.hpp"
+#include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Serialization/File.hpp"
 #include "Serialization/Path.hpp"
@@ -9,23 +10,84 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <limits>
 #include <utility>
 
 
 namespace Index {
 
 	namespace {
-		int QuantizePixelSize(float pixelSize) {
-			int p = std::max(1, static_cast<int>(std::lround(pixelSize)));
-			auto snap = [](int v, int step) {
-				return ((v + step / 2) / step) * step;
-			};
-			if (p <= 16)  return p;
-			if (p <= 32)  return snap(p, 2);
-			if (p <= 64)  return snap(p, 4);
-			if (p <= 128) return snap(p, 8);
-			return snap(p, 16);
+		// Engine frame counter; 0 when no Application (headless/tests — eviction
+		// never runs there anyway). Used to protect the current frame's working set.
+		int CurrentFrame() {
+			const Application* app = Application::GetInstance();
+			return app ? app->GetTime().GetFrameCount() : 0;
 		}
+	}
+
+	int FontManager::QuantizeBakeSize(float pixelSize) {
+		const int p = std::max(1, static_cast<int>(std::lround(pixelSize)));
+		auto snap = [](int v, int step) { return ((v + step / 2) / step) * step; };
+		if (s_BakeStep > 0) {
+			// Fixed step: snap to the nearest multiple, but never below one step
+			// (snap() can round small sizes down to 0).
+			return std::max(s_BakeStep, snap(p, s_BakeStep));
+		}
+		// Adaptive ladder: fine for small text, coarse for large.
+		if (p <= 16)  return p;
+		if (p <= 32)  return snap(p, 2);
+		if (p <= 64)  return snap(p, 4);
+		if (p <= 128) return snap(p, 8);
+		return snap(p, 16);
+	}
+
+	void FontManager::SetBakeStep(int step) {
+		const int normalized = step < 0 ? 0 : step;
+		if (normalized == s_BakeStep) return;
+		s_BakeStep = normalized;
+
+		// Re-key existing slots under the new quantization so a later resolve hits
+		// them instead of baking a duplicate atlas for the same pixel size. If two
+		// old buckets now collapse to one, the most recent slot wins the lookup and
+		// the orphan is reclaimed by the LRU. (No-op before Initialize: s_Slots empty.)
+		s_Lookup.clear();
+		for (uint16_t i = 0; i < static_cast<uint16_t>(s_Slots.size()); ++i) {
+			Slot& slot = s_Slots[i];
+			if (!slot.InUse || slot.AssetUUID == 0) continue;
+			slot.QuantizedSize = QuantizeBakeSize(slot.PixelSize);
+			s_Lookup[LookupKey{ slot.AssetUUID, slot.QuantizedSize }] = i;
+		}
+	}
+
+	void FontManager::SetAtlasMemoryBudgetMB(int megabytes) {
+		s_AtlasBudgetBytes = megabytes <= 0
+			? 0
+			: static_cast<size_t>(megabytes) * 1024 * 1024;
+	}
+
+	int FontManager::GetAtlasMemoryBudgetMB() {
+		return static_cast<int>(s_AtlasBudgetBytes / (1024 * 1024));
+	}
+
+	std::shared_ptr<const std::vector<uint8_t>> FontManager::GetSharedTtf(
+		uint64_t assetId, const std::string& path)
+	{
+		// Reuse the cached bytes only if they came from the same path — a moved/
+		// renamed font keeps its UUID but resolves to a new path, so a mismatch
+		// must re-read. (In-place edits to the same path during an editor session
+		// still serve cached bytes; fonts aren't hot-reload-watched like textures.)
+		auto it = s_TtfBufferCache.find(assetId);
+		if (it != s_TtfBufferCache.end() && it->second.Bytes && it->second.Path == path) {
+			return it->second.Bytes;
+		}
+		std::vector<uint8_t> bytes = File::ReadAllBytes(path);
+		if (bytes.empty()) {
+			IDX_CORE_ERROR_TAG("FontManager", "TTF read failed: {}", path);
+			return nullptr;
+		}
+		auto shared = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+		s_TtfBufferCache[assetId] = TtfBufferEntry{ shared, path };
+		return shared;
 	}
 
 	bool FontManager::Initialize() {
@@ -97,8 +159,11 @@ namespace Index {
 		const std::string path = AssetRegistry::ResolvePath(assetId);
 		if (path.empty()) return FontHandle::Invalid();
 
+		std::shared_ptr<const std::vector<uint8_t>> ttf = GetSharedTtf(assetId, path);
+		if (!ttf) return FontHandle::Invalid();
+
 		auto font = std::make_unique<Font>();
-		if (!font->LoadFromFile(path, pixelSize)) {
+		if (!font->LoadFromBuffer(path, std::move(ttf), pixelSize)) {
 			return FontHandle::Invalid();
 		}
 		return CreateSlot(std::move(font), assetId, pixelSize);
@@ -110,7 +175,7 @@ namespace Index {
 		}
 
 		// Uses raw slot lookup (not FindExisting) so a second async request for the same key latches onto the in-flight bake.
-		const LookupKey key{ assetId, QuantizePixelSize(pixelSize) };
+		const LookupKey key{ assetId, QuantizeBakeSize(pixelSize) };
 		auto it = s_Lookup.find(key);
 		if (it != s_Lookup.end()) {
 			const uint16_t idx = it->second;
@@ -124,11 +189,8 @@ namespace Index {
 		const std::string path = AssetRegistry::ResolvePath(assetId);
 		if (path.empty()) return FontHandle::Invalid();
 
-		std::vector<uint8_t> ttf = File::ReadAllBytes(path);
-		if (ttf.empty()) {
-			IDX_CORE_ERROR_TAG("FontManager", "TTF read failed for async bake: {}", path);
-			return FontHandle::Invalid();
-		}
+		std::shared_ptr<const std::vector<uint8_t>> ttf = GetSharedTtf(assetId, path);
+		if (!ttf) return FontHandle::Invalid();
 
 		auto font = std::make_unique<Font>();
 		if (!font->BeginAsyncBake(path, std::move(ttf), pixelSize)) {
@@ -139,17 +201,28 @@ namespace Index {
 
 	void FontManager::PollAsync() {
 		if (!s_IsInitialized) return;
+		const int frame = CurrentFrame();
 		for (Slot& slot : s_Slots) {
 			if (!slot.InUse || !slot.Font) continue;
 			if (!slot.Font->IsBakingAsync()) continue;
 			slot.Font->PollAsyncBake();
+			// Just-published atlases haven't been GetFont'd yet this frame; stamp
+			// them so the eviction pass below can't reclaim them the instant they bake.
+			if (slot.Font->IsLoaded()) {
+				slot.LastAccessFrame = frame;
+				slot.LastAccessTick = ++s_AccessTick;
+			}
 		}
+		// A bake may have just published a new atlas; reclaim old ones if over budget.
+		EnforceMemoryBudget();
 	}
 
 	void FontManager::UnloadFont(const FontHandle& handle) {
 		if (!IsValid(handle)) return;
 		Slot& slot = s_Slots[handle.index];
-		const LookupKey key{ slot.AssetUUID, QuantizePixelSize(slot.PixelSize) };
+		// Use the bucket the slot was registered under, not a recomputed one —
+		// SetBakeStep may have changed the quantization since this slot was created.
+		const LookupKey key{ slot.AssetUUID, slot.QuantizedSize };
 		auto it = s_Lookup.find(key);
 		if (it != s_Lookup.end() && it->second == handle.index) {
 			s_Lookup.erase(it);
@@ -175,6 +248,49 @@ namespace Index {
 		s_DefaultFont = FontHandle::Invalid();
 	}
 
+	void FontManager::EnforceMemoryBudget() {
+		if (s_AtlasBudgetBytes == 0) return;  // unlimited
+
+		size_t total = 0;
+		for (const Slot& s : s_Slots) {
+			if (s.InUse && s.Font && s.Font->IsLoaded()) {
+				total += s.Font->GetAtlasByteSize();
+			}
+		}
+		if (total <= s_AtlasBudgetBytes) return;
+
+		const uint16_t defaultIdx = s_DefaultFont.IsValid()
+			? s_DefaultFont.index : FontHandle::k_InvalidIndex;
+		const int currentFrame = CurrentFrame();
+
+		// Evict least-recently-used loaded atlases until under budget. The current
+		// frame's (and previous frame's) working set is protected: if the live set
+		// alone exceeds the budget we stay over rather than evict-and-rebake what's
+		// about to be drawn again — that would thrash the worker + GPU every frame.
+		// A stale handle held by a TextRendererComponent self-heals: IsValid() fails
+		// next frame → it re-resolves and re-bakes, exactly like a scene reload.
+		while (total > s_AtlasBudgetBytes) {
+			int victim = -1;
+			uint64_t oldest = std::numeric_limits<uint64_t>::max();
+			for (size_t i = 0; i < s_Slots.size(); ++i) {
+				const Slot& s = s_Slots[i];
+				if (!s.InUse || !s.Font || !s.Font->IsLoaded()) continue;  // skip free + in-flight bakes
+				if (static_cast<uint16_t>(i) == defaultIdx) continue;      // never evict the fallback font
+				if (currentFrame - s.LastAccessFrame <= 1) continue;       // protect this/last frame's working set
+				if (s.LastAccessTick < oldest) {
+					oldest = s.LastAccessTick;
+					victim = static_cast<int>(i);
+				}
+			}
+			if (victim < 0) break;  // only the live working set remains; stay over budget
+
+			const size_t freed = s_Slots[victim].Font->GetAtlasByteSize();
+			UnloadFont(FontHandle{ static_cast<uint16_t>(victim), s_Slots[victim].Generation });
+			if (freed >= total) break;  // freed was a summand of total; guards the subtraction
+			total -= freed;
+		}
+	}
+
 	bool FontManager::IsValid(const FontHandle& handle) {
 		if (!s_IsInitialized) return false;
 		if (!handle.IsValid()) return false;
@@ -188,7 +304,10 @@ namespace Index {
 
 	Font* FontManager::GetFont(const FontHandle& handle) {
 		if (!IsValid(handle)) return nullptr;
-		return s_Slots[handle.index].Font.get();
+		Slot& slot = s_Slots[handle.index];
+		slot.LastAccessTick = ++s_AccessTick;       // most-recently-used for the LRU
+		slot.LastAccessFrame = CurrentFrame();      // mark as part of this frame's working set
+		return slot.Font.get();
 	}
 
 	uint64_t FontManager::GetFontAssetUUID(const FontHandle& handle) {
@@ -217,17 +336,20 @@ namespace Index {
 		slot.Font = std::move(font);
 		slot.AssetUUID = assetUUID;
 		slot.PixelSize = pixelSize;
+		slot.QuantizedSize = QuantizeBakeSize(pixelSize);
+		slot.LastAccessTick = ++s_AccessTick;
+		slot.LastAccessFrame = CurrentFrame();
 		slot.InUse = true;
 		FontHandle h{ idx, slot.Generation };
 
 		if (assetUUID != 0) {
-			s_Lookup[LookupKey{ assetUUID, QuantizePixelSize(pixelSize) }] = idx;
+			s_Lookup[LookupKey{ assetUUID, slot.QuantizedSize }] = idx;
 		}
 		return h;
 	}
 
 	FontHandle FontManager::FindExisting(uint64_t assetUUID, float pixelSize) {
-		auto it = s_Lookup.find(LookupKey{ assetUUID, QuantizePixelSize(pixelSize) });
+		auto it = s_Lookup.find(LookupKey{ assetUUID, QuantizeBakeSize(pixelSize) });
 		if (it == s_Lookup.end()) return FontHandle::Invalid();
 		const uint16_t idx = it->second;
 		if (idx >= s_Slots.size() || !s_Slots[idx].InUse) {

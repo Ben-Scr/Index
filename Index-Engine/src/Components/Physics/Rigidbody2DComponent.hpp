@@ -1,12 +1,12 @@
 #pragma once
 #include "Collections/Vec2.hpp"
 #include "Core/Export.hpp"
+#include "Physics/PhysicsTypes.hpp"
 #include <box2d/types.h>
 
 namespace Index {
 	class Scene;
 	class Transform2DComponent;
-	enum class BodyType;
 }
 
 namespace Index {
@@ -59,6 +59,16 @@ namespace Index {
 	private:
 		b2BodyId m_BodyId{ b2_nullBodyId };
 
+		// Logical state — authoritative when there is no live b2 body (prefab editing
+		// happens in a detached scene that never creates one). Setters mirror into
+		// Box2D when the body exists; getters read Box2D when valid, else these. This
+		// lets the inspector edit + serialization round-trip work without a live body.
+		BodyType m_BodyType{ BodyType::Dynamic };
+		float m_GravityScale{ 1.0f };
+		float m_Mass{ 1.0f };
+		bool m_FreezeX{ false };
+		bool m_FreezeY{ false };
+		bool m_FreezeRot{ false };
 
 		friend class BoxCollider2DComponent;
 		friend class Collider2D;

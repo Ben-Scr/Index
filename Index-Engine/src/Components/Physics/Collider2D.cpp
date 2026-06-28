@@ -13,29 +13,32 @@ namespace Index {
 	bool Collider2D::IsValid() const { return b2Body_IsValid(m_BodyId) && b2Shape_IsValid(m_ShapeId); }
 
 	void Collider2D::SetFriction(float friction) {
+		m_Friction = friction;
 		IDX_COLLIDER_SHAPE_GUARD();
 		b2Shape_SetFriction(m_ShapeId, friction);
 	}
 	float Collider2D::GetFriction() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return 0.0f;
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Friction;
 		return b2Shape_GetFriction(m_ShapeId);
 	}
 	void Collider2D::SetBounciness(float bounciness) {
+		m_Bounciness = bounciness;
 		IDX_COLLIDER_SHAPE_GUARD();
 		b2Shape_SetRestitution(m_ShapeId, bounciness);
 	}
 	float Collider2D::GetBounciness() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return 0.0f;
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Bounciness;
 		return b2Shape_GetRestitution(m_ShapeId);
 	}
 	void Collider2D::SetLayer(uint64_t layer) {
+		m_Layer = layer;
 		IDX_COLLIDER_SHAPE_GUARD();
 		b2Filter filter = b2Shape_GetFilter(m_ShapeId);
 		filter.categoryBits = layer;
 		b2Shape_SetFilter(m_ShapeId, filter);
 	}
 	uint64_t Collider2D::GetLayer() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return 0;
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Layer;
 		return b2Shape_GetFilter(m_ShapeId).categoryBits;
 	}
 	bool Collider2D::IsEnabled() const {
@@ -43,7 +46,7 @@ namespace Index {
 		return b2Body_IsEnabled(m_BodyId);
 	}
 	bool Collider2D::IsSensor() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return false;
+		if (!b2Shape_IsValid(m_ShapeId)) return m_Sensor;
 		return b2Shape_IsSensor(m_ShapeId);
 	}
 
@@ -64,11 +67,12 @@ namespace Index {
 	}
 
 	void Collider2D::SetRegisterContacts(bool enabled) {
+		m_RegisterContacts = enabled;
 		IDX_COLLIDER_SHAPE_GUARD();
 		b2Shape_EnableContactEvents(m_ShapeId, enabled);
 	}
 	bool Collider2D::CanRegisterContacts() const {
-		if (!b2Shape_IsValid(m_ShapeId)) return false;
+		if (!b2Shape_IsValid(m_ShapeId)) return m_RegisterContacts;
 		return b2Shape_AreContactEventsEnabled(m_ShapeId);
 	}
 
