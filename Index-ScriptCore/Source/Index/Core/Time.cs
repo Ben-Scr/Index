@@ -11,6 +11,9 @@ public static class Time
     /// the engine clamps to [1/240, 1] and warns on a non-positive value
     /// (which would otherwise disable FixedUpdate). Lowering it raises physics
     /// fidelity at higher CPU cost; raising it does the inverse.
+    /// <para>The default is seeded from the project's Physics tick-rate setting
+    /// (Project Settings → Physics) at startup and re-seeded on each editor
+    /// Play, so a value set from a script does not persist across Stop/Play.</para>
     /// </summary>
     public static float FixedDeltaTime
     {

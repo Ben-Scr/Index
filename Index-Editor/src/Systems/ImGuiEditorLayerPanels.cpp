@@ -784,7 +784,10 @@ namespace Index {
 			const ImU32 linkCol = draw ? ImGui::GetColorU32(linkColor) : 0u;
 			const bool hasLink = draw && !filePath.empty()
 				&& linkEnd > linkStart && linkEnd <= text.size();
-			const bool windowHovered = draw && ImGui::IsWindowHovered();
+			// AllowWhenBlockedByActiveItem: the full-row Selectable grabs ActiveId on the second mouse-down,
+			// which makes a plain IsWindowHovered() return false on the exact frame IsMouseDoubleClicked() fires.
+			// The IsMouseHoveringRect test below still scopes the action to the link's glyphs.
+			const bool windowHovered = draw && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
 			const char* const base = text.data();
 			const char* const textEnd = base + text.size();
@@ -900,13 +903,16 @@ namespace Index {
 
 			// Systems (RenderSettings_Systems)
 			{ ImGuiEditorLayer::SettingsCategory::Systems,  "Global Systems",  "global systems globalsystem scene system registration project scope" },
+
+			// Physics (RenderSettings_Physics)
+			{ ImGuiEditorLayer::SettingsCategory::Physics,  "Physics World",   "physics world hz hertz tick rate fixed timestep fixed delta time simulation step frequency box2d fixedupdate gravity solver" },
 		};
 
 		constexpr const char* k_SettingsCategoryNamesLower[] = {
-			"display", "graphics", "branding", "build", "editor", "systems",
+			"display", "graphics", "branding", "build", "editor", "systems", "physics",
 		};
 		static_assert(IM_ARRAYSIZE(k_SettingsCategoryNamesLower)
-			== static_cast<int>(ImGuiEditorLayer::SettingsCategory::Systems) + 1,
+			== static_cast<int>(ImGuiEditorLayer::SettingsCategory::Physics) + 1,
 			"k_SettingsCategoryNamesLower out of sync with SettingsCategory enum");
 
 		bool SettingsContains(const char* haystackLower, const std::string& needleLower) {
@@ -1061,9 +1067,8 @@ namespace Index {
 				continue;
 			}
 
-			// "[HH:MM:SS] [Level] " precedes the message; the source-link byte span shifts by its length.
-			const std::string displayPrefix =
-				"[" + entry.Timestamp + "] " + std::string(GetLogLevelPrefix(entry.Level));
+			// "[HH:MM:SS] " precedes the message (level is conveyed by the row icon + color); the source-link byte span shifts by its length.
+			const std::string displayPrefix = "[" + entry.Timestamp + "] ";
 			const ImVec4 levelColor = GetLogLevelColor(entry.Level);
 			const std::string fullText = displayPrefix + entry.Message;
 
@@ -1358,53 +1363,49 @@ namespace Index {
 			ReportBuildProgress(1.0f, "Output directory creation failed");
 			return;
 		}
-		// Release ships an editor-free engine. The editor's own dev build of
-		// Index-Engine.dll is compiled with INDEX_WITH_EDITOR=1 (it has to host
-		// the editor); copying it verbatim would ship editor-only systems (the
-		// PrefabTemplateCache .prefab watcher, ProjectManager hooks, ...). So for
-		// Release we rebuild Index-Runtime in the Dist configuration — which sets
-		// INDEX_WITH_EDITOR=0 via ApplyIndexEditorModuleDefine() in premake5.lua —
-		// and stage the runtime exe + engine DLL from that output instead.
-		// Development keeps copying the adjacent dev build for fast iteration.
+		// Build the runtime in the SAME configuration the running editor was built in
+		// (IDX_BUILD_CONFIG_NAME, via GetActiveBuildConfiguration()), regardless of the
+		// selected build profile, so the standalone always matches the editor's config and
+		// never ships a stale runtime DLL. This mirrors the C# and native-script steps
+		// above, which already compile against `buildConfiguration`.
+		//
+		// INDEX_WITH_EDITOR is config-gated (premake ApplyIndexEditorModuleDefine): only a
+		// Dist editor produces an editor-free runtime; a Debug/Release editor produces a
+		// Debug/Release standalone that still carries the editor-only systems. Run the
+		// editor in Dist to ship a clean, editor-free build.
+		//
+		// Recompile when the engine repo + MSBuild are present (dev layout); when they are
+		// not (a shipped, repo-less editor) stage the existing adjacent runtime binaries.
 		std::filesystem::path runtimeOutputDirectory = exeDir / ".." / "Index-Runtime";
-		if (project->ActiveBuildProfile == IndexProject::BuildProfile::Release) {
+		{
 			const std::filesystem::path engineRoot =
 				exeDir.parent_path().parent_path().parent_path();
 			const std::filesystem::path runtimeProject =
 				engineRoot / "Index-Runtime" / "Index-Runtime.vcxproj";
 			const std::string msbuildPath = IndexProject::GetMSBuildPath();
-			if (msbuildPath.empty() || !std::filesystem::exists(runtimeProject)) {
-				IDX_ERROR_TAG("Build",
-					"Release profile needs a Dist (editor-free) runtime build, but the toolchain "
-					"is unavailable (msbuild='{}', project='{}'). Aborting rather than shipping an "
-					"editor-enabled engine.",
+			if (!msbuildPath.empty() && std::filesystem::exists(runtimeProject)) {
+				ReportBuildProgress(0.45f, "Building runtime (" + buildConfiguration + ")");
+				IDX_INFO_TAG("Build", "Building Index-Runtime ({}) to match the editor's configuration...", buildConfiguration);
+				const Process::Result runtimeBuild = Process::Run({
+					msbuildPath, runtimeProject.string(),
+					"/p:Configuration=" + buildConfiguration, "/p:Platform=x64",
+					"/m", "/v:minimal", "/nologo"
+				}, engineRoot.string());
+				if (!runtimeBuild.Succeeded()) {
+					IDX_ERROR_TAG("Build", "Runtime build ({}) failed (exit code {}).", buildConfiguration, runtimeBuild.ExitCode);
+					if (!runtimeBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", runtimeBuild.Output);
+					m_BuildSucceeded.store(false, std::memory_order_relaxed);
+					ReportBuildProgress(1.0f, "Runtime build failed");
+					return;
+				}
+				IDX_INFO_TAG("Build", "Runtime ({}) ready; staging from {}", buildConfiguration, runtimeOutputDirectory.string());
+			}
+			else {
+				IDX_WARN_TAG("Build",
+					"MSBuild or the runtime project is unavailable (msbuild='{}', project='{}'); "
+					"staging the existing adjacent runtime binaries without rebuilding.",
 					msbuildPath, runtimeProject.string());
-				m_BuildSucceeded.store(false, std::memory_order_relaxed);
-				ReportBuildProgress(1.0f, "Dist toolchain unavailable");
-				return;
 			}
-			ReportBuildProgress(0.45f, "Building editor-free runtime (Dist)");
-			IDX_INFO_TAG("Build", "Building Index-Runtime (Dist) so the shipped engine carries no editor systems...");
-			const Process::Result distBuild = Process::Run({
-				msbuildPath, runtimeProject.string(),
-				"/p:Configuration=Dist", "/p:Platform=x64",
-				"/m", "/v:minimal", "/nologo"
-			}, engineRoot.string());
-			if (!distBuild.Succeeded()) {
-				IDX_ERROR_TAG("Build", "Dist runtime build failed (exit code {}).", distBuild.ExitCode);
-				if (!distBuild.Output.empty()) IDX_ERROR_TAG("Build", "{}", distBuild.Output);
-				m_BuildSucceeded.store(false, std::memory_order_relaxed);
-				ReportBuildProgress(1.0f, "Dist runtime build failed");
-				return;
-			}
-			// Re-point staging at bin/Dist-<system>-<arch>/Index-Runtime, preserving
-			// whatever system/arch suffix the editor's own bin dir uses.
-			const std::string curCfgDir = exeDir.parent_path().filename().string();
-			const std::string::size_type dash = curCfgDir.find('-');
-			const std::string distCfgDir = "Dist" +
-				(dash != std::string::npos ? curCfgDir.substr(dash) : std::string("-windows-x86_64"));
-			runtimeOutputDirectory = engineRoot / "bin" / distCfgDir / "Index-Runtime";
-			IDX_INFO_TAG("Build", "Editor-free runtime ready; staging from {}", runtimeOutputDirectory.string());
 		}
 
 		ReportBuildProgress(0.55f, "Copying runtime binaries");
@@ -2052,9 +2053,10 @@ namespace Index {
 			"Build",
 			"Editor",
 			"Systems",
+			"Physics",
 		};
 		static_assert(IM_ARRAYSIZE(k_CategoryLabels)
-			== static_cast<int>(SettingsCategory::Systems) + 1,
+			== static_cast<int>(SettingsCategory::Physics) + 1,
 			"k_CategoryLabels out of sync with SettingsCategory enum");
 
 		ImGui::SetNextItemWidth(-1);
@@ -2116,6 +2118,7 @@ namespace Index {
 				case SettingsCategory::Systems:
 					RenderSettings_Systems(*project, changed, globalSystemsChanged, filterLower);
 					break;
+				case SettingsCategory::Physics: RenderSettings_Physics(*project, changed, filterLower); break;
 			}
 		}
 		ImGui::EndChild();
@@ -2457,6 +2460,45 @@ namespace Index {
 			}
 			ImGui::EndPopup();
 		}
+	}
+
+	void ImGuiEditorLayer::RenderSettings_Physics(IndexProject& project, bool& changed,
+		const std::string& filterLower)
+	{
+		if (SectionVisible(SettingsCategory::Physics, "Physics World", filterLower)) {
+		if (!filterLower.empty()) ImGui::SetNextItemOpen(true);
+		if (ImGui::CollapsingHeader("Physics World", ImGuiTreeNodeFlags_DefaultOpen)) {
+			ImGui::Indent(8);
+
+			// Live-applied to the running Time so it takes effect on the next Play without a
+			// restart, and persisted as the per-run default (see IndexProject::PhysicsTickRate).
+			// AlwaysClamp + the shared k_Min/k_MaxPhysicsHz bounds keep both the slider and
+			// ctrl+click type-in inside Time::SetFixedDeltaTime's valid range.
+			int hz = project.PhysicsTickRate;
+			ImGui::SetNextItemWidth(220.0f);
+			if (ImGui::SliderInt("Tick rate", &hz,
+				IndexProject::k_MinPhysicsHz, IndexProject::k_MaxPhysicsHz,
+				"%d Hz", ImGuiSliderFlags_AlwaysClamp)) {
+				project.PhysicsTickRate = hz;
+				if (Application* app = Application::GetInstance()) {
+					app->GetTime().SetFixedDeltaTime(project.GetFixedDeltaTimeSeconds());
+				}
+				changed = true;
+			}
+			if (ImGui::IsItemHovered()) {
+				ImGui::SetTooltip(
+					"How many times per second the physics world steps and\n"
+					"FixedUpdate runs (fixed timestep = 1 / Hz).\n"
+					"Higher = more accurate simulation, more CPU. Default 50.\n"
+					"\n"
+					"This is the per-run default applied at startup and on each\n"
+					"Play; scripts can still override it at runtime via\n"
+					"Time.fixedDeltaTime.");
+			}
+
+			ImGui::Unindent(8);
+		}
+		}  // end SectionVisible("Physics World")
 	}
 
 	void ImGuiEditorLayer::RenderSettings_Branding(IndexProject& project, bool& changed,

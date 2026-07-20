@@ -53,6 +53,18 @@ namespace Index::Codegen {
                     std::memcpy(&component, bytes, std::min(size, prefixSize));
                     registry.emplace_or_replace<T>(entity, std::move(component));
                 };
+                // Symmetric bake side. Without it the component has no writeBytes and every prefab
+                // containing it is rejected as unbakeable by PrefabTemplateCache. Capture only the POD
+                // prefix (never the trailing std::string's bytes — those are heap pointers that would
+                // dangle); emplaceFromBytes reconstructs the trailing members, matching the hydrate side.
+                info.writeBytes = [prefixSize](const entt::registry& registry, EntityHandle entity,
+                                               std::vector<uint8_t>& out) -> bool {
+                    const T* component = registry.try_get<T>(entity);
+                    if (component == nullptr) return false;
+                    const auto* bytes = reinterpret_cast<const uint8_t*>(component);
+                    out.insert(out.end(), bytes, bytes + prefixSize);
+                    return true;
+                };
             });
     }
 

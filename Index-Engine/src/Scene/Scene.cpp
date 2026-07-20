@@ -1415,20 +1415,24 @@ namespace Index {
 		bool isEnabled = !registry.all_of<DisabledTag>(entity);
 		Rigidbody2DComponent& rb2D = registry.get<Rigidbody2DComponent>(entity);
 
+		// Honor the component's body type instead of forcing Dynamic. For a freshly-added
+		// rigidbody m_BodyType defaults to Dynamic, so editor/runtime/slow-load behavior is
+		// unchanged; only an ECB fast-spawn (which byte-restores m_BodyType before the body
+		// exists) differs — a prefab authored Static now spawns Static instead of Dynamic.
 		if (HasAnyComponent<BoxCollider2DComponent>(entity)) {
 			rb2D.m_BodyId = GetComponent<BoxCollider2DComponent>(entity).m_BodyId;
-			rb2D.SetBodyType(BodyType::Dynamic);
+			rb2D.SetBodyType(rb2D.m_BodyType);
 		}
 		else if (HasAnyComponent<CircleCollider2DComponent>(entity)) {
 			rb2D.m_BodyId = GetComponent<CircleCollider2DComponent>(entity).m_BodyId;
-			rb2D.SetBodyType(BodyType::Dynamic);
+			rb2D.SetBodyType(rb2D.m_BodyType);
 		}
 		else if (HasAnyComponent<PolygonCollider2DComponent>(entity)) {
 			rb2D.m_BodyId = GetComponent<PolygonCollider2DComponent>(entity).m_BodyId;
-			rb2D.SetBodyType(BodyType::Dynamic);
+			rb2D.SetBodyType(rb2D.m_BodyType);
 		}
 		else {
-			rb2D.m_BodyId = PhysicsSystem2D::GetMainPhysicsWorld().CreateBody(entity, *this, BodyType::Dynamic);
+			rb2D.m_BodyId = PhysicsSystem2D::GetMainPhysicsWorld().CreateBody(entity, *this, rb2D.m_BodyType);
 		}
 
 		rb2D.SetEnabled(isEnabled);
@@ -1496,6 +1500,12 @@ namespace Index {
 
 		boxCollider.m_ShapeId = PhysicsSystem2D::GetMainPhysicsWorld().CreateShape(entity, *this, boxCollider.m_BodyId, ShapeType::Square);
 		boxCollider.SetEnabled(isEnabled);
+
+		// The shape attach made Box2D recompute mass from density*area; restore an
+		// explicit mass if the rigidbody pinned one.
+		if (HasComponent<Rigidbody2DComponent>(entity)) {
+			GetComponent<Rigidbody2DComponent>(entity).ApplyMassFromState();
+		}
 	}
 
 	void Scene::OnBoxCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
@@ -1539,6 +1549,10 @@ namespace Index {
 
 		circleCollider.m_ShapeId = PhysicsSystem2D::GetMainPhysicsWorld().CreateShape(entity, *this, circleCollider.m_BodyId, ShapeType::Circle);
 		circleCollider.SetEnabled(isEnabled);
+
+		if (HasComponent<Rigidbody2DComponent>(entity)) {
+			GetComponent<Rigidbody2DComponent>(entity).ApplyMassFromState();
+		}
 	}
 
 	void Scene::OnCircleCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {
@@ -1581,6 +1595,10 @@ namespace Index {
 
 		polygonCollider.m_ShapeId = PhysicsSystem2D::GetMainPhysicsWorld().CreateShape(entity, *this, polygonCollider.m_BodyId, ShapeType::Polygon);
 		polygonCollider.SetEnabled(isEnabled);
+
+		if (HasComponent<Rigidbody2DComponent>(entity)) {
+			GetComponent<Rigidbody2DComponent>(entity).ApplyMassFromState();
+		}
 	}
 
 	void Scene::OnPolygonCollider2DComponentDestroy(entt::registry& registry, EntityHandle entity) {

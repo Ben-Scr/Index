@@ -28,6 +28,11 @@ namespace Index {
 		// Local ECB root: payloadSize 0 and entityIndex names the root slot.
 		// Live scene entity: entityIndex is kEcbNoName and payload is uint64 persistent id.
 		Ecb_DestroyEntity = 5,
+
+		// Enable/disable an entity. Local ECB root: entityIndex names the root slot, payload is u8 enabled.
+		// Live scene entity: entityIndex is kEcbNoName, payload is u8 enabled + uint64 persistent id (9 bytes).
+		// Routes to Entity::SetEnabled at playback, so the DisabledTag cascade and OnEnable/OnDisable fire.
+		Ecb_SetEntityEnabled = 6,
 	};
 
 	// Sentinel "no name" in the entity table.
@@ -47,5 +52,9 @@ namespace Index {
 	// An exception escaped playback (e.g. std::bad_alloc during prefab bake). Caught at the
 	// reverse-pinvoke boundary because unwinding into CoreCLR is UB; surfaced as an error code.
 	constexpr int kEcbErrorInternal = -7;
+
+	// Ecb_InstantiatePrefab referenced a GUID that doesn't resolve to a loadable Prefab asset
+	// (vs kEcbErrorBadPrefab, where the prefab WAS found but its components can't be baked).
+	constexpr int kEcbErrorUnknownPrefab = -8;
 
 } // namespace Index

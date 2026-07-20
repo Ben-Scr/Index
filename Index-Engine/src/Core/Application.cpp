@@ -290,6 +290,13 @@ namespace Index {
 		m_Configuration = GetConfiguration();
 		SetName(m_Configuration.WindowSpecification.Title);
 
+		// Seed the fixed timestep from the project's default physics-world Hz (see
+		// IndexProject::PhysicsTickRate). Runs for every host, headless included, since
+		// it only touches Time; scripts may override later via Time.fixedDeltaTime.
+		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
+			m_Time.SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+		}
+
 		// Profiler first — no GL/window deps, lets later subsystems emit profile marks during init.
 #ifdef INDEX_PROFILER_ENABLED
 		Profiler::Initialize();

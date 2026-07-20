@@ -80,10 +80,16 @@ namespace Index {
 
 	void Rigidbody2DComponent::SetMass(float mass) {
 		m_Mass = mass;
+		m_MassOverridden = true; // explicit intent: pin mass, don't let shape attach recompute it
+		ApplyMassFromState();
+	}
+
+	void Rigidbody2DComponent::ApplyMassFromState() {
+		if (!m_MassOverridden) return; // auto mass: leave Box2D's density*area result in place
 		IDX_RB_GUARD();
 		auto massData = b2Body_GetMassData(m_BodyId);
 		const float previousMass = massData.mass;
-		const float newMass = mass > 0.0f ? mass : 0.0f;
+		const float newMass = m_Mass > 0.0f ? m_Mass : 0.0f;
 		if (previousMass > 0.0f) {
 			massData.rotationalInertia *= newMass / previousMass;
 		}
@@ -96,6 +102,19 @@ namespace Index {
 	float Rigidbody2DComponent::GetMass() const {
 		if (!IsValid()) return m_Mass;
 		return b2Body_GetMass(m_BodyId);
+	}
+
+	void Rigidbody2DComponent::RestoreBodyFromState() {
+		IDX_RB_GUARD();
+		// Members hold the byte-restored values; the construct hook created the body with defaults
+		// (and already honored m_BodyType), so push the rest into the live body. Re-assert the type
+		// too for coherence — it's a no-op when already correct.
+		SetBodyType(m_BodyType);
+		SetGravityScale(m_GravityScale);
+		SetFreezePositionX(m_FreezeX);
+		SetFreezePositionY(m_FreezeY);
+		SetFreezeRotation(m_FreezeRot);
+		ApplyMassFromState();
 	}
 
 	void Rigidbody2DComponent::SetLinearDrag(float value) {

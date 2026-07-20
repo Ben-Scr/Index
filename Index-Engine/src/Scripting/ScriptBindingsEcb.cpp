@@ -8,6 +8,9 @@
 #include "Scene/SceneManager.hpp"
 #include "Scene/ComponentRegistry.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
+#include "Components/General/Transform2DComponent.hpp"
+#include "Components/General/HierarchyComponent.hpp"
+#include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Serialization/PrefabTemplateCache.hpp"
 #include "Serialization/SceneSerializer.hpp"
 #include "Core/Application.hpp"
@@ -156,10 +159,21 @@ namespace Index {
 						}
 						templ = prefabCache.Find(guid);
 					}
-					if (templ == nullptr || !templ->bakeable) {
+					if (templ == nullptr) {
+						// Distinct from the unbakeable case: the GUID never resolved to a loadable
+						// Prefab asset (SceneSerializer::InstantiatePrefab returned null), so no
+						// template was baked. Entity.Instantiate(guid) would fail identically.
+						IDX_CORE_WARN_TAG("Ecb",
+							"Ecb_InstantiatePrefab rejected prefab {}: unknown prefab — the GUID does "
+							"not resolve to a loadable Prefab asset (missing/unscanned .prefab or .meta, "
+							"or a wrong/stale GUID). NOT a bake limitation; Entity.Instantiate would fail too.",
+							guid);
+						return kEcbErrorUnknownPrefab;
+					}
+					if (!templ->bakeable) {
 						IDX_CORE_WARN_TAG("Ecb",
 							"Ecb_InstantiatePrefab rejected prefab {}: {}",
-							guid, (templ != nullptr) ? templ->unbakeableReason : std::string("unknown prefab"));
+							guid, templ->unbakeableReason);
 						return kEcbErrorBadPrefab;
 					}
 					prefabSpawns.push_back({ entityIndex, guid, /*childBaseIndex=*/0u, templ });
@@ -174,6 +188,20 @@ namespace Index {
 					if (!validLiveDestroy && !validLocalDestroy) {
 						IDX_CORE_WARN_TAG("Ecb",
 							"Malformed Ecb_DestroyEntity at cmd {} (entityIndex={}, payloadSize={})",
+							cmdIdx, entityIndex, payloadSize);
+						return kEcbErrorTruncated;
+					}
+				}
+				else if (opcode == Ecb_SetEntityEnabled) {
+					const bool togglesLiveEntity = entityIndex == kEcbNoName;
+					const bool validLiveToggle = togglesLiveEntity
+						&& payloadSize == sizeof(uint8_t) + sizeof(uint64_t);
+					const bool validLocalToggle = !togglesLiveEntity
+						&& entityIndex < header.entityCount
+						&& payloadSize == sizeof(uint8_t);
+					if (!validLiveToggle && !validLocalToggle) {
+						IDX_CORE_WARN_TAG("Ecb",
+							"Malformed Ecb_SetEntityEnabled at cmd {} (entityIndex={}, payloadSize={})",
 							cmdIdx, entityIndex, payloadSize);
 						return kEcbErrorTruncated;
 					}
@@ -264,8 +292,10 @@ namespace Index {
 			}
 			cursor = payload + payloadSize;
 
-			const bool targetsLocalRoot = opcode != Ecb_DestroyEntity || entityIndex != kEcbNoName;
-			if (targetsLocalRoot && entityIndex >= header.entityCount) {
+			const bool targetsLiveEntity =
+				(opcode == Ecb_DestroyEntity || opcode == Ecb_SetEntityEnabled)
+				&& entityIndex == kEcbNoName;
+			if (!targetsLiveEntity && entityIndex >= header.entityCount) {
 				IDX_CORE_WARN_TAG("Ecb", "Skipping command with out-of-range entityIndex {}", entityIndex);
 				continue;
 			}
@@ -347,9 +377,65 @@ namespace Index {
 					}
 				}
 			}
-			// Unknown opcodes: skip (forwards-compat). We already advanced
+			else if (opcode == Ecb_SetEntityEnabled) {
+				// payload[0] = enabled flag; live entities carry the u64 persistent id after it.
+				const bool enabled = payload[0] != 0;
+				if (entityIndex == kEcbNoName) {
+					const uint64_t entityId = EcbReadLE<uint64_t>(payload + 1);
+					EntityHandle resolved = entt::null;
+					if (scene->TryResolveEntityRef(entityId, resolved) && scene->IsValid(resolved)) {
+						scene->GetEntity(resolved).SetEnabled(enabled);
+					}
+				}
+				else if (destroyedRoot[entityIndex] == 0 && scene->IsValid(handles[entityIndex])) {
+					scene->GetEntity(handles[entityIndex]).SetEnabled(enabled);
+				}
+			}
+				// Unknown opcodes: skip (forwards-compat). We already advanced
 			// `cursor` past the record's payload, so the stream stays
 			// aligned for the next iteration.
+		}
+
+		// A Transform2D written by the ECB to place a spawned prefab (e.g.
+		// ecb.AddComponent(root, new NativeTransform2D{Position})) is a raw byte copy. m_Dirty is set in
+		// the bytes, but m_OwnerScene/m_OwnerEntity are zeroed, so MarkDirty can't enqueue the entity in
+		// the scene dirty-transform set; and because the root already has a Transform2D from hydrate
+		// this is an emplace_or_replace REPLACE (fires on_update, not on_construct), so no hook moves
+		// the body the eager Rigidbody2D/collider construct hooks already created at the prefab origin.
+		// Net: transform/sprite at spawnPos, body left at the origin. Re-stamp the owner + mark dirty
+		// (ongoing sync + serialization), and teleport each root physics body straight to its transform
+		// so the spawn position takes effect immediately.
+		{
+			entt::registry& reg = scene->GetRegistry();
+			for (uint32_t i = 0; i < totalEntityCount; ++i) {
+				const EntityHandle h = handles[i];
+				if (!scene->IsValid(h)) {
+					continue;
+				}
+				Transform2DComponent* tr = reg.try_get<Transform2DComponent>(h);
+				if (tr == nullptr) {
+					continue;
+				}
+				tr->BindOwner(scene, h);
+				tr->MarkDirty();
+				// Only roots have world == local now (child world transforms are composed later by the
+				// hierarchy pass), so only teleport their body straight to the transform.
+				const HierarchyComponent* hc = reg.try_get<HierarchyComponent>(h);
+				const bool isRoot = (hc == nullptr) || hc->Parent == entt::null;
+				if (Rigidbody2DComponent* rb = reg.try_get<Rigidbody2DComponent>(h); rb != nullptr) {
+					const Vec2 bodyBefore = rb->GetPosition();
+					const bool moved = isRoot && rb->IsValid();
+					if (moved) {
+						rb->SetTransform(*tr);
+					}
+					// TEMP DIAGNOSTIC: confirm the override landed (trPos==spawnPos) and the body actually
+					// moved (bodyAfter==spawnPos). Remove once the ECB physics-spawn position is verified.
+					IDX_CORE_INFO_TAG("EcbFixDbg",
+						"ent={} isRoot={} rbValid={} moved={} trPos=({:.1f},{:.1f}) bodyBefore=({:.1f},{:.1f}) bodyAfter=({:.1f},{:.1f})",
+						static_cast<uint32_t>(h), isRoot ? 1 : 0, rb->IsValid() ? 1 : 0, moved ? 1 : 0,
+						tr->Position.x, tr->Position.y, bodyBefore.x, bodyBefore.y, rb->GetPosition().x, rb->GetPosition().y);
+				}
+			}
 		}
 
 		for (uint32_t i = 0; i < header.entityCount; ++i) {

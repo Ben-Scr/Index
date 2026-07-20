@@ -1190,7 +1190,11 @@ namespace Index {
 			auto& rigidbody = scene.AddComponent<Rigidbody2DComponent>(entity);
 			rigidbody.SetBodyType(static_cast<BodyType>(GetIntMember(*rigidbodyValue, "bodyType", static_cast<int>(BodyType::Dynamic))));
 			rigidbody.SetGravityScale(GetFloatMember(*rigidbodyValue, "gravityScale", 1.0f));
-			rigidbody.SetMass(GetFloatMember(*rigidbodyValue, "mass", 1.0f));
+			// Only pin the mass when it was explicitly overridden. Legacy files lack the
+			// key (-> false), so they keep Box2D's density*area auto mass as before.
+			if (GetBoolMember(*rigidbodyValue, "massOverridden", false)) {
+				rigidbody.SetMass(GetFloatMember(*rigidbodyValue, "mass", 1.0f));
+			}
 			// Constraints. Missing keys default to false so older scenes
 			// load with no surprises (`SetFreeze*` no-ops the body when the
 			// flag is already false, which it is on a freshly-created body).
@@ -2002,7 +2006,9 @@ namespace Index {
 				: scene.AddComponent<Rigidbody2DComponent>(entity);
 			rigidbody.SetBodyType(static_cast<BodyType>(GetIntMember(componentValue, "bodyType", static_cast<int>(BodyType::Dynamic))));
 			rigidbody.SetGravityScale(GetFloatMember(componentValue, "gravityScale", 1.0f));
-			rigidbody.SetMass(GetFloatMember(componentValue, "mass", 1.0f));
+			if (GetBoolMember(componentValue, "massOverridden", false)) {
+				rigidbody.SetMass(GetFloatMember(componentValue, "mass", 1.0f));
+			}
 			rigidbody.SetFreezePositionX(GetBoolMember(componentValue, "freezePositionX", false));
 			rigidbody.SetFreezePositionY(GetBoolMember(componentValue, "freezePositionY", false));
 			rigidbody.SetFreezeRotation(GetBoolMember(componentValue, "freezeRotation", false));

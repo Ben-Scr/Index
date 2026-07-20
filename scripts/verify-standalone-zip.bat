@@ -45,6 +45,17 @@ call :RequireFile "%SDK%\Index-ScriptCore\Index-ScriptCore.csproj"
 call :RequireFile "%SDK%\Index-ScriptCore\Index-ScriptCore.dll"
 call :RequireFile "%SDK%\bin\%CONFIG%-%PLATFORM%\Index-Engine\Index-Engine.lib"
 
+REM ---- Prebuilt editor-free Dist runtime bundled by CopyEngineSdk.bat. Must
+REM      mirror the files that script copies (it skips silently when the Dist
+REM      runtime is absent, so this is the only safety net). Tracy.dll is
+REM      profiler-only and intentionally not required here.
+call :RequireFile "%SDK%\Runtime-Dist\Index-Runtime.exe"
+call :RequireFile "%SDK%\Runtime-Dist\Index-Engine.dll"
+call :RequireFile "%SDK%\Runtime-Dist\GLFW.dll"
+call :RequireFile "%SDK%\Runtime-Dist\Index-ScriptCore.dll"
+call :RequireFile "%SDK%\Runtime-Dist\nethost.dll"
+call :RequireDir  "%SDK%\Runtime-Dist\IndexAssets"
+
 REM ---- External vendored deps that the NativeScript CMakeLists references
 call :RequireDir "%SDK%\External\spdlog\include"
 call :RequireDir "%SDK%\External\glm"

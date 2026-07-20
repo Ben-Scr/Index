@@ -126,6 +126,7 @@ namespace Index {
 		void RenderSettings_Build(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Editor(IndexProject& project, bool& changed, const std::string& filterLower);
 		void RenderSettings_Systems(IndexProject& project, bool& changed, bool& outGlobalSystemsChanged, const std::string& filterLower);
+		void RenderSettings_Physics(IndexProject& project, bool& changed, const std::string& filterLower);
 		void TickSplashPreview();
 		void RenderSceneSystemsInspector(Scene& scene);
 		void ExecuteBuild();
@@ -504,6 +505,7 @@ namespace Index {
 			Build,
 			Editor,
 			Systems,
+			Physics,
 		};
 	private:
 		SettingsCategory m_SelectedSettingsCategory = SettingsCategory::Display;

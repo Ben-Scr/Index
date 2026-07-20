@@ -1614,6 +1614,14 @@ namespace Index {
 		// Reset Time.TimeSinceStartup / Time.RealtimeSinceStartup so each
 		// play session starts at t=0 from a script's perspective.
 		ApplicationEditorAccess::MarkGameStart();
+		// Re-seed the fixed timestep from the project default (see IndexProject::PhysicsTickRate)
+		// so a prior session's scripted Time.fixedDeltaTime override doesn't leak across
+		// Stop/Play. Built games get this for free at Application::Initialize.
+		if (const IndexProject* project = ProjectManager::GetCurrentProject()) {
+			if (Application* app = Application::GetInstance()) {
+				app->GetTime().SetFixedDeltaTime(project->GetFixedDeltaTimeSeconds());
+			}
+		}
 		scene.StartManagedSceneSystemsForPlayMode();
 		// Reset Box2D sleep timers so bodies that sat through editor
 		// idle don't immediately freeze on the first physics step.
@@ -3418,7 +3426,8 @@ namespace Index {
 		}
 
 		// Propagation BEFORE clearing dirty flag: if it fails mid-loop the prefab stays dirty and auto-save retries.
-		if (havePreviousSource) {
+		// Edit-mode only: a play-time refresh destroys+recreates running instances; they rebuild from the saved prefab on Stop.
+		if (havePreviousSource && !Application::GetIsPlaying()) {
 			const uint64_t prefabGuid = AssetRegistry::GetOrCreateAssetUUID(m_PrefabEditPath);
 			if (prefabGuid != 0) {
 				SceneManager::Get().ForeachLoadedScene([&](Scene& s) {
@@ -4940,7 +4949,7 @@ namespace Index {
 				? "Prefab Instance"
 				: "Prefab Instance (child)");
 			ImGui::PopStyleColor();
-			ImGui::BeginDisabled(!hasSubtreeOverrides);
+			ImGui::BeginDisabled(!hasSubtreeOverrides || Application::GetIsPlaying()); // play mode: Apply would bake runtime state, Revert would destroy the running instance
 			if (ImGui::SmallButton("Apply All")) {
 				// Always act on prefab root (not selected entity); capture OLD source before overwriting so live-instance propagation can diff overrides.
 				const std::string prefabPath = AssetRegistry::ResolvePath(
@@ -5086,7 +5095,7 @@ namespace Index {
 				// at least one diff against the source.
 				if (isSinglePrefabInstance && prefabSourceResolvable && thisComponentOverridden) {
 					ImGui::Separator();
-					if (ImGui::BeginMenu("Revert Field")) {
+					if (ImGui::BeginMenu("Revert Field", !Application::GetIsPlaying())) {
 						const std::string prefix = componentSerializedName + ".";
 						for (const auto& [path, _] : prefabOverrides.GetObject()) {
 							if (path != componentSerializedName && path.compare(0, prefix.size(), prefix) != 0) continue;
@@ -5097,10 +5106,10 @@ namespace Index {
 						}
 						ImGui::EndMenu();
 					}
-					if (ImGui::MenuItem("Revert Component")) {
+					if (ImGui::MenuItem("Revert Component", nullptr, false, !Application::GetIsPlaying())) {
 						revertComponentRequested = true;
 					}
-					if (ImGui::MenuItem("Apply Component")) {
+					if (ImGui::MenuItem("Apply Component", nullptr, false, !Application::GetIsPlaying())) {
 						applyComponentRequested = true;
 					}
 				}

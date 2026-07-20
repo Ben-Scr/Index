@@ -45,6 +45,27 @@ public sealed partial class EntityCommandBuffer
                 entity);
         }
 
+        /// <summary>Records enable/disable into this thread's sub-buffer. An ECB <paramref name="entity"/> MUST originate from this same thread; live scene refs (<see cref="Entity.ToCommandBufferRef"/>) are thread-agnostic.</summary>
+        public void SetEnabled(EntityRef entity, bool enabled)
+        {
+            WorkerSlot slot = m_Parent.GetOrCreateSlotForCurrentThread();
+            if (entity.IsCommandBufferEntity && entity.Index >= slot.EntityCount)
+            {
+                throw new ArgumentException(
+                    $"EntityRef index {entity.Index} is out of range for this worker slot " +
+                    $"(thread {slot.ManagedThreadId} entityCount = {slot.EntityCount}). " +
+                    "Did you pass an EntityRef across worker threads, or call Create on a different ECB?",
+                    nameof(entity));
+            }
+
+            EcbWire.WriteSetEnabledRecord(
+                ref slot.Commands,
+                ref slot.CommandsLen,
+                ref slot.CommandCount,
+                entity,
+                enabled);
+        }
+
         /// <summary>Records a component add into this thread's sub-buffer. <paramref name="e"/> MUST originate from <see cref="Create"/> on this same thread; a cross-thread ref silently corrupts the batch.</summary>
         public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
         {

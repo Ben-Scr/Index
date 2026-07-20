@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include <Components/Physics/CircleCollider2DComponent.hpp>
+#include <Components/Physics/Rigidbody2DComponent.hpp>
 #include <Components/General/Transform2DComponent.hpp>
 
 #include <Scene/Scene.hpp>
@@ -69,6 +70,11 @@ namespace Index {
 		SetLayer(layer);
 		SetRegisterContacts(registerContacts);
 		SetEnabled(enabled);
+
+		// Recreating the shape recomputed mass from density*area; restore a pinned mass.
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle).ApplyMassFromState();
+		}
 	}
 
 	float CircleCollider2DComponent::GetRadius() const {
@@ -115,6 +121,20 @@ namespace Index {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_Center;
 		b2Circle circle = b2Shape_GetCircle(m_ShapeId);
 		return Vec2(circle.center.x, circle.center.y);
+	}
+
+	void CircleCollider2DComponent::RestoreShapeFromState(Scene& scene) {
+		if (!b2Shape_IsValid(m_ShapeId)) return;
+		// Members hold the byte-restored values; re-push them into the live shape. Order matters:
+		// SetSensor is last because it destroys+recreates the shape, re-reading the (by then correct)
+		// center/radius/friction/etc. from the getters.
+		SetCenter(m_Center, scene);
+		SetRadius(m_LocalRadius, scene);
+		SetFriction(m_Friction);
+		SetBounciness(m_Bounciness);
+		SetLayer(m_Layer);
+		SetRegisterContacts(m_RegisterContacts);
+		SetSensor(m_Sensor, scene);
 	}
 
 	// Idempotent: destroy hooks fire from both Rigidbody2D and this component.

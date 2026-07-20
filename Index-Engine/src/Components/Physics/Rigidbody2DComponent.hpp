@@ -30,6 +30,17 @@ namespace Index {
 
 		void SetMass(float mass);
 		float GetMass() const;
+		bool IsMassOverridden() const { return m_MassOverridden; }
+		// Re-assert an explicit mass after shapes attach. Box2D recomputes a body's
+		// mass from collider density*area on every shape create, which would discard
+		// a SetMass value; call this after attaching/recreating shapes. No-op unless
+		// the mass was explicitly overridden, so density-based auto mass is preserved.
+		void ApplyMassFromState();
+
+		// Push the byte-restored logical state (gravity scale, freeze locks, pinned mass) into the
+		// live b2 body after an ECB fast-spawn, where the construct hook created the body with
+		// defaults. Body type is already honored by the construct hook. Mirrors the slow-load setters.
+		void RestoreBodyFromState();
 
 		void SetLinearDrag(float value);
 		void SetAngularDrag(float value);
@@ -66,6 +77,9 @@ namespace Index {
 		BodyType m_BodyType{ BodyType::Dynamic };
 		float m_GravityScale{ 1.0f };
 		float m_Mass{ 1.0f };
+		// When false, mass tracks Box2D's density*area auto computation; when true the
+		// user/serialized m_Mass is authoritative and re-asserted after shape attach.
+		bool m_MassOverridden{ false };
 		bool m_FreezeX{ false };
 		bool m_FreezeY{ false };
 		bool m_FreezeRot{ false };

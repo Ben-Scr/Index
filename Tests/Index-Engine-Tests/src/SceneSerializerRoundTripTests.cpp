@@ -5,6 +5,7 @@
 #include "Components/General/Transform2DComponent.hpp"
 #include "Components/Graphics/ParticleSystem2DComponent.hpp"
 #include "Components/Graphics/SpriteRendererComponent.hpp"
+#include "Components/Physics/Rigidbody2DComponent.hpp"
 #include "Core/UUID.hpp"
 #include "Graphics/Filter.hpp"
 #include "Scene/Entity.hpp"
@@ -95,6 +96,72 @@ TEST_CASE("Full-entity serialize round-trip preserves ParticleSystem2D bursts")
 	CHECK(bursts[0].Interval == doctest::Approx(0.5f));
 	CHECK(bursts[1].Count == 100);
 	CHECK(bursts[1].Interval == doctest::Approx(2.25f));
+}
+
+// Rigidbody2D mass has two distinct states that MUST round-trip independently: an explicit
+// user-pinned mass (m_MassOverridden=true) and the default density-based auto mass
+// (m_MassOverridden=false). The bug these guard: a prefab/scene saved an explicit mass=100 but on
+// reload the collider's shape attach recomputed mass from density*area and discarded it. The fix
+// re-asserts a pinned mass after shapes attach, gated by an explicit "massOverridden" flag so
+// legacy/auto bodies are NOT forced to a frozen value. Detached scenes create no live b2 body, so
+// these exercise the serialize ladder + the override flag, not the live-shape recompute.
+TEST_CASE("Full-entity serialize round-trip preserves an explicit Rigidbody2D mass")
+{
+	auto scene = Scene::CreateDetachedScene("RoundTrip Rigidbody Mass");
+
+	Entity e = scene->CreateEntity("Body");
+	auto& rb = e.AddComponent<Rigidbody2DComponent>();
+	rb.SetMass(100.0f);
+	REQUIRE(rb.IsMassOverridden());
+
+	const Json::Value value = SceneSerializer::SerializeEntityFull(*scene, e.GetHandle());
+	REQUIRE(value.IsObject());
+
+	const EntityHandle cloneHandle = SceneSerializer::DeserializeEntityFromValue(*scene, value);
+	REQUIRE(cloneHandle != entt::null);
+	REQUIRE(scene->HasComponent<Rigidbody2DComponent>(cloneHandle));
+
+	const auto& restored = scene->GetComponent<Rigidbody2DComponent>(cloneHandle);
+	CHECK(restored.IsMassOverridden());
+	CHECK(restored.GetMass() == doctest::Approx(100.0f));
+}
+
+// Guards the regression flagged during review: marking EVERY deserialized body as overridden would
+// freeze auto-mass bodies at a stored value. A rigidbody whose mass was never set must come back
+// NOT overridden so it keeps density-based auto mass.
+TEST_CASE("Full-entity serialize round-trip keeps a default Rigidbody2D on auto mass")
+{
+	auto scene = Scene::CreateDetachedScene("RoundTrip Rigidbody AutoMass");
+
+	Entity e = scene->CreateEntity("Body");
+	e.AddComponent<Rigidbody2DComponent>(); // mass never set -> auto
+
+	const Json::Value value = SceneSerializer::SerializeEntityFull(*scene, e.GetHandle());
+	const EntityHandle cloneHandle = SceneSerializer::DeserializeEntityFromValue(*scene, value);
+	REQUIRE(cloneHandle != entt::null);
+	REQUIRE(scene->HasComponent<Rigidbody2DComponent>(cloneHandle));
+
+	CHECK_FALSE(scene->GetComponent<Rigidbody2DComponent>(cloneHandle).IsMassOverridden());
+}
+
+// The inspector reset/paste ladder (DeserializeComponent) must carry the override flag too.
+TEST_CASE("Component-level serialize round-trip preserves Rigidbody2D mass override")
+{
+	auto scene = Scene::CreateDetachedScene("RoundTrip Rigidbody Mass Component");
+
+	Entity src = scene->CreateEntity("Src");
+	src.AddComponent<Rigidbody2DComponent>().SetMass(57.5f);
+
+	const Json::Value comp = SceneSerializer::SerializeComponent(*scene, src.GetHandle(), "Rigidbody2D");
+	REQUIRE(comp.IsObject());
+
+	Entity dst = scene->CreateEntity("Dst");
+	dst.AddComponent<Rigidbody2DComponent>(); // starts at default auto mass
+	REQUIRE(SceneSerializer::DeserializeComponent(*scene, dst.GetHandle(), "Rigidbody2D", comp));
+
+	const auto& r = dst.GetComponent<Rigidbody2DComponent>();
+	CHECK(r.IsMassOverridden());
+	CHECK(r.GetMass() == doctest::Approx(57.5f));
 }
 
 TEST_CASE("Component-level serialize round-trip preserves SpriteRenderer fields")

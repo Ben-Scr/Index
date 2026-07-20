@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include <Components/Physics/PolygonCollider2DComponent.hpp>
+#include <Components/Physics/Rigidbody2DComponent.hpp>
 #include <Components/General/Transform2DComponent.hpp>
 
 #include <Scene/Scene.hpp>
@@ -180,6 +181,11 @@ namespace Index {
 		SetLayer(layer);
 		SetRegisterContacts(registerContacts);
 		SetEnabled(enabled);
+
+		// Recreating the shape recomputed mass from density*area; restore a pinned mass.
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle).ApplyMassFromState();
+		}
 	}
 
 	void PolygonCollider2DComponent::SyncWithTransform(const Scene& scene) {

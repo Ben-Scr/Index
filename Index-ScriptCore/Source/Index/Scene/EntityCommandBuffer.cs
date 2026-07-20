@@ -103,6 +103,28 @@ public sealed partial class EntityCommandBuffer : IDisposable
             entity);
     }
 
+    /// <summary>
+    /// Records "enable/disable entity" — applied at <see cref="Playback"/> via the same path as <see cref="Entity.IsEnabled"/>, so disabling cascades to children and fires OnEnable/OnDisable.
+    /// Works on ECB refs (incl. <see cref="Instantiate(ulong)"/> roots: records after Instantiate to spawn disabled) and on live scene refs (<see cref="Entity.ToCommandBufferRef"/> or a query row's <c>Entity</c>).
+    /// </summary>
+    public void SetEnabled(EntityRef entity, bool enabled)
+    {
+        if (entity.IsCommandBufferEntity && entity.Index >= m_EntityCount)
+        {
+            throw new ArgumentException(
+                $"EntityRef index {entity.Index} is out of range for this ECB (entityCount = {m_EntityCount}). " +
+                "Did you call Create on a different ECB?",
+                nameof(entity));
+        }
+
+        EcbWire.WriteSetEnabledRecord(
+            ref m_Commands,
+            ref m_CommandsLen,
+            ref m_CommandCount,
+            entity,
+            enabled);
+    }
+
     /// <summary>Records "attach component T with the given value to entity e"; bytes are copied immediately so the source struct can be reused.</summary>
     public unsafe void AddComponent<T>(EntityRef e, in T data) where T : unmanaged, IComponent
     {
@@ -679,13 +701,18 @@ public sealed partial class EntityCommandBuffer : IDisposable
                   "build. Open Project Settings > Entity ID bits, raise the value " +
                   "(24 -> 16M, 28 -> 268M), then regenerate project files and " +
                   "rebuild. See the engine log for the current count / cap",
-            -6 => "an Ecb_InstantiatePrefab record referenced a prefab GUID that " +
-                  "is unknown OR whose template can't be baked into a memcpy-ready " +
-                  "form (e.g. the prefab contains internal entity references — a " +
-                  "v1 limitation; fall back to Entity.Instantiate(prefab) for those). " +
-                  "See the engine log for the offending GUID",
+            -6 => "an Ecb_InstantiatePrefab record referenced a prefab whose template " +
+                  "can't be baked into a memcpy-ready form (e.g. a particle system or other " +
+                  "component holding non-trivial heap state, or internal entity references). " +
+                  "Fall back to Entity.Instantiate(prefab) for that prefab. " +
+                  "See the engine log for the offending component",
             -7 => "an unexpected internal engine exception occurred during playback " +
                   "(e.g. out of memory while baking a prefab). See the engine log for details",
+            -8 => "an Ecb_InstantiatePrefab record referenced a prefab GUID that is UNKNOWN — " +
+                  "it does not resolve to a loadable Prefab asset in this build (a missing or " +
+                  "unscanned .prefab/.meta, or a stale/zero GUID). This is NOT a bake limitation: " +
+                  "Entity.Instantiate(prefab) would fail the same way. Verify the prefab asset " +
+                  "exists and the reference is wired. See the engine log for the offending GUID",
             _ => $"native error code {created}",
         };
         throw new InvalidOperationException(
@@ -820,6 +847,8 @@ internal static class EcbWire
     // Payload-free opcode; native side calls defaultEmplace so C++ member-initializers (e.g. Transform2D Scale=(1,1)) fire instead of being overwritten by C#'s zero-init default(T).
     public const byte OP_DEFAULT_CONSTRUCT_COMPONENT = 4;
     public const byte OP_DESTROY_ENTITY = 5;
+    // Local entity: payload u8 enabled. Live scene entity (entityIndex == NO_NAME): payload u8 enabled + u64 persistent id. Routes to Entity::SetEnabled at playback (DisabledTag cascade + OnEnable/OnDisable).
+    public const byte OP_SET_ENTITY_ENABLED = 6;
 
     // Sentinel "no name" matching kEcbNoName on the native side.
     public const uint NO_NAME = 0xFFFFFFFFu;
@@ -829,6 +858,9 @@ internal static class EcbWire
     // u64 prefabGuid — the only payload Ecb_InstantiatePrefab carries today.
     public const int INSTANTIATE_PREFAB_PAYLOAD_BYTES = 8;
     public const int DESTROY_ENTITY_PAYLOAD_BYTES = 8;
+    // SetEntityEnabled: u8 enabled flag, plus (live scene entity only) the u64 persistent id.
+    public const int SET_ENABLED_FLAG_BYTES = 1;
+    public const int SET_ENABLED_LIVE_ID_BYTES = 8;
 
     public static unsafe void WriteAddComponentRecord(
         ref byte[] commands,
@@ -940,6 +972,41 @@ internal static class EcbWire
             {
                 ulong entityId = entity.ID;
                 Unsafe.CopyBlockUnaligned(w, &entityId, DESTROY_ENTITY_PAYLOAD_BYTES);
+            }
+        }
+
+        commandsLen += recordSize;
+        commandCount++;
+    }
+
+    // Layout mirrors Destroy: the enabled flag is always payload[0]; a live scene ref appends its u64 persistent id so native can TryResolveEntityRef it.
+    public static unsafe void WriteSetEnabledRecord(
+        ref byte[] commands,
+        ref int commandsLen,
+        ref int commandCount,
+        EntityRef entity,
+        bool enabled)
+    {
+        ushort payloadSize = entity.IsSceneEntity
+            ? (ushort)(SET_ENABLED_FLAG_BYTES + SET_ENABLED_LIVE_ID_BYTES)
+            : (ushort)SET_ENABLED_FLAG_BYTES;
+        uint entityIndex = entity.IsSceneEntity ? NO_NAME : entity.Index;
+        int recordSize = COMMAND_PREFIX_BYTES + payloadSize;
+        EnsureCapacity(ref commands, commandsLen + recordSize);
+
+        fixed (byte* basePtr = commands)
+        {
+            byte* w = basePtr + commandsLen;
+            *w = OP_SET_ENTITY_ENABLED; w += 1;
+            Unsafe.CopyBlockUnaligned(w, &entityIndex, 4); w += 4;
+            uint typeIdZero = 0;
+            Unsafe.CopyBlockUnaligned(w, &typeIdZero, 4); w += 4;
+            Unsafe.CopyBlockUnaligned(w, &payloadSize, 2); w += 2;
+            *w = enabled ? (byte)1 : (byte)0; w += 1;
+            if (entity.IsSceneEntity)
+            {
+                ulong entityId = entity.ID;
+                Unsafe.CopyBlockUnaligned(w, &entityId, SET_ENABLED_LIVE_ID_BYTES);
             }
         }
 

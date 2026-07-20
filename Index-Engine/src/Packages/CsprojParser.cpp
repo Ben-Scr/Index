@@ -45,7 +45,9 @@ namespace Index {
 			if (!input.is_open()) {
 				return false;
 			}
-			std::string contents((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+			std::string contents{
+				std::istreambuf_iterator<char>(input),
+				std::istreambuf_iterator<char>()};
 			return ParseXmlString(contents, document);
 		}
 

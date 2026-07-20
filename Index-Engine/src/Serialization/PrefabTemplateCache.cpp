@@ -4,10 +4,19 @@
 #include "Core/Log.hpp"
 #include "Components/General/NameComponent.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
+#include "Components/General/UUIDComponent.hpp"
+#include "Components/General/PrefabInstanceComponent.hpp"
+#include "Components/General/HierarchyComponent.hpp"
+#include "Components/Physics/Rigidbody2DComponent.hpp"
+#include "Components/Physics/BoxCollider2DComponent.hpp"
+#include "Components/Physics/CircleCollider2DComponent.hpp"
 #include "Scene/Scene.hpp"
 #include "Scene/SceneManager.hpp"
 #include "Scene/Entity.hpp"
 #include "Scene/ComponentRegistry.hpp"
+#include "Scene/DynamicComponentStorage.hpp"
+#include "Scripting/ScriptComponent.hpp"
+#include "Scripting/ScriptType.hpp"
 #include "Core/Application.hpp"
 
 #if INDEX_WITH_EDITOR
@@ -54,6 +63,36 @@ namespace Index {
 				return nullptr;
 			}
 			return &app->GetSceneManager()->GetComponentRegistry();
+		}
+
+		// A ScriptComponent is bakeable only when it is purely the inspector wrapper for C#
+		// dynamic (IComponent) components: every listed class resolves to a dynamic component
+		// and there are no behavior-script field values. Such a ScriptComponent carries no
+		// data of its own — it is re-seeded at hydrate from the baked dynamic components.
+		// A real managed/native behavior script (or any pending field values) makes it unbakeable.
+		bool ScriptComponentIsPureDynamicSeed(const ScriptComponent& sc, const ComponentRegistry& registry) {
+			if (!sc.PendingFieldValues.empty() || !sc.PendingDynamicComponentValues.empty()) {
+				return false;
+			}
+			// Behavior scripts aren't in the ComponentRegistry, so FindBySerializedName returns
+			// null for them -> not a pure seed -> unbakeable (correct). ASSUMPTION: a dynamic
+			// component's serializedName (the C# struct's simple type name) never collides with a
+			// behavior EntityScript's simple class name. A collision would resolve the script entry
+			// to the dynamic component (isDynamic) and let this prefab bake, silently dropping the
+			// behavior on the fast path only. Guard with ScriptEngine::IsScriptClass if that ever ships.
+			for (const ScriptInstance& s : sc.Scripts) {
+				const ComponentInfo* info = registry.FindBySerializedName(s.GetClassName());
+				if (info == nullptr || !info->isDynamic) {
+					return false;
+				}
+			}
+			for (const std::string& className : sc.ManagedComponents) {
+				const ComponentInfo* info = registry.FindBySerializedName(className);
+				if (info == nullptr || !info->isDynamic) {
+					return false;
+				}
+			}
+			return true;
 		}
 
 	} // namespace
@@ -112,6 +151,10 @@ namespace Index {
 		const entt::registry& registry = scene.GetRegistry();
 		const std::type_index nameComponentTypeIndex = typeid(NameComponent);
 		const std::type_index metaComponentTypeIndex = typeid(EntityMetaDataComponent);
+		const std::type_index uuidComponentTypeIndex = typeid(UUIDComponent);
+		const std::type_index prefabInstanceComponentTypeIndex = typeid(PrefabInstanceComponent);
+		const std::type_index scriptComponentTypeIndex = typeid(ScriptComponent);
+		const std::type_index hierarchyComponentTypeIndex = typeid(HierarchyComponent);
 
 		for (uint32_t i = 0; i < entityCount; ++i) {
 			if (!tmpl->bakeable) break;  // see post-loop reset; no point walking further
@@ -123,13 +166,64 @@ namespace Index {
 			slot.sourceUuid = CapturePersistentId(scene, h);
 			slot.componentRecordBegin = static_cast<uint32_t>(tmpl->components.size());
 
-			// NameComponent and EntityMetaDataComponent excluded: the cache owns their values; metadata gets a fresh RuntimeID at hydrate.
+			// Identity components must never be copied from the source entity. Hydrate stamps
+			// every instance with fresh metadata/UUID and rebuilds PrefabInstanceComponent from
+			// that metadata. Copying the source UUID made every fast-spawned instance share one
+			// script ID, so a physics hit could resolve to an unrelated prefab instance.
 			componentRegistry.ForEachComponentInfo(
 				[&](const std::type_index& typeId, const ComponentInfo& info) {
 					if (!tmpl->bakeable) return;
 					if (typeId == nameComponentTypeIndex) return;
 					if (typeId == metaComponentTypeIndex) return;
+					if (typeId == uuidComponentTypeIndex) return;
+					if (typeId == prefabInstanceComponentTypeIndex) return;
+					// Hierarchy is structural, not data: WalkTreeDFS already captured the parent
+					// indices and HydrateInto rebuilds the links via SetParent. Its Children/Parent
+					// are bake-tree EntityHandles that would be meaningless (and unbakeable — owns a
+					// std::vector) if byte-copied, so exclude it like Name/Metadata.
+					if (typeId == hierarchyComponentTypeIndex) return;
 					if (info.has == nullptr || !info.has(scene.GetEntity(h))) return;
+
+					// ScriptComponent is the inspector wrapper for C# dynamic components and owns
+					// no bakeable bytes. Drop it when it only seeds dynamic components (re-seeded at
+					// hydrate); a real behavior script makes the prefab unbakeable.
+					if (typeId == scriptComponentTypeIndex) {
+						if (!ScriptComponentIsPureDynamicSeed(
+								scene.GetComponent<ScriptComponent>(h), componentRegistry)) {
+							tmpl->bakeable = false;
+							tmpl->unbakeableReason = "prefab entity has a behavior script ('Scripts'); "
+								"behavior scripts can't be baked into the fast-spawn template. Use "
+								"Entity.Instantiate for this prefab, or move the behavior into a system";
+						}
+						return;
+					}
+
+					// C# dynamic (IComponent) components have no writeBytes function pointer — it
+					// can't capture the runtime storage — but their bytes live in dynamicStorage.
+					// Capture them directly so prefabs carrying C# data components stay bakeable;
+					// hydrate restores them through the existing emplaceFromBytes.
+					if (info.isDynamic) {
+						if (info.dynamicStorage == nullptr || info.typeIdU32 == 0) {
+							tmpl->bakeable = false;
+							tmpl->unbakeableReason = "dynamic component '" +
+								(info.serializedName.empty() ? info.displayName : info.serializedName) +
+								"' has no storage or stable type id; cannot bake";
+							return;
+						}
+						const uint32_t byteOffset = static_cast<uint32_t>(tmpl->payloadBlob.size());
+						const uint32_t byteSize = info.dynamicStorage->ElementSize();
+						// RegisterDynamic refuses size 0, so ElementSize() is always >= 1; the guard
+						// is belt-and-suspenders (Get on a 0-size storage would be ill-defined).
+						if (byteSize > 0) {
+							const void* raw = info.dynamicStorage->Get(h);
+							if (raw == nullptr) return; // has() true but no row = storage drift; skip
+							const uint8_t* bytes = static_cast<const uint8_t*>(raw);
+							tmpl->payloadBlob.insert(tmpl->payloadBlob.end(), bytes, bytes + byteSize);
+						}
+						tmpl->components.push_back(
+							PrefabTemplate::ComponentRecord{ info.typeIdU32, byteOffset, byteSize });
+						return;
+					}
 
 					if (info.writeBytes == nullptr || info.typeIdU32 == 0) {
 						tmpl->bakeable = false;
@@ -249,6 +343,49 @@ namespace Index {
 				}
 				info->emplaceFromBytes(registry, preAllocated[i],
 					tmpl->payloadBlob.data() + rec.byteOffset, rec.byteSize);
+
+				// Mirror seedScriptsEntryForDynamic: surface C# dynamic components in the
+				// inspector's Scripts list, matching what the slow Instantiate path produces.
+				if (info->isDynamic) {
+					ScriptComponent& sc = registry.get_or_emplace<ScriptComponent>(preAllocated[i]);
+					sc.AddScript(info->serializedName, ScriptType::Managed);
+				}
+			}
+		}
+
+		// Fast-spawn created the collider shapes with default material/geometry — CreateShape
+		// ignores the component's logical state — so push the byte-restored state (size/radius,
+		// center, friction/bounciness/layer, sensor, contact events) into the live shapes,
+		// matching the slow Instantiate path. Runs after the construct hooks built the shapes,
+		// before the mass re-assert (a resized or sensor-recreated shape changes mass).
+		for (uint32_t i = 0; i < entityCount; ++i) {
+			EntityHandle h = preAllocated[i];
+			if (BoxCollider2DComponent* box = registry.try_get<BoxCollider2DComponent>(h)) {
+				box->RestoreShapeFromState(scene);
+			}
+			else if (CircleCollider2DComponent* circle = registry.try_get<CircleCollider2DComponent>(h)) {
+				circle->RestoreShapeFromState(scene);
+			}
+		}
+
+		// Rigidbody state restore: push byte-restored gravity scale / freeze locks / pinned mass into
+		// the live body (the construct hook made it with defaults; body type is honored by the hook).
+		// Runs after the collider pass so the mass re-assert sees the final shapes.
+		for (uint32_t i = 0; i < entityCount; ++i) {
+			if (Rigidbody2DComponent* rb = registry.try_get<Rigidbody2DComponent>(preAllocated[i])) {
+				rb->RestoreBodyFromState();
+				// TEMP DIAGNOSTIC: a rigidbody and its sibling collider MUST share one b2 body.
+				// If shared==false the ECB hydrate adoption failed (shape on one body, rigidbody on
+				// another) — exactly the symptom where a spawned asteroid's collider sits at the origin
+				// while its rigidbody/transform are at spawnPos. Remove once root-caused.
+				uint64_t rbBody = b2StoreBodyId(rb->GetBodyHandle());
+				uint64_t colBody = 0;
+				if (auto* cc = registry.try_get<CircleCollider2DComponent>(preAllocated[i])) colBody = b2StoreBodyId(cc->m_BodyId);
+				else if (auto* bc = registry.try_get<BoxCollider2DComponent>(preAllocated[i])) colBody = b2StoreBodyId(bc->m_BodyId);
+				if (colBody != 0) {
+					IDX_CORE_INFO_TAG("HydrateDbg", "ent={} rbBody={} colBody={} shared={} rbValid={}",
+						static_cast<uint32_t>(preAllocated[i]), rbBody, colBody, (rbBody == colBody) ? 1 : 0, rb->IsValid() ? 1 : 0);
+				}
 			}
 		}
 

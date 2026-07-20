@@ -68,10 +68,12 @@ namespace Index {
 			Emit(emitCount);
 
 			for (auto& burst : m_Bursts) {
-				burst.TimeUntilNext += deltaTime;
-				if (burst.TimeUntilNext >= burst.Interval) {
+				// Counts down from 0, so the burst fires on the first update after Play (instant
+				// on spawn), then every Interval — instead of waiting one full Interval first.
+				burst.TimeUntilNext -= deltaTime;
+				if (burst.TimeUntilNext <= 0.f) {
 					Emit(burst.Count);
-					burst.TimeUntilNext = 0;
+					burst.TimeUntilNext = burst.Interval;
 				}
 			}
 		}

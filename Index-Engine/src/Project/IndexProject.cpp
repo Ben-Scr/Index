@@ -802,6 +802,9 @@ endforeach()
 		if (!project.EnablePostProcessing) {
 			root.AddMember("enablePostProcessing", false);
 		}
+		if (project.PhysicsTickRate != 50) {
+			root.AddMember("physicsTickRate", project.PhysicsTickRate);
+		}
 
 		// autoSaveScenes/autoSaveIntervalSeconds/showFileExtensions moved to EditorPreferences (2026-05).
 		root.AddMember("assetSerializationFormat",
@@ -1498,6 +1501,9 @@ endforeach()
 					project.ShowRuntimeLogs = v->AsBoolOr(true);
 				if (const Json::Value* v = root.FindMember("enablePostProcessing"))
 					project.EnablePostProcessing = v->AsBoolOr(true);
+				if (const Json::Value* v = root.FindMember("physicsTickRate"))
+					project.PhysicsTickRate = std::clamp(v->AsIntOr(50),
+						IndexProject::k_MinPhysicsHz, IndexProject::k_MaxPhysicsHz);
 				// Parse legacy keys into LegacyEditorPrefs so they can migrate to EditorPreferences on next Save.
 				if (const Json::Value* v = root.FindMember("autoSaveScenes")) {
 					project.LegacyEditorPrefs.AutoSaveScenes = v->AsBoolOr(false);

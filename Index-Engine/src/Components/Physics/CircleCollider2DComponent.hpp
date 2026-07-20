@@ -25,6 +25,11 @@ namespace Index {
 		void SetCenter(const Vec2& center, const Scene& scene);
 		Vec2 GetCenter() const;
 
+		// Push the byte-restored logical state (radius/center/material/sensor) into the live b2 shape.
+		// Needed after an ECB fast-spawn: the construct hook builds the shape from defaults, and the
+		// getters then shadow the struct fields, so the slow-path setters must be re-run here.
+		void RestoreShapeFromState(Scene& scene);
+
 		void Destroy() override;
 	private:
 		float m_LocalRadius{ 0.5f };

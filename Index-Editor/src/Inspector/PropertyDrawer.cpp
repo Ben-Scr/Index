@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -168,6 +169,100 @@ namespace Index::PropertyDrawer {
 				ImGui::EndPopup();
 			}
 			return cleared;
+		}
+
+		bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
+
+		std::string_view Trim(std::string_view v) {
+			while (!v.empty() && IsSpace(v.front())) v.remove_prefix(1);
+			while (!v.empty() && IsSpace(v.back()))  v.remove_suffix(1);
+			return v;
+		}
+
+		// Parse a clipboard string into an RGBA color (channels 0..1). Accepts the
+		// engine's canonical "r,g,b[,a]" decimal form (PropertyValue::ToString for
+		// Color) and "#RGB" / "#RGBA" / "#RRGGBB" / "#RRGGBBAA" hex. Returns nullopt
+		// when the text isn't a recognisable color, so Paste can be greyed out.
+		std::optional<std::array<float, 4>> ParseClipboardColor(const char* clipboard) {
+			if (!clipboard) return std::nullopt;
+			std::string_view s = Trim(std::string_view{ clipboard });
+			// Tolerate a wrapping () or [] (e.g. an "(r, g, b, a)" copy form).
+			if (s.size() >= 2 && (s.front() == '(' || s.front() == '[') && (s.back() == ')' || s.back() == ']')) {
+				s = Trim(s.substr(1, s.size() - 2));
+			}
+			if (s.empty()) return std::nullopt;
+
+			std::array<float, 4> out{ 0.0f, 0.0f, 0.0f, 1.0f };
+
+			if (s.front() == '#') {
+				const std::string_view hex = s.substr(1);
+				const auto nibble = [](char c, int& v) -> bool {
+					if (c >= '0' && c <= '9') { v = c - '0'; return true; }
+					if (c >= 'a' && c <= 'f') { v = 10 + (c - 'a'); return true; }
+					if (c >= 'A' && c <= 'F') { v = 10 + (c - 'A'); return true; }
+					return false;
+				};
+				const std::size_t n = hex.size();
+				if (n != 3 && n != 4 && n != 6 && n != 8) return std::nullopt;
+				const bool shortForm = (n == 3 || n == 4);
+				const std::size_t channels = (n == 3 || n == 6) ? 3 : 4;
+				for (std::size_t c = 0; c < channels; ++c) {
+					int value = 0;
+					if (shortForm) {
+						int h = 0;
+						if (!nibble(hex[c], h)) return std::nullopt;
+						value = h * 16 + h;
+					}
+					else {
+						int hi = 0, lo = 0;
+						if (!nibble(hex[c * 2], hi) || !nibble(hex[c * 2 + 1], lo)) return std::nullopt;
+						value = hi * 16 + lo;
+					}
+					out[c] = static_cast<float>(value) / 255.0f;
+				}
+				return out;
+			}
+
+			// Decimal CSV: 3 (RGB) or 4 (RGBA) float channels.
+			std::size_t channel = 0;
+			std::size_t start = 0;
+			while (channel < 4) {
+				const std::size_t comma = s.find(',', start);
+				const std::string_view tok = Trim(s.substr(start,
+					comma == std::string_view::npos ? std::string_view::npos : comma - start));
+				if (tok.empty()) return std::nullopt;
+				float f = 0.0f;
+				const auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), f);
+				if (ec != std::errc{} || ptr != tok.data() + tok.size()) return std::nullopt;
+				out[channel++] = f;
+				if (comma == std::string_view::npos) break;
+				start = comma + 1;
+			}
+			if (channel < 3) return std::nullopt; // need at least RGB
+			return out;
+		}
+
+		// Right-click copy/paste for Color rows. `current` is the sampled color
+		// (entity[0]'s value when the selection is mixed). Returns true and fills
+		// `outPasted` when the user pastes a parseable clipboard color.
+		bool DrawColorContextMenu(const char* popupId, const std::array<float, 4>& current,
+			std::array<float, 4>& outPasted) {
+			bool didPaste = false;
+			if (ImGui::BeginPopupContextItem(popupId)) {
+				if (ImGui::MenuItem("Copy")) {
+					PropertyValue v;
+					v.Type = PropertyType::Color;
+					v.FloatVec = current;
+					ImGui::SetClipboardText(v.ToString().c_str());
+				}
+				const std::optional<std::array<float, 4>> clip = ParseClipboardColor(ImGui::GetClipboardText());
+				if (ImGui::MenuItem("Paste", nullptr, false, clip.has_value())) {
+					outPasted = *clip;
+					didPaste = true;
+				}
+				ImGui::EndPopup();
+			}
+			return didPaste;
 		}
 
 		bool DrawAssetLocateButton(bool enabled) {
@@ -600,6 +695,9 @@ namespace Index::PropertyDrawer {
 			ImGui::PushID(d.Name.c_str());
 			ImGuiUtils::BeginInspectorFieldRow(d.DisplayName.c_str());
 			bool anyChanged = false;
+			// Group the value widget so the right-click context menu below covers the
+			// whole field in both branches (the mixed branch's last item is one channel).
+			ImGui::BeginGroup();
 			if (!anyMixed) {
 				// Persistent edit buffer so ImGui's ColorPicker reads back its OWN exact
 				// float output each frame. Re-seeding from the stored value (which round-trips
@@ -644,6 +742,21 @@ namespace Index::PropertyDrawer {
 					return changed;
 				});
 			}
+			ImGui::EndGroup();
+
+			// Right-click Copy/Paste. PushID(fieldKey) keeps the popup id unique per
+			// field; the trigger still binds to the group above (the whole color widget).
+			ImGui::PushID(fieldKey.c_str());
+			std::array<float, 4> pasted{};
+			if (DrawColorContextMenu("##ColorCtx", values, pasted)) {
+				PropertyValue v;
+				v.Type = PropertyType::Color;
+				v.FloatVec = pasted;
+				WriteAll(entities, d, v);
+				anyChanged = true;
+			}
+			ImGui::PopID();
+
 			ImGui::PopID();
 			return anyChanged;
 		}

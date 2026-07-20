@@ -85,6 +85,20 @@ namespace Index {
 		bool ShowRuntimeLogs = true;
 		bool EnablePostProcessing = true;
 
+		// Default physics-world / fixed-timestep rate in Hz: how many times per second
+		// the physics world steps and FixedUpdate runs (fixed timestep = 1/Hz seconds).
+		// Applied to Time at app startup and on each editor play-entry; scripts may still
+		// override it at runtime via Time.fixedDeltaTime. 50 matches the engine default
+		// (Time::m_FixedDeltaTime = 1/50). Bounds mirror Time::SetFixedDeltaTime's
+		// [1/240, 1]s clamp — keep k_Max/k_Min in sync if that range ever changes.
+		static constexpr int k_MinPhysicsHz = 1;
+		static constexpr int k_MaxPhysicsHz = 240;
+		int PhysicsTickRate = 50;
+
+		// Single source of truth for the Hz -> fixed-timestep-seconds conversion shared by
+		// every apply site (startup, play-entry, the settings slider).
+		float GetFixedDeltaTimeSeconds() const { return 1.0f / static_cast<float>(PhysicsTickRate); }
+
 		bool AutoRecompileScripts = true;
 		bool RecompileScriptsOnPlay = false;
 

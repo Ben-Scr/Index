@@ -11,6 +11,7 @@
 - **Startup project:** Index-Launcher
 - **Configs:** Debug, Release, Dist. All x64.
 - **Output:** `bin/{config}-windows-x64/{project}/`
+- **EngineSDK bundle (Windows):** the Index-Launcher postbuild runs `scripts/CopyEngineSdk.bat`, materializing `EngineSDK/` next to the launcher exe (engine headers + `Index-Engine.lib` + ScriptCore + External deps) plus `EngineSDK/Runtime-Dist/`, a prebuilt editor-free Dist runtime. **Build order:** build `Index-Runtime` in the **Dist** config *before* the Launcher postbuild, else `Runtime-Dist` is skipped (with a stderr note). `scripts/verify-standalone-zip.bat` validates the bundle.
 - **C++ Standard:** C++20 (Box2D and Index-Physics use C++23)
 - **New package:** `python scripts/packages/NewPackage.py <PackageName>` scaffolds a package under `packages/<PackageName>/` with a starter `index-package.lua`.
 

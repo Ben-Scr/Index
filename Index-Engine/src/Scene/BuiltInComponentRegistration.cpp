@@ -31,7 +31,9 @@
 #include "Scene/SceneManager.hpp"
 #include "Scripting/ScriptComponent.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <type_traits>
 #include <variant>
 #include <vector>
@@ -39,6 +41,51 @@
 // Single source of truth for built-in components — names, categories, properties.
 namespace Index {
 	namespace {
+		// Box/Circle colliders inherit Collider2D (virtual dtor -> non-trivially-destructible), so the
+		// auto byte-emplacers are skipped and any prefab containing one was rejected as unbakeable.
+		// They own no heap (all-POD data), and their on_construct hook rebuilds the Box2D body/shape
+		// from the logical state. So bake them: copy the data members (NOT the vtable pointer), and
+		// null the stale Box2D handles so OnXColliderConstruct recreates a fresh body/shape on hydrate.
+		// NOTE: not usable for PolygonCollider2DComponent — it owns std::vector vertices (heap).
+		template <typename T>
+		void RegisterColliderByteEmplacer(SceneManager& sceneManager) {
+			static_assert(std::is_base_of_v<Collider2D, T>,
+				"RegisterColliderByteEmplacer is only for Collider2D-derived components");
+			static_assert(std::is_polymorphic_v<T>, "expected a polymorphic collider (vptr at offset 0)");
+			const std::type_index targetId(typeid(T));
+			sceneManager.GetComponentRegistry().ForEachComponentInfo(
+				[targetId](const std::type_index& id, ComponentInfo& info) {
+					if (id != targetId) return;
+					info.writeBytes = [](const entt::registry& registry, EntityHandle entity,
+						std::vector<uint8_t>& out) -> bool {
+						const T* component = registry.try_get<T>(entity);
+						if (component == nullptr) return false;
+						const auto* bytes = reinterpret_cast<const uint8_t*>(component);
+						out.insert(out.end(), bytes, bytes + sizeof(T));
+						return true;
+					};
+					info.emplaceFromBytes = [](entt::registry& registry, EntityHandle entity,
+						const void* bytes, std::size_t size) {
+						T component; // fresh vtable ptr + null Box2D handles
+						// Restore data members WITHOUT overwriting the freshly-constructed vtable
+						// pointer (single inheritance -> vptr at offset 0; writing it is UB).
+						constexpr std::size_t kVptr = sizeof(void*);
+						const std::size_t total = std::min(size, sizeof(T));
+						if (total > kVptr) {
+							std::memcpy(reinterpret_cast<uint8_t*>(&component) + kVptr,
+								static_cast<const uint8_t*>(bytes) + kVptr, total - kVptr);
+						}
+						// Drop the bake tree's stale handles; the construct hook rebuilds them from the
+						// restored logical state (size/radius/center/material) and shares the body.
+						Collider2D& base = component;
+						base.m_BodyId = b2_nullBodyId;
+						base.m_ShapeId = b2_nullShapeId;
+						base.m_EntityHandle = entity;
+						registry.emplace_or_replace<T>(entity, std::move(component));
+					};
+				});
+		}
+
 		Json::Value UIColorToJson(const Color& c) {
 			Json::Value v = Json::Value::MakeObject();
 			v.AddMember("r", Json::Value(c.r));
@@ -356,7 +403,10 @@ namespace Index {
 		// SpriteRendererComponent; the trailing std::string SpriteName makes
 		// the type non-trivially-destructible, so the auto byte-emplacer is
 		// skipped. Register a prefix-aware one so ECB AddComponent of the
-		// native mirror works from scripts.
+		// native mirror works from scripts AND prefabs with a sprite stay bakeable.
+		static_assert(offsetof(SpriteRendererComponent, SpriteName) + sizeof(std::string)
+			== sizeof(SpriteRendererComponent),
+			"SpriteName must stay the last member: the prefix emplacer bakes only the POD bytes before it.");
 		Index::Codegen::RegisterPrefixByteEmplacer<SpriteRendererComponent>(
 			sceneManager, offsetof(SpriteRendererComponent, SpriteName));
 
@@ -403,6 +453,14 @@ namespace Index {
 						}
 					}),
 			});
+
+		// Same trailing-std::string layout as SpriteRenderer: register a prefix emplacer so UI
+		// prefabs containing an Image are ECB-bakeable instead of forced onto the slow spawn path.
+		static_assert(offsetof(ImageComponent, SpriteName) + sizeof(std::string)
+			== sizeof(ImageComponent),
+			"SpriteName must stay the last member: the prefix emplacer bakes only the POD bytes before it.");
+		Index::Codegen::RegisterPrefixByteEmplacer<ImageComponent>(
+			sceneManager, offsetof(ImageComponent, SpriteName));
 
 		RegisterComponent<Camera2DComponent>(sceneManager, "Camera 2D",
 			ComponentCategory::Component, "Rendering", "Camera2D",
@@ -1080,6 +1138,12 @@ namespace Index {
 						e.GetComponent<Rigidbody2DComponent>().SetRotation(v);
 					},
 					Properties::Meta::ReadOnly().WithDragSpeed(0.01f)),
+				Properties::MakeWith<float>("Mass", "Mass",
+					[](const Entity& e) { return e.GetComponent<Rigidbody2DComponent>().GetMass(); },
+					[](Entity& e, float v) {
+						e.GetComponent<Rigidbody2DComponent>().SetMass(v);
+					},
+					Properties::Meta::DragSpeed(0.01f).WithDragMin(0.0)),
 				Properties::MakeWith<float>("GravityScale", "Gravity Scale",
 					[](const Entity& e) { return e.GetComponent<Rigidbody2DComponent>().GetGravityScale(); },
 					[](Entity& e, float v) {
@@ -1229,6 +1293,11 @@ namespace Index {
 						e.GetComponent<CircleCollider2DComponent>().SetLayer(v);
 					}),
 			});
+
+		// Make Box/Circle colliders bakeable so prefabs with physics spawn via the ECB fast path.
+		// PolygonCollider2D stays on the slow path (Entity.Instantiate) — it owns heap vertex data.
+		RegisterColliderByteEmplacer<BoxCollider2DComponent>(sceneManager);
+		RegisterColliderByteEmplacer<CircleCollider2DComponent>(sceneManager);
 
 		RegisterComponent<PolygonCollider2DComponent>(sceneManager, "Polygon Collider 2D",
 			ComponentCategory::Component, "Physics", "PolygonCollider2D",

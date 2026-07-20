@@ -2339,8 +2339,11 @@ internal static class ScriptInstanceManager
         }
     }
 
-    private static unsafe byte* NullTerminated(string s)
+    private static unsafe byte* NullTerminated(string? s)
     {
+        // Defensive: GetByteCount(null) would throw across reverse-pinvoke. Callers pass
+        // literals / StringBuilder.ToString() today, but never hand native a null buffer.
+        s ??= "[]";
         lock (s_FieldJsonBufferLock)
         {
             int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);

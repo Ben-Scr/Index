@@ -1,5 +1,6 @@
 #include <pch.hpp>
 #include <Components/Physics/BoxCollider2DComponent.hpp>
+#include <Components/Physics/Rigidbody2DComponent.hpp>
 #include <Components/General/Transform2DComponent.hpp>
 
 #include <Scene/Scene.hpp>
@@ -84,6 +85,11 @@ namespace Index {
 		SetLayer(layer);
 		SetRegisterContacts(registerContacts);
 		SetEnabled(enabled);
+
+		// Recreating the shape recomputed mass from density*area; restore a pinned mass.
+		if (scene.HasComponent<Rigidbody2DComponent>(m_EntityHandle)) {
+			scene.GetComponent<Rigidbody2DComponent>(m_EntityHandle).ApplyMassFromState();
+		}
 	}
 
 	Vec2 BoxCollider2DComponent::GetScale() const {
@@ -148,6 +154,20 @@ namespace Index {
 		if (!b2Shape_IsValid(m_ShapeId)) return m_Center;
 		b2Polygon polygon = b2Shape_GetPolygon(m_ShapeId);
 		return Vec2(polygon.centroid.x, polygon.centroid.y);
+	}
+
+	void BoxCollider2DComponent::RestoreShapeFromState(Scene& scene) {
+		if (!b2Shape_IsValid(m_ShapeId)) return;
+		// Members hold the byte-restored values; re-push them into the live shape. Order matters:
+		// SetSensor is last because it destroys+recreates the shape, re-reading the (by then correct)
+		// center/size/friction/etc. from the getters.
+		SetCenter(m_Center, scene);
+		SetScale(m_LocalSize, scene);
+		SetFriction(m_Friction);
+		SetBounciness(m_Bounciness);
+		SetLayer(m_Layer);
+		SetRegisterContacts(m_RegisterContacts);
+		SetSensor(m_Sensor, scene);
 	}
 
 	// Idempotent: destroy hooks fire from both Rigidbody2D and this component.

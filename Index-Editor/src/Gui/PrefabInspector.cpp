@@ -3,6 +3,7 @@
 
 #include "Assets/AssetRegistry.hpp"
 #include "Components/General/EntityMetaDataComponent.hpp"
+#include "Core/Application.hpp"
 #include "Core/Log.hpp"
 #include "Editor/EditorComponentRegistration.hpp"
 #include "Inspector/ReferencePicker.hpp"
@@ -237,6 +238,9 @@ namespace Index {
 
 	void PrefabInspector::PropagateToLiveInstances(uint64_t prefabGuid,
 		const Json::Value& previousSourceEntity) {
+		// Edit-mode only: refreshing a live instance destroys+recreates it, wiping runtime state. The prefab
+		// is still saved to disk during play, so instances rebuild from it on the next play Stop reload.
+		if (Application::GetIsPlaying()) return;
 		SceneManager::Get().ForeachLoadedScene([&](Scene& scene) {
 			if (&scene == m_PrefabScene.get()) return;
 

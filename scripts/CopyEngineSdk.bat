@@ -75,6 +75,34 @@ for %%I in ("%BIN%") do set "CFGPLAT=%%~nxI"
 robocopy "%BIN%\Index-Engine" "%SDK%\bin\%CFGPLAT%\Index-Engine" Index-Engine.lib %ROBOFLAGS% >nul
 if errorlevel 8 goto :robofail
 
+REM --- Prebuilt editor-free Dist runtime, bundled under Runtime-Dist\ so a
+REM     shipped repo-less Launcher/editor carries a fully runnable runtime and
+REM     a future copy-based Release export has everything it needs. The Dist
+REM     runtime always comes from bin\Dist-<plat>\Index-Runtime regardless of
+REM     the Launcher's own config, so derive Dist-<plat> from CFGPLAT set above.
+REM     Copy the distribution artifacts by name plus the IndexAssets tree --
+REM     NOT a /MIR of the whole folder -- so stray files left by running a game
+REM     from that dir (imgui.ini, a project's Assets\, Packages\,
+REM     index-project.json) never leak into the bundle. The dest is wiped first
+REM     for a deterministic, stale-free bundle. Skipped with a stderr note if
+REM     the Dist runtime is not built yet (mirrors the :CopyExternalDir
+REM     missing-source behavior), so a Debug-only or partial build still
+REM     succeeds. Build Index-Runtime in the Dist config BEFORE this Launcher
+REM     postbuild for the bundle to populate.
+for /f "tokens=1* delims=-" %%A in ("!CFGPLAT!") do set "DISTPLAT=Dist-%%B"
+set "DISTRT=%ROOT%\bin\!DISTPLAT!\Index-Runtime"
+if not exist "%DISTRT%\Index-Runtime.exe" goto :skipRuntimeDist
+if exist "%SDK%\Runtime-Dist" rmdir /s /q "%SDK%\Runtime-Dist"
+robocopy "%DISTRT%" "%SDK%\Runtime-Dist" Index-Runtime.exe Index-Engine.dll GLFW.dll Index-ScriptCore.dll nethost.dll %ROBOFLAGS% >nul
+if errorlevel 8 goto :robofail
+if exist "%DISTRT%\Tracy.dll" robocopy "%DISTRT%" "%SDK%\Runtime-Dist" Tracy.dll %ROBOFLAGS% >nul
+robocopy "%DISTRT%\IndexAssets" "%SDK%\Runtime-Dist\IndexAssets" /MIR %ROBOFLAGS% >nul
+if errorlevel 8 goto :robofail
+goto :afterRuntimeDist
+:skipRuntimeDist
+echo CopyEngineSdk: Dist runtime missing at bin\!DISTPLAT!\Index-Runtime; Runtime-Dist not bundled 1>&2
+:afterRuntimeDist
+
 endlocal
 exit /b 0
 

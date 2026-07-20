@@ -1244,6 +1244,9 @@ namespace Index {
 				rigidbodyValue.AddMember("bodyType", Value(static_cast<int>(rigidbody.GetBodyType())));
 				rigidbodyValue.AddMember("gravityScale", Value(rigidbody.GetGravityScale()));
 				rigidbodyValue.AddMember("mass", Value(rigidbody.GetMass()));
+				// massOverridden distinguishes a pinned mass from Box2D's density*area
+				// auto value. Absent in legacy files -> false -> auto mass preserved.
+				rigidbodyValue.AddMember("massOverridden", Value(rigidbody.IsMassOverridden()));
 				// Constraints. Defaults to false on the deserializer side when
 				// the key is missing, so existing scene files keep loading
 				// without modification.

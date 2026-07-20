@@ -444,10 +444,14 @@ namespace Index {
 
 	// ── Log Bindings ────────────────────────────────────────────────────
 
-	static void Index_Log_Trace(const char* message) { Log::PrintMessageTag(Log::Type::Client, Log::Level::Trace, "Script", message); }
-	static void Index_Log_Info(const char* message)  { Log::PrintMessageTag(Log::Type::Client, Log::Level::Info, "Script", message); }
-	static void Index_Log_Warn(const char* message)  { Log::PrintMessageTag(Log::Type::Client, Log::Level::Warn, "Script", message); }
-	static void Index_Log_Error(const char* message) { Log::PrintMessageTag(Log::Type::Client, Log::Level::Error, "Script", message); }
+	// Guard the managed message pointer: a null const char* converts to std::string_view
+	// via std::char_traits::length (strlen) on nullptr -> AV read at 0x0. C# normally
+	// coalesces null (InternalCalls.CallStringBinding does `message ??= ""`), but native
+	// scripts/packages can call these directly, so never strlen an unchecked boundary pointer.
+	static void Index_Log_Trace(const char* message) { Log::PrintMessageTag(Log::Type::Client, Log::Level::Trace, "Script", message ? message : ""); }
+	static void Index_Log_Info(const char* message)  { Log::PrintMessageTag(Log::Type::Client, Log::Level::Info, "Script", message ? message : ""); }
+	static void Index_Log_Warn(const char* message)  { Log::PrintMessageTag(Log::Type::Client, Log::Level::Warn, "Script", message ? message : ""); }
+	static void Index_Log_Error(const char* message) { Log::PrintMessageTag(Log::Type::Client, Log::Level::Error, "Script", message ? message : ""); }
 
 	// ── Input Bindings ──────────────────────────────────────────────────
 

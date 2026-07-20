@@ -80,6 +80,14 @@ public class Entity : IEquatable<Entity>
     public bool IsEnabledInHierarchy
         => !IsPrefabAsset && InternalCalls.Entity_GetIsEnabledInHierarchy(ID);
 
+    /// <summary>Returns a live-scene <see cref="EntityRef"/> for this entity, for deferred ops like <see cref="EntityCommandBuffer.SetEnabled"/> / <see cref="EntityCommandBuffer.Destroy"/>. Throws for prefab assets and the invalid entity.</summary>
+    public EntityRef ToCommandBufferRef()
+    {
+        if (ID == 0 || IsPrefabAsset)
+            throw new InvalidOperationException("ToCommandBufferRef requires a valid live scene entity.");
+        return new EntityRef(ID);
+    }
+
     // Returns null when no Transform2D is present; use GetRefOrThrow<NativeTransform2D> when a hard requirement is acceptable.
     public Transform2D? Transform
     {

@@ -69,10 +69,12 @@ namespace Index {
 		// Default-constructs via registry.emplace<T>, firing C++ default-initializers (e.g. Scale={1,1}). MUST NOT route through emplaceFromBytes — managed default(T) is all-zero and would clobber those defaults.
 		std::function<void(entt::registry& registry, EntityHandle entity)> defaultEmplace;
 
-		// Appends rawSize bytes to `out`; used by PrefabTemplateCache to bake a memcpy-ready blob.
-		// Components owning non-trivial heap state (std::vector, non-SSO std::string) MUST override — the default memcpy aliases freed memory after the source entity is destroyed.
-		bool (*writeBytes)(const entt::registry& registry, EntityHandle entity,
-			std::vector<uint8_t>& out) = nullptr;
+		// Appends bytes to `out`; used by PrefabTemplateCache to bake a memcpy-ready blob.
+		// std::function (not a raw pointer) so helpers like RegisterPrefixByteEmplacer can capture a
+		// prefix size. Components owning non-trivial heap state (std::vector, non-SSO std::string) MUST
+		// override — the default memcpy aliases freed memory after the source entity is destroyed.
+		std::function<bool(const entt::registry& registry, EntityHandle entity,
+			std::vector<uint8_t>& out)> writeBytes;
 
 		// Fired by AddWithDependencies AFTER add; not called from raw add/deserialize/scene-load (those don't want smart defaults).
 		void (*onAdd)(Entity) = nullptr;
